@@ -84,7 +84,15 @@ app.get("/market", async (_, res) => {
   }
   res.json(JSON.parse(fs.readFileSync("latest.json")));
 });
-
+// 🔧 MANUELLER EINMAL-TRIGGER (temporär)
+app.get("/force-update", async (_, res) => {
+  try {
+    const data = await fetchMarketData();
+    res.json({ status: "ok", updated: data.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 // ===========================
 cron.schedule("0 6 1 * *", fetchMarketData);
 
