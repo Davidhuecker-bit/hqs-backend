@@ -5,7 +5,7 @@ import cron from "node-cron";
 import fs from "fs";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT; // ⬅️ WICHTIG: kein Fallback!
 
 // ===========================
 // MIDDLEWARE
@@ -14,36 +14,30 @@ app.use(cors());
 app.use(express.json());
 
 // ===========================
-// HEALTH CHECK (Railway braucht das)
+// HEALTH CHECKS (SEHR WICHTIG)
 // ===========================
-app.get("/", (req, res) => {
+app.get("/", (_, res) => {
   res.send("HQS Backend OK");
 });
 
-app.get("/ping", (req, res) => {
+app.get("/ping", (_, res) => {
   res.send("pong");
 });
 
 // ===========================
-// ASSET-UNIVERSUM
+// ASSETS
 // ===========================
 const ASSETS = [
   { name: "MSCI World ETF", symbol: "URTH" },
   { name: "MSCI Emerging Markets ETF", symbol: "EEM" },
   { name: "MSCI IT ETF", symbol: "IXN" },
   { name: "Tech Large Caps", symbol: "QQQ" },
-  { name: "Tech Mid Caps", symbol: "MDY" },
-  { name: "Tech Small Caps", symbol: "IJR" },
 ];
 
-// ===========================
-// MOMENTUM SCORE
 // ===========================
 const momentumScore = (m3, m6, m12) =>
   0.25 * m3 + 0.35 * m6 + 0.4 * m12;
 
-// ===========================
-// FETCH & BERECHNUNG
 // ===========================
 async function fetchMarketData() {
   const result = [];
@@ -53,8 +47,6 @@ async function fetchMarketData() {
       const res = await fetch(
         `https://query1.finance.yahoo.com/v8/finance/chart/${asset.symbol}?range=1y&interval=1d`
       );
-
-      if (!res.ok) throw new Error(`Yahoo API Fehler: ${asset.symbol}`);
 
       const json = await res.json();
       const prices =
@@ -72,8 +64,8 @@ async function fetchMarketData() {
         m6: pct(prices.at(-126), prices.at(-1)),
         m12: pct(prices.at(-252), prices.at(-1)),
       });
-    } catch (err) {
-      console.error(`❌ ${asset.symbol}:`, err.message);
+    } catch (e) {
+      console.error(asset.symbol, e.message);
     }
   }
 
@@ -86,33 +78,17 @@ async function fetchMarketData() {
 }
 
 // ===========================
-// API ROUTE
-// ===========================
-app.get("/market", async (req, res) => {
-  try {
-    if (!fs.existsSync("latest.json")) {
-      await fetchMarketData();
-    }
-
-    const data = JSON.parse(fs.readFileSync("latest.json", "utf8"));
-    res.json(data);
-  } catch (err) {
-    console.error("❌ API Fehler:", err.message);
-    res.status(500).json({ error: "Market data unavailable" });
+app.get("/market", async (_, res) => {
+  if (!fs.existsSync("latest.json")) {
+    await fetchMarketData();
   }
+  res.json(JSON.parse(fs.readFileSync("latest.json")));
 });
 
 // ===========================
-// CRON (Monatlich)
-// ===========================
-cron.schedule("0 6 1 * *", async () => {
-  console.log("🔄 HQS Monatslauf");
-  await fetchMarketData();
-});
+cron.schedule("0 6 1 * *", fetchMarketData);
 
-// ===========================
-// SERVER START
 // ===========================
 app.listen(PORT, () => {
-  console.log(`✅ HQS Backend läuft auf Port ${PORT}`);
+  console.log("✅ HQS Backend läuft auf Port", PORT);
 });
