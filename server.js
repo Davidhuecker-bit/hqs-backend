@@ -5,7 +5,7 @@ import cron from "node-cron";
 import fs from "fs";
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 
 // ===========================
 // MIDDLEWARE
@@ -14,9 +14,13 @@ app.use(cors());
 app.use(express.json());
 
 // ===========================
-// HEALTH CHECK (WICHTIG!)
+// HEALTH CHECK (Railway braucht das)
 // ===========================
-app.get("/ping", (_, res) => {
+app.get("/", (req, res) => {
+  res.send("HQS Backend OK");
+});
+
+app.get("/ping", (req, res) => {
   res.send("pong");
 });
 
@@ -50,7 +54,7 @@ async function fetchMarketData() {
         `https://query1.finance.yahoo.com/v8/finance/chart/${asset.symbol}?range=1y&interval=1d`
       );
 
-      if (!res.ok) throw new Error(`Yahoo API Fehler ${asset.symbol}`);
+      if (!res.ok) throw new Error(`Yahoo API Fehler: ${asset.symbol}`);
 
       const json = await res.json();
       const prices =
@@ -82,9 +86,9 @@ async function fetchMarketData() {
 }
 
 // ===========================
-// API ROUTE (Frontend)
+// API ROUTE
 // ===========================
-app.get("/market", async (_, res) => {
+app.get("/market", async (req, res) => {
   try {
     if (!fs.existsSync("latest.json")) {
       await fetchMarketData();
@@ -99,7 +103,7 @@ app.get("/market", async (_, res) => {
 });
 
 // ===========================
-// CRON (nur wenn Instanz aktiv)
+// CRON (Monatlich)
 // ===========================
 cron.schedule("0 6 1 * *", async () => {
   console.log("🔄 HQS Monatslauf");
