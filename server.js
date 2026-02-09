@@ -1,14 +1,23 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
 import cron from "node-cron";
 import fs from "fs";
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// 🔓 CORS – erlaubt Zugriff vom Frontend (Vercel)
+// ===========================
+// MIDDLEWARE
+// ===========================
 app.use(cors());
+app.use(express.json());
+
+// ===========================
+// HEALTH CHECK (WICHTIG!)
+// ===========================
+app.get("/ping", (_, res) => {
+  res.send("pong");
+});
 
 // ===========================
 // ASSET-UNIVERSUM
@@ -45,13 +54,10 @@ async function fetchMarketData() {
       const json = await res.json();
       const prices =
         json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(
-          Boolean
+          Number.isFinite
         ) || [];
 
-      if (prices.length < 252) {
-        console.warn(`⚠️ Zu wenig Daten für ${asset.symbol}`);
-        continue;
-      }
+      if (prices.length < 252) continue;
 
       const pct = (from, to) => ((to - from) / from) * 100;
 
@@ -62,15 +68,12 @@ async function fetchMarketData() {
         m12: pct(prices.at(-252), prices.at(-1)),
       });
     } catch (err) {
-      console.error(`❌ Fehler bei ${asset.symbol}:`, err.message);
+      console.error(`❌ ${asset.symbol}:`, err.message);
     }
   }
 
   const ranked = result
-    .map((a) => ({
-      ...a,
-      score: momentumScore(a.m3, a.m6, a.m12),
-    }))
+    .map(a => ({ ...a, score: momentumScore(a.m3, a.m6, a.m12) }))
     .sort((a, b) => b.score - a.score);
 
   fs.writeFileSync("latest.json", JSON.stringify(ranked, null, 2));
@@ -78,7 +81,7 @@ async function fetchMarketData() {
 }
 
 // ===========================
-// API ROUTE (Frontend nutzt diese)
+// API ROUTE (Frontend)
 // ===========================
 app.get("/market", async (_, res) => {
   try {
@@ -95,10 +98,10 @@ app.get("/market", async (_, res) => {
 });
 
 // ===========================
-// CRON: Monatlich am 1. um 06:00
+// CRON (nur wenn Instanz aktiv)
 // ===========================
 cron.schedule("0 6 1 * *", async () => {
-  console.log("🔄 HQS Monatslauf gestartet");
+  console.log("🔄 HQS Monatslauf");
   await fetchMarketData();
 });
 
