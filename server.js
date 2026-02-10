@@ -5,20 +5,19 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==================== DEIN EIGENER API KEY HIER ====================
-// Ersetze D_HUECKER_2024 mit deinem echten API Key!
-const ALPHA_VANTAGE_KEY = process.env.ALPHA_VANTAGE_KEY || 'D_HUECKER_2024';
-// ===================================================================
+// ==================== API KEY ====================
+// Dein Alpha Vantage API Key - in Railway als Umgebungsvariable setzen!
+const ALPHA_VANTAGE_KEY = process.env.ALPHA_VANTAGE_KEY || 'demo';
 
 app.use(cors());
 
-console.log(`🚀 HQS Backend gestartet`);
-console.log(`🔑 API Key: ${ALPHA_VANTAGE_KEY ? '✅ Konfiguriert' : '❌ Fehlt'}`);
+console.log(`🚀 HQS Backend gestartet auf Port ${PORT}`);
+console.log(`🔑 API Key Status: ${ALPHA_VANTAGE_KEY === 'demo' ? 'Demo-Modus' : 'Live-Modus'}`);
 
-// Standard-Aktien
+// ==================== KONFIGURATION ====================
 const DEFAULT_STOCKS = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'JPM', 'V', 'JNJ'];
 
-// Rate Limiting (5 calls/minute für Alpha Vantage Free)
+// Rate Limiting für Alpha Vantage (5 requests/minute)
 const rateLimiter = {
   lastCall: 0,
   minDelay: 1200, // 1.2 Sekunden zwischen Calls
@@ -32,20 +31,40 @@ const rateLimiter = {
   }
 };
 
-// HQS Score Berechnung
-function calculateHQSScore(symbol, price, changePercent, volume) {
+// Einfacher In-Memory Cache
+const cache = new Map();
+const CACHE_DURATION = 5 * 60 * 1000; // 5 Minuten
+
+// ==================== HELPER FUNCTIONS ====================
+function getCompanyName(symbol) {
+  const names = {
+    'AAPL': 'Apple Inc.',
+    'MSFT': 'Microsoft Corporation',
+    'NVDA': 'NVIDIA Corporation',
+    'GOOGL': 'Alphabet Inc. (Google)',
+    'AMZN': 'Amazon.com Inc.',
+    'META': 'Meta Platforms Inc.',
+    'TSLA': 'Tesla Inc.',
+    'JPM': 'JPMorgan Chase & Co.',
+    'V': 'Visa Inc.',
+    'JNJ': 'Johnson & Johnson'
+  };
+  return names[symbol] || `${symbol} Corporation`;
+}
+
+function calculateHQSScore(price, changePercent, volume) {
   let score = 50;
   
   // Momentum (Preisänderung)
   score += changePercent * 2;
   
-  // Volumen (mehr Volumen = besser)
+  // Volumen (mehr Volumen = mehr Vertrauen)
   if (volume > 10000000) score += 5;
   else if (volume > 5000000) score += 3;
   else if (volume > 1000000) score += 1;
   
   // Zufällige Faktoren für Realismus
-  const randomFactor = Math.random() * 20 - 5; // -5 bis +15
+  const randomFactor = Math.random() * 20 - 5;
   score += randomFactor;
   
   // Begrenzen auf 0-100
@@ -68,77 +87,68 @@ function getRecommendation(score) {
   return 'SELL: Starke Verkaufssignale in allen Bereichen';
 }
 
-// Einfacher Cache
-const cache = new Map();
-const CACHE_DURATION = 5 * 60 * 1000; // 5 Minuten
-
-// Fetch von Alpha Vantage
+// ==================== ALPHA VANTAGE API ====================
 async function fetchStockData(symbol) {
   const cacheKey = `stock_${symbol}`;
   const cached = cache.get(cacheKey);
   
+  // Cache prüfen
   if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-    console.log(`📦 Cache hit für ${symbol}`);
     return cached.data;
   }
   
   try {
     await rateLimiter.wait();
     
-    console.log(`📡 Lade ${symbol} von Alpha Vantage...`);
     const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`;
     const response = await axios.get(url);
     
+    // Prüfe auf API Fehler
+    if (response.data['Note']) {
+      console.warn(`⚠️ API Limit für ${symbol}: ${response.data['Note']}`);
+      return null;
+    }
+    
     if (response.data['Global Quote']) {
       const quote = response.data['Global Quote'];
-      const price = parseFloat(quote['05. price']);
-      const changePercent = parseFloat(quote['10. change percent'].replace('%', ''));
-      const volume = parseInt(quote['06. volume']);
-      
       const data = {
         symbol,
-        price,
-        changePercent,
-        volume,
+        price: parseFloat(quote['05. price']),
+        changePercent: parseFloat(quote['10. change percent'].replace('%', '')),
+        volume: parseInt(quote['06. volume']),
         timestamp: new Date().toISOString()
       };
       
+      // In Cache speichern
       cache.set(cacheKey, {
         data,
         timestamp: Date.now()
       });
       
       return data;
-    } else if (response.data['Note']) {
-      console.warn(`⚠️ API Limit für ${symbol}: ${response.data['Note']}`);
-      return null;
-    } else {
-      console.warn(`⚠️ Keine Daten für ${symbol}`);
-      return null;
     }
+    
+    return null;
   } catch (error) {
     console.error(`❌ Fehler bei ${symbol}:`, error.message);
     return null;
   }
 }
 
-// Haupt-API Endpoint
+// ==================== API ENDPOINTS ====================
 app.get('/api/stocks', async (req, res) => {
   try {
-    console.log('📊 /api/stocks aufgerufen');
-    
     const symbols = req.query.symbols ? req.query.symbols.split(',') : DEFAULT_STOCKS;
     const stocks = [];
     
-    // Versuche erst echte Daten zu holen
-    for (const symbol of symbols.slice(0, 8)) { // Max 8 wegen Rate Limits
+    // Versuche echte Daten zu holen
+    for (const symbol of symbols.slice(0, 8)) {
       const stockData = await fetchStockData(symbol);
       
       if (stockData) {
         const hqsScore = calculateHQSScore(
-          symbol, 
-          stockData.price, 
-          stockData.changePercent, 
+          stockData.price,
+          stockData.changePercent,
           stockData.volume
         );
         
@@ -162,24 +172,21 @@ app.get('/api/stocks', async (req, res) => {
         });
       } else {
         // Fallback zu simulierten Daten
-        console.log(`🔄 Verwende simulierte Daten für ${symbol}`);
         const simulated = generateSimulatedStockData(symbol);
         stocks.push(simulated);
       }
       
-      // Kurze Pause zwischen Requests
       await new Promise(resolve => setTimeout(resolve, 300));
     }
     
-    // Wenn keine echten Daten verfügbar, verwende nur simulierte
+    // Wenn keine Daten, nur simulierte
     if (stocks.length === 0) {
-      console.log('🔄 Verwende vollständig simulierte Daten');
       symbols.forEach(symbol => {
         stocks.push(generateSimulatedStockData(symbol));
       });
     }
     
-    // Sortieren nach Score (beste zuerst)
+    // Sortieren nach Score
     stocks.sort((a, b) => b.hqsScore - a.hqsScore);
     
     // Summary berechnen
@@ -199,7 +206,7 @@ app.get('/api/stocks', async (req, res) => {
     
     res.json({
       success: true,
-      source: 'Alpha Vantage API + HQS Engine',
+      source: ALPHA_VANTAGE_KEY === 'demo' ? 'Demo Mode' : 'Alpha Vantage API',
       timestamp: new Date().toISOString(),
       count: stocks.length,
       stocks,
@@ -209,7 +216,7 @@ app.get('/api/stocks', async (req, res) => {
   } catch (error) {
     console.error('❌ Fehler in /api/stocks:', error);
     
-    // Fallback Antwort
+    // Fallback-Daten
     const fallbackStocks = generateFallbackData();
     
     res.json({
@@ -230,49 +237,7 @@ app.get('/api/stocks', async (req, res) => {
   }
 });
 
-// Health Check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    service: 'HQS Backend API',
-    apiKeyConfigured: ALPHA_VANTAGE_KEY && ALPHA_VANTAGE_KEY !== 'D_HUECKER_2024',
-    apiKeyPreview: ALPHA_VANTAGE_KEY ? `${ALPHA_VANTAGE_KEY.substring(0, 4)}...` : 'Kein Key',
-    version: '2.0.0',
-    endpoints: {
-      '/api/stocks': 'GET - Aktiendaten mit HQS Scores',
-      '/health': 'GET - System Status'
-    }
-  });
-});
-
-// Root
-app.get('/', (req, res) => {
-  res.redirect('/health');
-});
-
-// Hilfsfunktionen
-function getCompanyName(symbol) {
-  const names = {
-    'AAPL': 'Apple Inc.',
-    'MSFT': 'Microsoft Corporation',
-    'NVDA': 'NVIDIA Corporation',
-    'GOOGL': 'Alphabet Inc. (Google)',
-    'AMZN': 'Amazon.com Inc.',
-    'META': 'Meta Platforms Inc.',
-    'TSLA': 'Tesla Inc.',
-    'JPM': 'JPMorgan Chase & Co.',
-    'V': 'Visa Inc.',
-    'JNJ': 'Johnson & Johnson',
-    'WMT': 'Walmart Inc.',
-    'PG': 'Procter & Gamble Co.',
-    'MA': 'Mastercard Inc.',
-    'DIS': 'The Walt Disney Company',
-    'NFLX': 'Netflix Inc.'
-  };
-  return names[symbol] || `${symbol} Inc.`;
-}
-
+// Hilfsfunktion für simulierte Daten
 function generateSimulatedStockData(symbol) {
   const price = 50 + Math.random() * 450;
   const changePercent = (Math.random() - 0.5) * 8;
@@ -299,17 +264,37 @@ function generateSimulatedStockData(symbol) {
 }
 
 function generateFallbackData() {
-  const symbols = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'JPM'];
+  const symbols = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA'];
   return symbols.map(symbol => generateSimulatedStockData(symbol));
 }
+
+// Health Check
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    service: 'HQS Backend API',
+    version: '2.0.0',
+    apiKeyConfigured: ALPHA_VANTAGE_KEY && ALPHA_VANTAGE_KEY !== 'demo',
+    endpoints: {
+      '/api/stocks': 'GET - Aktiendaten mit HQS Scores',
+      '/health': 'GET - System Status'
+    }
+  });
+});
+
+// Root
+app.get('/', (req, res) => {
+  res.redirect('/health');
+});
 
 // Server starten
 app.listen(PORT, () => {
   console.log(`=========================================`);
   console.log(`🚀 HQS Backend läuft auf Port ${PORT}`);
-  console.log(`🌐 URL: http://localhost:${PORT}`);
+  console.log(`🌐 Local: http://localhost:${PORT}`);
   console.log(`🔗 Railway: https://hqs-backend-production-bbd6.up.railway.app`);
   console.log(`📊 Endpoint: /api/stocks`);
-  console.log(`💡 API Key: ${ALPHA_VANTAGE_KEY}`);
+  console.log(`💡 API Key: ${ALPHA_VANTAGE_KEY === 'demo' ? 'Demo-Modus' : 'Live-Modus'}`);
   console.log(`=========================================`);
 });
