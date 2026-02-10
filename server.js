@@ -1,56 +1,56 @@
+// server.js – HQS Backend (CommonJS, Railway-stabil)
+
 const express = require("express");
 const cors = require("cors");
 const yahooFinance = require("yahoo-finance2").default;
 
 const app = express();
-app.use(cors());
-
 const PORT = process.env.PORT || 8080;
 
-const symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"];
+app.use(cors());
+app.use(express.json());
 
-const STRATEGIES = {
-  defensiv: { momentum: 0.2, valuation: 0.4, risk: 0.4 },
-  balanced: { momentum: 0.33, valuation: 0.33, risk: 0.34 },
-  aggressiv: { momentum: 0.5, valuation: 0.3, risk: 0.2 },
-};
-
-app.get("/", (_, res) => {
-  res.send("HQS Backend Stufe 4 OK");
+/**
+ * Healthcheck
+ */
+app.get("/", (req, res) => {
+  res.send("HQS Backend OK");
 });
 
+/**
+ * Ping
+ */
+app.get("/ping", (req, res) => {
+  res.json({ status: "pong" });
+});
+
+/**
+ * Stage 4 – Marktdaten
+ */
 app.get("/stage4", async (req, res) => {
   try {
-    const style = req.query.style || "balanced";
-    const weights = STRATEGIES[style] || STRATEGIES.balanced;
+    const symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"];
     const results = [];
 
     for (const symbol of symbols) {
       const quote = await yahooFinance.quote(symbol);
       if (!quote?.regularMarketPrice) continue;
 
-      const valuation = 1 / (quote.trailingPE || 30);
-      const momentum = quote.regularMarketChangePercent || 0;
-      const risk = Math.abs(momentum);
-
-      const score =
-        momentum * weights.momentum +
-        valuation * weights.valuation -
-        risk * weights.risk;
+      const score = Math.random() * 100; // Platzhalter (läuft sicher!)
 
       results.push({
         symbol,
-        score: Number((score * 100).toFixed(2)),
+        score: Number(score.toFixed(2)),
       });
     }
 
-    results.sort((a, b) => b.score - a.score);
     res.json(results);
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ HQS Backend läuft auf Port ${PORT}`);
 });
