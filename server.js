@@ -1,90 +1,107 @@
 import express from "express";
 import cors from "cors";
-import fs from "fs";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
+const PORT = process.env.PORT || 8080;
+
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 8080;
-const DATA_FILE = "latest.json";
+// =========================
+// HEALTH CHECKS
+// =========================
+app.get("/", (_, res) => res.send("HQS Backend OK"));
+app.get("/ping", (_, res) => res.send("pong"));
 
-/* =========================
-   🔹 FALLBACK MARKTDATEN
-   ========================= */
-const FALLBACK_DATA = [
-  { symbol: "AAPL", score: 82.4 },
-  { symbol: "MSFT", score: 79.1 },
-  { symbol: "NVDA", score: 76.9 },
-  { symbol: "GOOGL", score: 74.3 },
-  { symbol: "AMZN", score: 72.8 }
+// =========================
+// ASSET-UNIVERSUM (Stufe 2)
+// =========================
+const ASSETS = [
+  { name: "Apple", symbol: "AAPL" },
+  { name: "Microsoft", symbol: "MSFT" },
+  { name: "Nvidia", symbol: "NVDA" },
+  { name: "Google", symbol: "GOOGL" },
+  { name: "Amazon", symbol: "AMZN" },
 ];
 
-/* =========================
-   🔹 HILFSFUNKTION
-   ========================= */
-function saveData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
+// =========================
+// MOMENTUM FORMEL (HQS-Style)
+// =========================
+const momentumScore = (m3, m6, m12) =>
+  0.25 * m3 + 0.35 * m6 + 0.4 * m12;
 
-/* =========================
-   🔹 MARKTDATEN LADEN
-   ========================= */
+// =========================
+// DATEN FETCH + BERECHNUNG
+// =========================
 async function fetchMarketData() {
-  try {
-    // 👉 hier später echte Datenquelle (Yahoo, Polygon, etc.)
-    // aktuell simuliert → absichtlich stabil
-    const liveDataAvailable = false;
+  const results = [];
 
-    if (!liveDataAvailable) {
-      console.log("⚠️ Live-Daten nicht verfügbar → Fallback aktiv");
-      saveData(FALLBACK_DATA);
-      return FALLBACK_DATA;
+  for (const asset of ASSETS) {
+    try {
+      const res = await fetch(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${asset.symbol}?range=1y&interval=1d`
+      );
+
+      const json = await res.json();
+      const prices =
+        json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(
+          Number.isFinite
+        ) || [];
+
+      if (prices.length < 252) continue;
+
+      const pct = (from, to) => ((to - from) / from) * 100;
+
+      const m3 = pct(prices.at(-63), prices.at(-1));
+      const m6 = pct(prices.at(-126), prices.at(-1));
+      const m12 = pct(prices.at(-252), prices.at(-1));
+
+      results.push({
+        symbol: asset.symbol,
+        name: asset.name,
+        m3: Number(m3.toFixed(2)),
+        m6: Number(m6.toFixed(2)),
+        m12: Number(m12.toFixed(2)),
+        score: Number(momentumScore(m3, m6, m12).toFixed(2)),
+      });
+    } catch (e) {
+      console.error("❌ Fehler bei", asset.symbol, e.message);
     }
-
-    // Beispiel (noch deaktiviert):
-    // const res = await fetch("https://...");
-    // const json = await res.json();
-
-    return FALLBACK_DATA;
-  } catch (err) {
-    console.error("❌ Fehler beim Laden der Marktdaten:", err.message);
-    saveData(FALLBACK_DATA);
-    return FALLBACK_DATA;
   }
+
+  const ranked = results.sort((a, b) => b.score - a.score);
+
+  fs.writeFileSync("latest.json", JSON.stringify(ranked, null, 2));
+  return ranked;
 }
 
-/* =========================
-   🔹 ROUTES
-   ========================= */
-
-// Healthcheck
-app.get("/", (_, res) => {
-  res.send("HQS Backend OK");
-});
-
-// Market Endpoint (Frontend nutzt DAS)
+// =========================
+// API: MARKTDATEN
+// =========================
 app.get("/market", async (_, res) => {
-  if (!fs.existsSync(DATA_FILE)) {
+  if (!fs.existsSync("latest.json")) {
     await fetchMarketData();
   }
-  const data = JSON.parse(fs.readFileSync(DATA_FILE));
-  res.json(data);
+  res.json(JSON.parse(fs.readFileSync("latest.json")));
 });
 
-// Manuelles Update (temporär, aber extrem nützlich)
+// =========================
+// MANUELLER TRIGGER (Stufe 2)
+// =========================
 app.get("/force-update", async (_, res) => {
-  const data = await fetchMarketData();
-  res.json({
-    status: "ok",
-    updated: data.length
-  });
+  try {
+    const data = await fetchMarketData();
+    res.json({ status: "ok", updated: data.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
-/* =========================
-   🔹 SERVER START
-   ========================= */
+// =========================
+// SERVER START
+// =========================
 app.listen(PORT, () => {
   console.log(`✅ HQS Backend läuft auf Port ${PORT}`);
 });
