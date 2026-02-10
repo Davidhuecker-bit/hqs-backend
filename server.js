@@ -1,99 +1,85 @@
-// server.js – HQS Backend Stufe 3 (FINAL)
-// Multi-Faktor-Scoring: Fundamentals + Momentum + Risiko
-// Railway & Vercel kompatibel
+// server.js – HQS Backend St// server.js – HQS Backend Stufe 4
+// Reale Marktdaten + Strategie-Gewichtung
+// Railway-kompatibel (PORT, CORS, stabil)
 
-import express from "express";
-import cors from "cors";
+const express = require("express");
+const cors = require("cors");
+const yahooFinance = require("yahoo-finance2").default;
 
 const app = express();
+app.use(cors());
+
 const PORT = process.env.PORT || 8080;
 
-// =======================
-// MIDDLEWARE
-// =======================
-app.use(cors({ origin: "*" }));
-app.use(express.json());
+/**
+ * Aktien-Universum (erweiterbar)
+ */
+const symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"];
 
-// =======================
-// HEALTH
-// =======================
-app.get("/", (_, res) => {
-  res.send("HQS Backend OK");
+/**
+ * Strategie-Gewichte
+ */
+const STRATEGIES = {
+  defensiv: { momentum: 0.2, valuation: 0.4, risk: 0.4 },
+  balanced: { momentum: 0.33, valuation: 0.33, risk: 0.34 },
+  aggressiv: { momentum: 0.5, valuation: 0.3, risk: 0.2 },
+};
+
+/**
+ * Healthcheck
+ */
+app.get("/", (req, res) => {
+  res.send("HQS Backend Stufe 4 OK");
 });
 
-app.get("/health", (_, res) => {
-  res.json({ status: "ok", stage: 3 });
-});
+/**
+ * Stufe 4 Endpoint
+ */
+app.get("/stage4", async (req, res) => {
+  try {
+    const style = req.query.style || "balanced";
+    const weights = STRATEGIES[style] || STRATEGIES.balanced;
 
-// =======================
-// DEMO UNIVERSE (Stufe 3)
-// =======================
-const universe = [
-  {
-    symbol: "AAPL",
-    fundamentals: { pe: 28, growth: 0.12 },
-    momentum: { trend: 0.18 },
-    risk: { volatility: 0.22 }
-  },
-  {
-    symbol: "MSFT",
-    fundamentals: { pe: 30, growth: 0.14 },
-    momentum: { trend: 0.16 },
-    risk: { volatility: 0.20 }
-  },
-  {
-    symbol: "NVDA",
-    fundamentals: { pe: 45, growth: 0.30 },
-    momentum: { trend: 0.25 },
-    risk: { volatility: 0.35 }
-  },
-  {
-    symbol: "GOOGL",
-    fundamentals: { pe: 24, growth: 0.11 },
-    momentum: { trend: 0.14 },
-    risk: { volatility: 0.21 }
-  },
-  {
-    symbol: "AMZN",
-    fundamentals: { pe: 55, growth: 0.22 },
-    momentum: { trend: 0.19 },
-    risk: { volatility: 0.28 }
+    const results = [];
+
+    for (const symbol of symbols) {
+      const quote = await yahooFinance.quote(symbol);
+      const hist = await yahooFinance.historical(symbol, {
+        period1: "2024-01-01",
+      });
+
+      if (!quote || hist.length < 20) continue;
+
+      const priceNow = quote.regularMarketPrice;
+      const priceThen = hist[0].close;
+      const momentum = (priceNow - priceThen) / priceThen;
+
+      const volatility =
+        hist
+          .slice(0, 30)
+          .map(d => d.close)
+          .reduce((a, b) => a + Math.abs(b - priceNow), 0) / 30 / priceNow;
+
+      const valuation = 1 / (quote.trailingPE || 30);
+
+      const score =
+        momentum * weights.momentum +
+        valuation * weights.valuation -
+        volatility * weights.risk;
+
+      results.push({
+        symbol,
+        score: Number((score * 100).toFixed(2)),
+      });
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-];
-
-// =======================
-// SCORING
-// =======================
-function scoreAsset(a) {
-  const fundamentals =
-    (1 / a.fundamentals.pe) * 40 +
-    a.fundamentals.growth * 100;
-
-  const momentum = a.momentum.trend * 100;
-  const riskPenalty = a.risk.volatility * 50;
-
-  return (
-    fundamentals * 0.4 +
-    momentum * 0.4 -
-    riskPenalty * 0.2
-  );
-}
-
-// =======================
-// API – FRONTEND KOMPATIBEL
-// =======================
-app.get("/market", (_, res) => {
-  const ranked = universe
-    .map(a => ({
-      symbol: a.symbol,
-      score: Number(scoreAsset(a).toFixed(2))
-    }))
-    .sort((a, b) => b.score - a.score);
-
-  res.json(ranked);
 });
 
-// =======================
 app.listen(PORT, () => {
-  console.log(`✅ HQS Stufe 3 Backend läuft auf Port ${PORT}`);
+  console.log(`✅ HQS Stufe 4 Backend läuft auf Port ${PORT}`);
 });
