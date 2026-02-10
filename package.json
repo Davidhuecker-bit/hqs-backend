@@ -1,12 +1,12 @@
 {
   "name": "hqs-backend",
-  "version": "3.0.0",
-  "description": "HQS Stage 3 Backend",
-  "main": "server.js",
+  "version": "1.0.0",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
   }
 }
