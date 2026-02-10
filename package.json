@@ -1,22 +1,26 @@
 {
-  "name": "hqs-backend",
-  "version": "1.0.0",
-  "description": "HQS Quant Backend – Stage 4 (Real Market Data)",
+  "name": "hqs-quant-system",
+  "version": "4.0.0",
+  "description": "HQS Hyper-Quant System with Real Alpha Vantage Data",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon server.js",
+    "test": "echo \"No tests specified\" && exit 0"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "node-fetch": "^2.6.9",
+    "dotenv": "^16.0.0",
+    "cache-manager": "^5.2.3",
+    "node-cache": "^5.1.2"
   },
-  "devDependencies": {},
-  "keywords": ["quant", "finance", "backend"],
+  "keywords": ["quant", "finance", "trading", "alpha-vantage", "hqs"],
   "author": "David Hücker",
   "license": "MIT"
 }
