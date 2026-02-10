@@ -1,85 +1,109 @@
-// server.js – HQS Backend St// server.js – HQS Backend Stufe 4
-// Reale Marktdaten + Strategie-Gewichtung
-// Railway-kompatibel (PORT, CORS, stabil)
-
-const express = require("express");
-const cors = require("cors");
-const yahooFinance = require("yahoo-finance2").default;
+import express from "express";
+import cors from "cors";
+import yahooFinance from "yahoo-finance2";
 
 const app = express();
-app.use(cors());
-
 const PORT = process.env.PORT || 8080;
 
-/**
- * Aktien-Universum (erweiterbar)
- */
-const symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"];
+app.use(cors());
+app.use(express.json());
 
-/**
- * Strategie-Gewichte
- */
+// ✅ Railway Health
+app.get("/", (_, res) => res.send("HQS Backend OK"));
+app.get("/ping", (_, res) => res.json({ status: "pong" }));
+
+// Universe
+const SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"];
+
+// Strategy weights
 const STRATEGIES = {
   defensiv: { momentum: 0.2, valuation: 0.4, risk: 0.4 },
   balanced: { momentum: 0.33, valuation: 0.33, risk: 0.34 },
-  aggressiv: { momentum: 0.5, valuation: 0.3, risk: 0.2 },
+  aggressiv: { momentum: 0.5, valuation: 0.3, risk: 0.2 }
 };
 
-/**
- * Healthcheck
- */
-app.get("/", (req, res) => {
-  res.send("HQS Backend Stufe 4 OK");
-});
+function toNumber(x, fallback = null) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
 
-/**
- * Stufe 4 Endpoint
- */
-app.get("/stage4", async (req, res) => {
-  try {
-    const style = req.query.style || "balanced";
-    const weights = STRATEGIES[style] || STRATEGIES.balanced;
+async function scoreUniverse(style = "balanced") {
+  const weights = STRATEGIES[style] || STRATEGIES.balanced;
+  const results = [];
 
-    const results = [];
-
-    for (const symbol of symbols) {
+  for (const symbol of SYMBOLS) {
+    try {
       const quote = await yahooFinance.quote(symbol);
+
+      // 1y history
       const hist = await yahooFinance.historical(symbol, {
-        period1: "2024-01-01",
+        period1: new Date(Date.now() - 370 * 24 * 60 * 60 * 1000) // ~370 Tage
       });
 
-      if (!quote || hist.length < 20) continue;
+      if (!quote || !Array.isArray(hist) || hist.length < 60) continue;
 
-      const priceNow = quote.regularMarketPrice;
-      const priceThen = hist[0].close;
+      const closes = hist
+        .map(d => toNumber(d.close))
+        .filter(v => Number.isFinite(v));
+
+      if (closes.length < 60) continue;
+
+      const priceNow = toNumber(quote.regularMarketPrice);
+      const priceThen = closes[0];
+
+      if (!priceNow || !priceThen) continue;
+
+      // Momentum (1y approx)
       const momentum = (priceNow - priceThen) / priceThen;
 
-      const volatility =
-        hist
-          .slice(0, 30)
-          .map(d => d.close)
-          .reduce((a, b) => a + Math.abs(b - priceNow), 0) / 30 / priceNow;
+      // Simple “risk”: mean absolute deviation over last 30 closes
+      const last30 = closes.slice(-30);
+      const avgAbsDev =
+        last30.reduce((acc, p) => acc + Math.abs(p - priceNow), 0) /
+        last30.length /
+        priceNow;
 
-      const valuation = 1 / (quote.trailingPE || 30);
+      // Simple “valuation proxy”
+      const pe = toNumber(quote.trailingPE, 30);
+      const valuation = 1 / pe;
 
       const score =
         momentum * weights.momentum +
         valuation * weights.valuation -
-        volatility * weights.risk;
+        avgAbsDev * weights.risk;
 
       results.push({
         symbol,
         score: Number((score * 100).toFixed(2)),
+        meta: {
+          price: Number(priceNow.toFixed(2)),
+          momentum_1y_pct: Number((momentum * 100).toFixed(2)),
+          pe: Number(pe.toFixed(2)),
+          risk_proxy: Number((avgAbsDev * 100).toFixed(2))
+        }
       });
+    } catch (e) {
+      console.error("Symbol error:", symbol, e.message);
     }
-
-    results.sort((a, b) => b.score - a.score);
-    res.json(results);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
+
+  results.sort((a, b) => b.score - a.score);
+  return results;
+}
+
+// ✅ Frontend-Route: IMMER JSON
+app.get("/market", async (_, res) => {
+  const data = await scoreUniverse("balanced");
+  res.json(data);
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ HQS Stufe 4 Backend läuft auf Port ${PORT}`);
+// ✅ Stage4 Route (mit style param)
+app.get("/stage4", async (req, res) => {
+  const style = String(req.query.style || "balanced");
+  const data = await scoreUniverse(style);
+  res.json({ style, count: data.length, data });
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ HQS Backend läuft auf Port ${PORT}`);
 });
