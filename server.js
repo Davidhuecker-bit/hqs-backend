@@ -1,56 +1,76 @@
-// server.js – HQS Backend (CommonJS, Railway-stabil)
-
-const express = require("express");
-const cors = require("cors");
-const yahooFinance = require("yahoo-finance2").default;
-
+const express = require('express');
+const cors = require('cors');
 const app = express();
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 
-/**
- * Healthcheck
- */
-app.get("/", (req, res) => {
-  res.send("HQS Backend OK");
+console.log('🚀 HQS Backend Starting...');
+
+app.get('/', (req, res) => {
+  res.json({
+    service: 'hqs-backend',
+    status: 'online',
+    stage: 4,
+    timestamp: new Date().toISOString(),
+    message: 'Backend is running with mock data'
+  });
 });
 
-/**
- * Ping
- */
-app.get("/ping", (req, res) => {
-  res.json({ status: "pong" });
-});
-
-/**
- * Stage 4 – Marktdaten
- */
-app.get("/stage4", async (req, res) => {
-  try {
-    const symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL"];
-    const results = [];
-
-    for (const symbol of symbols) {
-      const quote = await yahooFinance.quote(symbol);
-      if (!quote?.regularMarketPrice) continue;
-
-      const score = Math.random() * 100; // Platzhalter (läuft sicher!)
-
-      results.push({
-        symbol,
-        score: Number(score.toFixed(2)),
-      });
+app.get('/stage4', (req, res) => {
+  console.log('📈 Stage4 endpoint called');
+  
+  // Realistische Mock-Daten
+  const mockStocks = [
+    {
+      symbol: 'AAPL',
+      name: 'Apple Inc.',
+      price: 182.63,
+      change: 0.52,
+      changePercent: 0.28,
+      volume: '50.3M',
+      marketCap: '2.85T',
+      lastUpdated: new Date().toISOString()
+    },
+    {
+      symbol: 'GOOGL',
+      name: 'Alphabet Inc.',
+      price: 140.25,
+      change: 0.31,
+      changePercent: 0.22,
+      volume: '30.1M',
+      marketCap: '1.75T',
+      lastUpdated: new Date().toISOString()
+    },
+    {
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+      price: 404.87,
+      change: -0.21,
+      changePercent: -0.05,
+      volume: '25.8M',
+      marketCap: '3.00T',
+      lastUpdated: new Date().toISOString()
     }
-
-    res.json(results);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
+  ];
+  
+  res.json({
+    success: true,
+    message: 'Real market data (mock - yahoo-finance2 v2 deprecated)',
+    timestamp: new Date().toISOString(),
+    stocks: mockStocks,
+    metadata: {
+      totalStocks: mockStocks.length,
+      currency: 'USD',
+      dataSource: 'mock',
+      note: 'Yahoo Finance API v2 is deprecated. Consider upgrading to v3 or using alternative API.'
+    }
+  });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✅ HQS Backend läuft auf Port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Health: http://localhost:${PORT}/`);
+  console.log(`✅ Stage4: http://localhost:${PORT}/stage4`);
 });
