@@ -1,56 +1,61 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
-import cron from "node-cron";
 import fs from "fs";
 
 const app = express();
-const PORT = process.env.PORT; // ⬅️ WICHTIG: kein Fallback!
+const PORT = process.env.PORT || 3000;
 
-// ===========================
-// MIDDLEWARE
-// ===========================
+/* ===========================
+   MIDDLEWARE
+=========================== */
 app.use(cors());
 app.use(express.json());
 
-// ===========================
-// HEALTH CHECKS (SEHR WICHTIG)
-// ===========================
-app.get("/", (_, res) => {
+/* ===========================
+   HEALTH CHECKS
+=========================== */
+app.get("/", (req, res) => {
   res.send("HQS Backend OK");
 });
 
-app.get("/ping", (_, res) => {
+app.get("/ping", (req, res) => {
   res.send("pong");
 });
 
-// ===========================
-// ASSETS
-// ===========================
+/* ===========================
+   HQS ASSET SETUP
+=========================== */
 const ASSETS = [
-  { name: "MSCI World ETF", symbol: "URTH" },
-  { name: "MSCI Emerging Markets ETF", symbol: "EEM" },
-  { name: "MSCI IT ETF", symbol: "IXN" },
-  { name: "Tech Large Caps", symbol: "QQQ" },
+  { name: "MSCI World", symbol: "URTH" },
+  { name: "Emerging Markets", symbol: "EEM" },
+  { name: "US Bonds", symbol: "BND" },
+  { name: "Cash (Risk-Off)", symbol: "SHY" },
+  { name: "Nasdaq 100", symbol: "QQQ" }
 ];
 
-// ===========================
-const momentumScore = (m3, m6, m12) =>
-  0.25 * m3 + 0.35 * m6 + 0.4 * m12;
+/* ===========================
+   HQS SCORE FUNCTION
+=========================== */
+function momentumScore(m3, m6, m12) {
+  return 0.25 * m3 + 0.35 * m6 + 0.4 * m12;
+}
 
-// ===========================
+/* ===========================
+   MARKET DATA FETCH
+=========================== */
 async function fetchMarketData() {
-  const result = [];
+  const results = [];
 
   for (const asset of ASSETS) {
     try {
-      const res = await fetch(
+      const response = await fetch(
         `https://query1.finance.yahoo.com/v8/finance/chart/${asset.symbol}?range=1y&interval=1d`
       );
+      const data = await response.json();
 
-      const json = await res.json();
       const prices =
-        json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(
+        data?.chart?.result?.[0]?.indicators?.quote?.[0]?.close?.filter(
           Number.isFinite
         ) || [];
 
@@ -58,45 +63,48 @@ async function fetchMarketData() {
 
       const pct = (from, to) => ((to - from) / from) * 100;
 
-      result.push({
-        ...asset,
-        m3: pct(prices.at(-63), prices.at(-1)),
-        m6: pct(prices.at(-126), prices.at(-1)),
-        m12: pct(prices.at(-252), prices.at(-1)),
+      const m3 = pct(prices.at(-63), prices.at(-1));
+      const m6 = pct(prices.at(-126), prices.at(-1));
+      const m12 = pct(prices.at(-252), prices.at(-1));
+
+      results.push({
+        name: asset.name,
+        symbol: asset.symbol,
+        m3: Number(m3.toFixed(2)),
+        m6: Number(m6.toFixed(2)),
+        m12: Number(m12.toFixed(2)),
+        score: Number(momentumScore(m3, m6, m12).toFixed(2))
       });
-    } catch (e) {
-      console.error(asset.symbol, e.message);
+    } catch (err) {
+      console.error(`Fehler bei ${asset.symbol}`, err.message);
     }
   }
 
-  const ranked = result
-    .map(a => ({ ...a, score: momentumScore(a.m3, a.m6, a.m12) }))
-    .sort((a, b) => b.score - a.score);
-
+  const ranked = results.sort((a, b) => b.score - a.score);
   fs.writeFileSync("latest.json", JSON.stringify(ranked, null, 2));
-  return ranked;
+
+  return ranked.length;
 }
 
-// ===========================
-app.get("/market", async (_, res) => {
+/* ===========================
+   API ENDPOINTS
+=========================== */
+app.get("/force-update", async (req, res) => {
+  const updated = await fetchMarketData();
+  res.json({ status: "ok", updated });
+});
+
+app.get("/market", async (req, res) => {
   if (!fs.existsSync("latest.json")) {
     await fetchMarketData();
   }
-  res.json(JSON.parse(fs.readFileSync("latest.json")));
+  const data = JSON.parse(fs.readFileSync("latest.json"));
+  res.json(data);
 });
-// 🔧 MANUELLER EINMAL-TRIGGER (temporär)
-app.get("/force-update", async (_, res) => {
-  try {
-    const data = await fetchMarketData();
-    res.json({ status: "ok", updated: data.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-// ===========================
-cron.schedule("0 6 1 * *", fetchMarketData);
 
-// ===========================
+/* ===========================
+   SERVER START
+=========================== */
 app.listen(PORT, () => {
-  console.log("✅ HQS Backend läuft auf Port", PORT);
+  console.log(`✅ HQS Backend läuft auf Port ${PORT}`);
 });
