@@ -7,20 +7,26 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+/* ================= API KEY CHECK ================= */
+
 const API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 if (!API_KEY) {
-  console.error("❌ ALPHA_VANTAGE_API_KEY not set!");
+  console.error("❌ ALPHA_VANTAGE_API_KEY not set in environment!");
   process.exit(1);
 }
 
-const cache = new NodeCache({ stdTTL: 300 });
+console.log("🚀 HQS Backend Starting...");
+console.log("🔐 API Key loaded securely");
+
+/* ================= MIDDLEWARE ================= */
 
 app.use(cors());
 app.use(express.json());
 
-console.log("🚀 HQS Hyper-Quant System (Production)");
-console.log("🔐 API Key loaded");
+/* ================= CACHE ================= */
+
+const cache = new NodeCache({ stdTTL: 300 });
 
 /* ================= HQS ENGINE ================= */
 
@@ -55,14 +61,16 @@ async function fetchQuote(symbol) {
   if (cached) return cached;
 
   try {
-    const url = `https://www.alphavantage.co/query`;
-    const response = await axios.get(url, {
-      params: {
-        function: "GLOBAL_QUOTE",
-        symbol,
-        apikey: API_KEY,
-      },
-    });
+    const response = await axios.get(
+      "https://www.alphavantage.co/query",
+      {
+        params: {
+          function: "GLOBAL_QUOTE",
+          symbol,
+          apikey: API_KEY,
+        },
+      }
+    );
 
     if (!response.data["Global Quote"]) return null;
 
@@ -71,7 +79,9 @@ async function fetchQuote(symbol) {
     const result = {
       symbol: q["01. symbol"],
       price: parseFloat(q["05. price"]),
-      changePercent: parseFloat(q["10. change percent"].replace("%", "")),
+      changePercent: parseFloat(
+        q["10. change percent"].replace("%", "")
+      ),
       volume: parseInt(q["06. volume"]),
       timestamp: new Date().toISOString(),
     };
@@ -79,7 +89,7 @@ async function fetchQuote(symbol) {
     cache.set(cacheKey, result);
     return result;
   } catch (err) {
-    console.error("AlphaVantage Error:", err.message);
+    console.error(`AlphaVantage Error for ${symbol}:`, err.message);
     return null;
   }
 }
@@ -89,8 +99,8 @@ async function fetchQuote(symbol) {
 app.get("/", (req, res) => {
   res.json({
     system: "HQS Hyper-Quant",
-    status: "online",
     version: "5.0",
+    status: "online",
     apiConfigured: true,
     endpoints: ["/health", "/market", "/hqs/:symbol"],
   });
@@ -130,14 +140,14 @@ app.get("/market", async (req, res) => {
         timestamp: quote.timestamp,
       });
 
-      // Rate limit safety
+      // Alpha Vantage Free Plan Safety (5 calls/min)
       await new Promise((r) => setTimeout(r, 1200));
     }
 
     if (stocks.length === 0) {
       return res.status(503).json({
         success: false,
-        message: "API limit reached",
+        message: "API rate limit reached",
       });
     }
 
@@ -146,12 +156,12 @@ app.get("/market", async (req, res) => {
     res.json({
       success: true,
       source: "Alpha Vantage API",
-      count: stocks.length,
       timestamp: new Date().toISOString(),
+      count: stocks.length,
       stocks,
     });
   } catch (err) {
-    console.error(err);
+    console.error("Market endpoint error:", err);
     res.status(500).json({
       success: false,
       error: "Internal Server Error",
@@ -196,7 +206,7 @@ app.get("/hqs/:symbol", async (req, res) => {
   }
 });
 
-/* ===== 404 ===== */
+/* ===== 404 HANDLER ===== */
 
 app.use((req, res) => {
   res.status(404).json({
@@ -207,8 +217,8 @@ app.use((req, res) => {
 /* ===== START SERVER ===== */
 
 app.listen(PORT, () => {
-  console.log("==================================");
+  console.log("=================================");
   console.log("🚀 HQS Backend Live");
   console.log(`📍 Port: ${PORT}`);
-  console.log("==================================");
+  console.log("=================================");
 });
