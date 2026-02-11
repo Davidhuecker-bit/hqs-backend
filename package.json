@@ -1,7 +1,7 @@
 {
   "name": "hqs-quant-system",
-  "version": "4.1.0",
-  "description": "HQS Hyper-Quant System with Real Alpha Vantage Data",
+  "version": "5.0.0",
+  "description": "HQS Hyper-Quant Production Backend",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -18,13 +18,9 @@
     "dotenv": "^16.0.0",
     "node-cache": "^5.1.2"
   },
-  "keywords": [
-    "quant",
-    "finance",
-    "trading",
-    "alpha-vantage",
-    "hqs"
-  ],
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
   "author": "David Hücker",
   "license": "MIT"
 }
