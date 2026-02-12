@@ -117,6 +117,65 @@ app.get("/market", async (req, res) => {
 
     const requests = SYMBOLS.map(symbol =>
       axios.get(
+        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "application/json"
+          },
+          timeout: 8000
+        }
+      )
+    );
+
+    const responses = await Promise.all(requests);
+
+    const stocks = responses
+      .map(response => {
+        const result = response.data?.quoteResponse?.result;
+        if (!result || result.length === 0) return null;
+
+        const data = result[0];
+        const hqsScore = calculateHQS(data);
+
+        return {
+          symbol: data.symbol,
+          name: data.shortName,
+          type: data.quoteType,
+          price: data.regularMarketPrice,
+          change: data.regularMarketChange,
+          changePercent: data.regularMarketChangePercent,
+          marketCap: data.marketCap,
+          volume: data.regularMarketVolume,
+          capCategory: classifyMarketCap(data.marketCap),
+          hqsScore,
+          rating: getRating(hqsScore)
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.hqsScore - a.hqsScore);
+
+    cache.set("marketData", stocks);
+
+    res.json({
+      success: true,
+      source: "Yahoo Finance",
+      count: stocks.length,
+      stocks
+    });
+
+  } catch (error) {
+    console.error("MARKET ERROR:", error.response?.data || error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Fehler beim Laden der Marktdaten"
+    });
+  }
+});
+
+    const requests = SYMBOLS.map(symbol =>
+      axios.get(
         `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}`
       )
     );
