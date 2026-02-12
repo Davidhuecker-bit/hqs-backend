@@ -1,7 +1,7 @@
 {
   "name": "hqs-quant-system",
-  "version": "5.0.0",
-  "description": "HQS Hyper-Quant Production Backend",
+  "version": "7.0.0",
+  "description": "HQS Hyper-Quant Enterprise Backend",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
