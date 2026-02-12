@@ -6,181 +6,168 @@ require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-
 const API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 if (!API_KEY) {
-  console.error("❌ ALPHA_VANTAGE_API_KEY not set!");
+  console.error("❌ API Key missing");
   process.exit(1);
 }
 
 app.use(cors());
 app.use(express.json());
 
-const cache = new NodeCache({ stdTTL: 300 });
+const cache = new NodeCache({ stdTTL: 600 });
 
-/* ================= HQS ENGINE 2.0 ================= */
+/* ================= INDICATOR FUNCTIONS ================= */
 
-class HQSEngine {
-  normalize(value, min, max) {
-    return Math.max(0, Math.min(1, (value - min) / (max - min)));
+function calculateRSI(closes, period = 14) {
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
   }
 
-  calculateScore({ changePercent, volume }) {
-    const avgVolume = 30000000;
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
 
-    const momentumScore = this.normalize(changePercent, -5, 5);
-    const relativeVolume = volume / avgVolume;
-    const volumeScore = this.normalize(relativeVolume, 0.5, 2);
-    const strengthScore = this.normalize(changePercent, -2, 3);
+  if (avgLoss === 0) return 100;
 
-    const stabilityScore =
-      changePercent < 0
-        ? 0.3
-        : this.normalize(changePercent, 0, 3);
-
-    const finalScore =
-      momentumScore * 35 +
-      volumeScore * 25 +
-      strengthScore * 20 +
-      stabilityScore * 20;
-
-    return Math.round(Math.max(0, Math.min(100, finalScore)));
-  }
-
-  getRating(score) {
-    if (score >= 80) return "STRONG_BUY";
-    if (score >= 65) return "BUY";
-    if (score >= 50) return "HOLD";
-    return "SELL";
-  }
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
 }
 
-const hqsEngine = new HQSEngine();
+function movingAverage(data, period) {
+  const slice = data.slice(0, period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
 
-/* ================= ALPHA VANTAGE ================= */
+function normalize(value, min, max) {
+  return Math.max(0, Math.min(1, (value - min) / (max - min)));
+}
+
+/* ================= FETCH DATA ================= */
 
 async function fetchQuote(symbol) {
   const cacheKey = `quote_${symbol}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  try {
-    const response = await axios.get(
-      "https://www.alphavantage.co/query",
-      {
-        params: {
-          function: "GLOBAL_QUOTE",
-          symbol,
-          apikey: API_KEY,
-        },
-      }
-    );
+  const response = await axios.get("https://www.alphavantage.co/query", {
+    params: {
+      function: "GLOBAL_QUOTE",
+      symbol,
+      apikey: API_KEY,
+    },
+  });
 
-    if (!response.data["Global Quote"]) return null;
+  const q = response.data["Global Quote"];
+  if (!q) return null;
 
-    const q = response.data["Global Quote"];
+  const result = {
+    price: parseFloat(q["05. price"]),
+    changePercent: parseFloat(q["10. change percent"].replace("%", "")),
+    volume: parseInt(q["06. volume"]),
+  };
 
-    const result = {
-      symbol: q["01. symbol"],
-      price: parseFloat(q["05. price"]),
-      changePercent: parseFloat(
-        q["10. change percent"].replace("%", "")
-      ),
-      volume: parseInt(q["06. volume"]),
-      timestamp: new Date().toISOString(),
-    };
+  cache.set(cacheKey, result);
+  return result;
+}
 
-    cache.set(cacheKey, result);
-    return result;
-  } catch (err) {
-    console.error(`AlphaVantage error ${symbol}:`, err.message);
-    return null;
-  }
+async function fetchDaily(symbol) {
+  const cacheKey = `daily_${symbol}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const response = await axios.get("https://www.alphavantage.co/query", {
+    params: {
+      function: "TIME_SERIES_DAILY",
+      symbol,
+      apikey: API_KEY,
+    },
+  });
+
+  const series = response.data["Time Series (Daily)"];
+  if (!series) return null;
+
+  const closes = Object.values(series)
+    .slice(0, 30)
+    .map(d => parseFloat(d["4. close"]));
+
+  cache.set(cacheKey, closes);
+  return closes;
+}
+
+/* ================= HQS 3.0 ================= */
+
+function calculateHQS({ quote, closes }) {
+  const momentum5 =
+    ((closes[0] - closes[5]) / closes[5]) * 100;
+
+  const ma20 = movingAverage(closes, 20);
+  const trendScore = quote.price > ma20 ? 1 : 0;
+
+  const rsi = calculateRSI(closes);
+  const rsiScore = normalize(rsi, 30, 70);
+
+  const relativeVolume = quote.volume / 30000000;
+  const volumeScore = normalize(relativeVolume, 0.5, 2);
+
+  const intradayScore = normalize(quote.changePercent, -3, 3);
+
+  const finalScore =
+    normalize(momentum5, -5, 10) * 30 +
+    rsiScore * 20 +
+    trendScore * 20 +
+    volumeScore * 15 +
+    intradayScore * 15;
+
+  return Math.round(Math.max(0, Math.min(100, finalScore)));
 }
 
 /* ================= ROUTES ================= */
 
-app.get("/health", (req, res) => {
-  res.json({
-    status: "healthy",
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
-});
-
 app.get("/market", async (req, res) => {
   try {
-    const symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"];
-    const stocks = [];
+    const symbols = ["AAPL", "MSFT", "TSLA"]; // wegen API Limit
+    const results = [];
 
     for (const symbol of symbols) {
       const quote = await fetchQuote(symbol);
-      if (!quote) continue;
+      const closes = await fetchDaily(symbol);
 
-      const score = hqsEngine.calculateScore({
+      if (!quote || !closes) continue;
+
+      const score = calculateHQS({ quote, closes });
+
+      results.push({
+        symbol,
+        price: quote.price,
         changePercent: quote.changePercent,
         volume: quote.volume,
-      });
-
-      stocks.push({
-        ...quote,
         hqsScore: score,
-        hqsRating: hqsEngine.getRating(score),
       });
 
-      await new Promise((r) => setTimeout(r, 1200));
+      await new Promise(r => setTimeout(r, 12000)); // Rate Limit Safety
     }
 
-    stocks.sort((a, b) => b.hqsScore - a.hqsScore);
+    results.sort((a, b) => b.hqsScore - a.hqsScore);
 
     res.json({
       success: true,
-      timestamp: new Date().toISOString(),
-      count: stocks.length,
-      stocks,
+      stocks: results,
     });
 
   } catch (err) {
     res.status(500).json({
       success: false,
-      error: "Internal Server Error",
-    });
-  }
-});
-
-app.get("/hqs/:symbol", async (req, res) => {
-  try {
-    const symbol = req.params.symbol.toUpperCase();
-    const quote = await fetchQuote(symbol);
-
-    if (!quote) {
-      return res.status(404).json({
-        success: false,
-        message: "Symbol not found",
-      });
-    }
-
-    const score = hqsEngine.calculateScore({
-      changePercent: quote.changePercent,
-      volume: quote.volume,
-    });
-
-    res.json({
-      success: true,
-      ...quote,
-      hqsScore: score,
-      hqsRating: hqsEngine.getRating(score),
-    });
-
-  } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: "Internal Server Error",
+      error: err.message,
     });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 HQS Backend running on port ${PORT}`);
+  console.log("🚀 HQS 3.0 Running");
 });
