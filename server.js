@@ -2,33 +2,66 @@ const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
 const NodeCache = require("node-cache");
+const { Pool } = require("pg");
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-/* ================= API KEY CHECK ================= */
+/* ================= ENV CHECK ================= */
 
-const API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
-
-if (!API_KEY) {
-  console.error("❌ ALPHA_VANTAGE_API_KEY not set in environment!");
+if (!process.env.ALPHA_VANTAGE_API_KEY) {
+  console.error("❌ ALPHA_VANTAGE_API_KEY missing");
   process.exit(1);
 }
 
-console.log("🚀 HQS Backend 2.5 Starting...");
-console.log("🔐 API Key loaded securely");
+if (!process.env.DATABASE_URL) {
+  console.error("❌ DATABASE_URL missing");
+  process.exit(1);
+}
+
+console.log("🚀 HQS Backend 3.1 Starting...");
 
 /* ================= MIDDLEWARE ================= */
 
 app.use(cors());
 app.use(express.json());
 
+/* ================= DATABASE ================= */
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl:
+    process.env.NODE_ENV === "production"
+      ? { rejectUnauthorized: false }
+      : false,
+});
+
+async function initDatabase() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS hqs_history (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(10),
+        price NUMERIC,
+        change_percent NUMERIC,
+        volume BIGINT,
+        hqs_score INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log("✅ Database initialized");
+  } catch (err) {
+    console.error("❌ Database init failed:", err.message);
+    process.exit(1);
+  }
+}
+
 /* ================= CACHE ================= */
 
 const cache = new NodeCache({ stdTTL: 300 });
 
-/* ================= HQS ENGINE 2.5 ================= */
+/* ================= HQS ENGINE ================= */
 
 class HQSEngine {
   normalize(value, min, max) {
@@ -39,20 +72,15 @@ class HQSEngine {
   calculateScore({ changePercent, volume }) {
     const avgVolume = 30000000;
 
-    // 1️⃣ Intraday Momentum (30%)
     const intradayScore = this.normalize(changePercent, -3, 3);
-
-    // 2️⃣ Relative Volume (25%)
     const relativeVolume = volume / avgVolume;
     const volumeScore = this.normalize(relativeVolume, 0.5, 2);
 
-    // 3️⃣ Strength Bias (20%)
     const strengthScore =
       changePercent > 0
         ? this.normalize(changePercent, 0, 5)
         : 0.2;
 
-    // 4️⃣ Stability (15%)
     const stabilityScore =
       changePercent < -3
         ? 0
@@ -60,7 +88,6 @@ class HQSEngine {
         ? 0.3
         : 1;
 
-    // 5️⃣ Acceleration (10%)
     const accelScore = this.normalize(changePercent, -1, 4);
 
     const finalScore =
@@ -97,8 +124,9 @@ async function fetchQuote(symbol) {
         params: {
           function: "GLOBAL_QUOTE",
           symbol,
-          apikey: API_KEY,
+          apikey: process.env.ALPHA_VANTAGE_API_KEY,
         },
+        timeout: 10000,
       }
     );
 
@@ -117,32 +145,20 @@ async function fetchQuote(symbol) {
 
     cache.set(cacheKey, result);
     return result;
+
   } catch (err) {
-    console.error(`AlphaVantage Error for ${symbol}:`, err.message);
+    console.error("AlphaVantage error:", err.message);
     return null;
   }
 }
 
 /* ================= ROUTES ================= */
 
-app.get("/", (req, res) => {
-  res.json({
-    system: "HQS Hyper-Quant",
-    version: "2.5",
-    status: "online",
-    endpoints: ["/health", "/market", "/hqs/:symbol"],
-  });
-});
-
 app.get("/health", (req, res) => {
-  res.json({
-    status: "healthy",
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: "healthy" });
 });
 
-/* ===== MARKET OVERVIEW ===== */
+/* ===== MARKET ===== */
 
 app.get("/market", async (req, res) => {
   try {
@@ -158,6 +174,24 @@ app.get("/market", async (req, res) => {
         volume: quote.volume,
       });
 
+      // 🔐 Safe DB Insert
+      try {
+        await pool.query(
+          `INSERT INTO hqs_history 
+           (symbol, price, change_percent, volume, hqs_score) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            quote.symbol,
+            quote.price,
+            quote.changePercent,
+            quote.volume,
+            score,
+          ]
+        );
+      } catch (dbErr) {
+        console.error("DB insert failed:", dbErr.message);
+      }
+
       stocks.push({
         symbol: quote.symbol,
         price: quote.price,
@@ -168,87 +202,58 @@ app.get("/market", async (req, res) => {
         timestamp: quote.timestamp,
       });
 
-      // AlphaVantage Free Limit Safety
       await new Promise((r) => setTimeout(r, 1200));
-    }
-
-    if (stocks.length === 0) {
-      return res.status(503).json({
-        success: false,
-        message: "API rate limit reached",
-      });
     }
 
     stocks.sort((a, b) => b.hqsScore - a.hqsScore);
 
     res.json({
       success: true,
-      source: "Alpha Vantage API",
-      timestamp: new Date().toISOString(),
       count: stocks.length,
       stocks,
     });
 
   } catch (err) {
-    console.error("Market endpoint error:", err);
-    res.status(500).json({
-      success: false,
-      error: "Internal Server Error",
-    });
+    console.error("Market error:", err.message);
+    res.status(500).json({ success: false });
   }
 });
 
-/* ===== SINGLE STOCK ===== */
+/* ===== HISTORY ===== */
 
-app.get("/hqs/:symbol", async (req, res) => {
+app.get("/history/:symbol", async (req, res) => {
   try {
     const symbol = req.params.symbol.toUpperCase();
-    const quote = await fetchQuote(symbol);
 
-    if (!quote) {
-      return res.status(404).json({
-        success: false,
-        message: "Symbol not found or API limit reached",
-      });
-    }
-
-    const score = hqsEngine.calculateScore({
-      changePercent: quote.changePercent,
-      volume: quote.volume,
-    });
+    const result = await pool.query(
+      `SELECT symbol, price, change_percent, volume, hqs_score, created_at
+       FROM hqs_history
+       WHERE symbol = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [symbol]
+    );
 
     res.json({
       success: true,
       symbol,
-      price: quote.price,
-      changePercent: quote.changePercent,
-      volume: quote.volume,
-      hqsScore: score,
-      hqsRating: hqsEngine.getRating(score),
-      timestamp: quote.timestamp,
+      count: result.rows.length,
+      history: result.rows,
     });
 
   } catch (err) {
-    res.status(500).json({
-      success: false,
-      error: "Internal Server Error",
-    });
+    console.error("History error:", err.message);
+    res.status(500).json({ success: false });
   }
 });
 
-/* ===== 404 HANDLER ===== */
+/* ================= START ================= */
 
-app.use((req, res) => {
-  res.status(404).json({
-    error: "Endpoint not found",
+(async () => {
+  await initDatabase();
+  app.listen(PORT, () => {
+    console.log("=================================");
+    console.log("🚀 HQS Backend 3.1 Live");
+    console.log("=================================");
   });
-});
-
-/* ===== START SERVER ===== */
-
-app.listen(PORT, () => {
-  console.log("=================================");
-  console.log("🚀 HQS Backend 2.5 Live");
-  console.log(`📍 Port: ${PORT}`);
-  console.log("=================================");
-});
+})();
