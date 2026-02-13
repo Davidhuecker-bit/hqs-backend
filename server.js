@@ -1,6 +1,7 @@
 // =====================================================
-// HQS ENTERPRISE BACKEND v8
-// Stable, Railway-kompatibel, ohne await/Syntax-Fehler
+// HQS ENTERPRISE BACKEND v9
+// Financial Modeling Prep integriert (Yahoo entfernt)
+// Railway kompatibel
 // =====================================================
 
 const express = require("express");
@@ -13,18 +14,26 @@ const app = express();
 const PORT = Number(process.env.PORT) || 8080;
 
 // ============================
-// KONFIGURATION
+// CONFIG
 // ============================
+
 const SYMBOLS = (process.env.SYMBOLS ||
   "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ,IEMG")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const REQUEST_TIMEOUT_MS = Number(process.env.MARKET_TIMEOUT_MS) || 8000;
-const CACHE_TTL_SECONDS = Number(process.env.MARKET_CACHE_TTL_SECONDS) || 600; // 10 min
-const LAST_KNOWN_GOOD_TTL_SECONDS =
-  Number(process.env.MARKET_LAST_GOOD_TTL_SECONDS) || 86400; // 24h
+const API_KEY = process.env.FMP_API_KEY;
+
+if (!API_KEY) {
+  console.error("FMP_API_KEY fehlt in Railway Variables");
+}
+
+const BASE_URL = "https://financialmodelingprep.com/stable";
+
+const REQUEST_TIMEOUT_MS = 8000;
+const CACHE_TTL_SECONDS = 600;
+const LAST_KNOWN_GOOD_TTL_SECONDS = 86400;
 
 const cache = new NodeCache({
   stdTTL: CACHE_TTL_SECONDS,
@@ -35,22 +44,22 @@ app.use(cors());
 app.use(express.json());
 
 // ============================
-// HEALTH CHECK
+// HEALTH
 // ============================
+
 app.get("/", (req, res) => {
   res.json({
     success: true,
     system: "HQS Enterprise Backend",
-    version: "8.0",
+    version: "9.0",
+    provider: "Financial Modeling Prep",
     status: "Running",
-    timestamp: new Date().toISOString(),
   });
 });
 
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    uptimeSec: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
 });
@@ -58,36 +67,33 @@ app.get("/health", (req, res) => {
 // ============================
 // HELPERS
 // ============================
+
 function classifyMarketCap(marketCap) {
-  if (!Number.isFinite(marketCap) || marketCap <= 0) return "Unknown";
+  if (!Number.isFinite(marketCap)) return "Unknown";
   if (marketCap >= 200_000_000_000) return "Large Cap";
   if (marketCap >= 10_000_000_000) return "Mid Cap";
   return "Small Cap";
 }
 
 function calculateHQS(data) {
+
   let score = 50;
 
-  const changePercent = Number(data.regularMarketChangePercent || 0);
+  const changePercent = Number(data.changesPercentage || 0);
   const marketCap = Number(data.marketCap || 0);
-  const volume = Number(data.regularMarketVolume || 0);
-  const avgVolume = Number(data.averageDailyVolume3Month || 1);
+  const volume = Number(data.volume || 0);
+  const avgVolume = Number(data.avgVolume || 1);
 
-  // Momentum
   if (changePercent > 2) score += 15;
   if (changePercent > 5) score += 10;
   if (changePercent < -2) score -= 10;
 
-  // Groesse/Stabilitaet
   if (marketCap > 500_000_000_000) score += 10;
   if (marketCap > 1_000_000_000_000) score += 5;
 
-  // Volumen-Dynamik
   if (volume > avgVolume) score += 10;
 
-  // Clamp 0..100
-  if (score > 100) score = 100;
-  if (score < 0) score = 0;
+  score = Math.max(0, Math.min(100, score));
 
   return Math.round(score);
 }
@@ -100,135 +106,152 @@ function getRating(score) {
   return "Sell";
 }
 
-async function fetchQuoteForSymbol(symbol) {
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbol)}`;
+// ============================
+// FETCH FROM FMP
+// ============================
+
+async function fetchQuote(symbol) {
+
+  const url = `${BASE_URL}/quote?symbol=${symbol}&apikey=${API_KEY}`;
 
   const response = await axios.get(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      Accept: "application/json",
-    },
-    timeout: REQUEST_TIMEOUT_MS,
+    timeout: REQUEST_TIMEOUT_MS
   });
 
-  const item = response.data?.quoteResponse?.result?.[0];
+  const item = response.data?.[0];
+
   if (!item) return null;
 
-  const hqsScore = calculateHQS(item);
+  const score = calculateHQS(item);
 
   return {
-    symbol: item.symbol || symbol,
-    name: item.shortName || item.longName || symbol,
-    type: item.quoteType || "UNKNOWN",
-    price: Number(item.regularMarketPrice || 0),
-    change: Number(item.regularMarketChange || 0),
-    changePercent: Number(item.regularMarketChangePercent || 0),
-    marketCap: Number(item.marketCap || 0),
-    volume: Number(item.regularMarketVolume || 0),
-    capCategory: classifyMarketCap(Number(item.marketCap || 0)),
-    hqsScore,
-    rating: getRating(hqsScore),
+
+    symbol: item.symbol,
+
+    name: item.name,
+
+    price: item.price,
+
+    change: item.change,
+
+    changePercent: item.changesPercentage,
+
+    marketCap: item.marketCap,
+
+    volume: item.volume,
+
+    capCategory: classifyMarketCap(item.marketCap),
+
+    hqsScore: score,
+
+    rating: getRating(score)
+
   };
+
 }
 
 // ============================
 // MARKET ENDPOINT
 // ============================
+
 app.get("/market", async (req, res) => {
+
   try {
+
     const cached = cache.get("marketData");
+
     if (cached) {
+
       return res.json({
+
         success: true,
+
         source: "cache",
-        count: cached.length,
-        failedSymbols: 0,
-        stocks: cached,
+
+        stocks: cached
+
       });
+
     }
 
-    const settled = await Promise.allSettled(
-      SYMBOLS.map((symbol) => fetchQuoteForSymbol(symbol))
+    const results = await Promise.allSettled(
+      SYMBOLS.map(fetchQuote)
     );
 
-    const stocks = settled
-      .filter((entry) => entry.status === "fulfilled" && entry.value)
-      .map((entry) => entry.value)
+    const stocks = results
+      .filter(r => r.status === "fulfilled" && r.value)
+      .map(r => r.value)
       .sort((a, b) => b.hqsScore - a.hqsScore);
 
-    const failedSymbols = settled.filter(
-      (entry) => entry.status === "rejected" || !entry.value
-    ).length;
-
     if (stocks.length === 0) {
-      const lastKnownGood = cache.get("lastKnownGood");
-      if (lastKnownGood && Array.isArray(lastKnownGood) && lastKnownGood.length > 0) {
-        return res.json({
-          success: true,
-          source: "stale-cache",
-          stale: true,
-          count: lastKnownGood.length,
-          failedSymbols: SYMBOLS.length,
-          notice:
-            "Live-Marktdaten sind aktuell nicht erreichbar. Letzte verfuegbare Daten werden angezeigt.",
-          stocks: lastKnownGood,
-        });
-      }
 
-      return res.status(502).json({
+      return res.status(500).json({
+
         success: false,
-        message: "Keine gueltigen Marktdaten verfuegbar",
-        failedSymbols: SYMBOLS.length,
+
+        message: "Keine Marktdaten verfügbar"
+
       });
+
     }
 
     cache.set("marketData", stocks);
+
     cache.set("lastKnownGood", stocks, LAST_KNOWN_GOOD_TTL_SECONDS);
 
-    return res.json({
+    res.json({
+
       success: true,
-      source: "Yahoo Finance",
+
+      source: "Financial Modeling Prep",
+
       count: stocks.length,
-      failedSymbols,
-      stocks,
-    });
-  } catch (error) {
-    console.error("MARKET ERROR:", error.response?.data || error.message);
 
-    const lastKnownGood = cache.get("lastKnownGood");
-    if (lastKnownGood && Array.isArray(lastKnownGood) && lastKnownGood.length > 0) {
-      return res.json({
-        success: true,
-        source: "stale-cache",
-        stale: true,
-        count: lastKnownGood.length,
-        notice:
-          "Live-Marktdaten sind aktuell nicht erreichbar. Letzte verfuegbare Daten werden angezeigt.",
-        stocks: lastKnownGood,
-      });
-    }
+      stocks
 
-    return res.status(500).json({
-      success: false,
-      message: "Fehler beim Laden der Marktdaten",
     });
+
   }
+  catch (error) {
+
+    console.error("FMP ERROR:", error.message);
+
+    res.status(500).json({
+
+      success: false,
+
+      message: "API Fehler"
+
+    });
+
+  }
+
 });
 
 // ============================
-// GLOBAL ERROR HANDLER
+// ERROR HANDLER
 // ============================
+
 app.use((err, req, res, next) => {
-  console.error("GLOBAL ERROR:", err.stack || err.message);
+
+  console.error(err);
+
   res.status(500).json({
+
     success: false,
-    message: "Internal Server Error",
+
+    message: "Internal Server Error"
+
   });
+
 });
 
 // ============================
-// START SERVER
+// START
 // ============================
+
 app.listen(PORT, () => {
-  console.log(`HQS Enterprise laeuft auf Port ${PORT}`);
+
+  console.log("HQS Backend läuft auf Port", PORT);
+
 });
