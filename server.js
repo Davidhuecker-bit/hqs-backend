@@ -12,7 +12,9 @@ const PORT = Number(process.env.PORT) || 8080;
 // ============================
 const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ").split(",").map(s => s.trim());
 const API_KEY = process.env.FMP_API_KEY;
-const BASE_URL = "https://financialmodelingprep.com/api/v3";
+
+// ÄNDERUNG: Wir nutzen /stable, um den 403-Fehler zu umgehen
+const BASE_URL = "https://financialmodelingprep.com/stable"; 
 
 const cache = new NodeCache({ stdTTL: 600, useClones: false });
 
@@ -45,7 +47,6 @@ function getAIInsight(symbol, score, change) {
     if (score >= 75) cat = "bullish";
     if (score <= 45) cat = "bearish";
 
-    // Beständiger Text pro Symbol (kein Flackern)
     const index = symbol.length % insights[cat].length;
     return insights[cat][index];
 }
@@ -62,17 +63,19 @@ function calculateProbabilities(score, change) {
     };
 }
 
-function processStockData(item, userTier = "FULL_TRIAL") {
+function calculateHQS(item) {
     const change = Number(item.changesPercentage || 0);
     const vRatio = Number(item.volume) / (Number(item.avgVolume) || 1);
-    
-    // Erweiterter HQS Score
     let score = 50;
     if (change > 0) score += 10;
     if (vRatio > 1.3) score += 15;
     if (item.marketCap > 1e11) score += 10;
-    const finalHqs = Math.min(100, Math.round(score + 15));
+    return Math.min(100, Math.round(score + 15));
+}
 
+function processStockData(item, userTier = "FULL_TRIAL") {
+    const finalHqs = calculateHQS(item);
+    const change = Number(item.changesPercentage || 0);
     const isFull = userTier === "FULL_TRIAL";
 
     return {
@@ -83,17 +86,9 @@ function processStockData(item, userTier = "FULL_TRIAL") {
         hqsScore: finalHqs,
         rating: finalHqs >= 85 ? "Strong Buy" : finalHqs >= 70 ? "Buy" : "Neutral",
         decision: finalHqs >= 70 ? "KAUFEN" : finalHqs <= 45 ? "NICHT KAUFEN" : "HALTEN",
-        
-        // KI-Begründung (Kostenlos)
         aiInsight: getAIInsight(item.symbol, finalHqs, change),
-
-        // Subscription-Logik (Paywall)
         probabilities: isFull ? calculateProbabilities(finalHqs, change) : "Upgrade erforderlich",
-        isDiscovery: isFull ? (vRatio > 1.4 && change < 3) : "Locked",
-        
-        // Alpha-Beweis
         alphaVsMarket: isFull ? `+${(finalHqs / 15).toFixed(1)}%` : "Nur Premium",
-        
         userTier
     };
 }
@@ -103,7 +98,7 @@ function processStockData(item, userTier = "FULL_TRIAL") {
 // ============================
 app.get("/market", async (req, res) => {
     try {
-        const userTier = req.query.tier || "FULL_TRIAL"; // Simuliert für den Test
+        const userTier = req.query.tier || "FULL_TRIAL";
         const cacheKey = `market_${userTier}`;
         const cached = cache.get(cacheKey);
         if (cached) return res.json({ success: true, stocks: cached });
@@ -111,12 +106,17 @@ app.get("/market", async (req, res) => {
         const url = `${BASE_URL}/quote/${SYMBOLS.join(",")}?apikey=${API_KEY}`;
         const response = await axios.get(url);
         
-        const stocks = await Promise.all(response.data.map(item => processStockData(item, userTier)));
+        if (!response.data || response.data.length === 0) {
+            throw new Error("Keine Daten von FMP erhalten.");
+        }
+
+        const stocks = response.data.map(item => processStockData(item, userTier));
         stocks.sort((a, b) => b.hqsScore - a.hqsScore);
 
         cache.set(cacheKey, stocks);
         res.json({ success: true, stocks });
     } catch (e) {
+        console.error("API Fehler:", e.message);
         res.status(500).json({ success: false, error: e.message });
     }
 });
