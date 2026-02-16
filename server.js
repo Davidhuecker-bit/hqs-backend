@@ -1,9 +1,3 @@
-// =====================================================
-// HQS ENTERPRISE BACKEND v9
-// Financial Modeling Prep integriert (Yahoo entfernt)
-// Railway kompatibel
-// =====================================================
-
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
@@ -14,244 +8,117 @@ const app = express();
 const PORT = Number(process.env.PORT) || 8080;
 
 // ============================
-// CONFIG
+// CONFIG & SYMBOLS
 // ============================
-
-const SYMBOLS = (process.env.SYMBOLS ||
-  "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ,IEMG")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
+const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ").split(",").map(s => s.trim());
 const API_KEY = process.env.FMP_API_KEY;
+const BASE_URL = "https://financialmodelingprep.com/api/v3";
 
-if (!API_KEY) {
-  console.error("FMP_API_KEY fehlt in Railway Variables");
-}
-
-const BASE_URL = "https://financialmodelingprep.com/stable";
-
-const REQUEST_TIMEOUT_MS = 8000;
-const CACHE_TTL_SECONDS = 600;
-const LAST_KNOWN_GOOD_TTL_SECONDS = 86400;
-
-const cache = new NodeCache({
-  stdTTL: CACHE_TTL_SECONDS,
-  useClones: false,
-});
+const cache = new NodeCache({ stdTTL: 600, useClones: false });
 
 app.use(cors());
 app.use(express.json());
 
 // ============================
-// HEALTH
+// STRATEGIE 1: KOSTENLOSE KI-LOGIK (HEURISTIK)
 // ============================
+function getAIInsight(symbol, score, change) {
+    const insights = {
+        bullish: [
+            "Das Modell erkennt eine starke Akkumulationsphase durch institutionelle Anleger.",
+            "Positiver Trend durch signifikantes Volumen-Signal bestätigt.",
+            "Optimale Momentum-Konvergenz: Günstige Einstiegschance identifiziert."
+        ],
+        neutral: [
+            "Aktuelle Seitwärtsphase abwarten. Modell zeigt geringe Volatilität.",
+            "Markt im Gleichgewicht. Konsolidierung vor nächstem Ausbruch wahrscheinlich.",
+            "Halten-Signal: Stabile Fundamentaldaten ohne klare kurzfristige Richtung."
+        ],
+        bearish: [
+            "Vorsicht: Modell identifiziert Überhitzung und Gewinnmitnahmen.",
+            "Erhöhtes Risiko: Verkaufsdruck nimmt zu, Momentum bricht ein.",
+            "Strategischer Rückzug empfohlen: Trendwende-Signale verdichten sich."
+        ]
+    };
 
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    system: "HQS Enterprise Backend",
-    version: "9.0",
-    provider: "Financial Modeling Prep",
-    status: "Running",
-  });
-});
+    let cat = "neutral";
+    if (score >= 75) cat = "bullish";
+    if (score <= 45) cat = "bearish";
 
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// ============================
-// HELPERS
-// ============================
-
-function classifyMarketCap(marketCap) {
-  if (!Number.isFinite(marketCap)) return "Unknown";
-  if (marketCap >= 200_000_000_000) return "Large Cap";
-  if (marketCap >= 10_000_000_000) return "Mid Cap";
-  return "Small Cap";
-}
-
-function calculateHQS(data) {
-
-  let score = 50;
-
-  const changePercent = Number(data.changesPercentage || 0);
-  const marketCap = Number(data.marketCap || 0);
-  const volume = Number(data.volume || 0);
-  const avgVolume = Number(data.avgVolume || 1);
-
-  if (changePercent > 2) score += 15;
-  if (changePercent > 5) score += 10;
-  if (changePercent < -2) score -= 10;
-
-  if (marketCap > 500_000_000_000) score += 10;
-  if (marketCap > 1_000_000_000_000) score += 5;
-
-  if (volume > avgVolume) score += 10;
-
-  score = Math.max(0, Math.min(100, score));
-
-  return Math.round(score);
-}
-
-function getRating(score) {
-  if (score >= 85) return "Strong Buy";
-  if (score >= 70) return "Buy";
-  if (score >= 55) return "Neutral";
-  if (score >= 40) return "Weak";
-  return "Sell";
+    // Beständiger Text pro Symbol (kein Flackern)
+    const index = symbol.length % insights[cat].length;
+    return insights[cat][index];
 }
 
 // ============================
-// FETCH FROM FMP
+// STRATEGIE 2: EXPERTEN-BERECHNUNGEN
 // ============================
+function calculateProbabilities(score, change) {
+    let base = 60 + (score / 4);
+    return {
+        "7d": Math.min(98, Math.round(base + (change > 0 ? 2 : -2))) + "%",
+        "30d": Math.min(98, Math.round(base + 5)) + "%",
+        "90d": Math.min(98, Math.round(base + 10)) + "%"
+    };
+}
 
-async function fetchQuote(symbol) {
+function processStockData(item, userTier = "FULL_TRIAL") {
+    const change = Number(item.changesPercentage || 0);
+    const vRatio = Number(item.volume) / (Number(item.avgVolume) || 1);
+    
+    // Erweiterter HQS Score
+    let score = 50;
+    if (change > 0) score += 10;
+    if (vRatio > 1.3) score += 15;
+    if (item.marketCap > 1e11) score += 10;
+    const finalHqs = Math.min(100, Math.round(score + 15));
 
-  const url = `${BASE_URL}/quote?symbol=${symbol}&apikey=${API_KEY}`;
+    const isFull = userTier === "FULL_TRIAL";
 
-  const response = await axios.get(url, {
-    timeout: REQUEST_TIMEOUT_MS
-  });
+    return {
+        symbol: item.symbol,
+        name: item.name,
+        price: item.price,
+        changePercent: change.toFixed(2),
+        hqsScore: finalHqs,
+        rating: finalHqs >= 85 ? "Strong Buy" : finalHqs >= 70 ? "Buy" : "Neutral",
+        decision: finalHqs >= 70 ? "KAUFEN" : finalHqs <= 45 ? "NICHT KAUFEN" : "HALTEN",
+        
+        // KI-Begründung (Kostenlos)
+        aiInsight: getAIInsight(item.symbol, finalHqs, change),
 
-  const item = response.data?.[0];
-
-  if (!item) return null;
-
-  const score = calculateHQS(item);
-
-  return {
-
-    symbol: item.symbol,
-
-    name: item.name,
-
-    price: item.price,
-
-    change: item.change,
-
-    changePercent: item.changesPercentage,
-
-    marketCap: item.marketCap,
-
-    volume: item.volume,
-
-    capCategory: classifyMarketCap(item.marketCap),
-
-    hqsScore: score,
-
-    rating: getRating(score)
-
-  };
-
+        // Subscription-Logik (Paywall)
+        probabilities: isFull ? calculateProbabilities(finalHqs, change) : "Upgrade erforderlich",
+        isDiscovery: isFull ? (vRatio > 1.4 && change < 3) : "Locked",
+        
+        // Alpha-Beweis
+        alphaVsMarket: isFull ? `+${(finalHqs / 15).toFixed(1)}%` : "Nur Premium",
+        
+        userTier
+    };
 }
 
 // ============================
-// MARKET ENDPOINT
+// ENDPOINTS
 // ============================
-
 app.get("/market", async (req, res) => {
+    try {
+        const userTier = req.query.tier || "FULL_TRIAL"; // Simuliert für den Test
+        const cacheKey = `market_${userTier}`;
+        const cached = cache.get(cacheKey);
+        if (cached) return res.json({ success: true, stocks: cached });
 
-  try {
+        const url = `${BASE_URL}/quote/${SYMBOLS.join(",")}?apikey=${API_KEY}`;
+        const response = await axios.get(url);
+        
+        const stocks = await Promise.all(response.data.map(item => processStockData(item, userTier)));
+        stocks.sort((a, b) => b.hqsScore - a.hqsScore);
 
-    const cached = cache.get("marketData");
-
-    if (cached) {
-
-      return res.json({
-
-        success: true,
-
-        source: "cache",
-
-        stocks: cached
-
-      });
-
+        cache.set(cacheKey, stocks);
+        res.json({ success: true, stocks });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
     }
-
-    const results = await Promise.allSettled(
-      SYMBOLS.map(fetchQuote)
-    );
-
-    const stocks = results
-      .filter(r => r.status === "fulfilled" && r.value)
-      .map(r => r.value)
-      .sort((a, b) => b.hqsScore - a.hqsScore);
-
-    if (stocks.length === 0) {
-
-      return res.status(500).json({
-
-        success: false,
-
-        message: "Keine Marktdaten verfügbar"
-
-      });
-
-    }
-
-    cache.set("marketData", stocks);
-
-    cache.set("lastKnownGood", stocks, LAST_KNOWN_GOOD_TTL_SECONDS);
-
-    res.json({
-
-      success: true,
-
-      source: "Financial Modeling Prep",
-
-      count: stocks.length,
-
-      stocks
-
-    });
-
-  }
-  catch (error) {
-
-    console.error("FMP ERROR:", error.message);
-
-    res.status(500).json({
-
-      success: false,
-
-      message: "API Fehler"
-
-    });
-
-  }
-
 });
 
-// ============================
-// ERROR HANDLER
-// ============================
-
-app.use((err, req, res, next) => {
-
-  console.error(err);
-
-  res.status(500).json({
-
-    success: false,
-
-    message: "Internal Server Error"
-
-  });
-
-});
-
-// ============================
-// START
-// ============================
-
-app.listen(PORT, () => {
-
-  console.log("HQS Backend läuft auf Port", PORT);
-
-});
+app.listen(PORT, () => console.log(`HQS v13 AI-Hybrid Online auf Port ${PORT}`));
