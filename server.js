@@ -5,7 +5,7 @@ const NodeCache = require("node-cache");
 require("dotenv").config();
 
 const app = express();
-// Nutzt den von Railway zugewiesenen Port oder 8080 als Backup
+// Railway vergibt den Port dynamisch – das stellt sicher, dass wir erreichbar sind
 const PORT = process.env.PORT || 8080;
 
 // ============================
@@ -13,11 +13,11 @@ const PORT = process.env.PORT || 8080;
 // ============================
 const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ").split(",").map(s => s.trim());
 const API_KEY = process.env.FMP_API_KEY;
-const BASE_URL = "https://financialmodelingprep.com/api/v3"; // Standard V3 für maximale Kompatibilität
+const BASE_URL = "https://financialmodelingprep.com/api/v3"; 
 
 const cache = new NodeCache({ stdTTL: 600, useClones: false });
 
-// Erlaubt Anfragen von deiner Domain
+// CORS-Update: Erlaubt deiner Domain den Zugriff
 app.use(cors({
     origin: ["https://dhsystemhqs.de", "https://www.dhsystemhqs.de", "http://localhost:3000"],
     methods: ["GET", "POST"]
@@ -25,7 +25,7 @@ app.use(cors({
 app.use(express.json());
 
 // ============================
-// HILFSFUNKTIONEN (KI-Logik & HQS-Score)
+// KI-LOGIK & BERECHNUNGEN (Bleiben erhalten)
 // ============================
 function getAIInsight(symbol, score) {
     if (score >= 75) return "Das Modell erkennt eine starke Akkumulationsphase durch institutionelle Anleger.";
@@ -35,17 +35,19 @@ function getAIInsight(symbol, score) {
 
 function calculateHQS(item) {
     const change = Number(item.changesPercentage || 0);
-    let score = 65; 
+    const vRatio = Number(item.volume) / (Number(item.avgVolume) || 1);
+    let score = 50;
     if (change > 0) score += 10;
-    if (item.marketCap > 1e11) score += 15;
-    return Math.min(100, Math.round(score));
+    if (vRatio > 1.3) score += 15;
+    if (item.marketCap > 1e11) score += 10;
+    return Math.min(100, Math.round(score + 15));
 }
 
 // ============================
 // ENDPOINTS
 // ============================
 
-// FIX: Akzeptiert jetzt /market UND /api/market, um 404-Fehler zu vermeiden
+// FIX 1: Akzeptiert jetzt /market UND /api/market (Löst 404 Fehler)
 app.get(["/market", "/api/market"], async (req, res) => {
     const userTier = req.query.tier || "FULL_TRIAL";
     const cacheKey = `market_${userTier}`;
@@ -54,12 +56,11 @@ app.get(["/market", "/api/market"], async (req, res) => {
         const cached = cache.get(cacheKey);
         if (cached) return res.json({ success: true, stocks: cached });
 
-        // API-Anfrage mit 5 Sekunden Timeout, damit der Server nicht hängen bleibt
         const url = `${BASE_URL}/quote/${SYMBOLS.join(",")}?apikey=${API_KEY}`;
-        const response = await axios.get(url, { timeout: 5000 });
+        const response = await axios.get(url, { timeout: 5000 }); // Timeout gegen Hänger
         
         if (!response.data || response.data.length === 0) {
-            throw new Error("API lieferte leere Daten");
+            throw new Error("Keine Daten von FMP erhalten.");
         }
 
         const stocks = response.data.map(item => {
@@ -70,8 +71,9 @@ app.get(["/market", "/api/market"], async (req, res) => {
                 price: item.price,
                 changePercent: Number(item.changesPercentage || 0).toFixed(2),
                 hqsScore: hqs,
-                aiInsight: getAIInsight(item.symbol, hqs),
-                decision: hqs >= 70 ? "KAUFEN" : "HALTEN"
+                rating: hqs >= 85 ? "Strong Buy" : hqs >= 70 ? "Buy" : "Neutral",
+                decision: hqs >= 70 ? "KAUFEN" : "HALTEN",
+                aiInsight: getAIInsight(item.symbol, hqs)
             };
         });
 
@@ -79,30 +81,26 @@ app.get(["/market", "/api/market"], async (req, res) => {
         res.json({ success: true, stocks });
 
     } catch (e) {
-        console.error("!!! API FEHLER - Nutze Fallback-Daten:", e.message);
+        console.error("API Fehler - Nutze Fallback:", e.message);
         
-        // FIX: Statt Status 500 senden wir jetzt immer Daten, damit die Website nicht abstürzt
-        const fallbackStocks = SYMBOLS.slice(0, 3).map(s => ({
+        // FIX 2: Sende Test-Daten statt Fehler 500 (Löst Website-Absturz)
+        const fallback = SYMBOLS.slice(0, 3).map(s => ({
             symbol: s,
-            name: `${s} (Demo Data)`,
+            name: `${s} (Demo-Modus)`,
             price: 150.00,
-            changePercent: "1.50",
-            hqsScore: 85,
-            aiInsight: "Demo-Modus aktiv: Bitte API-Key in Railway prüfen.",
-            decision: "PRÜFEN"
+            changePercent: "0.00",
+            hqsScore: 75,
+            decision: "PRÜFEN",
+            aiInsight: "Verbindung wird neu aufgebaut... Bitte API-Key prüfen."
         }));
 
-        res.json({ 
-            success: true, 
-            stocks: fallbackStocks, 
-            note: "Dies sind temporäre Vorschaudaten (API-Error)." 
-        });
+        res.json({ success: true, stocks: fallback, isFallback: true });
     }
 });
 
-// Admin-Status Route fixen
+// FIX 3: Admin-Status Route für das Frontend erreichbar machen
 app.get(["/admin-bypass-status", "/api/admin-bypass-status"], (req, res) => {
-    res.json({ active: true, mode: "AI-Hybrid" });
+    res.json({ active: true, mode: "AI-Hybrid Online" });
 });
 
 app.listen(PORT, () => console.log(`HQS Backend Online auf Port ${PORT}`));
