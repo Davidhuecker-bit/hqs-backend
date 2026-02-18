@@ -1,108 +1,24 @@
-const express = require("express");
-const cors = require("cors");
-const axios = require("axios");
-const { Redis } = require("@upstash/redis");
-require("dotenv").config();
-
-const app = express();
-const PORT = process.env.PORT || 8080;
-
-// ============================
-// REDIS SETUP
-// ============================
-
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
-
-// ============================
-// CONFIG
-// ============================
-
-const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA")
-  .split(",")
-  .map(s => s.trim());
-
-const API_KEY = process.env.FMP_API_KEY;
-const BASE_URL = "https://financialmodelingprep.com/api/v3";
-
-app.use(cors({
-  origin: [
-    "https://dhsystemhqs.de",
-    "https://www.dhsystemhqs.de",
-    "http://localhost:3000"
-  ],
-  methods: ["GET"]
-}));
-
-app.use(express.json());
-
-// ============================
-// HQS LOGIK
-// ============================
-
-function calculateHQS(item) {
-  let score = 50;
-  if (item.changesPercentage > 0) score += 10;
-  if (item.marketCap > 1e11) score += 10;
-  return Math.min(100, score);
-}
-
-// ============================
-// MARKET ENDPOINT
-// ============================
-
-app.get(["/market", "/api/market"], async (req, res) => {
-
-  const cacheKey = "market:data";
-
-  try {
-
-    // 🔥 1️⃣ Redis prüfen
-    const cached = await redis.get(cacheKey);
-    if (cached) {
-      return res.json({ success: true, stocks: cached, cached: true });
-    }
-
-    const results = [];
-
-    for (const symbol of SYMBOLS) {
-
-      const url = `${BASE_URL}/quote/${symbol}?apikey=${API_KEY}`;
-      const response = await axios.get(url);
-
-      if (!response.data || !response.data[0]) continue;
-
-      const stock = response.data[0];
-      const hqs = calculateHQS(stock);
-
-      results.push({
-        symbol: stock.symbol,
-        name: stock.name,
-        price: stock.price,
-        changePercent: Number(stock.changesPercentage || 0).toFixed(2),
-        hqsScore: hqs,
-        decision: hqs >= 60 ? "KAUFEN" : "HALTEN"
-      });
-    }
-
-    // 🔥 2️⃣ In Redis speichern (10 Minuten TTL)
-    await redis.set(cacheKey, results, { ex: 600 });
-
-    res.json({ success: true, stocks: results, cached: false });
-
-  } catch (error) {
-
-    console.error("API Fehler:", error.response?.data || error.message);
-
-    res.status(500).json({
-      success: false,
-      error: error.response?.data || error.message
-    });
+{
+  "name": "hqs-quant-system",
+  "version": "8.0.0",
+  "description": "HQS Hyper-Quant Enterprise Backend",
+  "private": true,
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "check": "node --check server.js",
+    "prestart": "npm run check",
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18 <23"
+  },
+  "dependencies": {
+    "axios": "^1.13.5",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.1",
+    "@upstash/redis": "^1.28.4"
   }
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 HQS Backend läuft auf Port ${PORT}`);
-});
+}
