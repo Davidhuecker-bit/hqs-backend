@@ -1,7 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const axios = require("axios");
-const NodeCache = require("node-cache");
 require("dotenv").config();
 
 const app = express();
@@ -11,16 +10,15 @@ const PORT = process.env.PORT || 8080;
 // CONFIG
 // ============================
 
-const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ")
-  .split(",")
-  .map(s => s.trim());
+// 🔥 Nur eine Test-Aktie
+const DEFAULT_SYMBOL = "NVDA";
 
 const API_KEY = process.env.FMP_API_KEY;
-
-// 🔥 Neue FMP Stable API
 const BASE_URL = "https://financialmodelingprep.com/stable";
 
-const cache = new NodeCache({ stdTTL: 600, useClones: false });
+// ============================
+// CORS
+// ============================
 
 app.use(cors({
   origin: [
@@ -47,7 +45,7 @@ function calculateHQS(item) {
   const change = Number(item.changesPercentage || 0);
   const volume = Number(item.volume || 0);
   const avgVolume = Number(item.avgVolume || 1);
-  const vRatio = volume / avgVolume;
+  const vRatio = avgVolume > 0 ? volume / avgVolume : 0;
 
   let score = 50;
 
@@ -63,16 +61,19 @@ function calculateHQS(item) {
 // ============================
 
 app.get(["/market", "/api/market"], async (req, res) => {
-  const cacheKey = "market_data";
-
   try {
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      return res.json({ success: true, stocks: cached });
+
+    if (!API_KEY) {
+      return res.status(500).json({
+        success: false,
+        message: "FMP_API_KEY ist nicht gesetzt."
+      });
     }
 
-    // 🔥 Neue Stable API Struktur
-    const url = `${BASE_URL}/quote?symbol=${SYMBOLS.join(",")}&apikey=${API_KEY}`;
+    // 🔥 Optional: Symbol über Query erlauben
+    const symbol = req.query.symbol || DEFAULT_SYMBOL;
+
+    const url = `${BASE_URL}/quote?symbol=${symbol}&apikey=${API_KEY}`;
 
     const response = await axios.get(url, { timeout: 8000 });
 
@@ -92,18 +93,18 @@ app.get(["/market", "/api/market"], async (req, res) => {
         avgVolume: item.avgVolume,
         marketCap: item.marketCap,
         hqsScore: hqs,
-        rating: hqs >= 85 ? "Strong Buy"
-              : hqs >= 70 ? "Buy"
-              : hqs >= 50 ? "Hold"
-              : "Risk",
-        decision: hqs >= 70 ? "KAUFEN"
-                : hqs >= 50 ? "HALTEN"
-                : "NICHT KAUFEN",
+        rating:
+          hqs >= 85 ? "Strong Buy" :
+          hqs >= 70 ? "Buy" :
+          hqs >= 50 ? "Hold" :
+          "Risk",
+        decision:
+          hqs >= 70 ? "KAUFEN" :
+          hqs >= 50 ? "HALTEN" :
+          "NICHT KAUFEN",
         aiInsight: getAIInsight(hqs)
       };
     });
-
-    cache.set(cacheKey, stocks);
 
     res.json({ success: true, stocks });
 
@@ -119,7 +120,7 @@ app.get(["/market", "/api/market"], async (req, res) => {
 });
 
 // ============================
-// STATUS ENDPOINT
+// STATUS
 // ============================
 
 app.get(["/admin-bypass-status", "/api/admin-bypass-status"], (req, res) => {
@@ -127,7 +128,7 @@ app.get(["/admin-bypass-status", "/api/admin-bypass-status"], (req, res) => {
 });
 
 // ============================
-// SERVER START
+// START
 // ============================
 
 app.listen(PORT, () => {
