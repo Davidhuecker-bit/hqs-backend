@@ -5,102 +5,131 @@ const NodeCache = require("node-cache");
 require("dotenv").config();
 
 const app = express();
-// Railway vergibt den Port dynamisch – das stellt sicher, dass wir erreichbar sind
 const PORT = process.env.PORT || 8080;
 
 // ============================
-// CONFIG & SYMBOLS
+// CONFIG
 // ============================
-const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ").split(",").map(s => s.trim());
+
+const SYMBOLS = (process.env.SYMBOLS || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,VTI,QQQ")
+  .split(",")
+  .map(s => s.trim());
+
 const API_KEY = process.env.FMP_API_KEY;
-const BASE_URL = "https://financialmodelingprep.com/api/v3"; 
+
+// 🔥 Neue FMP Stable API
+const BASE_URL = "https://financialmodelingprep.com/stable";
 
 const cache = new NodeCache({ stdTTL: 600, useClones: false });
 
-// CORS-Update: Erlaubt deiner Domain den Zugriff
 app.use(cors({
-    origin: ["https://dhsystemhqs.de", "https://www.dhsystemhqs.de", "http://localhost:3000"],
-    methods: ["GET", "POST"]
+  origin: [
+    "https://dhsystemhqs.de",
+    "https://www.dhsystemhqs.de",
+    "http://localhost:3000"
+  ],
+  methods: ["GET", "POST"]
 }));
+
 app.use(express.json());
 
 // ============================
-// KI-LOGIK & BERECHNUNGEN (Bleiben erhalten)
+// HQS LOGIK
 // ============================
-function getAIInsight(symbol, score) {
-    if (score >= 75) return "Das Modell erkennt eine starke Akkumulationsphase durch institutionelle Anleger.";
-    if (score <= 45) return "Vorsicht: Modell identifiziert Überhitzung und Gewinnmitnahmen.";
-    return "Markt im Gleichgewicht. Konsolidierung vor nächstem Ausbruch wahrscheinlich.";
+
+function getAIInsight(score) {
+  if (score >= 80) return "Starke institutionelle Akkumulation erkannt.";
+  if (score <= 45) return "Erhöhtes Risiko – Gewinnmitnahmen wahrscheinlich.";
+  return "Neutraler Markt – Konsolidierungsphase möglich.";
 }
 
 function calculateHQS(item) {
-    const change = Number(item.changesPercentage || 0);
-    const vRatio = Number(item.volume) / (Number(item.avgVolume) || 1);
-    let score = 50;
-    if (change > 0) score += 10;
-    if (vRatio > 1.3) score += 15;
-    if (item.marketCap > 1e11) score += 10;
-    return Math.min(100, Math.round(score + 15));
+  const change = Number(item.changesPercentage || 0);
+  const volume = Number(item.volume || 0);
+  const avgVolume = Number(item.avgVolume || 1);
+  const vRatio = volume / avgVolume;
+
+  let score = 50;
+
+  if (change > 0) score += 10;
+  if (vRatio > 1.3) score += 15;
+  if (item.marketCap && item.marketCap > 1e11) score += 10;
+
+  return Math.min(100, Math.round(score));
 }
 
 // ============================
-// ENDPOINTS
+// MARKET ENDPOINT
 // ============================
 
-// FIX 1: Akzeptiert jetzt /market UND /api/market (Löst 404 Fehler)
 app.get(["/market", "/api/market"], async (req, res) => {
-    const userTier = req.query.tier || "FULL_TRIAL";
-    const cacheKey = `market_${userTier}`;
+  const cacheKey = "market_data";
 
-    try {
-        const cached = cache.get(cacheKey);
-        if (cached) return res.json({ success: true, stocks: cached });
-
-        const url = `${BASE_URL}/quote/${SYMBOLS.join(",")}?apikey=${API_KEY}`;
-        const response = await axios.get(url, { timeout: 5000 }); // Timeout gegen Hänger
-        
-        if (!response.data || response.data.length === 0) {
-            throw new Error("Keine Daten von FMP erhalten.");
-        }
-
-        const stocks = response.data.map(item => {
-            const hqs = calculateHQS(item);
-            return {
-                symbol: item.symbol,
-                name: item.name,
-                price: item.price,
-                changePercent: Number(item.changesPercentage || 0).toFixed(2),
-                hqsScore: hqs,
-                rating: hqs >= 85 ? "Strong Buy" : hqs >= 70 ? "Buy" : "Neutral",
-                decision: hqs >= 70 ? "KAUFEN" : "HALTEN",
-                aiInsight: getAIInsight(item.symbol, hqs)
-            };
-        });
-
-        cache.set(cacheKey, stocks);
-        res.json({ success: true, stocks });
-
-    } catch (e) {
-        console.error("API Fehler - Nutze Fallback:", e.message);
-        
-        // FIX 2: Sende Test-Daten statt Fehler 500 (Löst Website-Absturz)
-        const fallback = SYMBOLS.slice(0, 3).map(s => ({
-            symbol: s,
-            name: `${s} (Demo-Modus)`,
-            price: 150.00,
-            changePercent: "0.00",
-            hqsScore: 75,
-            decision: "PRÜFEN",
-            aiInsight: "Verbindung wird neu aufgebaut... Bitte API-Key prüfen."
-        }));
-
-        res.json({ success: true, stocks: fallback, isFallback: true });
+  try {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return res.json({ success: true, stocks: cached });
     }
+
+    // 🔥 Neue Stable API Struktur
+    const url = `${BASE_URL}/quote?symbol=${SYMBOLS.join(",")}&apikey=${API_KEY}`;
+
+    const response = await axios.get(url, { timeout: 8000 });
+
+    if (!response.data || !Array.isArray(response.data)) {
+      throw new Error("Ungültige FMP Antwort");
+    }
+
+    const stocks = response.data.map(item => {
+      const hqs = calculateHQS(item);
+
+      return {
+        symbol: item.symbol,
+        name: item.name,
+        price: item.price,
+        changePercent: Number(item.changesPercentage || 0).toFixed(2),
+        volume: item.volume,
+        avgVolume: item.avgVolume,
+        marketCap: item.marketCap,
+        hqsScore: hqs,
+        rating: hqs >= 85 ? "Strong Buy"
+              : hqs >= 70 ? "Buy"
+              : hqs >= 50 ? "Hold"
+              : "Risk",
+        decision: hqs >= 70 ? "KAUFEN"
+                : hqs >= 50 ? "HALTEN"
+                : "NICHT KAUFEN",
+        aiInsight: getAIInsight(hqs)
+      };
+    });
+
+    cache.set(cacheKey, stocks);
+
+    res.json({ success: true, stocks });
+
+  } catch (error) {
+    console.error("FMP Fehler:", error.response?.data || error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "Marktdaten konnten nicht geladen werden.",
+      error: error.response?.data || error.message
+    });
+  }
 });
 
-// FIX 3: Admin-Status Route für das Frontend erreichbar machen
+// ============================
+// STATUS ENDPOINT
+// ============================
+
 app.get(["/admin-bypass-status", "/api/admin-bypass-status"], (req, res) => {
-    res.json({ active: true, mode: "AI-Hybrid Online" });
+  res.json({ active: true, mode: "HQS AI Hybrid Online" });
 });
 
-app.listen(PORT, () => console.log(`HQS Backend Online auf Port ${PORT}`));
+// ============================
+// SERVER START
+// ============================
+
+app.listen(PORT, () => {
+  console.log(`🚀 HQS Backend läuft auf Port ${PORT}`);
+});
