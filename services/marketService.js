@@ -1,11 +1,21 @@
 const { fetchQuote } = require("./providerService");
 const { buildHQSResponse } = require("../hqsEngine");
-const Redis = require("@upstash/redis");
+const { Redis } = require("@upstash/redis");
 
-const redis = Redis.fromEnv();
+// ============================
+// REDIS SETUP (Upstash)
+// ============================
 
-// 🔥 Später erweiterbar (Top 20 etc.)
-const DEFAULT_SYMBOLS = ["NVDA"];
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+// ============================
+// DEFAULT SYMBOLS (Snapshot)
+// ============================
+
+const DEFAULT_SYMBOLS = ["NVDA"]; // später erweiterbar
 
 // ============================
 // SNAPSHOT BUILDER
@@ -21,7 +31,7 @@ async function buildMarketSnapshot() {
   // Snapshot 60 Sekunden gültig
   await redis.set("market:snapshot", result, { ex: 60 });
 
-  console.log("📊 Snapshot aktualisiert");
+  console.log("🔥 Snapshot aktualisiert");
 
   return result;
 }
@@ -32,13 +42,13 @@ async function buildMarketSnapshot() {
 
 async function getMarketData(symbol) {
 
-  // 1️⃣ Wenn einzelnes Symbol gewünscht
+  // 1️⃣ Einzelnes Symbol gewünscht
   if (symbol) {
     const rawData = await fetchQuote(symbol);
     return rawData.map(item => buildHQSResponse(item));
   }
 
-  // 2️⃣ Snapshot holen
+  // 2️⃣ Snapshot aus Redis holen
   const snapshot = await redis.get("market:snapshot");
 
   if (snapshot) {
@@ -46,12 +56,12 @@ async function getMarketData(symbol) {
     return snapshot;
   }
 
-  // 3️⃣ Fallback wenn Snapshot noch nicht existiert
-  console.log("⚠️ Kein Snapshot – baue neu");
+  // 3️⃣ Fallback → neu bauen
+  console.log("⚠ Kein Snapshot → baue neu");
   return await buildMarketSnapshot();
 }
 
 module.exports = {
   getMarketData,
-  buildMarketSnapshot
+  buildMarketSnapshot,
 };
