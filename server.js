@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-const { getMarketData } = require("./services/marketService");
+const { getMarketData, buildMarketSnapshot } = require("./services/marketService");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -24,7 +24,7 @@ app.use(express.json());
 
 app.get(["/market", "/api/market"], async (req, res) => {
   try {
-    const symbol = req.query.symbol || "NVDA";
+    const symbol = req.query.symbol || null;
 
     const stocks = await getMarketData(symbol);
 
@@ -49,6 +49,29 @@ app.get(["/admin-bypass-status", "/api/admin-bypass-status"], (req, res) => {
   res.json({ active: true, mode: "HQS AI Hybrid Online" });
 });
 
-app.listen(PORT, () => {
+// ============================
+// SERVER START
+// ============================
+
+app.listen(PORT, async () => {
   console.log(`🚀 HQS Backend läuft auf Port ${PORT}`);
+
+  // 🔥 Direkt beim Start Snapshot bauen
+  try {
+    await buildMarketSnapshot();
+  } catch (err) {
+    console.error("Initial Snapshot Fehler:", err.message);
+  }
 });
+
+// ============================
+// 🔥 WARMUP JOB
+// ============================
+
+setInterval(async () => {
+  try {
+    await buildMarketSnapshot();
+  } catch (err) {
+    console.error("Warmup Fehler:", err.message);
+  }
+}, 60000); // alle 60 Sekunden
