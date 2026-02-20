@@ -3,6 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 const { getMarketData, buildMarketSnapshot } = require("./services/marketService");
+const { buildHQSResponse } = require("./hqsEngine");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -19,7 +20,7 @@ app.use(cors({
 app.use(express.json());
 
 // ============================
-// MARKET ROUTE
+// MARKET ROUTE (bestehend)
 // ============================
 
 app.get(["/market", "/api/market"], async (req, res) => {
@@ -36,6 +37,48 @@ app.get(["/market", "/api/market"], async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Marktdaten konnten nicht geladen werden.",
+      error: error.message
+    });
+  }
+});
+
+// ============================
+// 🔥 HQS ROUTE (NEU)
+// ============================
+
+app.get(["/hqs", "/api/hqs"], async (req, res) => {
+  try {
+    const symbol = req.query.symbol;
+
+    if (!symbol) {
+      return res.status(400).json({
+        success: false,
+        message: "Symbol fehlt."
+      });
+    }
+
+    const marketData = await getMarketData(symbol.toUpperCase());
+
+    if (!marketData) {
+      return res.status(404).json({
+        success: false,
+        message: "Symbol nicht gefunden."
+      });
+    }
+
+    const hqsResult = await buildHQSResponse(marketData);
+
+    res.json({
+      success: true,
+      data: hqsResult
+    });
+
+  } catch (error) {
+    console.error("HQS Fehler:", error.message);
+
+    res.status(500).json({
+      success: false,
+      message: "HQS Berechnung fehlgeschlagen.",
       error: error.message
     });
   }
@@ -74,4 +117,4 @@ setInterval(async () => {
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
   }
-}, 60000); // alle 60 Sekunden
+}, 15 * 60 * 1000); // alle 15 Minuten
