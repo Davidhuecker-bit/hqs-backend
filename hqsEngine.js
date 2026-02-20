@@ -1,8 +1,8 @@
-// hqsEngine.js (oder wo dein buildHQSResponse aktuell liegt)
+// hqsEngine.js
 // HQS Engine – aktuell nur "Current Score" (Gegenwart) v1.0
 // Später ergänzen wir: Stability + Future + Regime + Constraints + Confidence
 
-const { calculateCurrentScore, getCurrentInsight } = require("./services/hqs/current.service");
+const { calculateCurrentScore, getCurrentInsight } = require("./services/current.service");
 
 function buildHQSResponse(item) {
   const currentScore = calculateCurrentScore(item);
@@ -16,10 +16,10 @@ function buildHQSResponse(item) {
     avgVolume: item.avgVolume,
     marketCap: item.marketCap,
 
-    // NEU: sauber benannt
+    // Modul-Score
     currentScore,
 
-    // Vorläufig: hqsScore = currentScore, bis Stability/Future da sind
+    // Vorläufig: Gesamt-HQS = Current
     hqsScore: currentScore,
 
     rating:
