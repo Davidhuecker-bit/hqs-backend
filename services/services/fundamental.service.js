@@ -1,4 +1,4 @@
-// services/fundamental.service.js
+fundamental.service.js
 
 const axios = require("axios");
 
