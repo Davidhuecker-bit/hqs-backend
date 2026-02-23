@@ -23,7 +23,10 @@ app.use(cors({
   origin: [
     "https://dhsystemhqs.de",
     "https://www.dhsystemhqs.de",
-    "https://hqs-frontend-v8.vercel.app", // Falls du noch über Vercel-Domains testest
+    "https://hqs-frontend-v8.vercel.app",
+    "https://hqs-private-quant-git-cursor-inf-0ffdd8-david-hucker-s-projects.vercel.app",
+    "https://hqs-private-quant-4i8psh8vy-david-hucker-s-projects.vercel.app",
+    /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
     "http://localhost:3000"
   ],
   methods: ["GET", "POST"],
