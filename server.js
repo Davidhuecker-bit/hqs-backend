@@ -10,28 +10,32 @@ const { analyzeStockWithGuardian } = require("./services/guardianService");
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// CORS Einstellungen für dein Dashboard
+// ==========================================================
+// 🛡️ CORS EINSTELLUNGEN
+// ==========================================================
+// Erlaubt Anfragen von deinem Dashboard und lokalen Tests
 app.use(cors({
   origin: [
     "https://dhsystemhqs.de",
     "https://www.dhsystemhqs.de",
+    "https://hqs-frontend-v8.vercel.app", // Falls du noch über Vercel-Domains testest
     "http://localhost:3000"
   ],
-  methods: ["GET", "POST"]
+  methods: ["GET", "POST"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(express.json());
 
 // ==========================================================
-// 🛡️ GUARDIAN AI ROUTE (Gemini Integration)
+// 🧠 GUARDIAN AI ROUTE (Gemini Integration)
 // ==========================================================
-// Test-Link: /guardian/analyze/IONQ
+// Nutzt den GOOGLE_GEMINI_API_KEY aus Railway
 app.get("/guardian/analyze/:ticker", async (req, res) => {
   try {
     const ticker = req.params.ticker.toUpperCase();
     console.log(`🛡️ Guardian: Starte KI-Analyse für ${ticker}...`);
     
-    // Hier nutzen wir den GOOGLE_GEMINI_API_KEY
     const analysis = await analyzeStockWithGuardian(ticker);
     
     res.json({
@@ -44,42 +48,49 @@ app.get("/guardian/analyze/:ticker", async (req, res) => {
     console.error("Guardian Fehler:", error.message);
     res.status(500).json({
       success: false,
-      message: "Guardian Analyse fehlgeschlagen. Prüfe API-Keys.",
+      message: "Guardian Analyse fehlgeschlagen. Bitte GOOGLE_GEMINI_API_KEY in Railway prüfen.",
       error: error.message
     });
   }
 });
 
 // ==========================================================
-// 📈 MARKET ROUTE (Finnhub & Fallbacks)
+// 📊 MARKET ROUTE (Jetzt via FINSHEET)
 // ==========================================================
 app.get(["/market", "/api/market"], async (req, res) => {
   try {
-    const symbol = req.query.symbol || null;
-    const stocks = await getMarketData(symbol);
-    res.json({ success: true, stocks });
+    const symbol = req.query.symbol || "IONQ"; // Standardwert falls leer
+    const stockData = await getMarketData(symbol.toUpperCase());
+    
+    res.json({ 
+      success: true, 
+      source: "Finsheet Hybrid",
+      stocks: stockData 
+    });
   } catch (error) {
     console.error("Market Fehler:", error.message);
     res.status(500).json({
       success: false,
-      message: "Marktdaten konnten nicht geladen werden.",
+      message: "Marktdaten-Abfrage über Finsheet fehlgeschlagen.",
       error: error.message
     });
   }
 });
 
 // ==========================================================
-// 🔥 HQS ENGINE ROUTE
+// 🔥 HQS ENGINE ROUTE (Berechnung & Scores)
 // ==========================================================
 app.get(["/hqs", "/api/hqs"], async (req, res) => {
   try {
     const symbol = req.query.symbol;
     if (!symbol) return res.status(400).json({ success: false, message: "Symbol fehlt." });
 
+    // Holt Daten von Finsheet
     const marketData = await getMarketData(symbol.toUpperCase());
-    if (!marketData) return res.status(404).json({ success: false, message: "Symbol nicht gefunden." });
-
+    
+    // Berechnet HQS Scores
     const hqsResult = await buildHQSResponse(marketData);
+    
     res.json({ success: true, data: hqsResult });
   } catch (error) {
     console.error("HQS Fehler:", error.message);
@@ -88,22 +99,25 @@ app.get(["/hqs", "/api/hqs"], async (req, res) => {
 });
 
 // ==========================================================
-// ⚙️ STATUS & ADMIN
+// ⚙️ STATUS & ADMIN BEREICH
 // ==========================================================
 app.get(["/admin-bypass-status", "/api/admin-bypass-status"], (req, res) => {
   res.json({ 
     active: true, 
     mode: "HQS AI Hybrid Online", 
-    guardian: "Integrated",
+    engine: "Finsheet Optimized",
+    guardian: "Integrated (Gemini 1.5)",
     fallbacks: "Active (Data from 17.02.2026)" 
   });
 });
 
 // ==========================================================
-// 🚀 SERVER START & JOBS
+// 🚀 SERVER START
 // ==========================================================
 app.listen(PORT, async () => {
   console.log(`🚀 HQS Backend aktiv auf Port ${PORT}`);
+  console.log(`📡 Nutze FINSHEET_API_KEY für Marktdaten`);
+  
   try {
     await buildMarketSnapshot();
   } catch (err) {
@@ -111,7 +125,7 @@ app.listen(PORT, async () => {
   }
 });
 
-// Alle 15 Minuten Daten auffrischen (Warmup)
+// Cache/Snapshot alle 15 Minuten auffrischen
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
