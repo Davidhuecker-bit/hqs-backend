@@ -1,41 +1,42 @@
 const axios = require("axios");
 
 const API_KEY = process.env.FMP_API_KEY;
-const BASE_URL = "https://financialmodelingprep.com/stable";
+const BASE_URL = "https://financialmodelingprep.com/v3"; // Oder /stable, beides geht bei FMP
 
 async function fetchQuote(symbol) {
   if (!API_KEY) {
-    throw new Error("FMP_API_KEY ist nicht gesetzt.");
+    console.error("❌ FMP_API_KEY fehlt.");
+    return null; // Rückgabe von null erlaubt dem Haupt-Service den Fallback
   }
 
-  if (!symbol) {
-    throw new Error("Kein Symbol übergeben.");
-  }
-
-  const url = `${BASE_URL}/quote?symbol=${symbol}&apikey=${API_KEY}`;
+  const url = `${BASE_URL}/quote/${symbol}?apikey=${API_KEY}`;
 
   try {
-    const response = await axios.get(url, { timeout: 8000 });
+    const response = await axios.get(url, { timeout: 5000 }); // 5s reicht meistens
+
+    // FMP sendet manchmal 200 OK mit Fehlermeldung im Body
+    if (response.data && response.data["Error Message"]) {
+      console.error("FMP API Error Message:", response.data["Error Message"]);
+      return null;
+    }
 
     if (!response.data || !Array.isArray(response.data)) {
-      throw new Error("Ungültige FMP Antwortstruktur");
+      return null;
     }
 
     return response.data;
 
   } catch (error) {
-
+    // Logge den Fehler, aber "schlucke" ihn, damit das Fallback-System übernehmen kann
     if (error.response) {
-      console.error("FMP API Fehler:", error.response.status, error.response.data);
-      throw new Error(`FMP API Fehler (${error.response.status})`);
+      console.error(`FMP Status Error (${error.response.status}) für ${symbol}`);
+    } else if (error.code === "ECONNABORTED") {
+      console.error(`FMP Timeout für ${symbol}`);
+    } else {
+      console.error("FMP Verbindungsfehler:", error.message);
     }
-
-    if (error.code === "ECONNABORTED") {
-      throw new Error("FMP Anfrage Timeout");
-    }
-
-    console.error("Unbekannter Provider Fehler:", error.message);
-    throw new Error("Marktdaten-Provider nicht erreichbar.");
+    
+    return null; // Wichtig für die Kette!
   }
 }
 
