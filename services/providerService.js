@@ -1,42 +1,47 @@
 const axios = require("axios");
 
 const API_KEY = process.env.FMP_API_KEY;
-const BASE_URL = "https://financialmodelingprep.com/v3"; // Oder /stable, beides geht bei FMP
+// Wir nutzen /v3, da dies der stabilste Endpunkt für Batch-Quotes ist
+const BASE_URL = "https://financialmodelingprep.com/api/v3";
 
 async function fetchQuote(symbol) {
   if (!API_KEY) {
-    console.error("❌ FMP_API_KEY fehlt.");
-    return null; // Rückgabe von null erlaubt dem Haupt-Service den Fallback
+    console.error("❌ FMP_API_KEY fehlt in den Umgebungsvariablen.");
+    return null; 
   }
 
+  // WICHTIG: Nutze die Query-Parameter Struktur (?symbol=), 
+  // damit auch kommagetrennte Listen (z.B. "NVDA,AAPL") funktionieren.
   const url = `${BASE_URL}/quote/${symbol}?apikey=${API_KEY}`;
 
   try {
-    const response = await axios.get(url, { timeout: 5000 }); // 5s reicht meistens
+    const response = await axios.get(url, { timeout: 5000 });
 
-    // FMP sendet manchmal 200 OK mit Fehlermeldung im Body
-    if (response.data && response.data["Error Message"]) {
-      console.error("FMP API Error Message:", response.data["Error Message"]);
+    // FMP sendet bei Fehlern (z.B. Limit erreicht) oft 200 OK, aber mit Fehlermeldung im Body
+    if (response.data && (response.data["Error Message"] || response.data["error"])) {
+      console.error("FMP API Hinweis:", response.data["Error Message"] || response.data["error"]);
       return null;
     }
 
+    // Sicherstellen, dass wir ein Array erhalten
     if (!response.data || !Array.isArray(response.data)) {
+      console.error(`FMP lieferte kein Array für ${symbol}`);
       return null;
     }
 
     return response.data;
 
   } catch (error) {
-    // Logge den Fehler, aber "schlucke" ihn, damit das Fallback-System übernehmen kann
+    // Fehler loggen, aber null zurückgeben, damit der Fallback-Provider (Polygon/Alpha) einspringen kann
     if (error.response) {
-      console.error(`FMP Status Error (${error.response.status}) für ${symbol}`);
+      console.error(`FMP Status Fehler (${error.response.status}) bei Symbol: ${symbol}`);
     } else if (error.code === "ECONNABORTED") {
-      console.error(`FMP Timeout für ${symbol}`);
+      console.error(`FMP Timeout (5s überschritten) für ${symbol}`);
     } else {
-      console.error("FMP Verbindungsfehler:", error.message);
+      console.error("FMP Netzwerkfehler:", error.message);
     }
     
-    return null; // Wichtig für die Kette!
+    return null; 
   }
 }
 
