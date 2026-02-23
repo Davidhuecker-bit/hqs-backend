@@ -1,6 +1,6 @@
 {
   "name": "hqs-quant-system",
-  "version": "8.0.0",
+  "version": "8.1.0",
   "description": "HQS Hyper-Quant Enterprise Backend",
   "private": true,
   "main": "server.js",
@@ -19,6 +19,7 @@
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
-    "@upstash/redis": "^1.28.4"
+    "@upstash/redis": "^1.28.4",
+    "@google/generative-ai": "^0.21.0"
   }
 }
