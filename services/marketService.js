@@ -9,57 +9,32 @@ const redis = new Redis({
 
 const DEFAULT_SYMBOLS = ["NVDA"];
 
-/**
- * Redundanz-Logik: Polygon.io & Alpha Vantage
- */
-async function fetchFromFallback(symbols) {
-  console.log(`🔄 Primärquelle down. Versuche Fallbacks für: ${symbols}`);
-  
-  try {
-    // 1. Fallback: Polygon.io (Echtzeit-Fokus)
-    // const data = await polygonClient.getQuotes(symbols);
-    // if (data) return data;
-
-    // 2. Fallback: Alpha Vantage (Multi-Asset Fokus)
-    // const data = await alphaVantage.getGlobalQuote(symbols);
-    // if (data) return data;
-
-    return null;
-  } catch (err) {
-    console.error("❌ Alle Fallback-Provider fehlgeschlagen", err.message);
-    return null;
-  }
-}
-
 // ============================
 // SNAPSHOT BUILDER
 // ============================
 
 async function buildMarketSnapshot() {
-  const symbolsString = DEFAULT_SYMBOLS.join(",");
-  
   try {
-    let rawData = await fetchQuote(symbolsString);
-
-    // Fallback-Kette triggern, falls Hauptquelle leer
-    if (!rawData || rawData.length === 0) {
-      rawData = await fetchFromFallback(symbolsString);
+    // Da Finnhub /quote oft nur pro Symbol erlaubt, mappen wir durch unsere Liste
+    const results = [];
+    for (const symbol of DEFAULT_SYMBOLS) {
+      const data = await fetchQuote(symbol);
+      if (data && data[0]) {
+        results.push(buildHQSResponse(data[0]));
+      }
     }
 
-    if (!rawData || rawData.length === 0) {
-      throw new Error("Keine Daten von Primär- oder Fallback-Quellen erhalten.");
+    if (results.length === 0) {
+      throw new Error("Finnhub lieferte keine Daten für den Snapshot.");
     }
 
-    const result = rawData.map(item => buildHQSResponse(item));
-
-    // Snapshot in Redis (Upstash) ablegen
-    await redis.set("market:snapshot", JSON.stringify(result), { ex: 60 });
-    console.log("🔥 Snapshot aktualisiert");
-    return result;
+    // Snapshot 60 Sekunden in Redis speichern
+    await redis.set("market:snapshot", JSON.stringify(results), { ex: 60 });
+    console.log("🔥 Finnhub Snapshot aktualisiert");
+    return results;
     
   } catch (error) {
-    console.error("❌ Snapshot-Build Error:", error.message);
-    // Versuche alten Snapshot zu retten (Stale-while-revalidate)
+    console.error("❌ Snapshot Error:", error.message);
     const staleData = await redis.get("market:snapshot");
     return staleData ? (typeof staleData === 'string' ? JSON.parse(staleData) : staleData) : [];
   }
@@ -70,27 +45,18 @@ async function buildMarketSnapshot() {
 // ============================
 
 async function getMarketData(symbol) {
-  // Einzelabfrage
   if (symbol) {
-    try {
-      let data = await fetchQuote(symbol);
-      if (!data || data.length === 0) {
-        data = await fetchFromFallback(symbol);
-      }
-      return data ? data.map(item => buildHQSResponse(item)) : [];
-    } catch (e) {
-      return { error: "Daten für " + symbol + " nicht verfügbar." };
-    }
+    const data = await fetchQuote(symbol);
+    return data ? data.map(item => buildHQSResponse(item)) : [];
   }
 
-  // Snapshot-Logik
-  const cachedSnapshot = await redis.get("market:snapshot");
-  if (cachedSnapshot) {
-    console.log("⚡ Snapshot Cache Hit");
-    return typeof cachedSnapshot === "string" ? JSON.parse(cachedSnapshot) : cachedSnapshot;
+  // Cache Check
+  const cached = await redis.get("market:snapshot");
+  if (cached) {
+    console.log("⚡ Snapshot Cache Hit (Finnhub)");
+    return typeof cached === "string" ? JSON.parse(cached) : cached;
   }
 
-  console.log("⚠ Cache leer → baue Snapshot neu");
   return await buildMarketSnapshot();
 }
 
