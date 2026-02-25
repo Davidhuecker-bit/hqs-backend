@@ -20,6 +20,7 @@
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "@upstash/redis": "^1.28.4",
-    "@google/generative-ai": "^0.21.0"
+    "@google/generative-ai": "^0.21.0",
+    "pg": "^8.11.5"
   }
 }
