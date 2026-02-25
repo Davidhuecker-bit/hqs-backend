@@ -1,16 +1,38 @@
 const { fetchQuote } = require("./providerService");
 const { buildHQSResponse } = require("../hqsEngine");
 const { Redis } = require("@upstash/redis");
+const { Pool } = require("pg");
+
+// ============================
+// REDIS
+// ============================
 
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.UPSTASH_REDIS_REST_TOKEN,
 });
 
+// ============================
+// POSTGRES
+// ============================
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+// ============================
+// DEFAULT SYMBOLS
+// ============================
+
 const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
   .split(",")
   .map((symbol) => String(symbol || "").trim().toUpperCase())
   .filter((symbol) => /^[A-Z0-9.-]{1,12}$/.test(symbol));
+
+// ============================
+// CACHE HELPERS
+// ============================
 
 async function readSnapshotCache() {
   try {
@@ -32,15 +54,49 @@ async function writeSnapshotCache(payload) {
 }
 
 // ============================
+// DB HELPERS
+// ============================
+
+async function persistSnapshotToDB(snapshotArray) {
+  try {
+    if (!Array.isArray(snapshotArray) || snapshotArray.length === 0) return;
+
+    for (const item of snapshotArray) {
+      await pool.query(
+        `
+        INSERT INTO market_snapshots (
+          symbol,
+          price,
+          hqs_score,
+          created_at
+        )
+        VALUES ($1, $2, $3, NOW())
+        `,
+        [
+          item.symbol || null,
+          item.currentPrice || 0,
+          item.hqsScore || 0,
+        ]
+      );
+    }
+
+    console.log("💾 Snapshot in Postgres gespeichert");
+  } catch (error) {
+    console.error("⚠️ DB Persist Error:", error.message);
+  }
+}
+
+// ============================
 // SNAPSHOT BUILDER
 // ============================
 
 async function buildMarketSnapshot() {
   try {
-    // Finnhub /quote liefert pro Symbol, daher bauen wir den Snapshot iterativ.
     const results = [];
+
     for (const symbol of DEFAULT_SYMBOLS) {
       const data = await fetchQuote(symbol);
+
       if (data && data[0]) {
         const hqsData = await buildHQSResponse(data[0]);
         if (hqsData) results.push(hqsData);
@@ -51,13 +107,15 @@ async function buildMarketSnapshot() {
       throw new Error("Finnhub lieferte keine Daten für den Snapshot.");
     }
 
-    // Snapshot 60 Sekunden in Redis speichern
     await writeSnapshotCache(results);
+    await persistSnapshotToDB(results);
+
     console.log("🔥 Finnhub Snapshot aktualisiert");
     return results;
-    
+
   } catch (error) {
     console.error("❌ Snapshot Error:", error.message);
+
     const staleData = await readSnapshotCache();
     return Array.isArray(staleData) ? staleData : [];
   }
@@ -71,11 +129,14 @@ async function getMarketData(symbol) {
   if (symbol) {
     const data = await fetchQuote(symbol);
     if (!Array.isArray(data) || data.length === 0) return [];
-    const mapped = await Promise.all(data.map((item) => buildHQSResponse(item)));
+
+    const mapped = await Promise.all(
+      data.map((item) => buildHQSResponse(item))
+    );
+
     return mapped.filter(Boolean);
   }
 
-  // Cache Check
   const cached = await readSnapshotCache();
   if (Array.isArray(cached) && cached.length > 0) {
     console.log("⚡ Snapshot Cache Hit (Finnhub)");
