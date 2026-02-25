@@ -1,41 +1,45 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const axios = require("axios");
 
-// API Key sauber laden
-const apiKey = (process.env.GOOGLE_GEMINI_API_KEY || "").trim();
+const API_KEY = (process.env.GOOGLE_GEMINI_API_KEY || "").trim();
 
-if (!apiKey) {
-  console.error("❌ GOOGLE_GEMINI_API_KEY ist nicht gesetzt!");
+if (!API_KEY) {
+  console.error("❌ GOOGLE_GEMINI_API_KEY fehlt!");
 }
-
-const genAI = new GoogleGenerativeAI(apiKey);
 
 async function analyzeStockWithGuardian(ticker) {
   try {
-    console.log("🔎 Starte Gemini Analyse für:", ticker);
+    console.log("🔎 Starte neue Gemini v1 Analyse für:", ticker);
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash-latest"
-    });
+    const response = await axios.post(
+      "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + API_KEY,
+      {
+        contents: [
+          {
+            parts: [
+              {
+                text: `Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
+Gib:
+- Markt-Sentiment
+- Kurzfristiges Risiko
+- Strategische Einschätzung`
+              }
+            ]
+          }
+        ]
+      }
+    );
 
-    const prompt = `
-    Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
-    Gib:
-    - Markt-Sentiment (Bullisch / Neutral / Bärisch)
-    - Kurzfristiges Risiko (Niedrig / Mittel / Hoch)
-    - Eine kurze strategische Einschätzung in 3–5 Sätzen.
-    `;
+    const text =
+      response.data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "Keine Antwort erhalten.";
 
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
-
-    console.log("✅ Gemini Analyse erfolgreich");
+    console.log("✅ Gemini v1 Analyse erfolgreich");
 
     return text;
 
   } catch (error) {
-    console.error("❌ Gemini Fehler:", error?.message || error);
-    throw new Error(error?.message || "Gemini Analyse fehlgeschlagen.");
+    console.error("❌ Gemini v1 Fehler:", error.response?.data || error.message);
+    throw new Error("Gemini Analyse fehlgeschlagen.");
   }
 }
 
