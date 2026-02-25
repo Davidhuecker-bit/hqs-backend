@@ -6,7 +6,9 @@ require("dotenv").config();
 const {
   getMarketData,
   buildMarketSnapshot,
-  ensureTablesExist
+  ensureTablesExist,
+  backfillSymbolHistory,
+  updateSymbolDaily,
 } = require("./services/marketService");
 
 const { analyzeStockWithGuardian } = require("./services/guardianService");
@@ -25,17 +27,19 @@ const PORT = process.env.PORT || 8080;
 // 🛡️ CORS SETTINGS
 // ==========================================================
 
-app.use(cors({
-  origin: [
-    "https://dhsystemhqs.de",
-    "https://www.dhsystemhqs.de",
-    "https://hqs-frontend-v8.vercel.app",
-    /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
-    "http://localhost:3000"
-  ],
-  methods: ["GET", "POST"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+app.use(
+  cors({
+    origin: [
+      "https://dhsystemhqs.de",
+      "https://www.dhsystemhqs.de",
+      "https://hqs-frontend-v8.vercel.app",
+      /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
+      "http://localhost:3000",
+    ],
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
 app.use(express.json());
 
@@ -50,7 +54,7 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
     if (!ticker) {
       return res.status(400).json({
         success: false,
-        message: "Ticker fehlt."
+        message: "Ticker fehlt.",
       });
     }
 
@@ -62,7 +66,7 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
     if (!Array.isArray(marketData) || marketData.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `Keine Marktdaten für ${ticker} gefunden.`
+        message: `Keine Marktdaten für ${ticker} gefunden.`,
       });
     }
 
@@ -74,16 +78,15 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
     return res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      data: guardianResult
+      data: guardianResult,
     });
-
   } catch (error) {
     console.error("Guardian Route Fehler:", error.message);
 
     return res.status(500).json({
       success: false,
       message: "Guardian Analyse fehlgeschlagen.",
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -99,18 +102,17 @@ app.get(["/guardian", "/api/guardian"], async (req, res) => {
 
     const payload = buildGuardianPayload(stocks, { generatedAt });
     res.json(payload);
-
   } catch (error) {
     console.error("Guardian Snapshot Fehler:", error.message);
 
     const fallbackPayload = buildGuardianPayload([], {
-      generatedAt: new Date().toISOString()
+      generatedAt: new Date().toISOString(),
     });
 
     res.json({
       ...fallbackPayload,
       degraded: true,
-      message: "Guardian Snapshot Fallback aktiv."
+      message: "Guardian Snapshot Fallback aktiv.",
     });
   }
 });
@@ -122,24 +124,21 @@ app.get(["/guardian", "/api/guardian"], async (req, res) => {
 app.get(["/market", "/api/market"], async (req, res) => {
   try {
     const symbol =
-      typeof req.query.symbol === "string"
-        ? req.query.symbol.trim().toUpperCase()
-        : "";
+      typeof req.query.symbol === "string" ? req.query.symbol.trim().toUpperCase() : "";
 
     const stockData = await getMarketData(symbol || undefined);
 
     res.json({
       success: true,
       source: "Finnhub + HQS Engine",
-      stocks: stockData
+      stocks: stockData,
     });
-
   } catch (error) {
     console.error("Market Fehler:", error.message);
     res.status(500).json({
       success: false,
       message: "Marktdaten-Abfrage fehlgeschlagen.",
-      error: error.message
+      error: error.message,
     });
   }
 });
@@ -151,14 +150,12 @@ app.get(["/market", "/api/market"], async (req, res) => {
 app.get(["/hqs", "/api/hqs"], async (req, res) => {
   try {
     const symbol =
-      typeof req.query.symbol === "string"
-        ? req.query.symbol.trim().toUpperCase()
-        : "";
+      typeof req.query.symbol === "string" ? req.query.symbol.trim().toUpperCase() : "";
 
     if (!symbol) {
       return res.status(400).json({
         success: false,
-        message: "Symbol fehlt."
+        message: "Symbol fehlt.",
       });
     }
 
@@ -167,20 +164,19 @@ app.get(["/hqs", "/api/hqs"], async (req, res) => {
     if (!Array.isArray(marketData) || marketData.length === 0) {
       return res.status(404).json({
         success: false,
-        message: `Keine Daten für ${symbol} gefunden.`
+        message: `Keine Daten für ${symbol} gefunden.`,
       });
     }
 
     res.json({
       success: true,
-      data: marketData[0]
+      data: marketData[0],
     });
-
   } catch (error) {
     console.error("HQS Fehler:", error.message);
     res.status(500).json({
       success: false,
-      message: "HQS Berechnung fehlgeschlagen."
+      message: "HQS Berechnung fehlgeschlagen.",
     });
   }
 });
@@ -194,6 +190,26 @@ app.listen(PORT, async () => {
 
   await ensureTablesExist();
 
+  // ✅ OPTIONAL: Backfill (einmalig)
+  // Setze in Railway ENV: RUN_PRICE_BACKFILL=true
+  // Optional: BACKFILL_SYMBOLS="AAPL,SPY,NVDA"
+  if (process.env.RUN_PRICE_BACKFILL === "true") {
+    const symbols = String(process.env.BACKFILL_SYMBOLS || "AAPL,SPY")
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => /^[A-Z0-9.-]{1,12}$/.test(s));
+
+    console.log("🧱 Starte Price Backfill für:", symbols.join(", "));
+
+    for (const sym of symbols) {
+      try {
+        await backfillSymbolHistory(sym, 2);
+      } catch (err) {
+        console.error(`Backfill Fehler ${sym}:`, err.message);
+      }
+    }
+  }
+
   try {
     await buildMarketSnapshot();
   } catch (err) {
@@ -206,5 +222,23 @@ setInterval(async () => {
     await buildMarketSnapshot();
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
+  }
+
+  // ✅ OPTIONAL: Daily price update (leichter Sync der letzten 14 Tage)
+  // Setze ENV: RUN_PRICE_UPDATE=true
+  if (process.env.RUN_PRICE_UPDATE === "true") {
+    const symbols = String(process.env.BACKFILL_SYMBOLS || process.env.GUARDIAN_SYMBOLS || "AAPL,SPY")
+      .split(",")
+      .map((s) => s.trim().toUpperCase())
+      .filter((s) => /^[A-Z0-9.-]{1,12}$/.test(s))
+      .slice(0, 10); // Schutz
+
+    for (const sym of symbols) {
+      try {
+        await updateSymbolDaily(sym, 14);
+      } catch (err) {
+        console.error(`Price Update Fehler ${sym}:`, err.message);
+      }
+    }
   }
 }, 15 * 60 * 1000);
