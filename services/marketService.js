@@ -4,7 +4,7 @@ const { Redis } = require("@upstash/redis");
 const { Pool } = require("pg");
 
 // ============================
-// REDIS
+// REDIS (UPSTASH)
 // ============================
 
 const redis = new Redis({
@@ -13,7 +13,7 @@ const redis = new Redis({
 });
 
 // ============================
-// POSTGRES
+// POSTGRES (RAILWAY)
 // ============================
 
 const pool = new Pool({
@@ -31,7 +31,28 @@ const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
   .filter((symbol) => /^[A-Z0-9.-]{1,12}$/.test(symbol));
 
 // ============================
-// CACHE HELPERS
+// TABLE CREATION
+// ============================
+
+async function ensureTablesExist() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS market_snapshots (
+        id SERIAL PRIMARY KEY,
+        symbol VARCHAR(20),
+        price NUMERIC,
+        hqs_score NUMERIC,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✅ Tabelle market_snapshots geprüft/erstellt");
+  } catch (err) {
+    console.error("❌ Table Creation Error:", err.message);
+  }
+}
+
+// ============================
+// REDIS CACHE
 // ============================
 
 async function readSnapshotCache() {
@@ -54,35 +75,28 @@ async function writeSnapshotCache(payload) {
 }
 
 // ============================
-// DB HELPERS
+// SAVE SNAPSHOT TO POSTGRES
 // ============================
 
-async function persistSnapshotToDB(snapshotArray) {
+async function saveSnapshotToDB(results) {
   try {
-    if (!Array.isArray(snapshotArray) || snapshotArray.length === 0) return;
-
-    for (const item of snapshotArray) {
+    for (const item of results) {
       await pool.query(
         `
-        INSERT INTO market_snapshots (
-          symbol,
-          price,
-          hqs_score,
-          created_at
-        )
-        VALUES ($1, $2, $3, NOW())
+        INSERT INTO market_snapshots (symbol, price, hqs_score)
+        VALUES ($1, $2, $3)
         `,
         [
-          item.symbol || null,
-          item.currentPrice || 0,
+          item.symbol,
+          item.price || 0,
           item.hqsScore || 0,
         ]
       );
     }
 
     console.log("💾 Snapshot in Postgres gespeichert");
-  } catch (error) {
-    console.error("⚠️ DB Persist Error:", error.message);
+  } catch (err) {
+    console.error("❌ DB Insert Error:", err.message);
   }
 }
 
@@ -96,7 +110,6 @@ async function buildMarketSnapshot() {
 
     for (const symbol of DEFAULT_SYMBOLS) {
       const data = await fetchQuote(symbol);
-
       if (data && data[0]) {
         const hqsData = await buildHQSResponse(data[0]);
         if (hqsData) results.push(hqsData);
@@ -104,11 +117,14 @@ async function buildMarketSnapshot() {
     }
 
     if (results.length === 0) {
-      throw new Error("Finnhub lieferte keine Daten für den Snapshot.");
+      throw new Error("Finnhub lieferte keine Daten.");
     }
 
+    // Redis Cache (60 Sekunden)
     await writeSnapshotCache(results);
-    await persistSnapshotToDB(results);
+
+    // Postgres Speicherung
+    await saveSnapshotToDB(results);
 
     console.log("🔥 Finnhub Snapshot aktualisiert");
     return results;
@@ -137,16 +153,22 @@ async function getMarketData(symbol) {
     return mapped.filter(Boolean);
   }
 
+  // Cache Check
   const cached = await readSnapshotCache();
   if (Array.isArray(cached) && cached.length > 0) {
-    console.log("⚡ Snapshot Cache Hit (Finnhub)");
+    console.log("⚡ Snapshot Cache Hit");
     return cached;
   }
 
   return buildMarketSnapshot();
 }
 
+// ============================
+// EXPORTS
+// ============================
+
 module.exports = {
   getMarketData,
   buildMarketSnapshot,
+  ensureTablesExist,
 };
