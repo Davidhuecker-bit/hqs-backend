@@ -3,10 +3,10 @@ const cors = require("cors");
 require("dotenv").config();
 
 // Services
-const { 
-  getMarketData, 
+const {
+  getMarketData,
   buildMarketSnapshot,
-  ensureTablesExist 
+  ensureTablesExist
 } = require("./services/marketService");
 
 const { analyzeStockWithGuardian } = require("./services/guardianService");
@@ -40,25 +40,47 @@ app.use(cors({
 app.use(express.json());
 
 // ==========================================================
-// 🧠 GUARDIAN ANALYZE ROUTE
+// 🧠 GUARDIAN ANALYZE ROUTE (FIXED)
 // ==========================================================
 
 app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (req, res) => {
   try {
-    const ticker = req.params.ticker.toUpperCase();
+    const ticker = String(req.params.ticker || "").toUpperCase();
 
-    const analysis = await analyzeStockWithGuardian(ticker);
+    if (!ticker) {
+      return res.status(400).json({
+        success: false,
+        message: "Ticker fehlt."
+      });
+    }
 
-    res.json({
+    console.log(`🛡️ Guardian Analyse startet für ${ticker}`);
+
+    // 1️⃣ HQS Daten laden
+    const marketData = await getMarketData(ticker);
+
+    if (!Array.isArray(marketData) || marketData.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `Keine Marktdaten für ${ticker} gefunden.`
+      });
+    }
+
+    const stockData = marketData[0];
+
+    // 2️⃣ Guardian mit vollständigem HQS-Kontext
+    const guardianResult = await analyzeStockWithGuardian(stockData);
+
+    return res.json({
       success: true,
-      ticker,
       timestamp: new Date().toISOString(),
-      analysis
+      data: guardianResult
     });
 
   } catch (error) {
-    console.error("Guardian Fehler:", error.message);
-    res.status(500).json({
+    console.error("Guardian Route Fehler:", error.message);
+
+    return res.status(500).json({
       success: false,
       message: "Guardian Analyse fehlgeschlagen.",
       error: error.message
@@ -72,18 +94,8 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
 
 app.get(["/guardian", "/api/guardian"], async (req, res) => {
   try {
-    const hasSymbolsQuery =
-      typeof req.query.symbols === "string" && req.query.symbols.trim().length > 0;
-
     const generatedAt = new Date().toISOString();
-    let stocks = [];
-
-    if (hasSymbolsQuery) {
-      const symbols = parseSymbolsQuery(req.query.symbols);
-      stocks = await getMarketData();
-    } else {
-      stocks = await getMarketData();
-    }
+    const stocks = await getMarketData();
 
     const payload = buildGuardianPayload(stocks, { generatedAt });
     res.json(payload);
@@ -174,79 +186,12 @@ app.get(["/hqs", "/api/hqs"], async (req, res) => {
 });
 
 // ==========================================================
-// 🗞️ MARKET NEWS ROUTE
-// ==========================================================
-
-app.get("/api/market-news", async (req, res) => {
-  try {
-    const symbols = parseSymbolsQuery(req.query.symbols);
-    const stocks = await getMarketData();
-
-    const payload = buildMarketNewsPayload(
-      symbols,
-      stocks,
-      new Date().toISOString()
-    );
-
-    res.json(payload);
-
-  } catch (error) {
-    console.error("Market News Fehler:", error.message);
-    res.json({
-      degraded: true,
-      message: "News-Fallback aktiv."
-    });
-  }
-});
-
-// ==========================================================
-// 🕵️ INSIDER SIGNAL ROUTE
-// ==========================================================
-
-app.get("/api/insider-signal", async (req, res) => {
-  try {
-    const symbols = parseSymbolsQuery(req.query.symbols);
-    const stocks = await getMarketData();
-
-    const payload = buildInsiderSignalPayload(
-      symbols,
-      stocks,
-      new Date().toISOString()
-    );
-
-    res.json(payload);
-
-  } catch (error) {
-    console.error("Insider Signal Fehler:", error.message);
-    res.json({
-      degraded: true,
-      message: "Insider-Fallback aktiv."
-    });
-  }
-});
-
-// ==========================================================
-// ⚙️ STATUS ROUTE
-// ==========================================================
-
-app.get("/api/status", (req, res) => {
-  res.json({
-    active: true,
-    mode: "HQS AI Hybrid Online",
-    engine: "Finnhub Optimized",
-    guardian: "Gemini Integrated",
-    database: "Postgres + Redis"
-  });
-});
-
-// ==========================================================
 // 🚀 SERVER START
 // ==========================================================
 
 app.listen(PORT, async () => {
   console.log(`🚀 HQS Backend aktiv auf Port ${PORT}`);
 
-  // Tabelle prüfen / erstellen
   await ensureTablesExist();
 
   try {
@@ -256,7 +201,6 @@ app.listen(PORT, async () => {
   }
 });
 
-// Snapshot Refresh alle 15 Minuten
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
