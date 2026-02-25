@@ -1,43 +1,44 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const key = (process.env.GOOGLE_GEMINI_API_KEY || "").trim();
+// API Key sauber laden
+const apiKey = (process.env.GOOGLE_GEMINI_API_KEY || "").trim();
 
-function keyInfo() {
-  if (!key) return { ok: false, reason: "MISSING" };
-  return {
-    ok: true,
-    len: key.length,
-    prefix: key.slice(0, 6) + "…" // nur Prefix, kein Leak
-  };
+if (!apiKey) {
+  console.error("❌ GOOGLE_GEMINI_API_KEY ist nicht gesetzt!");
 }
 
-const genAI = key ? new GoogleGenerativeAI(key) : null;
+const genAI = new GoogleGenerativeAI(apiKey);
 
 async function analyzeStockWithGuardian(ticker) {
   try {
-    const info = keyInfo();
-    console.log("🔑 Gemini Key Info:", info);
+    console.log("🔎 Starte Gemini Analyse für:", ticker);
 
-    if (!genAI) {
-      throw new Error("GOOGLE_GEMINI_API_KEY fehlt oder ist leer.");
-    }
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash-latest"
+    });
 
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-    const prompt = `Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
-Gib eine kurze Einschätzung zu Sentiment und Risiko ab.`;
+    const prompt = `
+    Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
+    Gib:
+    - Markt-Sentiment (Bullisch / Neutral / Bärisch)
+    - Kurzfristiges Risiko (Niedrig / Mittel / Hoch)
+    - Eine kurze strategische Einschätzung in 3–5 Sätzen.
+    `;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
+    const text = response.text();
 
-    return response.text();
+    console.log("✅ Gemini Analyse erfolgreich");
+
+    return text;
+
   } catch (error) {
-    console.error("❌ Gemini ERROR RAW:", error);
-    console.error("❌ Gemini ERROR MESSAGE:", error?.message);
-    console.error("❌ Gemini ERROR STATUS:", error?.status || error?.code);
-
-    throw new Error(error?.message || "Unbekannter Gemini Fehler");
+    console.error("❌ Gemini Fehler:", error?.message || error);
+    throw new Error(error?.message || "Gemini Analyse fehlgeschlagen.");
   }
 }
 
-module.exports = { analyzeStockWithGuardian };
+module.exports = {
+  analyzeStockWithGuardian
+};
