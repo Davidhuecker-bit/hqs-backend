@@ -1,3 +1,5 @@
+// services/marketService.js
+
 const { fetchQuote } = require("./providerService");
 const { buildHQSResponse } = require("../hqsEngine");
 const { Redis } = require("@upstash/redis");
@@ -36,6 +38,7 @@ const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
 
 async function ensureTablesExist() {
   try {
+    // Existing table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS market_snapshots (
         id SERIAL PRIMARY KEY,
@@ -45,7 +48,30 @@ async function ensureTablesExist() {
         created_at TIMESTAMP DEFAULT NOW()
       );
     `);
-    console.log("✅ Tabelle market_snapshots geprüft/erstellt");
+
+    // ✅ NEW: Daily price history table (OHLCV)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS prices_daily (
+        symbol VARCHAR(20) NOT NULL,
+        date DATE NOT NULL,
+        open NUMERIC,
+        high NUMERIC,
+        low NUMERIC,
+        close NUMERIC,
+        volume NUMERIC,
+        source VARCHAR(40) DEFAULT 'finnhub',
+        created_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (symbol, date)
+      );
+    `);
+
+    // ✅ NEW: Index for fast symbol/date queries
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_prices_daily_symbol_date
+      ON prices_daily (symbol, date);
+    `);
+
+    console.log("✅ Tabellen geprüft/erstellt (market_snapshots + prices_daily)");
   } catch (err) {
     console.error("❌ Table Creation Error:", err.message);
   }
@@ -116,7 +142,6 @@ async function buildMarketSnapshot() {
           const hqsData = await buildHQSResponse(data[0]);
           if (hqsData) results.push(hqsData);
         }
-
       } catch (err) {
         console.error(`⚠️ Snapshot Error for ${symbol}:`, err.message);
       }
@@ -131,7 +156,6 @@ async function buildMarketSnapshot() {
 
     console.log("🔥 Finnhub Snapshot aktualisiert");
     return results;
-
   } catch (error) {
     console.error("❌ Snapshot Error:", error.message);
 
@@ -162,7 +186,6 @@ async function getMarketData(symbol) {
       );
 
       return mapped.filter(Boolean);
-
     } catch (err) {
       console.error("❌ getMarketData Error:", err.message);
       return [];
