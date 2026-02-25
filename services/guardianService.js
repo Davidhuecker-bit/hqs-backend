@@ -1,37 +1,37 @@
-const axios = require("axios");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const API_KEY = (process.env.GOOGLE_GEMINI_API_KEY || "").trim();
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
 
 async function analyzeStockWithGuardian(ticker) {
   try {
-    if (!API_KEY) {
-      return "❌ API KEY FEHLT IN RAILWAY";
-    }
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-pro"   // ✅ Cloud v1 kompatibel
+    });
 
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${API_KEY}`,
-      {
-        contents: [
-          {
-            parts: [
-              {
-                text: `Analysiere die Aktie ${ticker} und gib eine kurze Einschätzung.`
-              }
-            ]
-          }
-        ]
-      }
-    );
+    const prompt = `
+    Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
+    Gib:
+    - Kurze Marktanalyse
+    - Aktuelles Sentiment
+    - Risiko-Einschätzung
+    - Handlungsempfehlung
+    `;
 
-    return response.data.candidates[0].content.parts[0].text;
+    const result = await model.generateContent({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: prompt }]
+        }
+      ]
+    });
+
+    const response = await result.response;
+    return response.text();
 
   } catch (error) {
-    console.error("ECHTER GEMINI FEHLER:", error.response?.data || error.message);
-
-    return {
-      error: true,
-      details: error.response?.data || error.message
-    };
+    console.error("Guardian Service Fehler:", error);
+    throw new Error("Gemini Analyse fehlgeschlagen.");
   }
 }
 
