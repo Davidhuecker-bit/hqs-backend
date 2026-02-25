@@ -109,10 +109,16 @@ async function buildMarketSnapshot() {
     const results = [];
 
     for (const symbol of DEFAULT_SYMBOLS) {
-      const data = await fetchQuote(symbol);
-      if (data && data[0]) {
-        const hqsData = await buildHQSResponse(data[0]);
-        if (hqsData) results.push(hqsData);
+      try {
+        const data = await fetchQuote(symbol);
+
+        if (data && data[0]) {
+          const hqsData = await buildHQSResponse(data[0]);
+          if (hqsData) results.push(hqsData);
+        }
+
+      } catch (err) {
+        console.error(`⚠️ Snapshot Error for ${symbol}:`, err.message);
       }
     }
 
@@ -120,10 +126,7 @@ async function buildMarketSnapshot() {
       throw new Error("Finnhub lieferte keine Daten.");
     }
 
-    // Redis Cache (60 Sekunden)
     await writeSnapshotCache(results);
-
-    // Postgres Speicherung
     await saveSnapshotToDB(results);
 
     console.log("🔥 Finnhub Snapshot aktualisiert");
@@ -143,17 +146,29 @@ async function buildMarketSnapshot() {
 
 async function getMarketData(symbol) {
   if (symbol) {
-    const data = await fetchQuote(symbol);
-    if (!Array.isArray(data) || data.length === 0) return [];
+    try {
+      const data = await fetchQuote(symbol);
+      if (!Array.isArray(data) || data.length === 0) return [];
 
-    const mapped = await Promise.all(
-      data.map((item) => buildHQSResponse(item))
-    );
+      const mapped = await Promise.all(
+        data.map(async (item) => {
+          try {
+            return await buildHQSResponse(item);
+          } catch (err) {
+            console.error(`⚠️ HQS Engine Error for ${item.symbol}:`, err.message);
+            return null;
+          }
+        })
+      );
 
-    return mapped.filter(Boolean);
+      return mapped.filter(Boolean);
+
+    } catch (err) {
+      console.error("❌ getMarketData Error:", err.message);
+      return [];
+    }
   }
 
-  // Cache Check
   const cached = await readSnapshotCache();
   if (Array.isArray(cached) && cached.length > 0) {
     console.log("⚡ Snapshot Cache Hit");
