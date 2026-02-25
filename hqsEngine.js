@@ -35,40 +35,50 @@ function combineScores(currentScore, stabilityScore, marketPhase) {
     weightS = 0.6;
   }
 
-  return Math.round(
-    currentScore * weightG + stabilityScore * weightS
-  );
+  return Math.round(currentScore * weightG + stabilityScore * weightS);
 }
 
-async function buildHQSResponse(item) {
+async function buildHQSResponse(item = {}) {
+  if (!item || typeof item !== "object") {
+    throw new Error("Invalid item passed to HQS Engine (not an object)");
+  }
+  if (!item.symbol) {
+    throw new Error("Invalid item passed to HQS Engine (missing symbol)");
+  }
+
+  // Defensive numeric normalization
+  const safePrice = Number(item.price || 0);
+  const safeVolume = Number(item.volume || 0);
+  const safeAvgVolume = Number(item.avgVolume || 0);
+  const safeMarketCap = Number(item.marketCap || 0);
+  const rawChangePercent = Number(item.changesPercentage || 0);
+
   const currentScore = calculateCurrentScore(item);
 
   // Fundamentals laden
   const fundamentals = await getFundamentals(item.symbol);
 
   // Stability berechnen
-  const stabilityScore = fundamentals
-    ? calculateStabilityScore(fundamentals)
-    : 50;
+  const stabilityScore = fundamentals ? calculateStabilityScore(fundamentals) : 50;
 
   // Marktphase bestimmen (vereinfacht über Tagesperformance)
-  const marketPhase = detectMarketPhase(item.changesPercentage);
+  const marketPhase = detectMarketPhase(rawChangePercent);
 
   // Gesamt-HQS
-  const hqsScore = combineScores(
-    currentScore,
-    stabilityScore,
-    marketPhase
-  );
+  const hqsScore = combineScores(currentScore, stabilityScore, marketPhase);
 
   return {
-    symbol: item.symbol,
+    symbol: String(item.symbol || "").toUpperCase(),
     name: item.name,
-    price: item.price,
-    changePercent: Number(item.changesPercentage || 0).toFixed(2),
-    volume: item.volume,
-    avgVolume: item.avgVolume,
-    marketCap: item.marketCap,
+
+    price: safePrice,
+
+    // IMPORTANT: keep as NUMBER (not string)
+    changePercent: Number(rawChangePercent.toFixed(2)),
+
+    volume: safeVolume,
+    avgVolume: safeAvgVolume,
+    marketCap: safeMarketCap,
 
     marketPhase,
 
@@ -78,15 +88,15 @@ async function buildHQSResponse(item) {
     hqsScore,
 
     rating:
-      hqsScore >= 85 ? "Strong Buy" :
-      hqsScore >= 70 ? "Buy" :
-      hqsScore >= 50 ? "Hold" :
-      "Risk",
+      hqsScore >= 85
+        ? "Strong Buy"
+        : hqsScore >= 70
+          ? "Buy"
+          : hqsScore >= 50
+            ? "Hold"
+            : "Risk",
 
-    decision:
-      hqsScore >= 70 ? "KAUFEN" :
-      hqsScore >= 50 ? "HALTEN" :
-      "NICHT KAUFEN",
+    decision: hqsScore >= 70 ? "KAUFEN" : hqsScore >= 50 ? "HALTEN" : "NICHT KAUFEN",
 
     aiInsight: getCurrentInsight(currentScore),
   };
