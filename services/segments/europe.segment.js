@@ -1,66 +1,54 @@
-const yahoo = require("../providers/yahoo.provider");
-const investing = require("../providers/investing.provider");
+const provider = require("../providerService");
 
 async function getEuropeData(symbol) {
   const timestamp = new Date().toISOString();
 
-  if (!symbol) {
+  try {
+    // Für Europa nehmen wir aktuell FMP als Primary
+    if (!process.env.FMP_API_KEY) {
+      throw new Error("FMP_API_KEY fehlt für Europe Segment");
+    }
+
+    const axios = require("axios");
+    const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${process.env.FMP_API_KEY}`;
+    const response = await axios.get(url, { timeout: 7000 });
+
+    if (!response.data || !response.data.length) {
+      throw new Error("Keine Europe Daten gefunden");
+    }
+
+    const q = response.data[0];
+
+    return {
+      success: true,
+      segment: "europe",
+      provider: "fmp",
+      symbol,
+      data: {
+        symbol,
+        price: q.price,
+        change: q.change,
+        changesPercentage: q.changesPercentage,
+        high: q.dayHigh,
+        low: q.dayLow,
+        open: q.open,
+        previousClose: q.previousClose,
+      },
+      fallbackUsed: false,
+      timestamp,
+    };
+  } catch (error) {
     return {
       success: false,
       segment: "europe",
       provider: null,
-      symbol: null,
+      symbol,
       data: null,
       fallbackUsed: false,
-      error: "Symbol fehlt",
+      error: error.message,
       timestamp,
     };
   }
-
-  // 1️⃣ PRIMARY: Yahoo Finance
-  try {
-    const data = await yahoo.getQuote(symbol);
-
-    return {
-      success: true,
-      segment: "europe",
-      provider: "yahoo",
-      symbol,
-      data,
-      fallbackUsed: false,
-      timestamp,
-    };
-  } catch (e1) {
-    console.warn(`⚠️ Yahoo failed for ${symbol}: ${e1.message}`);
-  }
-
-  // 2️⃣ FALLBACK: Investing.com
-  try {
-    const data = await investing.getQuote(symbol);
-
-    return {
-      success: true,
-      segment: "europe",
-      provider: "investing",
-      symbol,
-      data,
-      fallbackUsed: true,
-      timestamp,
-    };
-  } catch (e2) {
-    console.error(`❌ All Europe providers failed for ${symbol}`);
-  }
-
-  return {
-    success: false,
-    segment: "europe",
-    provider: null,
-    symbol,
-    data: null,
-    fallbackUsed: false,
-    error: "All Europe providers failed",
-    timestamp,
-  };
 }
 
 module.exports = { getEuropeData };
