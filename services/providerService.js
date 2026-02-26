@@ -9,16 +9,41 @@ const FMP_KEY = process.env.FMP_API_KEY;
 const ALPHA_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 // ======================================================
+// NORMALIZER
+// ======================================================
+
+function safeNumber(value) {
+  const n = Number(value);
+  return isNaN(n) ? 0 : n;
+}
+
+function normalizeData(symbol, raw) {
+  return {
+    symbol,
+    price: safeNumber(raw.price),
+    change: safeNumber(raw.change),
+    changesPercentage: safeNumber(raw.changesPercentage),
+    high: safeNumber(raw.high),
+    low: safeNumber(raw.low),
+    open: safeNumber(raw.open),
+    previousClose: safeNumber(raw.previousClose),
+  };
+}
+
+// ======================================================
 // FINNHUB (Primary)
 // ======================================================
 
 async function fetchFinnhub(symbol) {
-  if (!FINNHUB_KEY) throw new Error("FINNHUB_API_KEY fehlt");
+  if (!FINNHUB_KEY) {
+    throw new Error("FINNHUB_API_KEY fehlt");
+  }
 
   const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_KEY}`;
   const response = await axios.get(url, { timeout: 7000 });
 
-  if (!response.data || !response.data.c) {
+  // WICHTIG: nur undefined prüfen, nicht !c
+  if (!response.data || response.data.c === undefined) {
     throw new Error("Finnhub keine gültigen Daten");
   }
 
@@ -41,12 +66,14 @@ async function fetchFinnhub(symbol) {
 // ======================================================
 
 async function fetchFMP(symbol) {
-  if (!FMP_KEY) throw new Error("FMP_API_KEY fehlt");
+  if (!FMP_KEY) {
+    throw new Error("FMP_API_KEY fehlt");
+  }
 
   const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${FMP_KEY}`;
   const response = await axios.get(url, { timeout: 7000 });
 
-  if (!response.data || !response.data.length) {
+  if (!response.data || !Array.isArray(response.data) || response.data.length === 0) {
     throw new Error("FMP keine Daten");
   }
 
@@ -71,51 +98,31 @@ async function fetchFMP(symbol) {
 // ======================================================
 
 async function fetchAlpha(symbol) {
-  if (!ALPHA_KEY) throw new Error("ALPHA_VANTAGE_API_KEY fehlt");
+  if (!ALPHA_KEY) {
+    throw new Error("ALPHA_VANTAGE_API_KEY fehlt");
+  }
 
   const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_KEY}`;
   const response = await axios.get(url, { timeout: 7000 });
 
-  const q = response.data["Global Quote"];
+  const q = response.data?.["Global Quote"];
 
-  if (!q || !q["05. price"]) {
+  if (!q || q["05. price"] === undefined) {
     throw new Error("Alpha keine Daten");
   }
 
   return {
     provider: "alpha_vantage",
     data: normalizeData(symbol, {
-      price: parseFloat(q["05. price"]),
-      change: parseFloat(q["09. change"]),
-      changesPercentage: parseFloat(q["10. change percent"]),
-      high: parseFloat(q["03. high"]),
-      low: parseFloat(q["04. low"]),
-      open: parseFloat(q["02. open"]),
-      previousClose: parseFloat(q["08. previous close"]),
+      price: q["05. price"],
+      change: q["09. change"],
+      changesPercentage: q["10. change percent"],
+      high: q["03. high"],
+      low: q["04. low"],
+      open: q["02. open"],
+      previousClose: q["08. previous close"],
     }),
   };
-}
-
-// ======================================================
-// NORMALIZER
-// ======================================================
-
-function normalizeData(symbol, raw) {
-  return {
-    symbol,
-    price: safeNumber(raw.price),
-    change: safeNumber(raw.change),
-    changesPercentage: safeNumber(raw.changesPercentage),
-    high: safeNumber(raw.high),
-    low: safeNumber(raw.low),
-    open: safeNumber(raw.open),
-    previousClose: safeNumber(raw.previousClose),
-  };
-}
-
-function safeNumber(value) {
-  const n = Number(value);
-  return isNaN(n) ? 0 : n;
 }
 
 // ======================================================
@@ -148,10 +155,10 @@ async function getUSQuote(symbol) {
 }
 
 // ======================================================
-// EXPORT (WICHTIG für Snapshot Kompatibilität)
+// EXPORT
 // ======================================================
 
 module.exports = {
   getUSQuote,
-  fetchQuote: getUSQuote, // ← WICHTIGER FIX für marketService
+  fetchQuote: getUSQuote, // wichtig für Snapshot & marketService
 };
