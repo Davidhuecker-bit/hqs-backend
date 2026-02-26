@@ -1,66 +1,43 @@
-const coingecko = require("../providers/coingecko.provider");
-const cryptocompare = require("../providers/cryptocompare.provider");
+const axios = require("axios");
 
 async function getCryptoData(symbol) {
   const timestamp = new Date().toISOString();
 
-  if (!symbol) {
-    return {
-      success: false,
-      segment: "crypto",
-      provider: null,
-      symbol: null,
-      data: null,
-      fallbackUsed: false,
-      error: "Symbol fehlt",
-      timestamp,
-    };
-  }
-
-  // 1️⃣ PRIMARY: CoinGecko
   try {
-    const data = await coingecko.getQuote(symbol);
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${symbol}&vs_currencies=usd&include_24hr_change=true`;
+    const response = await axios.get(url, { timeout: 7000 });
+
+    if (!response.data || !response.data[symbol]) {
+      throw new Error("Keine Crypto Daten gefunden");
+    }
+
+    const data = response.data[symbol];
 
     return {
       success: true,
       segment: "crypto",
       provider: "coingecko",
       symbol,
-      data,
+      data: {
+        symbol,
+        price: data.usd,
+        changesPercentage: data.usd_24h_change,
+      },
       fallbackUsed: false,
       timestamp,
     };
-  } catch (e1) {
-    console.warn(`⚠️ CoinGecko failed for ${symbol}: ${e1.message}`);
-  }
-
-  // 2️⃣ FALLBACK: CryptoCompare
-  try {
-    const data = await cryptocompare.getQuote(symbol);
-
+  } catch (error) {
     return {
-      success: true,
+      success: false,
       segment: "crypto",
-      provider: "cryptocompare",
+      provider: null,
       symbol,
-      data,
-      fallbackUsed: true,
+      data: null,
+      fallbackUsed: false,
+      error: error.message,
       timestamp,
     };
-  } catch (e2) {
-    console.error(`❌ All Crypto providers failed for ${symbol}`);
   }
-
-  return {
-    success: false,
-    segment: "crypto",
-    provider: null,
-    symbol,
-    data: null,
-    fallbackUsed: false,
-    error: "All Crypto providers failed",
-    timestamp,
-  };
 }
 
 module.exports = { getCryptoData };
