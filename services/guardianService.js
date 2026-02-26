@@ -1,37 +1,38 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const OpenAI = require("openai");
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_GEMINI_API_KEY);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 async function analyzeStockWithGuardian(ticker) {
   try {
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-pro"   // ✅ Cloud v1 kompatibel
-    });
-
-    const prompt = `
-    Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
-    Gib:
-    - Kurze Marktanalyse
-    - Aktuelles Sentiment
-    - Risiko-Einschätzung
-    - Handlungsempfehlung
-    `;
-
-    const result = await model.generateContent({
-      contents: [
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini", // schnell & günstig
+      messages: [
+        {
+          role: "system",
+          content: "Du bist ein professioneller Finanzanalyst."
+        },
         {
           role: "user",
-          parts: [{ text: prompt }]
+          content: `
+          Analysiere die aktuelle Marktsituation für die Aktie ${ticker}.
+          Gib:
+          - Kurze Marktanalyse
+          - Aktuelles Sentiment
+          - Risiko-Einschätzung
+          - Handlungsempfehlung
+          `
         }
-      ]
+      ],
+      temperature: 0.4,
     });
 
-    const response = await result.response;
-    return response.text();
+    return completion.choices[0].message.content;
 
   } catch (error) {
-    console.error("Guardian Service Fehler:", error);
-    throw new Error("Gemini Analyse fehlgeschlagen.");
+    console.error("OpenAI Fehler:", error);
+    throw new Error("OpenAI Analyse fehlgeschlagen.");
   }
 }
 
