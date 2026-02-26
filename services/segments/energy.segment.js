@@ -1,66 +1,52 @@
-const marketwatch = require("../providers/marketwatch.provider");
-const tradingview = require("../providers/tradingview.provider");
+const axios = require("axios");
 
 async function getEnergyData(symbol) {
   const timestamp = new Date().toISOString();
 
-  if (!symbol) {
+  try {
+    if (!process.env.FMP_API_KEY) {
+      throw new Error("FMP_API_KEY fehlt für Energy Segment");
+    }
+
+    const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${process.env.FMP_API_KEY}`;
+    const response = await axios.get(url, { timeout: 7000 });
+
+    if (!response.data || !response.data.length) {
+      throw new Error("Keine Energy Daten gefunden");
+    }
+
+    const q = response.data[0];
+
+    return {
+      success: true,
+      segment: "energy",
+      provider: "fmp",
+      symbol,
+      data: {
+        symbol,
+        price: q.price,
+        change: q.change,
+        changesPercentage: q.changesPercentage,
+        high: q.dayHigh,
+        low: q.dayLow,
+        open: q.open,
+        previousClose: q.previousClose,
+      },
+      fallbackUsed: false,
+      timestamp,
+    };
+  } catch (error) {
     return {
       success: false,
       segment: "energy",
       provider: null,
-      symbol: null,
+      symbol,
       data: null,
       fallbackUsed: false,
-      error: "Symbol fehlt",
+      error: error.message,
       timestamp,
     };
   }
-
-  // 1️⃣ PRIMARY: MarketWatch
-  try {
-    const data = await marketwatch.getQuote(symbol);
-
-    return {
-      success: true,
-      segment: "energy",
-      provider: "marketwatch",
-      symbol,
-      data,
-      fallbackUsed: false,
-      timestamp,
-    };
-  } catch (e1) {
-    console.warn(`⚠️ MarketWatch failed for ${symbol}: ${e1.message}`);
-  }
-
-  // 2️⃣ FALLBACK: TradingView
-  try {
-    const data = await tradingview.getQuote(symbol);
-
-    return {
-      success: true,
-      segment: "energy",
-      provider: "tradingview",
-      symbol,
-      data,
-      fallbackUsed: true,
-      timestamp,
-    };
-  } catch (e2) {
-    console.error(`❌ All Energy providers failed for ${symbol}`);
-  }
-
-  return {
-    success: false,
-    segment: "energy",
-    provider: null,
-    symbol,
-    data: null,
-    fallbackUsed: false,
-    error: "All Energy providers failed",
-    timestamp,
-  };
 }
 
 module.exports = { getEnergyData };
