@@ -2,10 +2,7 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-// ============================
-// CORE SERVICES
-// ============================
-
+// Core Services
 const {
   getMarketData,
   buildMarketSnapshot,
@@ -15,22 +12,13 @@ const {
 } = require("./services/marketService");
 
 const { analyzeStockWithGuardian } = require("./services/guardianService");
-
-const {
-  parseSymbolsQuery,
-  buildGuardianPayload,
-  buildMarketNewsPayload,
-  buildInsiderSignalPayload,
-} = require("./services/frontendAdapter.service");
-
-// 🔥 NEW: Multi-Segment Aggregator
 const { getMarketDataBySegment } = require("./services/aggregator.service");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
 // ==========================================================
-// 🛡️ CORS SETTINGS
+// CORS
 // ==========================================================
 
 app.use(
@@ -50,7 +38,7 @@ app.use(
 app.use(express.json());
 
 // ==========================================================
-// 🔥 NEW: SEGMENT ROUTE (Multi Source System)
+// SEGMENT ROUTE
 // ==========================================================
 
 app.get("/api/segment", async (req, res) => {
@@ -66,25 +54,24 @@ app.get("/api/segment", async (req, res) => {
     }
 
     const result = await getMarketDataBySegment({ segment, symbol });
-
     return res.json(result);
   } catch (error) {
-    console.error("Segment Route Fehler:", error.message);
     return res.status(500).json({
       success: false,
-      message: "Segment Verarbeitung fehlgeschlagen.",
+      message: "Segment Fehler",
       error: error.message,
     });
   }
 });
 
 // ==========================================================
-// 🧠 GUARDIAN ANALYZE ROUTE
+// GUARDIAN ANALYZE (SEGMENT BASED)
 // ==========================================================
 
-app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (req, res) => {
+app.get("/api/guardian/analyze/:ticker", async (req, res) => {
   try {
     const ticker = String(req.params.ticker || "").toUpperCase();
+    const segment = String(req.query.segment || "usa").toLowerCase();
 
     if (!ticker) {
       return res.status(400).json({
@@ -93,103 +80,48 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
       });
     }
 
-    const marketData = await getMarketData(ticker);
+    const segmentData = await getMarketDataBySegment({
+      segment,
+      symbol: ticker,
+    });
 
-    if (!Array.isArray(marketData) || marketData.length === 0) {
+    if (!segmentData.success) {
       return res.status(404).json({
         success: false,
-        message: `Keine Marktdaten für ${ticker} gefunden.`,
+        message: "Segmentdaten nicht verfügbar.",
+        error: segmentData.error,
       });
     }
 
-    const stockData = marketData[0];
-    const guardianResult = await analyzeStockWithGuardian(stockData);
+    const guardianResult = await analyzeStockWithGuardian({
+      symbol: ticker,
+      segment,
+      provider: segmentData.provider,
+      fallbackUsed: segmentData.fallbackUsed,
+      marketData: segmentData.data,
+    });
 
     return res.json({
       success: true,
       timestamp: new Date().toISOString(),
-      data: guardianResult,
+      guardian: guardianResult,
+      marketMeta: {
+        segment,
+        provider: segmentData.provider,
+        fallbackUsed: segmentData.fallbackUsed,
+      },
     });
   } catch (error) {
-    console.error("Guardian Route Fehler:", error.message);
     return res.status(500).json({
       success: false,
-      message: "Guardian Analyse fehlgeschlagen.",
+      message: "Guardian Analyse fehlgeschlagen",
       error: error.message,
     });
   }
 });
 
 // ==========================================================
-// 📊 MARKET ROUTE
-// ==========================================================
-
-app.get(["/market", "/api/market"], async (req, res) => {
-  try {
-    const symbol =
-      typeof req.query.symbol === "string"
-        ? req.query.symbol.trim().toUpperCase()
-        : "";
-
-    const stockData = await getMarketData(symbol || undefined);
-
-    res.json({
-      success: true,
-      source: "Finnhub + HQS Engine",
-      stocks: stockData,
-    });
-  } catch (error) {
-    console.error("Market Fehler:", error.message);
-    res.status(500).json({
-      success: false,
-      message: "Marktdaten-Abfrage fehlgeschlagen.",
-      error: error.message,
-    });
-  }
-});
-
-// ==========================================================
-// 🔥 HQS ROUTE
-// ==========================================================
-
-app.get(["/hqs", "/api/hqs"], async (req, res) => {
-  try {
-    const symbol =
-      typeof req.query.symbol === "string"
-        ? req.query.symbol.trim().toUpperCase()
-        : "";
-
-    if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        message: "Symbol fehlt.",
-      });
-    }
-
-    const marketData = await getMarketData(symbol);
-
-    if (!Array.isArray(marketData) || marketData.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: `Keine Daten für ${symbol} gefunden.`,
-      });
-    }
-
-    res.json({
-      success: true,
-      data: marketData[0],
-    });
-  } catch (error) {
-    console.error("HQS Fehler:", error.message);
-    res.status(500).json({
-      success: false,
-      message: "HQS Berechnung fehlgeschlagen.",
-    });
-  }
-});
-
-// ==========================================================
-// 🚀 SERVER START
+// SERVER START
 // ==========================================================
 
 app.listen(PORT, async () => {
@@ -204,7 +136,6 @@ app.listen(PORT, async () => {
   }
 });
 
-// Snapshot Refresh
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
