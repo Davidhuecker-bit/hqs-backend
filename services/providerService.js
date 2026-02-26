@@ -1,12 +1,15 @@
 const axios = require("axios");
 
+// ======================================================
 // ENV KEYS
+// ======================================================
+
 const FINNHUB_KEY = process.env.FINNHUB_API_KEY;
 const FMP_KEY = process.env.FMP_API_KEY;
 const ALPHA_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 // ======================================================
-// FINNHUB
+// FINNHUB (Primary)
 // ======================================================
 
 async function fetchFinnhub(symbol) {
@@ -21,8 +24,7 @@ async function fetchFinnhub(symbol) {
 
   return {
     provider: "finnhub",
-    data: {
-      symbol,
+    data: normalizeData(symbol, {
       price: response.data.c,
       change: response.data.d,
       changesPercentage: response.data.dp,
@@ -30,12 +32,12 @@ async function fetchFinnhub(symbol) {
       low: response.data.l,
       open: response.data.o,
       previousClose: response.data.pc,
-    },
+    }),
   };
 }
 
 // ======================================================
-// FMP
+// FMP (Fallback 1)
 // ======================================================
 
 async function fetchFMP(symbol) {
@@ -52,8 +54,7 @@ async function fetchFMP(symbol) {
 
   return {
     provider: "fmp",
-    data: {
-      symbol,
+    data: normalizeData(symbol, {
       price: q.price,
       change: q.change,
       changesPercentage: q.changesPercentage,
@@ -61,12 +62,12 @@ async function fetchFMP(symbol) {
       low: q.dayLow,
       open: q.open,
       previousClose: q.previousClose,
-    },
+    }),
   };
 }
 
 // ======================================================
-// ALPHA VANTAGE
+// ALPHA VANTAGE (Fallback 2)
 // ======================================================
 
 async function fetchAlpha(symbol) {
@@ -76,14 +77,14 @@ async function fetchAlpha(symbol) {
   const response = await axios.get(url, { timeout: 7000 });
 
   const q = response.data["Global Quote"];
+
   if (!q || !q["05. price"]) {
     throw new Error("Alpha keine Daten");
   }
 
   return {
     provider: "alpha_vantage",
-    data: {
-      symbol,
+    data: normalizeData(symbol, {
       price: parseFloat(q["05. price"]),
       change: parseFloat(q["09. change"]),
       changesPercentage: parseFloat(q["10. change percent"]),
@@ -91,12 +92,34 @@ async function fetchAlpha(symbol) {
       low: parseFloat(q["04. low"]),
       open: parseFloat(q["02. open"]),
       previousClose: parseFloat(q["08. previous close"]),
-    },
+    }),
   };
 }
 
 // ======================================================
-// PUBLIC FUNCTION MIT FALLBACK
+// NORMALIZER
+// ======================================================
+
+function normalizeData(symbol, raw) {
+  return {
+    symbol,
+    price: safeNumber(raw.price),
+    change: safeNumber(raw.change),
+    changesPercentage: safeNumber(raw.changesPercentage),
+    high: safeNumber(raw.high),
+    low: safeNumber(raw.low),
+    open: safeNumber(raw.open),
+    previousClose: safeNumber(raw.previousClose),
+  };
+}
+
+function safeNumber(value) {
+  const n = Number(value);
+  return isNaN(n) ? 0 : n;
+}
+
+// ======================================================
+// PUBLIC FUNCTION (MIT FALLBACK)
 // ======================================================
 
 async function getUSQuote(symbol) {
@@ -124,6 +147,11 @@ async function getUSQuote(symbol) {
   throw new Error("Alle US Provider fehlgeschlagen");
 }
 
+// ======================================================
+// EXPORT (WICHTIG für Snapshot Kompatibilität)
+// ======================================================
+
 module.exports = {
   getUSQuote,
+  fetchQuote: getUSQuote, // ← WICHTIGER FIX für marketService
 };
