@@ -2,7 +2,10 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-// Services
+// ============================
+// CORE SERVICES
+// ============================
+
 const {
   getMarketData,
   buildMarketSnapshot,
@@ -19,6 +22,9 @@ const {
   buildMarketNewsPayload,
   buildInsiderSignalPayload,
 } = require("./services/frontendAdapter.service");
+
+// 🔥 NEW: Multi-Segment Aggregator
+const { getMarketDataBySegment } = require("./services/aggregator.service");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -44,7 +50,36 @@ app.use(
 app.use(express.json());
 
 // ==========================================================
-// 🧠 GUARDIAN ANALYZE ROUTE (FIXED)
+// 🔥 NEW: SEGMENT ROUTE (Multi Source System)
+// ==========================================================
+
+app.get("/api/segment", async (req, res) => {
+  try {
+    const segment = String(req.query.segment || "").toLowerCase();
+    const symbol = String(req.query.symbol || "").toUpperCase();
+
+    if (!segment || !symbol) {
+      return res.status(400).json({
+        success: false,
+        message: "segment und symbol sind erforderlich.",
+      });
+    }
+
+    const result = await getMarketDataBySegment({ segment, symbol });
+
+    return res.json(result);
+  } catch (error) {
+    console.error("Segment Route Fehler:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Segment Verarbeitung fehlgeschlagen.",
+      error: error.message,
+    });
+  }
+});
+
+// ==========================================================
+// 🧠 GUARDIAN ANALYZE ROUTE
 // ==========================================================
 
 app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (req, res) => {
@@ -58,9 +93,6 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
       });
     }
 
-    console.log(`🛡️ Guardian Analyse startet für ${ticker}`);
-
-    // 1️⃣ HQS Daten laden
     const marketData = await getMarketData(ticker);
 
     if (!Array.isArray(marketData) || marketData.length === 0) {
@@ -71,8 +103,6 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
     }
 
     const stockData = marketData[0];
-
-    // 2️⃣ Guardian mit vollständigem HQS-Kontext
     const guardianResult = await analyzeStockWithGuardian(stockData);
 
     return res.json({
@@ -82,37 +112,10 @@ app.get(["/guardian/analyze/:ticker", "/api/guardian/analyze/:ticker"], async (r
     });
   } catch (error) {
     console.error("Guardian Route Fehler:", error.message);
-
     return res.status(500).json({
       success: false,
       message: "Guardian Analyse fehlgeschlagen.",
       error: error.message,
-    });
-  }
-});
-
-// ==========================================================
-// 🧠 GUARDIAN SNAPSHOT ROUTE
-// ==========================================================
-
-app.get(["/guardian", "/api/guardian"], async (req, res) => {
-  try {
-    const generatedAt = new Date().toISOString();
-    const stocks = await getMarketData();
-
-    const payload = buildGuardianPayload(stocks, { generatedAt });
-    res.json(payload);
-  } catch (error) {
-    console.error("Guardian Snapshot Fehler:", error.message);
-
-    const fallbackPayload = buildGuardianPayload([], {
-      generatedAt: new Date().toISOString(),
-    });
-
-    res.json({
-      ...fallbackPayload,
-      degraded: true,
-      message: "Guardian Snapshot Fallback aktiv.",
     });
   }
 });
@@ -124,7 +127,9 @@ app.get(["/guardian", "/api/guardian"], async (req, res) => {
 app.get(["/market", "/api/market"], async (req, res) => {
   try {
     const symbol =
-      typeof req.query.symbol === "string" ? req.query.symbol.trim().toUpperCase() : "";
+      typeof req.query.symbol === "string"
+        ? req.query.symbol.trim().toUpperCase()
+        : "";
 
     const stockData = await getMarketData(symbol || undefined);
 
@@ -144,13 +149,15 @@ app.get(["/market", "/api/market"], async (req, res) => {
 });
 
 // ==========================================================
-// 🔥 HQS ROUTE (Single Symbol)
+// 🔥 HQS ROUTE
 // ==========================================================
 
 app.get(["/hqs", "/api/hqs"], async (req, res) => {
   try {
     const symbol =
-      typeof req.query.symbol === "string" ? req.query.symbol.trim().toUpperCase() : "";
+      typeof req.query.symbol === "string"
+        ? req.query.symbol.trim().toUpperCase()
+        : "";
 
     if (!symbol) {
       return res.status(400).json({
@@ -190,26 +197,6 @@ app.listen(PORT, async () => {
 
   await ensureTablesExist();
 
-  // ✅ OPTIONAL: Backfill (einmalig)
-  // Setze in Railway ENV: RUN_PRICE_BACKFILL=true
-  // Optional: BACKFILL_SYMBOLS="AAPL,SPY,NVDA"
-  if (process.env.RUN_PRICE_BACKFILL === "true") {
-    const symbols = String(process.env.BACKFILL_SYMBOLS || "AAPL,SPY")
-      .split(",")
-      .map((s) => s.trim().toUpperCase())
-      .filter((s) => /^[A-Z0-9.-]{1,12}$/.test(s));
-
-    console.log("🧱 Starte Price Backfill für:", symbols.join(", "));
-
-    for (const sym of symbols) {
-      try {
-        await backfillSymbolHistory(sym, 2);
-      } catch (err) {
-        console.error(`Backfill Fehler ${sym}:`, err.message);
-      }
-    }
-  }
-
   try {
     await buildMarketSnapshot();
   } catch (err) {
@@ -217,28 +204,11 @@ app.listen(PORT, async () => {
   }
 });
 
+// Snapshot Refresh
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
-  }
-
-  // ✅ OPTIONAL: Daily price update (leichter Sync der letzten 14 Tage)
-  // Setze ENV: RUN_PRICE_UPDATE=true
-  if (process.env.RUN_PRICE_UPDATE === "true") {
-    const symbols = String(process.env.BACKFILL_SYMBOLS || process.env.GUARDIAN_SYMBOLS || "AAPL,SPY")
-      .split(",")
-      .map((s) => s.trim().toUpperCase())
-      .filter((s) => /^[A-Z0-9.-]{1,12}$/.test(s))
-      .slice(0, 10); // Schutz
-
-    for (const sym of symbols) {
-      try {
-        await updateSymbolDaily(sym, 14);
-      } catch (err) {
-        console.error(`Price Update Fehler ${sym}:`, err.message);
-      }
-    }
   }
 }, 15 * 60 * 1000);
