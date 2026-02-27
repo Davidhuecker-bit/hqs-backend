@@ -1,16 +1,11 @@
 const axios = require("axios");
 
-// ======================================================
-// ENV KEYS
-// ======================================================
+// ======================================================// ENV KEYS// ======================================================
 
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY;
 const FMP_KEY = process.env.FMP_API_KEY;
 const ALPHA_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
-// ======================================================
-// NORMALIZER
-// ======================================================
+// ======================================================// NORMALIZER// ======================================================
 
 function safeNumber(value) {
   const n = Number(value);
@@ -30,40 +25,7 @@ function normalizeData(symbol, raw) {
   };
 }
 
-// ======================================================
-// FINNHUB (Primary)
-// ======================================================
-
-async function fetchFinnhub(symbol) {
-  if (!FINNHUB_KEY) {
-    throw new Error("FINNHUB_API_KEY fehlt");
-  }
-
-  const url = `https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${FINNHUB_KEY}`;
-  const response = await axios.get(url, { timeout: 7000 });
-
-  // WICHTIG: nur undefined prüfen, nicht !c
-  if (!response.data || response.data.c === undefined) {
-    throw new Error("Finnhub keine gültigen Daten");
-  }
-
-  return {
-    provider: "finnhub",
-    data: normalizeData(symbol, {
-      price: response.data.c,
-      change: response.data.d,
-      changesPercentage: response.data.dp,
-      high: response.data.h,
-      low: response.data.l,
-      open: response.data.o,
-      previousClose: response.data.pc,
-    }),
-  };
-}
-
-// ======================================================
-// FMP (Fallback 1)
-// ======================================================
+// ======================================================// FMP (Primary)// ======================================================
 
 async function fetchFMP(symbol) {
   if (!FMP_KEY) {
@@ -93,9 +55,7 @@ async function fetchFMP(symbol) {
   };
 }
 
-// ======================================================
-// ALPHA VANTAGE (Fallback 2)
-// ======================================================
+// ======================================================// ALPHA VANTAGE (Fallback)// ======================================================
 
 async function fetchAlpha(symbol) {
   if (!ALPHA_KEY) {
@@ -125,40 +85,29 @@ async function fetchAlpha(symbol) {
   };
 }
 
-// ======================================================
-// PUBLIC FUNCTION (MIT FALLBACK)
-// ======================================================
+// ======================================================// PUBLIC FUNCTION (FMP Primary, Alpha Fallback)// ======================================================
 
 async function getUSQuote(symbol) {
   try {
-    const primary = await fetchFinnhub(symbol);
+    const primary = await fetchFMP(symbol);
     return { ...primary, fallbackUsed: false };
   } catch (e1) {
-    console.warn("⚠️ Finnhub failed:", e1.message);
+    console.warn("FMP failed:", e1.message);
   }
 
   try {
-    const fallback1 = await fetchFMP(symbol);
-    return { ...fallback1, fallbackUsed: true };
+    const fallback = await fetchAlpha(symbol);
+    return { ...fallback, fallbackUsed: true };
   } catch (e2) {
-    console.warn("⚠️ FMP failed:", e2.message);
+    console.warn("Alpha failed:", e2.message);
   }
 
-  try {
-    const fallback2 = await fetchAlpha(symbol);
-    return { ...fallback2, fallbackUsed: true };
-  } catch (e3) {
-    console.warn("⚠️ Alpha failed:", e3.message);
-  }
-
-  throw new Error("Alle US Provider fehlgeschlagen");
+  throw new Error("Alle Provider fehlgeschlagen fuer: " + symbol);
 }
 
-// ======================================================
-// EXPORT
-// ======================================================
+// ======================================================// EXPORT// ======================================================
 
 module.exports = {
   getUSQuote,
-  fetchQuote: getUSQuote, // wichtig für Snapshot & marketService
+  fetchQuote: getUSQuote,
 };
