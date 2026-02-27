@@ -37,6 +37,12 @@ const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
   .filter((symbol) => /^[A-Z0-9.-]{1,12}$/.test(symbol));
 
 // ============================
+// PERFORMANCE SETTINGS
+// ============================
+
+const SNAPSHOT_CONCURRENCY = Number(process.env.SNAPSHOT_CONCURRENCY || 3);
+
+// ============================
 // TABLE CREATION
 // ============================
 
@@ -102,20 +108,30 @@ async function writeSnapshotCache(payload) {
 }
 
 // ============================
-// SAVE SNAPSHOT TO POSTGRES
+// SAVE SNAPSHOT TO POSTGRES (BATCH INSERT)
 // ============================
 
 async function saveSnapshotToDB(results) {
   try {
+    if (!Array.isArray(results) || results.length === 0) return;
+
+    const values = [];
+    const params = [];
+    let i = 1;
+
     for (const item of results) {
-      await pool.query(
-        `
-        INSERT INTO market_snapshots (symbol, price, hqs_score)
-        VALUES ($1, $2, $3)
-        `,
-        [item.symbol, item.price || 0, item.hqsScore || 0],
-      );
+      values.push(`($${i++}, $${i++}, $${i++})`);
+      params.push(item.symbol, item.price || 0, item.hqsScore || 0);
     }
+
+    await pool.query(
+      `
+      INSERT INTO market_snapshots (symbol, price, hqs_score)
+      VALUES ${values.join(", ")}
+      `,
+      params,
+    );
+
     console.log("💾 Snapshot in Postgres gespeichert");
   } catch (err) {
     console.error("❌ DB Insert Error:", err.message);
@@ -123,25 +139,35 @@ async function saveSnapshotToDB(results) {
 }
 
 // ============================
-// SNAPSHOT BUILDER (FMP + Alpha)
+// SNAPSHOT BUILDER (PARALLEL, CONCURRENCY-LIMITED)
 // ============================
 
 async function buildMarketSnapshot() {
   try {
     const results = [];
+    const queue = [...DEFAULT_SYMBOLS];
 
-    for (const symbol of DEFAULT_SYMBOLS) {
-      try {
-        const data = await fetchQuote(symbol);
+    const workerCount = Math.max(1, Number.isFinite(SNAPSHOT_CONCURRENCY) ? SNAPSHOT_CONCURRENCY : 3);
 
-        if (data && data[0]) {
-          const hqsData = await buildHQSResponse(data[0]);
-          if (hqsData) results.push(hqsData);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (queue.length) {
+        const symbol = queue.shift();
+        if (!symbol) break;
+
+        try {
+          const data = await fetchQuote(symbol);
+
+          if (data && data[0]) {
+            const hqsData = await buildHQSResponse(data[0]);
+            if (hqsData) results.push(hqsData);
+          }
+        } catch (err) {
+          console.error(`⚠️ Snapshot Fehler fuer ${symbol}:`, err.message);
         }
-      } catch (err) {
-        console.error(`⚠️ Snapshot Fehler fuer ${symbol}:`, err.message);
       }
-    }
+    });
+
+    await Promise.all(workers);
 
     if (results.length === 0) {
       throw new Error("Kein Provider lieferte Daten fuer Snapshot.");
