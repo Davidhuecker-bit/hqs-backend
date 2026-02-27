@@ -1,6 +1,6 @@
 // services/marketService.js
 // Provider: FMP (Primary) + Alpha Vantage (Fallback)
-// Finnhub vollstaendig entfernt.
+// Finnhub: vollstaendig entfernt
 
 const { fetchQuote } = require("./providerService");
 const { buildHQSResponse } = require("../hqsEngine");
@@ -114,7 +114,6 @@ async function saveSnapshotToDB(results) {
         [item.symbol, item.price || 0, item.hqsScore || 0],
       );
     }
-
     console.log("💾 Snapshot in Postgres gespeichert");
   } catch (err) {
     console.error("❌ DB Insert Error:", err.message);
@@ -122,66 +121,7 @@ async function saveSnapshotToDB(results) {
 }
 
 // ============================
-// UPSERT DAILY PRICES (DB only – no candle fetch)
-// ============================
-
-async function upsertDailyPrices(symbol, candles) {
-  if (!Array.isArray(candles) || candles.length === 0) return 0;
-
-  const safeSymbol = String(symbol || "").trim().toUpperCase();
-  if (!/^[A-Z0-9.-]{1,12}$/.test(safeSymbol)) return 0;
-
-  let count = 0;
-
-  for (const row of candles) {
-    if (!row || !row.date) continue;
-
-    await pool.query(
-      `
-      INSERT INTO prices_daily (symbol, date, open, high, low, close, volume, source)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'fmp')
-      ON CONFLICT (symbol, date) DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume
-      `,
-      [
-        safeSymbol,
-        row.date,
-        row.open,
-        row.high,
-        row.low,
-        row.close,
-        row.volume,
-      ],
-    );
-
-    count += 1;
-  }
-
-  return count;
-}
-
-// ============================
-// BACKFILL / UPDATE STUBS
-// Candle-Fetch via Finnhub entfernt.
-// Funktion bleibt exportiert fuer Abwaertskompatibilitaet.
-// ============================
-
-async function backfillSymbolHistory(symbol) {
-  console.warn(`[marketService] backfillSymbolHistory: Finnhub entfernt – kein Candle-Fetch fuer ${symbol}.`);
-  return 0;
-}
-
-async function updateSymbolDaily(symbol) {
-  console.warn(`[marketService] updateSymbolDaily: Finnhub entfernt – kein Candle-Fetch fuer ${symbol}.`);
-  return 0;
-}
-
-// ============================
-// SNAPSHOT BUILDER
+// SNAPSHOT BUILDER (FMP + Alpha)
 // ============================
 
 async function buildMarketSnapshot() {
@@ -192,25 +132,23 @@ async function buildMarketSnapshot() {
       try {
         const data = await fetchQuote(symbol);
 
-        if (data && data.data) {
-          const hqsData = await buildHQSResponse(data.data);
+        if (data && data[0]) {
+          const hqsData = await buildHQSResponse(data[0]);
           if (hqsData) results.push(hqsData);
         }
       } catch (err) {
-        console.error(`⚠️ Snapshot Error for ${symbol}:`, err.message);
+        console.error(`⚠️ Snapshot Fehler fuer ${symbol}:`, err.message);
       }
     }
 
     if (results.length === 0) {
-      console.warn("⚠️ Snapshot: Keine Daten von FMP/Alpha erhalten.");
-      const staleData = await readSnapshotCache();
-      return Array.isArray(staleData) ? staleData : [];
+      throw new Error("Kein Provider lieferte Daten fuer Snapshot.");
     }
 
     await writeSnapshotCache(results);
     await saveSnapshotToDB(results);
 
-    console.log("🔥 Snapshot aktualisiert (FMP/Alpha)");
+    console.log("🔥 Markt-Snapshot aktualisiert (FMP/Alpha)");
     return results;
   } catch (error) {
     console.error("❌ Snapshot Error:", error.message);
@@ -222,22 +160,30 @@ async function buildMarketSnapshot() {
 
 // ============================
 // MAIN DATA FETCH
-// Primary: FMP | Fallback: Alpha Vantage
-// Gibt immer ein Array zurueck, niemals undefined/crash.
 // ============================
 
 async function getMarketData(symbol) {
   if (symbol) {
     try {
-      const result = await fetchQuote(symbol);
+      const data = await fetchQuote(symbol);
 
-      if (!result || !result.data) {
-        console.warn(`⚠️ getMarketData: Keine Daten fuer ${symbol}`);
+      if (!Array.isArray(data) || data.length === 0) {
+        console.warn(`⚠️ Keine Daten fuer Symbol: ${symbol}`);
         return [];
       }
 
-      const hqsData = await buildHQSResponse(result.data);
-      return hqsData ? [hqsData] : [];
+      const mapped = await Promise.all(
+        data.map(async (item) => {
+          try {
+            return await buildHQSResponse(item);
+          } catch (err) {
+            console.error(`⚠️ HQS Engine Error fuer ${item.symbol}:`, err.message);
+            return null;
+          }
+        }),
+      );
+
+      return mapped.filter(Boolean);
     } catch (err) {
       console.error("❌ getMarketData Error:", err.message);
       return [];
@@ -251,6 +197,21 @@ async function getMarketData(symbol) {
   }
 
   return buildMarketSnapshot();
+}
+
+// ============================
+// STUB: backfill + update
+// (Finnhub entfernt - Candle-Logik deaktiviert)
+// ============================
+
+async function backfillSymbolHistory(symbol) {
+  console.warn(`⚠️ backfillSymbolHistory deaktiviert (Finnhub entfernt) fuer: ${symbol}`);
+  return 0;
+}
+
+async function updateSymbolDaily(symbol) {
+  console.warn(`⚠️ updateSymbolDaily deaktiviert (Finnhub entfernt) fuer: ${symbol}`);
+  return 0;
 }
 
 // ============================
