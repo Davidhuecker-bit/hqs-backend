@@ -1,7 +1,6 @@
 // services/marketService.js
-// Phase 1 Stabilization
-// getMarketData() ist 100% fehlertolerant.
-// Immer Array, niemals undefined/null/crash.
+// Phase 1 – Snapshot Hardening
+// Rate-limit-safe, dedup, in-memory cache, never crashes.
 
 "use strict";
 
@@ -24,6 +23,36 @@ const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
   .split(",")
   .map((s) => String(s || "").trim().toUpperCase())
   .filter((s) => /^[A-Z0-9.-]{1,12}$/.test(s));
+
+// ============================
+// SLEEP
+// ============================
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ============================
+// IN-MEMORY SYMBOL CACHE
+// TTL: 60 seconds
+// ============================
+
+const symbolMemCache = new Map();
+const SYMBOL_CACHE_TTL_MS = 60 * 1000;
+
+function memCacheGet(symbol) {
+  const entry = symbolMemCache.get(symbol);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > SYMBOL_CACHE_TTL_MS) {
+    symbolMemCache.delete(symbol);
+    return null;
+  }
+  return entry.data;
+}
+
+function memCacheSet(symbol, data) {
+  symbolMemCache.set(symbol, { data, ts: Date.now() });
+}
 
 // ============================
 // SAFE NORMALIZER
@@ -127,17 +156,23 @@ async function saveSnapshotToDB(results) {
         [item.symbol, item.price !== null ? item.price : 0, item.hqsScore !== null ? item.hqsScore : 0],
       );
     }
-    console.log("[MarketService] Snapshot in Postgres gespeichert");
+    console.log("[Snapshot] Saved " + results.length + " entries");
   } catch (err) {
     console.error("[MarketService] DB Insert Error:", err.message);
   }
 }
 
 // ============================
-// FETCH SINGLE SYMBOL - never throws
+// FETCH SINGLE SYMBOL – never throws
 // ============================
 
 async function fetchSymbolData(symbol) {
+  const memHit = memCacheGet(symbol);
+  if (memHit) {
+    console.log("[Snapshot] Cache Hit: " + symbol);
+    return memHit;
+  }
+
   try {
     const result = await getUSQuote(symbol);
 
@@ -147,17 +182,24 @@ async function fetchSymbolData(symbol) {
     }
 
     const source = result.provider || (result.fallbackUsed ? "alpha_vantage" : "fmp");
+    let normalized = null;
 
     try {
       const hqsData = await buildHQSResponse(result.data);
       if (hqsData && typeof hqsData === "object") {
-        return normalizeMarketItem(Object.assign({}, result.data, hqsData), source);
+        normalized = normalizeMarketItem(Object.assign({}, result.data, hqsData), source);
       }
     } catch (hqsErr) {
       console.warn("[MarketService] HQS Engine fallback for " + symbol + ":", hqsErr.message);
     }
 
-    return normalizeMarketItem(result.data, source);
+    if (!normalized) {
+      normalized = normalizeMarketItem(result.data, source);
+    }
+
+    if (normalized) memCacheSet(symbol, normalized);
+
+    return normalized;
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     if (msg.includes("FMP")) {
@@ -172,15 +214,26 @@ async function fetchSymbolData(symbol) {
 }
 
 // ============================
-// SNAPSHOT BUILDER - never crashes
+// SNAPSHOT BUILDER
+// Rate-limit-safe: 200ms delay between symbols.
+// Dedup via seen Set.
+// Never crashes.
 // ============================
 
 async function buildMarketSnapshot() {
   const results = [];
+  const seen = new Set();
 
   for (const symbol of DEFAULT_SYMBOLS) {
+    if (seen.has(symbol)) continue;
+    seen.add(symbol);
+
+    console.log("[Snapshot] Processing " + symbol);
+
     const item = await fetchSymbolData(symbol);
     if (item) results.push(item);
+
+    await sleep(200);
   }
 
   if (results.length === 0) {
@@ -192,7 +245,7 @@ async function buildMarketSnapshot() {
   await writeSnapshotCache(results);
   await saveSnapshotToDB(results);
 
-  console.log("[MarketService] Market Snapshot updated - " + results.length + " symbols (FMP)");
+  console.log("[Snapshot] Completed without crash");
   return results;
 }
 
