@@ -5,9 +5,6 @@ const { buildHQSResponse } = require("../hqsEngine");
 const { Redis } = require("@upstash/redis");
 const { Pool } = require("pg");
 
-// ✅ NEW (Step 2): Candle provider
-const { fetchDailyCandles, toUnixSeconds } = require("./finnhubCandle.service");
-
 // ============================
 // REDIS (UPSTASH)
 // ============================
@@ -51,7 +48,6 @@ async function ensureTablesExist() {
       );
     `);
 
-    // ✅ Step 1 table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS prices_daily (
         symbol VARCHAR(20) NOT NULL,
@@ -61,7 +57,7 @@ async function ensureTablesExist() {
         low NUMERIC,
         close NUMERIC,
         volume NUMERIC,
-        source VARCHAR(40) DEFAULT 'finnhub',
+        source VARCHAR(40) DEFAULT 'fmp',
         created_at TIMESTAMP DEFAULT NOW(),
         PRIMARY KEY (symbol, date)
       );
@@ -72,9 +68,9 @@ async function ensureTablesExist() {
       ON prices_daily (symbol, date);
     `);
 
-    console.log("✅ Tabellen geprüft/erstellt (market_snapshots + prices_daily)");
+    console.log("Tabellen geprueft/erstellt (market_snapshots + prices_daily)");
   } catch (err) {
-    console.error("❌ Table Creation Error:", err.message);
+    console.error("Table Creation Error:", err.message);
   }
 }
 
@@ -88,7 +84,7 @@ async function readSnapshotCache() {
     if (!cached) return null;
     return typeof cached === "string" ? JSON.parse(cached) : cached;
   } catch (error) {
-    console.error("⚠️ Snapshot Cache Read Error:", error.message);
+    console.error("Snapshot Cache Read Error:", error.message);
     return null;
   }
 }
@@ -97,7 +93,7 @@ async function writeSnapshotCache(payload) {
   try {
     await redis.set("market:snapshot", JSON.stringify(payload), { ex: 60 });
   } catch (error) {
-    console.error("⚠️ Snapshot Cache Write Error:", error.message);
+    console.error("Snapshot Cache Write Error:", error.message);
   }
 }
 
@@ -116,90 +112,10 @@ async function saveSnapshotToDB(results) {
         [item.symbol, item.price || 0, item.hqsScore || 0],
       );
     }
-
-    console.log("💾 Snapshot in Postgres gespeichert");
+    console.log("Snapshot in Postgres gespeichert");
   } catch (err) {
-    console.error("❌ DB Insert Error:", err.message);
+    console.error("DB Insert Error:", err.message);
   }
-}
-
-// ============================
-// ✅ STEP 2: UPSERT DAILY PRICES
-// ============================
-
-async function upsertDailyPrices(symbol, candles) {
-  if (!Array.isArray(candles) || candles.length === 0) return 0;
-
-  const safeSymbol = String(symbol || "").trim().toUpperCase();
-  if (!/^[A-Z0-9.-]{1,12}$/.test(safeSymbol)) return 0;
-
-  let count = 0;
-
-  for (const row of candles) {
-    if (!row || !row.date) continue;
-
-    await pool.query(
-      `
-      INSERT INTO prices_daily (symbol, date, open, high, low, close, volume, source)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'finnhub')
-      ON CONFLICT (symbol, date) DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume
-      `,
-      [
-        safeSymbol,
-        row.date,
-        row.open,
-        row.high,
-        row.low,
-        row.close,
-        row.volume,
-      ],
-    );
-
-    count += 1;
-  }
-
-  return count;
-}
-
-async function backfillSymbolHistory(symbol, years = 2) {
-  const now = new Date();
-  const from = new Date();
-  from.setFullYear(now.getFullYear() - Number(years || 2));
-
-  const candles = await fetchDailyCandles(
-    symbol,
-    toUnixSeconds(from),
-    toUnixSeconds(now),
-  );
-
-  if (!Array.isArray(candles)) return 0;
-
-  const inserted = await upsertDailyPrices(symbol, candles);
-  console.log(`📈 prices_daily backfill ${String(symbol).toUpperCase()}: ${inserted} rows`);
-  return inserted;
-}
-
-async function updateSymbolDaily(symbol, lookbackDays = 14) {
-  const now = new Date();
-  const from = new Date();
-  from.setDate(now.getDate() - Number(lookbackDays || 14));
-
-  const candles = await fetchDailyCandles(
-    symbol,
-    toUnixSeconds(from),
-    toUnixSeconds(now),
-  );
-
-  if (!Array.isArray(candles)) return 0;
-
-  const upserted = await upsertDailyPrices(symbol, candles);
-  console.log(`🔁 prices_daily update ${String(symbol).toUpperCase()}: ${upserted} rows`);
-  return upserted;
 }
 
 // ============================
@@ -219,22 +135,21 @@ async function buildMarketSnapshot() {
           if (hqsData) results.push(hqsData);
         }
       } catch (err) {
-        console.error(`⚠️ Snapshot Error for ${symbol}:`, err.message);
+        console.error("Snapshot Error for " + symbol + ":", err.message);
       }
     }
 
     if (results.length === 0) {
-      throw new Error("Finnhub lieferte keine Daten.");
+      throw new Error("Kein Provider lieferte Daten fuer Snapshot.");
     }
 
     await writeSnapshotCache(results);
     await saveSnapshotToDB(results);
 
-    console.log("🔥 Finnhub Snapshot aktualisiert");
+    console.log("Market Snapshot aktualisiert (FMP)");
     return results;
   } catch (error) {
-    console.error("❌ Snapshot Error:", error.message);
-
+    console.error("Snapshot Error:", error.message);
     const staleData = await readSnapshotCache();
     return Array.isArray(staleData) ? staleData : [];
   }
@@ -255,7 +170,7 @@ async function getMarketData(symbol) {
           try {
             return await buildHQSResponse(item);
           } catch (err) {
-            console.error(`⚠️ HQS Engine Error for ${item.symbol}:`, err.message);
+            console.error("HQS Engine Error for " + (item && item.symbol) + ":", err.message);
             return null;
           }
         }),
@@ -263,14 +178,14 @@ async function getMarketData(symbol) {
 
       return mapped.filter(Boolean);
     } catch (err) {
-      console.error("❌ getMarketData Error:", err.message);
+      console.error("getMarketData Error:", err.message);
       return [];
     }
   }
 
   const cached = await readSnapshotCache();
   if (Array.isArray(cached) && cached.length > 0) {
-    console.log("⚡ Snapshot Cache Hit");
+    console.log("Snapshot Cache Hit");
     return cached;
   }
 
@@ -285,8 +200,4 @@ module.exports = {
   getMarketData,
   buildMarketSnapshot,
   ensureTablesExist,
-
-  // ✅ Step 2 exports
-  backfillSymbolHistory,
-  updateSymbolDaily,
 };
