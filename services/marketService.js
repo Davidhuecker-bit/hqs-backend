@@ -1,13 +1,11 @@
 // services/marketService.js
-// Phase 1 – Snapshot Hardening
-// Phase 2 – HQS Scoring Layer integrated
+// Phase 1 – Snapshot Hardening + Phase 4 – Historical Data
 // Rate-limit-safe, dedup, in-memory cache, never crashes.
 
 "use strict";
 
 const { getUSQuote } = require("./providerService");
 const { buildHQSResponse } = require("../hqsEngine");
-const { calculateHQSScore } = require("./scoring.service");
 const { Redis } = require("@upstash/redis");
 const { Pool } = require("pg");
 
@@ -26,18 +24,9 @@ const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
   .map((s) => String(s || "").trim().toUpperCase())
   .filter((s) => /^[A-Z0-9.-]{1,12}$/.test(s));
 
-// ============================
-// SLEEP
-// ============================
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-// ============================
-// IN-MEMORY SYMBOL CACHE
-// TTL: 60 seconds
-// ============================
 
 const symbolMemCache = new Map();
 const SYMBOL_CACHE_TTL_MS = 60 * 1000;
@@ -55,10 +44,6 @@ function memCacheGet(symbol) {
 function memCacheSet(symbol, data) {
   symbolMemCache.set(symbol, { data, ts: Date.now() });
 }
-
-// ============================
-// SAFE NORMALIZER
-// ============================
 
 function safeNull(value) {
   const n = Number(value);
@@ -82,48 +67,16 @@ function normalizeMarketItem(raw, source) {
   };
 }
 
-// ============================
-// TABLE CREATION
-// ============================
-
 async function ensureTablesExist() {
   try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS market_snapshots (
-        id SERIAL PRIMARY KEY,
-        symbol VARCHAR(20),
-        price NUMERIC,
-        hqs_score NUMERIC,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS prices_daily (
-        symbol VARCHAR(20) NOT NULL,
-        date DATE NOT NULL,
-        open NUMERIC,
-        high NUMERIC,
-        low NUMERIC,
-        close NUMERIC,
-        volume NUMERIC,
-        source VARCHAR(40) DEFAULT 'fmp',
-        created_at TIMESTAMP DEFAULT NOW(),
-        PRIMARY KEY (symbol, date)
-      );
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_prices_daily_symbol_date
-      ON prices_daily (symbol, date);
-    `);
+    await pool.query(`CREATE TABLE IF NOT EXISTS market_snapshots (id SERIAL PRIMARY KEY, symbol VARCHAR(20), price NUMERIC, hqs_score NUMERIC, created_at TIMESTAMP DEFAULT NOW());`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS prices_daily (symbol VARCHAR(20) NOT NULL, date DATE NOT NULL, open NUMERIC, high NUMERIC, low NUMERIC, close NUMERIC, volume NUMERIC, source VARCHAR(40) DEFAULT 'fmp', created_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY (symbol, date));`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_prices_daily_symbol_date ON prices_daily (symbol, date);`);
     console.log("[MarketService] Tabellen geprueft/erstellt");
   } catch (err) {
     console.error("[MarketService] Table Creation Error:", err.message);
   }
 }
-
-// ============================
-// REDIS CACHE
-// ============================
 
 async function readSnapshotCache() {
   try {
@@ -144,19 +97,12 @@ async function writeSnapshotCache(payload) {
   }
 }
 
-// ============================
-// SAVE SNAPSHOT TO POSTGRES
-// ============================
-
 async function saveSnapshotToDB(results) {
   if (!Array.isArray(results) || results.length === 0) return;
   try {
     for (const item of results) {
       if (!item || !item.symbol) continue;
-      await pool.query(
-        `INSERT INTO market_snapshots (symbol, price, hqs_score) VALUES ($1, $2, $3)`,
-        [item.symbol, item.price !== null ? item.price : 0, item.score !== null ? item.score : 0],
-      );
+      await pool.query(`INSERT INTO market_snapshots (symbol, price, hqs_score) VALUES ($1, $2, $3)`, [item.symbol, item.price !== null ? item.price : 0, item.hqsScore !== null ? item.hqsScore : 0]);
     }
     console.log("[Snapshot] Saved " + results.length + " entries");
   } catch (err) {
@@ -164,111 +110,51 @@ async function saveSnapshotToDB(results) {
   }
 }
 
-// ============================
-// FETCH SINGLE SYMBOL - never throws
-// ============================
-
 async function fetchSymbolData(symbol) {
   const memHit = memCacheGet(symbol);
-  if (memHit) {
-    console.log("[Snapshot] Cache Hit: " + symbol);
-    return memHit;
-  }
-
+  if (memHit) { console.log("[Snapshot] Cache Hit: " + symbol); return memHit; }
   try {
     const result = await getUSQuote(symbol);
-
-    if (!result || !result.data) {
-      console.warn("[MarketService] No data available for:", symbol);
-      return null;
-    }
-
+    if (!result || !result.data) { console.warn("[MarketService] No data available for:", symbol); return null; }
     const source = result.provider || (result.fallbackUsed ? "alpha_vantage" : "fmp");
     let normalized = null;
-
     try {
       const hqsData = await buildHQSResponse(result.data);
-      if (hqsData && typeof hqsData === "object") {
-        normalized = normalizeMarketItem(Object.assign({}, result.data, hqsData), source);
-      }
-    } catch (hqsErr) {
-      console.warn("[MarketService] HQS Engine fallback for " + symbol + ":", hqsErr.message);
-    }
-
-    if (!normalized) {
-      normalized = normalizeMarketItem(result.data, source);
-    }
-
-    // ============================
-    // PHASE 2 - HQS SCORING LAYER
-    // ============================
-    if (normalized) {
-      try {
-        const scoring = calculateHQSScore(normalized);
-        if (scoring && typeof scoring === "object") {
-          normalized = Object.assign({}, normalized, scoring);
-        }
-      } catch (scoreErr) {
-        console.warn("[MarketService] Scoring fallback for " + symbol + ":", scoreErr.message);
-      }
-    }
-
+      if (hqsData && typeof hqsData === "object") normalized = normalizeMarketItem(Object.assign({}, result.data, hqsData), source);
+    } catch (hqsErr) { console.warn("[MarketService] HQS Engine fallback for " + symbol + ":", hqsErr.message); }
+    if (!normalized) normalized = normalizeMarketItem(result.data, source);
     if (normalized) memCacheSet(symbol, normalized);
-
     return normalized;
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
-    if (msg.includes("FMP")) {
-      console.warn("[MarketService] FMP failed for " + symbol + ":", msg);
-    } else if (msg.includes("Alpha") || msg.includes("alpha")) {
-      console.warn("[MarketService] Alpha fallback used for " + symbol + ":", msg);
-    } else {
-      console.warn("[MarketService] No data available for " + symbol + ":", msg);
-    }
+    if (msg.includes("FMP")) console.warn("[MarketService] FMP failed for " + symbol + ":", msg);
+    else if (msg.includes("Alpha") || msg.includes("alpha")) console.warn("[MarketService] Alpha fallback used for " + symbol + ":", msg);
+    else console.warn("[MarketService] No data available for " + symbol + ":", msg);
     return null;
   }
 }
 
-// ============================
-// SNAPSHOT BUILDER
-// Rate-limit-safe: 200ms delay between symbols.
-// Dedup via seen Set.
-// Never crashes.
-// ============================
-
 async function buildMarketSnapshot() {
   const results = [];
   const seen = new Set();
-
   for (const symbol of DEFAULT_SYMBOLS) {
     if (seen.has(symbol)) continue;
     seen.add(symbol);
-
     console.log("[Snapshot] Processing " + symbol);
-
     const item = await fetchSymbolData(symbol);
     if (item) results.push(item);
-
     await sleep(200);
   }
-
   if (results.length === 0) {
     console.warn("[MarketService] No data available - snapshot empty, using cache.");
     const staleData = await readSnapshotCache();
     return Array.isArray(staleData) ? staleData : [];
   }
-
   await writeSnapshotCache(results);
   await saveSnapshotToDB(results);
-
   console.log("[Snapshot] Completed without crash");
   return results;
 }
-
-// ============================
-// getMarketData(symbol?)
-// Always Array. Never undefined/null/crash.
-// ============================
 
 async function getMarketData(symbol) {
   if (symbol) {
@@ -277,26 +163,40 @@ async function getMarketData(symbol) {
     const item = await fetchSymbolData(safeSymbol);
     return item ? [item] : [];
   }
-
   try {
     const cached = await readSnapshotCache();
-    if (Array.isArray(cached) && cached.length > 0) {
-      console.log("[MarketService] Snapshot Cache Hit");
-      return cached;
-    }
-  } catch (err) {
-    console.error("[MarketService] Cache Error:", err.message);
-  }
-
+    if (Array.isArray(cached) && cached.length > 0) { console.log("[MarketService] Snapshot Cache Hit"); return cached; }
+  } catch (err) { console.error("[MarketService] Cache Error:", err.message); }
   return buildMarketSnapshot();
 }
 
-// ============================
-// EXPORTS
-// ============================
+async function backfillSymbolHistory(symbol, days) {
+  const safeSymbol = String(symbol || "").trim().toUpperCase();
+  if (!safeSymbol || !/^[A-Z0-9.-]{1,12}$/.test(safeSymbol)) return [];
+  const limit = typeof days === "number" && days > 0 ? days : 90;
+  try {
+    const result = await pool.query(`SELECT date, open, high, low, close, volume FROM prices_daily WHERE symbol = $1 ORDER BY date DESC LIMIT $2`, [safeSymbol, limit]);
+    if (!result || !Array.isArray(result.rows)) return [];
+    return result.rows.map((row) => ({ date: row.date ? String(row.date).slice(0, 10) : null, open: safeNull(row.open), high: safeNull(row.high), low: safeNull(row.low), close: safeNull(row.close), volume: safeNull(row.volume) }));
+  } catch (err) { console.error("[MarketService] backfillSymbolHistory Error for " + safeSymbol + ":", err.message); return []; }
+}
 
-module.exports = {
-  getMarketData,
-  buildMarketSnapshot,
-  ensureTablesExist,
-};
+async function updateSymbolDaily(symbol, row) {
+  const safeSymbol = String(symbol || "").trim().toUpperCase();
+  if (!safeSymbol || !row || typeof row !== "object") return false;
+  const date = row.date ? String(row.date).slice(0, 10) : null;
+  if (!date) return false;
+  try {
+    await pool.query(`INSERT INTO prices_daily (symbol, date, open, high, low, close, volume, source) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (symbol, date) DO UPDATE SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, close = EXCLUDED.close, volume = EXCLUDED.volume, source = EXCLUDED.source`, [safeSymbol, date, safeNull(row.open), safeNull(row.high), safeNull(row.low), safeNull(row.close), safeNull(row.volume), String(row.source || "fmp")]);
+    return true;
+  } catch (err) { console.error("[MarketService] updateSymbolDaily Error for " + safeSymbol + ":", err.message); return false; }
+}
+
+async function getSymbolHistory(symbol, days) {
+  const safeSymbol = String(symbol || "").trim().toUpperCase();
+  if (!safeSymbol || !/^[A-Z0-9.-]{1,12}$/.test(safeSymbol)) return { symbol: safeSymbol || null, history: [] };
+  const history = await backfillSymbolHistory(safeSymbol, days);
+  return { symbol: safeSymbol, history: Array.isArray(history) ? history : [] };
+}
+
+module.exports = { getMarketData, buildMarketSnapshot, ensureTablesExist, backfillSymbolHistory, updateSymbolDaily, getSymbolHistory };
