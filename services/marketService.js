@@ -2,7 +2,9 @@
 // Provider: FMP (Primary) + Alpha Vantage (Fallback)
 // Finnhub: vollstaendig entfernt
 
-const { fetchQuote } = require("./providerService");
+const provider = require("./providerService");
+const fetchQuote = provider?.fetchQuote || provider;
+
 const { buildHQSResponse } = require("../hqsEngine");
 const { Redis } = require("@upstash/redis");
 const { Pool } = require("pg");
