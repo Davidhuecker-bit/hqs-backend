@@ -1,12 +1,10 @@
 const axios = require("axios");
 
-// ======================================================// ENV KEYS// ======================================================
-
+// ======================================================// ENV KEYS// ====================================================== 
 const FMP_KEY = process.env.FMP_API_KEY;
 const ALPHA_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
-// ======================================================// NORMALIZER// ======================================================
-
+// ======================================================// NORMALIZER// ====================================================== 
 function safeNumber(value) {
   const n = Number(value);
   return isNaN(n) ? 0 : n;
@@ -25,14 +23,13 @@ function normalizeData(symbol, raw) {
   };
 }
 
-// ======================================================// FMP (Primary)// ======================================================
-
+// ======================================================// FMP (Primary)// ====================================================== 
 async function fetchFMP(symbol) {
   if (!FMP_KEY) {
     throw new Error("FMP_API_KEY fehlt");
   }
 
-  const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${FMP_KEY}`;
+  const url = `https://financialmodelingprep.com/stable/quote?symbol=${symbol}&apikey=${FMP_KEY}`;
   const response = await axios.get(url, { timeout: 7000 });
 
   if (!response.data || !Array.isArray(response.data) || response.data.length === 0) {
@@ -55,8 +52,7 @@ async function fetchFMP(symbol) {
   };
 }
 
-// ======================================================// ALPHA VANTAGE (Fallback)// ======================================================
-
+// ======================================================// ALPHA VANTAGE (Fallback)// ====================================================== 
 async function fetchAlpha(symbol) {
   if (!ALPHA_KEY) {
     throw new Error("ALPHA_VANTAGE_API_KEY fehlt");
@@ -85,8 +81,7 @@ async function fetchAlpha(symbol) {
   };
 }
 
-// ======================================================// PUBLIC FUNCTION (FMP Primary, Alpha Fallback)// ======================================================
-
+// ======================================================// PUBLIC FUNCTION (FMP Primary, Alpha Fallback)// ====================================================== 
 async function getUSQuote(symbol) {
   try {
     const primary = await fetchFMP(symbol);
@@ -105,8 +100,7 @@ async function getUSQuote(symbol) {
   throw new Error("Alle Provider fehlgeschlagen fuer: " + symbol);
 }
 
-// ======================================================// EXPORT// ======================================================
-
+// ======================================================// EXPORT// ====================================================== 
 module.exports = {
   getUSQuote,
   fetchQuote: getUSQuote,
