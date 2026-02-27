@@ -11,12 +11,15 @@ const FMP_API_KEY = process.env.FMP_API_KEY;
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 // ============================
-// FMP QUOTE
+// FMP QUOTE (STABLE ROUTE)
 // ============================
 
 async function fetchFromFMP(symbol) {
   try {
-    const url = `https://financialmodelingprep.com/api/v3/quote/${symbol}?apikey=${FMP_API_KEY}`;
+    // STABLE endpoint (works for non-legacy accounts)
+    const url = `https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(
+      symbol,
+    )}&apikey=${encodeURIComponent(FMP_API_KEY || "")}`;
 
     const response = await axios.get(url);
 
@@ -38,7 +41,9 @@ async function fetchFromFMP(symbol) {
 
 async function fetchFromAlphaVantage(symbol) {
   try {
-    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_VANTAGE_API_KEY}`;
+    const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
+      symbol,
+    )}&apikey=${encodeURIComponent(ALPHA_VANTAGE_API_KEY || "")}`;
 
     const response = await axios.get(url);
 
