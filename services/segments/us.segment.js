@@ -1,6 +1,6 @@
 // services/segments/us.segment.js
-// US Market Segment – Symbol Lists by Layer
-// KEINE API Calls hier – nur Symbol-Definitionen
+// US Market Segment - Symbol Lists by Layer
+// KEINE API Calls hier - nur Symbol-Definitionen
 
 const US_SEGMENTS = {
   core: [
