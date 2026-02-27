@@ -7,8 +7,6 @@ const {
   getMarketData,
   buildMarketSnapshot,
   ensureTablesExist,
-  backfillSymbolHistory,
-  updateSymbolDaily,
 } = require("./services/marketService");
 
 const { analyzeStockWithGuardian } = require("./services/guardianService");
@@ -36,6 +34,67 @@ app.use(
 );
 
 app.use(express.json());
+
+// ==========================================================
+// RESPONSE FORMATTER (Phase 3)
+// Maps raw market item to HQS top-level response shape.
+// Defensive: all score fields fall back to null.
+// ========================================================== 
+
+function formatMarketItem(item) {
+  if (!item || typeof item !== "object") return null;
+  return {
+    symbol: item.symbol || null,
+    price: item.price !== undefined ? item.price : null,
+    change: item.change !== undefined ? item.change : null,
+    changesPercentage: item.changesPercentage !== undefined ? item.changesPercentage : null,
+    high: item.high !== undefined ? item.high : null,
+    low: item.low !== undefined ? item.low : null,
+    open: item.open !== undefined ? item.open : null,
+    previousClose: item.previousClose !== undefined ? item.previousClose : null,
+    marketCap: item.marketCap !== undefined ? item.marketCap : null,
+    score: item.score !== undefined ? item.score : null,
+    rating: item.rating !== undefined ? item.rating : null,
+    risk: item.risk !== undefined ? item.risk : null,
+    momentum: item.momentum !== undefined ? item.momentum : null,
+    stability: item.stability !== undefined ? item.stability : null,
+    timestamp: item.timestamp !== undefined ? item.timestamp : null,
+    source: item.source || null,
+  };
+}
+
+// ==========================================================
+// MARKET ROUTE (Phase 3)
+// GET /api/market
+// GET /api/market?symbol=AAPL
+// ==========================================================
+
+app.get("/api/market", async (req, res) => {
+  try {
+    const symbol = req.query.symbol
+      ? String(req.query.symbol).trim().toUpperCase()
+      : null;
+
+    const raw = await getMarketData(symbol || undefined);
+
+    const data = Array.isArray(raw)
+      ? raw.map(formatMarketItem).filter(Boolean)
+      : [];
+
+    return res.json({
+      success: true,
+      count: data.length,
+      data,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      count: 0,
+      data: [],
+      error: error.message,
+    });
+  }
+});
 
 // ==========================================================
 // SEGMENT ROUTE
@@ -125,7 +184,7 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 // ==========================================================
 
 app.listen(PORT, async () => {
-  console.log(`🚀 HQS Backend aktiv auf Port ${PORT}`);
+  console.log(`HQS Backend aktiv auf Port ${PORT}`);
 
   await ensureTablesExist();
 
