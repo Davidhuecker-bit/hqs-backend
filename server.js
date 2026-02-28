@@ -1,204 +1,163 @@
-const express = require("express");
-const cors = require("cors");
 require("dotenv").config();
-
-// Core Services
-const {
-  getMarketData,
-  buildMarketSnapshot,
-  ensureTablesExist,
-} = require("./services/marketService");
-
-const { analyzeStockWithGuardian } = require("./services/guardianService");
-const { getMarketDataBySegment } = require("./services/aggregator.service");
+const express = require("express");
+const axios = require("axios");
+const { Pool } = require("pg");
 
 const app = express();
-const PORT = process.env.PORT || 8080;
-
-// ==========================================================
-// CORS
-// ==========================================================
-
-app.use(
-  cors({
-    origin: [
-      "https://dhsystemhqs.de",
-      "https://www.dhsystemhqs.de",
-      "https://hqs-frontend-v8.vercel.app",
-      /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
-      "http://localhost:3000",
-    ],
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  }),
-);
-
 app.use(express.json());
 
-// ==========================================================
-// RESPONSE FORMATTER (Phase 3)
-// Maps raw market item to HQS top-level response shape.
-// Defensive: all score fields fall back to null.
-// ========================================================== 
+const PORT = process.env.PORT || 8080;
 
-function formatMarketItem(item) {
-  if (!item || typeof item !== "object") return null;
+// ===============================
+// DATABASE
+// ===============================
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false,
+  },
+});
+
+// ===============================
+// ENSURE TABLES (SAFE MIGRATION)
+// ===============================
+
+async function ensureTablesExist() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market_snapshots (
+      id SERIAL PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      price NUMERIC,
+      hqs_score INTEGER,
+      open NUMERIC,
+      high NUMERIC,
+      low NUMERIC,
+      volume BIGINT,
+      source TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS prices_daily (
+      symbol TEXT NOT NULL,
+      date DATE NOT NULL,
+      open NUMERIC,
+      high NUMERIC,
+      low NUMERIC,
+      close NUMERIC,
+      volume BIGINT,
+      source TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      PRIMARY KEY (symbol, date)
+    );
+  `);
+
+  console.log("✅ Tables ensured");
+}
+
+// ===============================
+// MASSIVE (POLYGON) PROVIDER
+// ===============================
+
+const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
+
+async function fetchSnapshot(symbol) {
+  const url = `https://api.massive.com/v2/aggs/ticker/${symbol}/prev?adjusted=true&apiKey=${MASSIVE_API_KEY}`;
+
+  const response = await axios.get(url);
+
+  if (!response.data.results || response.data.results.length === 0) {
+    throw new Error("No data from Massive");
+  }
+
+  const data = response.data.results[0];
+
   return {
-    symbol: item.symbol || null,
-    price: item.price !== undefined ? item.price : null,
-    change: item.change !== undefined ? item.change : null,
-    changesPercentage: item.changesPercentage !== undefined ? item.changesPercentage : null,
-    high: item.high !== undefined ? item.high : null,
-    low: item.low !== undefined ? item.low : null,
-    open: item.open !== undefined ? item.open : null,
-    previousClose: item.previousClose !== undefined ? item.previousClose : null,
-    marketCap: item.marketCap !== undefined ? item.marketCap : null,
-    score: item.score !== undefined ? item.score : null,
-    rating: item.rating !== undefined ? item.rating : null,
-    risk: item.risk !== undefined ? item.risk : null,
-    momentum: item.momentum !== undefined ? item.momentum : null,
-    stability: item.stability !== undefined ? item.stability : null,
-    timestamp: item.timestamp !== undefined ? item.timestamp : null,
-    source: item.source || null,
+    symbol,
+    price: data.c,
+    open: data.o,
+    high: data.h,
+    low: data.l,
+    volume: data.v,
+    source: "MASSIVE",
   };
 }
 
-// ==========================================================
-// MARKET ROUTE (Phase 3)
-// GET /api/market
-// GET /api/market?symbol=AAPL
-// ==========================================================
+// ===============================
+// SAVE SNAPSHOT
+// ===============================
 
-app.get("/api/market", async (req, res) => {
+async function saveSnapshot(snapshot) {
+  await pool.query(
+    `
+    INSERT INTO market_snapshots 
+    (symbol, price, open, high, low, volume, source)
+    VALUES ($1,$2,$3,$4,$5,$6,$7)
+  `,
+    [
+      snapshot.symbol,
+      snapshot.price,
+      snapshot.open,
+      snapshot.high,
+      snapshot.low,
+      snapshot.volume,
+      snapshot.source,
+    ]
+  );
+}
+
+// ===============================
+// BUILD MARKET SNAPSHOT
+// ===============================
+
+async function buildMarketSnapshot() {
+  const symbols = ["AAPL", "MSFT", "NVDA", "AMD"];
+
+  console.log("📊 Building market snapshot...");
+
+  for (const symbol of symbols) {
+    try {
+      const data = await fetchSnapshot(symbol);
+      await saveSnapshot(data);
+      console.log(`✅ Snapshot saved for ${symbol}`);
+    } catch (err) {
+      console.error(`❌ Snapshot error for ${symbol}`, err.message);
+    }
+  }
+
+  console.log("✅ Snapshot complete");
+}
+
+// ===============================
+// ROUTES
+// ===============================
+
+app.get("/", (req, res) => {
+  res.json({ status: "HQS Backend running" });
+});
+
+app.get("/snapshot", async (req, res) => {
   try {
-    const symbol = req.query.symbol
-      ? String(req.query.symbol).trim().toUpperCase()
-      : null;
-
-    const raw = await getMarketData(symbol || undefined);
-
-    const data = Array.isArray(raw)
-      ? raw.map(formatMarketItem).filter(Boolean)
-      : [];
-
-    return res.json({
-      success: true,
-      count: data.length,
-      data,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      count: 0,
-      data: [],
-      error: error.message,
-    });
+    await buildMarketSnapshot();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ==========================================================
-// SEGMENT ROUTE
-// ==========================================================
-
-app.get("/api/segment", async (req, res) => {
-  try {
-    const segment = String(req.query.segment || "").toLowerCase();
-    const symbol = String(req.query.symbol || "").toUpperCase();
-
-    if (!segment || !symbol) {
-      return res.status(400).json({
-        success: false,
-        message: "segment und symbol sind erforderlich.",
-      });
-    }
-
-    const result = await getMarketDataBySegment({ segment, symbol });
-    return res.json(result);
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Segment Fehler",
-      error: error.message,
-    });
-  }
-});
-
-// ==========================================================
-// GUARDIAN ANALYZE (SEGMENT BASED)
-// ==========================================================
-
-app.get("/api/guardian/analyze/:ticker", async (req, res) => {
-  try {
-    const ticker = String(req.params.ticker || "").toUpperCase();
-    const segment = String(req.query.segment || "usa").toLowerCase();
-
-    if (!ticker) {
-      return res.status(400).json({
-        success: false,
-        message: "Ticker fehlt.",
-      });
-    }
-
-    const segmentData = await getMarketDataBySegment({
-      segment,
-      symbol: ticker,
-    });
-
-    if (!segmentData.success) {
-      return res.status(404).json({
-        success: false,
-        message: "Segmentdaten nicht verfügbar.",
-        error: segmentData.error,
-      });
-    }
-
-    const guardianResult = await analyzeStockWithGuardian({
-      symbol: ticker,
-      segment,
-      provider: segmentData.provider,
-      fallbackUsed: segmentData.fallbackUsed,
-      marketData: segmentData.data,
-    });
-
-    return res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      guardian: guardianResult,
-      marketMeta: {
-        segment,
-        provider: segmentData.provider,
-        fallbackUsed: segmentData.fallbackUsed,
-      },
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      message: "Guardian Analyse fehlgeschlagen",
-      error: error.message,
-    });
-  }
-});
-
-// ==========================================================
-// SERVER START
-// ==========================================================
+// ===============================
+// START SERVER
+// ===============================
 
 app.listen(PORT, async () => {
-  console.log(`HQS Backend aktiv auf Port ${PORT}`);
-
-  await ensureTablesExist();
+  console.log(`🚀 HQS Backend running on port ${PORT}`);
 
   try {
+    await ensureTablesExist();
     await buildMarketSnapshot();
   } catch (err) {
-    console.error("Initial Snapshot Fehler:", err.message);
+    console.error("Startup error:", err.message);
   }
 });
-
-setInterval(async () => {
-  try {
-    await buildMarketSnapshot();
-  } catch (err) {
-    console.error("Warmup Fehler:", err.message);
-  }
-}, 15 * 60 * 1000);
