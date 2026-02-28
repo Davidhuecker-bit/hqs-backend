@@ -1,5 +1,8 @@
-// services/portfolioOptimizer.js
-// HQS Hybrid Portfolio Optimizer
+"use strict";
+
+/*
+  HQS Portfolio Optimizer – Score Weighted Allocation
+*/
 
 function safe(v, f = 0) {
   const n = Number(v);
@@ -7,21 +10,31 @@ function safe(v, f = 0) {
 }
 
 function optimizePortfolio(stocks = []) {
-  if (!Array.isArray(stocks) || stocks.length === 0) return [];
+  if (!Array.isArray(stocks) || stocks.length === 0) {
+    return [];
+  }
 
   const totalScore = stocks.reduce(
     (sum, s) => sum + safe(s.hqsScore),
     0
   );
 
+  if (totalScore === 0) {
+    const equalWeight = 100 / stocks.length;
+
+    return stocks.map(stock => ({
+      symbol: stock.symbol,
+      allocation: Number(equalWeight.toFixed(2))
+    }));
+  }
+
   return stocks.map(stock => {
-    const weight = totalScore
-      ? safe(stock.hqsScore) / totalScore
-      : 1 / stocks.length;
+    const weight =
+      (safe(stock.hqsScore) / totalScore) * 100;
 
     return {
       symbol: stock.symbol,
-      allocation: Number((weight * 100).toFixed(2))
+      allocation: Number(weight.toFixed(2))
     };
   });
 }
