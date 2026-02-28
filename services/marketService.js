@@ -1,34 +1,20 @@
 "use strict";
 
-/*
-  MARKET SERVICE
-  Snapshot-First Architektur
-  DB → API nur wenn nötig
-*/
-
 const { fetchQuote } = require("./providerService");
 const { Pool } = require("pg");
-
-// ============================
-// DATABASE
-// ============================
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// ============================
-// CONFIG
-// ============================
-
-const SNAPSHOT_TTL_SECONDS = 60; // 60 Sekunden Cache
+const SNAPSHOT_TTL_SECONDS = 60;
 
 // ============================
-// INIT TABLE
+// TABLE INIT
 // ============================
 
-async function ensureSnapshotTable() {
+async function ensureTablesExist() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_snapshots (
       symbol TEXT PRIMARY KEY,
@@ -39,7 +25,7 @@ async function ensureSnapshotTable() {
 }
 
 // ============================
-// GET SNAPSHOT
+// CACHE
 // ============================
 
 async function getSnapshot(symbol) {
@@ -54,16 +40,10 @@ async function getSnapshot(symbol) {
   const ageSeconds =
     (Date.now() - new Date(row.updated_at).getTime()) / 1000;
 
-  if (ageSeconds > SNAPSHOT_TTL_SECONDS) {
-    return null;
-  }
+  if (ageSeconds > SNAPSHOT_TTL_SECONDS) return null;
 
   return row.data;
 }
-
-// ============================
-// SAVE SNAPSHOT
-// ============================
 
 async function saveSnapshot(symbol, data) {
   await pool.query(
@@ -80,17 +60,14 @@ async function saveSnapshot(symbol, data) {
 }
 
 // ============================
-// MAIN FUNCTION
+// MAIN
 // ============================
 
 async function getMarketData(symbol) {
   if (!symbol) return [];
 
-  await ensureSnapshotTable();
-
   const upperSymbol = String(symbol).toUpperCase();
 
-  // 1️⃣ Prüfen ob Snapshot existiert
   const cached = await getSnapshot(upperSymbol);
 
   if (cached) {
@@ -98,22 +75,21 @@ async function getMarketData(symbol) {
     return [cached];
   }
 
-  console.log(`🔵 Cache miss for ${upperSymbol} → Fetching API`);
+  console.log(`🔵 Cache miss for ${upperSymbol}`);
 
-  // 2️⃣ API Call nur wenn nötig
   const fresh = await fetchQuote(upperSymbol);
 
   if (!fresh || !fresh.length) {
-    console.warn(`⚠️ No data returned for ${upperSymbol}`);
+    console.warn(`⚠️ No data for ${upperSymbol}`);
     return [];
   }
 
-  // 3️⃣ Snapshot speichern
   await saveSnapshot(upperSymbol, fresh[0]);
 
   return fresh;
 }
 
 module.exports = {
-  getMarketData
+  getMarketData,
+  ensureTablesExist
 };
