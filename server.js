@@ -1,40 +1,35 @@
+"use strict";
+
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { Pool } = require("pg");
 const cron = require("node-cron");
 
+const { buildHQSResponse } = require("./hqsEngine");
+const { simulateStrategy } = require("./services/backtestEngine");
+const { recalibrate } = require("./services/autoRecalibration.service");
+const { initWeightTable, loadLastWeights } = require("./services/weightHistory.repository");
+const { initFactorTable } = require("./services/factorHistory.repository");
+const { getDefaultWeights } = require("./services/autoFactor.service");
+
 const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 8080;
 
-// ==============================
-// DATABASE
-// ==============================
+/* ==============================
+   DATABASE
+============================== */
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
-// ==============================
-// SCORE ENGINE
-// ==============================
-
-function calculateHqsScore(data) {
-  let score = 50;
-
-  if (data.price > data.open) score += 5;
-  if (data.volume > 10000000) score += 5;
-  if (data.high - data.low > 2) score += 5;
-
-  return Math.min(score, 100);
-}
-
-// ==============================
-// SAFE MIGRATION
-// ==============================
+/* ==============================
+   SAFE MIGRATION
+============================== */
 
 async function ensureTablesExist() {
   await pool.query(`
@@ -55,9 +50,9 @@ async function ensureTablesExist() {
   console.log("✅ Tables ensured and migrated");
 }
 
-// ==============================
-// MASSIVE API
-// ==============================
+/* ==============================
+   MASSIVE API
+============================== */
 
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
 
@@ -78,70 +73,92 @@ async function fetchSnapshot(symbol) {
     high: r.h,
     low: r.l,
     volume: r.v,
+    changesPercentage: r.p || 0,
     source: "MASSIVE",
   };
 }
 
-// ==============================
-// SAVE SNAPSHOT
-// ==============================
-
-async function saveSnapshot(data) {
-  const score = calculateHqsScore(data);
-
-  await pool.query(
-    `
-    INSERT INTO market_snapshots
-    (symbol, price, hqs_score, open, high, low, volume, source)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    `,
-    [
-      data.symbol,
-      data.price,
-      score,
-      data.open,
-      data.high,
-      data.low,
-      data.volume,
-      data.source,
-    ]
-  );
-}
-
-// ==============================
-// BUILD SNAPSHOT
-// ==============================
+/* ==============================
+   BUILD SNAPSHOT + LEARNING LOOP
+============================== */
 
 async function buildMarketSnapshot() {
   const symbols = ["AAPL", "MSFT", "NVDA", "AMD"];
 
   console.log("📊 Building market snapshot...");
 
+  let weights = await loadLastWeights();
+  if (!weights) {
+    weights = getDefaultWeights();
+  }
+
+  const history = [];
+
   for (const symbol of symbols) {
     try {
-      const snapshot = await fetchSnapshot(symbol);
-      await saveSnapshot(snapshot);
+      const raw = await fetchSnapshot(symbol);
+
+      const enriched = await buildHQSResponse(raw, weights);
+
+      await pool.query(
+        `
+        INSERT INTO market_snapshots
+        (symbol, price, hqs_score, open, high, low, volume, source)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `,
+        [
+          enriched.symbol,
+          enriched.price,
+          enriched.hqsScore,
+          raw.open,
+          raw.high,
+          raw.low,
+          raw.volume,
+          raw.source,
+        ]
+      );
+
+      history.push({
+        symbol: enriched.symbol,
+        price: enriched.price,
+        hqsScore: enriched.hqsScore,
+      });
+
       console.log(`✅ Snapshot saved for ${symbol}`);
     } catch (err) {
       console.error(`❌ Snapshot error for ${symbol}:`, err.message);
     }
   }
 
-  console.log("✅ Snapshot complete");
+  /* ==============================
+     BACKTEST + RECALIBRATION
+  ============================== */
+
+  if (history.length > 1) {
+    const performance = simulateStrategy(history);
+
+    const regime = "bull"; // später SPY-basierend
+
+    await recalibrate(performance, regime);
+
+    console.log("🧠 Recalibration complete");
+  }
+
+  console.log("✅ Snapshot cycle complete");
 }
 
-// ==============================
-// CRON JOB (alle 15 Minuten)
-// ==============================
+/* ==============================
+   CRON JOB (alle 15 Minuten)
+============================== */
 
 cron.schedule("*/15 * * * *", async () => {
   console.log("⏱ Running scheduled snapshot...");
   await buildMarketSnapshot();
 });
 
-// ==============================
-// API ROUTES
-// ==============================
+/* ==============================
+   API ROUTES
+============================== */
 
 app.get("/", (req, res) => {
   res.json({ status: "HQS Backend running" });
@@ -158,15 +175,17 @@ app.get("/market/latest", async (req, res) => {
   res.json(result.rows);
 });
 
-// ==============================
-// START SERVER
-// ==============================
+/* ==============================
+   START SERVER
+============================== */
 
 app.listen(PORT, async () => {
   console.log(`🚀 HQS Backend running on port ${PORT}`);
 
   try {
     await ensureTablesExist();
+    await initWeightTable();
+    await initFactorTable();
     await buildMarketSnapshot();
   } catch (err) {
     console.error("Startup error:", err.message);
