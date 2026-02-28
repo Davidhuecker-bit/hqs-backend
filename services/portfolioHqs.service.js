@@ -1,19 +1,20 @@
 "use strict";
 
 /*
-  HQS PORTFOLIO ENGINE – SELF LEARNING + SAFEGUARDS
+  HQS PORTFOLIO ENGINE – FULL PERSISTENT VERSION
 */
 
 const axios = require("axios");
 const { getGlobalMarketData } = require("./aggregator.service");
 const { buildDiagnosis } = require("./portfolioDiagnosis.service");
 const { calibrateFactorWeights } = require("./autoFactorCalibration.service");
+const {
+  initFactorTable,
+  saveFactorSnapshot,
+  loadFactorHistory
+} = require("./factorHistory.repository");
 
 const FMP_API_KEY = process.env.FMP_API_KEY;
-
-/* =========================
-   DEFAULT WEIGHTS
-========================= */
 
 const DEFAULT_WEIGHTS = {
   momentum: 0.30,
@@ -23,17 +24,9 @@ const DEFAULT_WEIGHTS = {
   macro: 0.20
 };
 
-/* =========================
-   Helpers
-========================= */
-
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
-
-/* =========================
-   Core Factors
-========================= */
 
 function calculateMomentum(stock) {
   const ch = stock.changesPercentage || 0;
@@ -65,7 +58,6 @@ async function fetchEarningsDrift(symbol) {
     if (!latest || !prev) return 0;
     if (latest > prev * 1.05) return 8;
     if (latest < prev * 0.95) return -8;
-
     return 0;
   } catch {
     return 0;
@@ -90,13 +82,11 @@ async function detectRegime() {
   }
 }
 
-/* =========================
-   MAIN FUNCTION
-========================= */
-
 async function calculatePortfolioHQS(portfolio = []) {
   if (!Array.isArray(portfolio) || !portfolio.length)
     return { finalScore: 0, reason: "Empty portfolio" };
+
+  await initFactorTable();
 
   const symbols = portfolio.map(p => p.symbol);
   const marketData = await getGlobalMarketData(symbols);
@@ -106,16 +96,15 @@ async function calculatePortfolioHQS(portfolio = []) {
 
   const regime = await detectRegime();
 
-  // Load learned weights safely
+  const factorHistory = await loadFactorHistory();
+
   const learned = calibrateFactorWeights(
-    global.factorHistory || [],
-    global.previousWeights || {}
+    factorHistory,
+    {}
   );
 
   const dynamicWeights =
     learned?.[regime] || DEFAULT_WEIGHTS;
-
-  global.previousWeights = learned || global.previousWeights || {};
 
   const enriched = await Promise.all(
     marketData.map(async stock => {
@@ -146,6 +135,15 @@ async function calculatePortfolioHQS(portfolio = []) {
   const finalScore = Math.round(
     clamp(weightedScore * 0.6 + 50 * 0.4, 0, 100)
   );
+
+  // Persist learning snapshot
+  await saveFactorSnapshot(regime, finalScore / 100, {
+    momentum: dynamicWeights.momentum,
+    volatility: dynamicWeights.volatility,
+    earnings: dynamicWeights.earnings,
+    correlation: dynamicWeights.correlation,
+    macro: dynamicWeights.macro
+  });
 
   const diagnosis = buildDiagnosis(
     enriched,
