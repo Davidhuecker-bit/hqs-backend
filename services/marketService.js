@@ -1,255 +1,119 @@
-// services/marketService.js
-// Provider: FMP (Primary) + Alpha Vantage (Fallback)
-// Finnhub: vollstaendig entfernt
+"use strict";
 
-const provider = require("./providerService");
-const fetchQuote = provider?.fetchQuote || provider;
+/*
+  MARKET SERVICE
+  Snapshot-First Architektur
+  DB → API nur wenn nötig
+*/
 
-const { buildHQSResponse } = require("../hqsEngine");
-const { Redis } = require("@upstash/redis");
+const { fetchQuote } = require("./providerService");
 const { Pool } = require("pg");
 
 // ============================
-// REDIS (UPSTASH)
-// ============================
-
-const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
-
-// ============================
-// POSTGRES (RAILWAY)
+// DATABASE
 // ============================
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: false }
 });
 
 // ============================
-// DEFAULT SYMBOLS
+// CONFIG
 // ============================
 
-const DEFAULT_SYMBOLS = (process.env.GUARDIAN_SYMBOLS || "AAPL,MSFT,NVDA,AMD")
-  .split(",")
-  .map((symbol) => String(symbol || "").trim().toUpperCase())
-  .filter((symbol) => /^[A-Z0-9.-]{1,12}$/.test(symbol));
+const SNAPSHOT_TTL_SECONDS = 60; // 60 Sekunden Cache
 
 // ============================
-// PERFORMANCE SETTINGS
+// INIT TABLE
 // ============================
 
-const SNAPSHOT_CONCURRENCY = Number(process.env.SNAPSHOT_CONCURRENCY || 3);
-
-// ============================
-// TABLE CREATION
-// ============================
-
-async function ensureTablesExist() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS market_snapshots (
-        id SERIAL PRIMARY KEY,
-        symbol VARCHAR(20),
-        price NUMERIC,
-        hqs_score NUMERIC,
-        created_at TIMESTAMP DEFAULT NOW()
-      );
-    `);
-
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS prices_daily (
-        symbol VARCHAR(20) NOT NULL,
-        date DATE NOT NULL,
-        open NUMERIC,
-        high NUMERIC,
-        low NUMERIC,
-        close NUMERIC,
-        volume NUMERIC,
-        source VARCHAR(40) DEFAULT 'fmp',
-        created_at TIMESTAMP DEFAULT NOW(),
-        PRIMARY KEY (symbol, date)
-      );
-    `);
-
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_prices_daily_symbol_date
-      ON prices_daily (symbol, date);
-    `);
-
-    console.log("✅ Tabellen geprueft/erstellt (market_snapshots + prices_daily)");
-  } catch (err) {
-    console.error("❌ Table Creation Error:", err.message);
-  }
+async function ensureSnapshotTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market_snapshots (
+      symbol TEXT PRIMARY KEY,
+      data JSONB NOT NULL,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
 }
 
 // ============================
-// REDIS CACHE
+// GET SNAPSHOT
 // ============================
 
-async function readSnapshotCache() {
-  try {
-    const cached = await redis.get("market:snapshot");
-    if (!cached) return null;
-    return typeof cached === "string" ? JSON.parse(cached) : cached;
-  } catch (error) {
-    console.error("⚠️ Snapshot Cache Read Error:", error.message);
+async function getSnapshot(symbol) {
+  const res = await pool.query(
+    `SELECT data, updated_at FROM market_snapshots WHERE symbol = $1`,
+    [symbol]
+  );
+
+  if (!res.rows.length) return null;
+
+  const row = res.rows[0];
+  const ageSeconds =
+    (Date.now() - new Date(row.updated_at).getTime()) / 1000;
+
+  if (ageSeconds > SNAPSHOT_TTL_SECONDS) {
     return null;
   }
-}
 
-async function writeSnapshotCache(payload) {
-  try {
-    await redis.set("market:snapshot", JSON.stringify(payload), { ex: 60 });
-  } catch (error) {
-    console.error("⚠️ Snapshot Cache Write Error:", error.message);
-  }
+  return row.data;
 }
 
 // ============================
-// SAVE SNAPSHOT TO POSTGRES (BATCH INSERT)
+// SAVE SNAPSHOT
 // ============================
 
-async function saveSnapshotToDB(results) {
-  try {
-    if (!Array.isArray(results) || results.length === 0) return;
-
-    const values = [];
-    const params = [];
-    let i = 1;
-
-    for (const item of results) {
-      values.push(`($${i++}, $${i++}, $${i++})`);
-      params.push(item.symbol, item.price || 0, item.hqsScore || 0);
-    }
-
-    await pool.query(
-      `
-      INSERT INTO market_snapshots (symbol, price, hqs_score)
-      VALUES ${values.join(", ")}
-      `,
-      params,
-    );
-
-    console.log("💾 Snapshot in Postgres gespeichert");
-  } catch (err) {
-    console.error("❌ DB Insert Error:", err.message);
-  }
+async function saveSnapshot(symbol, data) {
+  await pool.query(
+    `
+    INSERT INTO market_snapshots (symbol, data, updated_at)
+    VALUES ($1, $2, NOW())
+    ON CONFLICT (symbol)
+    DO UPDATE SET
+      data = EXCLUDED.data,
+      updated_at = NOW()
+    `,
+    [symbol, data]
+  );
 }
 
 // ============================
-// SNAPSHOT BUILDER (PARALLEL, CONCURRENCY-LIMITED)
-// ============================
-
-async function buildMarketSnapshot() {
-  try {
-    const results = [];
-    const queue = [...DEFAULT_SYMBOLS];
-
-    const workerCount = Math.max(1, Number.isFinite(SNAPSHOT_CONCURRENCY) ? SNAPSHOT_CONCURRENCY : 3);
-
-    const workers = Array.from({ length: workerCount }, async () => {
-      while (queue.length) {
-        const symbol = queue.shift();
-        if (!symbol) break;
-
-        try {
-          const data = await fetchQuote(symbol);
-
-          if (data && data[0]) {
-            const hqsData = await buildHQSResponse(data[0]);
-            if (hqsData) results.push(hqsData);
-          }
-        } catch (err) {
-          console.error(`⚠️ Snapshot Fehler fuer ${symbol}:`, err.message);
-        }
-      }
-    });
-
-    await Promise.all(workers);
-
-    if (results.length === 0) {
-      throw new Error("Kein Provider lieferte Daten fuer Snapshot.");
-    }
-
-    await writeSnapshotCache(results);
-    await saveSnapshotToDB(results);
-
-    console.log("🔥 Markt-Snapshot aktualisiert (FMP/Alpha)");
-    return results;
-  } catch (error) {
-    console.error("❌ Snapshot Error:", error.message);
-
-    const staleData = await readSnapshotCache();
-    return Array.isArray(staleData) ? staleData : [];
-  }
-}
-
-// ============================
-// MAIN DATA FETCH
+// MAIN FUNCTION
 // ============================
 
 async function getMarketData(symbol) {
-  if (symbol) {
-    try {
-      const data = await fetchQuote(symbol);
+  if (!symbol) return [];
 
-      if (!Array.isArray(data) || data.length === 0) {
-        console.warn(`⚠️ Keine Daten fuer Symbol: ${symbol}`);
-        return [];
-      }
+  await ensureSnapshotTable();
 
-      const mapped = await Promise.all(
-        data.map(async (item) => {
-          try {
-            return await buildHQSResponse(item);
-          } catch (err) {
-            console.error(`⚠️ HQS Engine Error fuer ${item.symbol}:`, err.message);
-            return null;
-          }
-        }),
-      );
+  const upperSymbol = String(symbol).toUpperCase();
 
-      return mapped.filter(Boolean);
-    } catch (err) {
-      console.error("❌ getMarketData Error:", err.message);
-      return [];
-    }
+  // 1️⃣ Prüfen ob Snapshot existiert
+  const cached = await getSnapshot(upperSymbol);
+
+  if (cached) {
+    console.log(`🟢 Cache hit for ${upperSymbol}`);
+    return [cached];
   }
 
-  const cached = await readSnapshotCache();
-  if (Array.isArray(cached) && cached.length > 0) {
-    console.log("⚡ Snapshot Cache Hit");
-    return cached;
+  console.log(`🔵 Cache miss for ${upperSymbol} → Fetching API`);
+
+  // 2️⃣ API Call nur wenn nötig
+  const fresh = await fetchQuote(upperSymbol);
+
+  if (!fresh || !fresh.length) {
+    console.warn(`⚠️ No data returned for ${upperSymbol}`);
+    return [];
   }
 
-  return buildMarketSnapshot();
+  // 3️⃣ Snapshot speichern
+  await saveSnapshot(upperSymbol, fresh[0]);
+
+  return fresh;
 }
-
-// ============================
-// STUB: backfill + update
-// (Finnhub entfernt - Candle-Logik deaktiviert)
-// ============================
-
-async function backfillSymbolHistory(symbol) {
-  console.warn(`⚠️ backfillSymbolHistory deaktiviert (Finnhub entfernt) fuer: ${symbol}`);
-  return 0;
-}
-
-async function updateSymbolDaily(symbol) {
-  console.warn(`⚠️ updateSymbolDaily deaktiviert (Finnhub entfernt) fuer: ${symbol}`);
-  return 0;
-}
-
-// ============================
-// EXPORTS
-// ============================
 
 module.exports = {
-  getMarketData,
-  buildMarketSnapshot,
-  ensureTablesExist,
-  backfillSymbolHistory,
-  updateSymbolDaily,
+  getMarketData
 };
