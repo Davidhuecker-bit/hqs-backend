@@ -18,6 +18,18 @@ function safe(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function normalizeWeights(weights) {
+  const sum = Object.values(weights || {}).reduce((a, b) => a + safe(b), 0);
+  if (!sum) return getDefaultWeights();
+
+  const normalized = {};
+  Object.keys(weights).forEach(key => {
+    normalized[key] = safe(weights[key]) / sum;
+  });
+
+  return normalized;
+}
+
 /* =========================================================
    REGIME DETECTION
 ========================================================= */
@@ -34,26 +46,22 @@ function detectRegime(changePercent) {
 
 function regimeMultiplier(regime) {
   switch (regime) {
-    case "expansion": return 1.15;
+    case "expansion": return 1.12;
     case "bull": return 1.05;
     case "bear": return 0.95;
-    case "crash": return 0.85;
+    case "crash": return 0.88;
     default: return 1;
   }
 }
 
 /* =========================================================
-   FACTOR: MOMENTUM
+   FACTORS
 ========================================================= */
 
 function calculateMomentum(item) {
   const change = safe(item.changesPercentage);
   return clamp(50 + change * 3, 0, 100);
 }
-
-/* =========================================================
-   FACTOR: VOLATILITY
-========================================================= */
 
 function calculateStability(item) {
   const high = safe(item.high);
@@ -64,14 +72,11 @@ function calculateStability(item) {
 
   const range = ((high - low) / open) * 100;
 
-  if (range < 2) return 60;
-  if (range > 6) return 40;
-  return 50;
-}
+  if (range < 2) return 65;
+  if (range > 6) return 35;
 
-/* =========================================================
-   FACTOR: QUALITY (Fundamental)
-========================================================= */
+  return clamp(60 - range * 2, 30, 70);
+}
 
 function calculateQuality(f) {
   if (!f) return 50;
@@ -87,18 +92,15 @@ function calculateQuality(f) {
   return clamp(score, 0, 100);
 }
 
-/* =========================================================
-   FACTOR: RELATIVE STRENGTH
-========================================================= */
-
 function calculateRelativeStrength(changePercent, marketProxy = 0.8) {
   const relative = safe(changePercent) - marketProxy;
 
-  if (relative > 2) return 65;
+  if (relative > 2) return 70;
   if (relative > 1) return 60;
   if (relative > 0) return 55;
-  if (relative < -2) return 35;
+  if (relative < -2) return 30;
   if (relative < -1) return 40;
+
   return 50;
 }
 
@@ -107,81 +109,118 @@ function calculateRelativeStrength(changePercent, marketProxy = 0.8) {
 ========================================================= */
 
 async function buildHQSResponse(item = {}) {
-  if (!item || typeof item !== "object") {
-    throw new Error("Invalid item passed to HQS Engine");
-  }
+  try {
+    if (!item || typeof item !== "object") {
+      throw new Error("Invalid item passed to HQS Engine");
+    }
 
-  if (!item.symbol) {
-    throw new Error("Missing symbol in HQS Engine");
-  }
+    if (!item.symbol) {
+      throw new Error("Missing symbol in HQS Engine");
+    }
 
-  // 🔥 Dynamische Gewichte laden
-  let weights = await loadLastWeights();
-  if (!weights) weights = getDefaultWeights();
+    /* =========================
+       LOAD & NORMALIZE WEIGHTS
+    ========================== */
 
-  const fundamentals = await getFundamentals(item.symbol);
+    let weights = await loadLastWeights();
+    if (!weights) weights = getDefaultWeights();
 
-  const regime = detectRegime(item.changesPercentage);
+    weights = normalizeWeights(weights);
 
-  const momentum = calculateMomentum(item);
-  const stability = calculateStability(item);
-  const quality = calculateQuality(fundamentals);
-  const relative = calculateRelativeStrength(item.changesPercentage);
+    /* =========================
+       LOAD FUNDAMENTALS (SAFE)
+    ========================== */
 
-  // Adaptive Gewichtung
-  let baseScore =
-    momentum * weights.momentum +
-    quality * weights.quality +
-    stability * weights.stability +
-    relative * weights.relative;
+    let fundamentals = null;
+    try {
+      fundamentals = await getFundamentals(item.symbol);
+    } catch (err) {
+      console.warn("Fundamental load failed:", err.message);
+    }
 
-  // Marktphase berücksichtigen
-  baseScore *= regimeMultiplier(regime);
+    /* =========================
+       FACTOR CALCULATION
+    ========================== */
 
-  const finalScore = clamp(Math.round(baseScore), 0, 100);
+    const regime = detectRegime(item.changesPercentage);
 
-  /* ===============================================
-     SAVE FACTOR SNAPSHOT (für Learning Loop)
-  =============================================== */
+    const momentum = calculateMomentum(item);
+    const stability = calculateStability(item);
+    const quality = calculateQuality(fundamentals);
+    const relative = calculateRelativeStrength(item.changesPercentage);
 
-  await saveScoreSnapshot({
-    symbol: item.symbol,
-    hqsScore: finalScore,
-    momentum,
-    quality,
-    stability,
-    relative,
-    regime
-  });
+    /* =========================
+       ADAPTIVE SCORING
+    ========================== */
 
-  return {
-    symbol: item.symbol.toUpperCase(),
-    price: safe(item.price),
-    changePercent: safe(item.changesPercentage),
-    regime,
+    let baseScore =
+      momentum * weights.momentum +
+      quality * weights.quality +
+      stability * weights.stability +
+      relative * weights.relative;
 
-    weights,
+    baseScore *= regimeMultiplier(regime);
 
-    breakdown: {
+    const finalScore = clamp(Math.round(baseScore), 0, 100);
+
+    /* =========================
+       SAVE SNAPSHOT
+    ========================== */
+
+    await saveScoreSnapshot({
+      symbol: item.symbol,
+      hqsScore: finalScore,
       momentum,
       quality,
       stability,
-      relative
-    },
+      relative,
+      regime
+    });
 
-    hqsScore: finalScore,
+    /* =========================
+       RESPONSE
+    ========================== */
 
-    rating:
-      finalScore >= 85 ? "Strong Buy"
-      : finalScore >= 70 ? "Buy"
-      : finalScore >= 50 ? "Hold"
-      : "Risk",
+    return {
+      symbol: item.symbol.toUpperCase(),
+      price: safe(item.price),
+      changePercent: safe(item.changesPercentage),
+      regime,
 
-    decision:
-      finalScore >= 70 ? "KAUFEN"
-      : finalScore >= 50 ? "HALTEN"
-      : "NICHT KAUFEN"
-  };
+      weights,
+
+      breakdown: {
+        momentum,
+        quality,
+        stability,
+        relative
+      },
+
+      hqsScore: finalScore,
+
+      rating:
+        finalScore >= 85 ? "Strong Buy"
+        : finalScore >= 70 ? "Buy"
+        : finalScore >= 50 ? "Hold"
+        : "Risk",
+
+      decision:
+        finalScore >= 70 ? "KAUFEN"
+        : finalScore >= 50 ? "HALTEN"
+        : "NICHT KAUFEN",
+
+      timestamp: new Date().toISOString()
+    };
+
+  } catch (error) {
+    console.error("HQS Engine Error:", error.message);
+
+    return {
+      symbol: item?.symbol || null,
+      hqsScore: null,
+      error: "HQS calculation failed"
+    };
+  }
 }
 
 module.exports = {
