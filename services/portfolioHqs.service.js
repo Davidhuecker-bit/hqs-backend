@@ -1,20 +1,22 @@
 // services/portfolioHqs.service.js
-// HQS Portfolio Core Engine
+// Advanced HQS Portfolio Core Engine
 
 const { getGlobalMarketData } = require("./aggregator.service");
 
 /**
- * Berechnet Einzel-Aktien-Score (Basis)
+ * Einzel-Aktien Momentum Score
  */
-function calculateStockScore(stock) {
+function calculateMomentumScore(stock) {
   let score = 50;
 
   if (stock.changesPercentage !== null) {
-    if (stock.changesPercentage > 2) score += 10;
-    if (stock.changesPercentage < -2) score -= 10;
+    if (stock.changesPercentage > 3) score += 15;
+    else if (stock.changesPercentage > 1) score += 8;
+    else if (stock.changesPercentage < -3) score -= 15;
+    else if (stock.changesPercentage < -1) score -= 8;
   }
 
-  if (stock.volume !== null && stock.volume > 1000000) {
+  if (stock.volume !== null && stock.volume > 2_000_000) {
     score += 5;
   }
 
@@ -22,11 +24,30 @@ function calculateStockScore(stock) {
 }
 
 /**
- * Berechnet Diversifikation
+ * Region Diversifikation
  */
-function calculateDiversificationScore(stocks) {
+function calculateRegionScore(stocks) {
   const regions = new Set(stocks.map(s => s.region));
-  return Math.min(100, regions.size * 25);
+  return Math.min(100, regions.size * 30);
+}
+
+/**
+ * Konzentrations-Risiko
+ */
+function calculateConcentrationPenalty(stocks) {
+  const regionCount = {};
+
+  for (const stock of stocks) {
+    regionCount[stock.region] = (regionCount[stock.region] || 0) + 1;
+  }
+
+  const maxRegion = Math.max(...Object.values(regionCount));
+  const concentrationRatio = maxRegion / stocks.length;
+
+  if (concentrationRatio > 0.7) return -20;
+  if (concentrationRatio > 0.5) return -10;
+
+  return 0;
 }
 
 /**
@@ -35,28 +56,42 @@ function calculateDiversificationScore(stocks) {
 async function calculatePortfolioHQS(symbols = []) {
   const marketData = await getGlobalMarketData(symbols);
 
-  const individualScores = marketData.map(stock => ({
-    symbol: stock.symbol,
-    region: stock.region,
-    score: calculateStockScore(stock),
-  }));
+  if (!marketData.length) {
+    return {
+      finalScore: 0,
+      reason: "No market data available",
+    };
+  }
 
-  const averageStockScore =
-    individualScores.reduce((sum, s) => sum + s.score, 0) /
-    (individualScores.length || 1);
+  const momentumScores = marketData.map(calculateMomentumScore);
 
-  const diversificationScore = calculateDiversificationScore(marketData);
+  const avgMomentum =
+    momentumScores.reduce((sum, val) => sum + val, 0) /
+    momentumScores.length;
+
+  const regionScore = calculateRegionScore(marketData);
+  const concentrationPenalty = calculateConcentrationPenalty(marketData);
+
+  const rawScore =
+    avgMomentum * 0.6 +
+    regionScore * 0.3 +
+    50 * 0.1;
 
   const finalScore = Math.round(
-    averageStockScore * 0.7 +
-    diversificationScore * 0.3
+    Math.max(0, Math.min(100, rawScore + concentrationPenalty))
   );
 
   return {
     finalScore,
-    averageStockScore: Math.round(averageStockScore),
-    diversificationScore,
-    breakdown: individualScores,
+    avgMomentum: Math.round(avgMomentum),
+    regionScore,
+    concentrationPenalty,
+    stockCount: marketData.length,
+    breakdown: marketData.map((stock, i) => ({
+      symbol: stock.symbol,
+      region: stock.region,
+      momentumScore: momentumScores[i],
+    })),
   };
 }
 
