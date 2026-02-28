@@ -1,22 +1,23 @@
 // services/segments/china.segment.js
-// China Market Segment Service
+// China Market Segment Service (Dynamic Version)
 
 const { fetchQuote } = require("../providerService");
 
-// Beispiel-Liste (kann später erweitert oder DB-basiert werden)
-const CHINA_SYMBOLS = [
-  "0700.HK", // Tencent
-  "9988.HK", // Alibaba
-  "3690.HK", // Meituan
-  "1810.HK", // Xiaomi
-];
+/**
+ * Holt China-Marktdaten für übergebene Symbole
+ * @param {string[]} symbols
+ */
+async function getChinaMarketData(symbols = []) {
+  if (!Array.isArray(symbols) || symbols.length === 0) {
+    return [];
+  }
 
-async function getChinaMarketData() {
   const results = [];
 
-  for (const symbol of CHINA_SYMBOLS) {
+  for (const symbol of symbols) {
     try {
       const data = await fetchQuote(symbol, "china");
+
       if (Array.isArray(data)) {
         results.push(...data);
       }
