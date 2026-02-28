@@ -1,5 +1,8 @@
-// services/backtestEngine.js
-// HQS Backtesting Engine v1.0
+"use strict";
+
+/*
+  HQS Backtesting Engine – Institutional Version
+*/
 
 function safe(v, f = 0) {
   const n = Number(v);
@@ -11,38 +14,53 @@ function calculateReturn(entry, exit) {
   return ((exit - entry) / entry) * 100;
 }
 
-function simulateStrategy(historicalData = [], scoreThreshold = 70) {
-  if (!Array.isArray(historicalData)) return null;
+function simulateStrategy(history = [], threshold = 70) {
+  if (!Array.isArray(history) || history.length < 2) {
+    return {
+      trades: 0,
+      winRate: 0,
+      totalReturn: 0,
+      averageReturn: 0,
+      equityCurve: []
+    };
+  }
 
   let trades = [];
   let wins = 0;
+  let equity = 100;
+  const equityCurve = [equity];
 
-  for (let i = 0; i < historicalData.length - 1; i++) {
-    const today = historicalData[i];
-    const tomorrow = historicalData[i + 1];
+  for (let i = 0; i < history.length - 1; i++) {
+    const today = history[i];
+    const tomorrow = history[i + 1];
 
-    if (safe(today.hqsScore) >= scoreThreshold) {
-      const tradeReturn = calculateReturn(
+    if (safe(today.hqsScore) >= threshold) {
+      const ret = calculateReturn(
         safe(today.price),
         safe(tomorrow.price)
       );
 
-      trades.push(tradeReturn);
+      trades.push(ret);
 
-      if (tradeReturn > 0) wins++;
+      equity = equity * (1 + ret / 100);
+      equityCurve.push(equity);
+
+      if (ret > 0) wins++;
     }
   }
 
-  const totalReturn = trades.reduce((a, b) => a + b, 0);
+  const totalReturn = equity - 100;
   const winRate = trades.length ? (wins / trades.length) * 100 : 0;
+  const avgReturn = trades.length
+    ? trades.reduce((a, b) => a + b, 0) / trades.length
+    : 0;
 
   return {
     trades: trades.length,
     winRate: Math.round(winRate),
-    totalReturn: Math.round(totalReturn),
-    averageReturn: trades.length
-      ? Math.round(totalReturn / trades.length)
-      : 0,
+    totalReturn: Number(totalReturn.toFixed(2)),
+    averageReturn: Number(avgReturn.toFixed(2)),
+    equityCurve
   };
 }
 
