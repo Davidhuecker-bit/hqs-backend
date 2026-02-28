@@ -1,14 +1,7 @@
 "use strict";
 
 /*
-  HQS PORTFOLIO ENGINE – FINAL SELF-LEARNING VERSION
-  - Momentum
-  - Volatility
-  - Earnings Drift
-  - Correlation
-  - Macro Overlay
-  - Regime Detection
-  - Auto Factor Calibration
+  HQS PORTFOLIO ENGINE – SELF LEARNING + SAFEGUARDS
 */
 
 const axios = require("axios");
@@ -19,19 +12,19 @@ const { calibrateFactorWeights } = require("./autoFactorCalibration.service");
 const FMP_API_KEY = process.env.FMP_API_KEY;
 
 /* =========================
-   DEFAULT FACTOR WEIGHTS
+   DEFAULT WEIGHTS
 ========================= */
 
 const DEFAULT_WEIGHTS = {
-  momentum: 0.3,
-  volatility: 0.1,
-  earnings: 0.2,
-  correlation: 0.2,
-  macro: 0.2
+  momentum: 0.30,
+  volatility: 0.10,
+  earnings: 0.20,
+  correlation: 0.20,
+  macro: 0.20
 };
 
 /* =========================
-   HELPERS
+   Helpers
 ========================= */
 
 function clamp(v, min, max) {
@@ -39,7 +32,7 @@ function clamp(v, min, max) {
 }
 
 /* =========================
-   CORE FACTORS
+   Core Factors
 ========================= */
 
 function calculateMomentum(stock) {
@@ -63,11 +56,11 @@ async function fetchEarningsDrift(symbol) {
   try {
     const url = `https://financialmodelingprep.com/api/v3/analyst-estimates/${symbol}?apikey=${FMP_API_KEY}`;
     const res = await axios.get(url);
-    const estimates = res.data;
-    if (!Array.isArray(estimates) || estimates.length < 2) return 0;
+    const data = res.data;
+    if (!Array.isArray(data) || data.length < 2) return 0;
 
-    const latest = estimates[0]?.estimatedEpsAvg;
-    const prev = estimates[1]?.estimatedEpsAvg;
+    const latest = data[0]?.estimatedEpsAvg;
+    const prev = data[1]?.estimatedEpsAvg;
 
     if (!latest || !prev) return 0;
     if (latest > prev * 1.05) return 8;
@@ -79,11 +72,7 @@ async function fetchEarningsDrift(symbol) {
   }
 }
 
-/* =========================
-   REGIME DETECTION
-========================= */
-
-async function getRegime() {
+async function detectRegime() {
   try {
     const [spy, vix] = await Promise.all([
       axios.get(`https://financialmodelingprep.com/api/v3/quote/SPY?apikey=${FMP_API_KEY}`),
@@ -95,7 +84,6 @@ async function getRegime() {
 
     if (vixLevel > 25) return "risk_off";
     if (spyCh > 1.5) return "risk_on";
-
     return "neutral";
   } catch {
     return "neutral";
@@ -107,7 +95,7 @@ async function getRegime() {
 ========================= */
 
 async function calculatePortfolioHQS(portfolio = []) {
-  if (!Array.isArray(portfolio) || portfolio.length === 0)
+  if (!Array.isArray(portfolio) || !portfolio.length)
     return { finalScore: 0, reason: "Empty portfolio" };
 
   const symbols = portfolio.map(p => p.symbol);
@@ -116,11 +104,18 @@ async function calculatePortfolioHQS(portfolio = []) {
   if (!marketData.length)
     return { finalScore: 0, reason: "No market data available" };
 
-  const regime = await getRegime();
+  const regime = await detectRegime();
 
-  const learned = calibrateFactorWeights(global.factorHistory || []);
+  // Load learned weights safely
+  const learned = calibrateFactorWeights(
+    global.factorHistory || [],
+    global.previousWeights || {}
+  );
+
   const dynamicWeights =
     learned?.[regime] || DEFAULT_WEIGHTS;
+
+  global.previousWeights = learned || global.previousWeights || {};
 
   const enriched = await Promise.all(
     marketData.map(async stock => {
@@ -140,12 +135,12 @@ async function calculatePortfolioHQS(portfolio = []) {
   let weightedScore = 0;
 
   for (const s of enriched) {
-    const factorScore =
+    const score =
       s.momentum * dynamicWeights.momentum +
       s.volatility * dynamicWeights.volatility +
       s.earnings * dynamicWeights.earnings;
 
-    weightedScore += factorScore * (s.weight / totalWeight);
+    weightedScore += score * (s.weight / totalWeight);
   }
 
   const finalScore = Math.round(
