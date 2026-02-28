@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const { Pool } = require("pg");
+const cron = require("node-cron");
 
 const app = express();
 app.use(express.json());
@@ -18,41 +19,36 @@ const pool = new Pool({
 });
 
 // ==============================
-// SAFE TABLE MIGRATION
+// SCORE ENGINE
+// ==============================
+
+function calculateHqsScore(data) {
+  let score = 50;
+
+  if (data.price > data.open) score += 5;
+  if (data.volume > 10000000) score += 5;
+  if (data.high - data.low > 2) score += 5;
+
+  return Math.min(score, 100);
+}
+
+// ==============================
+// SAFE MIGRATION
 // ==============================
 
 async function ensureTablesExist() {
-  // Basis Tabelle
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_snapshots (
       id SERIAL PRIMARY KEY,
       symbol TEXT NOT NULL,
       price NUMERIC,
       hqs_score INTEGER,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  // Migration – fehlende Spalten ergänzen
-  await pool.query(`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS open NUMERIC;`);
-  await pool.query(`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS high NUMERIC;`);
-  await pool.query(`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS low NUMERIC;`);
-  await pool.query(`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS volume BIGINT;`);
-  await pool.query(`ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS source TEXT;`);
-
-  // Daily Tabelle
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS prices_daily (
-      symbol TEXT NOT NULL,
-      date DATE NOT NULL,
       open NUMERIC,
       high NUMERIC,
       low NUMERIC,
-      close NUMERIC,
       volume BIGINT,
       source TEXT,
-      created_at TIMESTAMP DEFAULT NOW(),
-      PRIMARY KEY (symbol, date)
+      created_at TIMESTAMP DEFAULT NOW()
     );
   `);
 
@@ -60,14 +56,13 @@ async function ensureTablesExist() {
 }
 
 // ==============================
-// MASSIVE (Polygon) API
+// MASSIVE API
 // ==============================
 
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
 
 async function fetchSnapshot(symbol) {
   const url = `https://api.massive.com/v2/aggs/ticker/${symbol}/prev?adjusted=true&apiKey=${MASSIVE_API_KEY}`;
-
   const response = await axios.get(url);
 
   if (!response.data.results || response.data.results.length === 0) {
@@ -92,15 +87,18 @@ async function fetchSnapshot(symbol) {
 // ==============================
 
 async function saveSnapshot(data) {
+  const score = calculateHqsScore(data);
+
   await pool.query(
     `
     INSERT INTO market_snapshots
-    (symbol, price, open, high, low, volume, source)
-    VALUES ($1,$2,$3,$4,$5,$6,$7)
+    (symbol, price, hqs_score, open, high, low, volume, source)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
     `,
     [
       data.symbol,
       data.price,
+      score,
       data.open,
       data.high,
       data.low,
@@ -111,7 +109,7 @@ async function saveSnapshot(data) {
 }
 
 // ==============================
-// BUILD MARKET SNAPSHOT
+// BUILD SNAPSHOT
 // ==============================
 
 async function buildMarketSnapshot() {
@@ -133,20 +131,31 @@ async function buildMarketSnapshot() {
 }
 
 // ==============================
-// ROUTES
+// CRON JOB (alle 15 Minuten)
+// ==============================
+
+cron.schedule("*/15 * * * *", async () => {
+  console.log("⏱ Running scheduled snapshot...");
+  await buildMarketSnapshot();
+});
+
+// ==============================
+// API ROUTES
 // ==============================
 
 app.get("/", (req, res) => {
   res.json({ status: "HQS Backend running" });
 });
 
-app.get("/snapshot", async (req, res) => {
-  try {
-    await buildMarketSnapshot();
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+app.get("/market/latest", async (req, res) => {
+  const result = await pool.query(`
+    SELECT DISTINCT ON (symbol)
+    symbol, price, hqs_score, open, high, low, volume, source, created_at
+    FROM market_snapshots
+    ORDER BY symbol, created_at DESC;
+  `);
+
+  res.json(result.rows);
 });
 
 // ==============================
