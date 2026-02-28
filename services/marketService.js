@@ -10,9 +10,9 @@ const pool = new Pool({
 
 const SNAPSHOT_TTL_SECONDS = 60;
 
-// ============================
+// ==========================================================
 // TABLE INIT
-// ============================
+// ==========================================================
 
 async function ensureTablesExist() {
   await pool.query(`
@@ -24,9 +24,9 @@ async function ensureTablesExist() {
   `);
 }
 
-// ============================
+// ==========================================================
 // CACHE
-// ============================
+// ==========================================================
 
 async function getSnapshot(symbol) {
   const res = await pool.query(
@@ -59,9 +59,9 @@ async function saveSnapshot(symbol, data) {
   );
 }
 
-// ============================
-// MAIN
-// ============================
+// ==========================================================
+// MAIN FETCH
+// ==========================================================
 
 async function getMarketData(symbol) {
   if (!symbol) return [];
@@ -89,7 +89,33 @@ async function getMarketData(symbol) {
   return fresh;
 }
 
+// ==========================================================
+// INITIAL SNAPSHOT
+// ==========================================================
+
+async function buildMarketSnapshot() {
+  console.log("🔄 Building market snapshot...");
+
+  const defaultSymbols = ["AAPL", "MSFT", "NVDA", "AMD"];
+
+  for (const symbol of defaultSymbols) {
+    try {
+      const data = await fetchQuote(symbol);
+      if (data.length) {
+        await saveSnapshot(symbol, data[0]);
+      }
+    } catch (err) {
+      console.warn(`Snapshot error for ${symbol}`);
+    }
+  }
+
+  console.log("✅ Snapshot complete");
+}
+
+// ==========================================================
+
 module.exports = {
   getMarketData,
-  ensureTablesExist
+  ensureTablesExist,
+  buildMarketSnapshot
 };
