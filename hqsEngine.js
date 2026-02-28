@@ -2,6 +2,8 @@
 
 const { getFundamentals } = require("./fundamental.service");
 const { saveScoreSnapshot } = require("./factorHistory.repository");
+const { loadLastWeights } = require("./weightHistory.repository");
+const { getDefaultWeights } = require("./autoFactor.service");
 
 /* =========================================================
    UTIL
@@ -53,18 +55,18 @@ function calculateMomentum(item) {
    FACTOR: VOLATILITY
 ========================================================= */
 
-function calculateVolatilityAdjustment(item) {
+function calculateStability(item) {
   const high = safe(item.high);
   const low = safe(item.low);
   const open = safe(item.open);
 
-  if (!open) return 0;
+  if (!open) return 50;
 
   const range = ((high - low) / open) * 100;
 
-  if (range < 2) return 5;
-  if (range > 6) return -5;
-  return 0;
+  if (range < 2) return 60;
+  if (range > 6) return 40;
+  return 50;
 }
 
 /* =========================================================
@@ -86,22 +88,22 @@ function calculateQuality(f) {
 }
 
 /* =========================================================
-   FACTOR: RELATIVE STRENGTH (vs Proxy)
+   FACTOR: RELATIVE STRENGTH
 ========================================================= */
 
 function calculateRelativeStrength(changePercent, marketProxy = 0.8) {
   const relative = safe(changePercent) - marketProxy;
 
-  if (relative > 2) return 15;
-  if (relative > 1) return 8;
-  if (relative > 0) return 4;
-  if (relative < -2) return -10;
-  if (relative < -1) return -5;
-  return 0;
+  if (relative > 2) return 65;
+  if (relative > 1) return 60;
+  if (relative > 0) return 55;
+  if (relative < -2) return 35;
+  if (relative < -1) return 40;
+  return 50;
 }
 
 /* =========================================================
-   MAIN ENGINE
+   MAIN ADAPTIVE ENGINE
 ========================================================= */
 
 async function buildHQSResponse(item = {}) {
@@ -113,27 +115,33 @@ async function buildHQSResponse(item = {}) {
     throw new Error("Missing symbol in HQS Engine");
   }
 
+  // 🔥 Dynamische Gewichte laden
+  let weights = await loadLastWeights();
+  if (!weights) weights = getDefaultWeights();
+
   const fundamentals = await getFundamentals(item.symbol);
 
   const regime = detectRegime(item.changesPercentage);
 
   const momentum = calculateMomentum(item);
+  const stability = calculateStability(item);
   const quality = calculateQuality(fundamentals);
-  const volatilityAdj = calculateVolatilityAdjustment(item);
   const relative = calculateRelativeStrength(item.changesPercentage);
 
+  // Adaptive Gewichtung
   let baseScore =
-    momentum * 0.35 +
-    quality * 0.35 +
-    (50 + volatilityAdj) * 0.2 +
-    (50 + relative) * 0.1;
+    momentum * weights.momentum +
+    quality * weights.quality +
+    stability * weights.stability +
+    relative * weights.relative;
 
+  // Marktphase berücksichtigen
   baseScore *= regimeMultiplier(regime);
 
   const finalScore = clamp(Math.round(baseScore), 0, 100);
 
   /* ===============================================
-     SAVE SNAPSHOT TO DATABASE
+     SAVE FACTOR SNAPSHOT (für Learning Loop)
   =============================================== */
 
   await saveScoreSnapshot({
@@ -141,7 +149,7 @@ async function buildHQSResponse(item = {}) {
     hqsScore: finalScore,
     momentum,
     quality,
-    volatilityAdj,
+    stability,
     relative,
     regime
   });
@@ -152,10 +160,12 @@ async function buildHQSResponse(item = {}) {
     changePercent: safe(item.changesPercentage),
     regime,
 
+    weights,
+
     breakdown: {
       momentum,
       quality,
-      volatilityAdj,
+      stability,
       relative
     },
 
