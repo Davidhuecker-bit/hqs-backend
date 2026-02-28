@@ -1,20 +1,7 @@
 "use strict";
 
-/*
-  Multi-Region Provider Service
-  FMP (Primary) + Alpha Vantage (Fallback)
-  Region aware + Normalized
-*/
-
 const axios = require("axios");
-const path = require("path");
-
-// 🔥 Absolute sichere Require-Variante (Linux safe)
-const { normalizeMarketData } = require(path.join(
-  __dirname,
-  "normalizers",
-  "marketNormalizer"
-));
+const { normalizeMarketData } = require("./marketNormalizer");
 
 // ============================
 // ENV
@@ -30,8 +17,6 @@ const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 function resolveRegion(symbol, regionOverride) {
   if (regionOverride) return regionOverride;
 
-  if (!symbol) return "us";
-
   if (symbol.endsWith(".HK")) return "china";
   if (symbol.endsWith(".T")) return "japan";
   if (symbol.endsWith(".NS")) return "india";
@@ -40,12 +25,12 @@ function resolveRegion(symbol, regionOverride) {
 }
 
 // ============================
-// FMP
+// FMP FETCH
 // ============================
 
 async function fetchFromFMP(symbol, region) {
   if (!FMP_API_KEY) {
-    throw new Error("FMP_API_KEY not configured");
+    throw new Error("FMP API key missing");
   }
 
   const url = `https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(
@@ -58,18 +43,18 @@ async function fetchFromFMP(symbol, region) {
     throw new Error("FMP returned empty array");
   }
 
-  return response.data.map((raw) =>
-    normalizeMarketData(raw, "FMP", region)
-  );
+  return response.data
+    .map((raw) => normalizeMarketData(raw, "FMP", region))
+    .filter(Boolean);
 }
 
 // ============================
-// ALPHA VANTAGE
+// ALPHA VANTAGE FETCH
 // ============================
 
 async function fetchFromAlphaVantage(symbol, region) {
   if (!ALPHA_VANTAGE_API_KEY) {
-    throw new Error("ALPHA_VANTAGE_API_KEY not configured");
+    throw new Error("Alpha Vantage API key missing");
   }
 
   const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
@@ -94,7 +79,8 @@ async function fetchFromAlphaVantage(symbol, region) {
     volume: quote["06. volume"],
   };
 
-  return [normalizeMarketData(raw, "ALPHA_VANTAGE", region)];
+  const normalized = normalizeMarketData(raw, "ALPHA_VANTAGE", region);
+  return normalized ? [normalized] : [];
 }
 
 // ============================
@@ -107,17 +93,13 @@ async function fetchQuote(symbol, regionOverride = null) {
   try {
     return await fetchFromFMP(symbol, region);
   } catch (fmpError) {
-    console.warn(
-      `⚠️ FMP failed for ${symbol}, trying Alpha Vantage...`,
-      fmpError.message
-    );
-
+    console.warn(`⚠️ FMP failed for ${symbol}, trying Alpha Vantage...`);
     return await fetchFromAlphaVantage(symbol, region);
   }
 }
 
 // ============================
-// EXPORTS
+// EXPORT
 // ============================
 
 module.exports = {
