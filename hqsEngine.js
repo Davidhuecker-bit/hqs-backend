@@ -1,16 +1,27 @@
 // services/hqsEngine.js
-// HQS Engine v3.0 – Institutional Core Architecture
+// HQS 4.0 – Institutional Multi-Layer Engine
 
-const { calculateCurrentScore } = require("./services/current.service");
-const { calculateStabilityScore } = require("./services/stability.service");
 const { getFundamentals } = require("./services/fundamental.service");
+
+/* =========================================================
+   UTIL
+========================================================= */
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function safeNumber(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 /* =========================================================
    REGIME ENGINE
 ========================================================= */
 
-function detectMarketRegime(changePercent = 0) {
-  const change = Number(changePercent || 0);
+function detectRegime(changePercent) {
+  const change = safeNumber(changePercent);
 
   if (change > 1.5) return "strong_bull";
   if (change > 0.5) return "bull";
@@ -19,36 +30,31 @@ function detectMarketRegime(changePercent = 0) {
   return "neutral";
 }
 
-function regimeModifier(regime) {
+function regimeWeight(regime) {
   switch (regime) {
-    case "strong_bull":
-      return 5;
-    case "bull":
-      return 2;
-    case "strong_bear":
-      return -5;
-    case "bear":
-      return -2;
-    default:
-      return 0;
+    case "strong_bull": return 1.1;
+    case "bull": return 1.05;
+    case "strong_bear": return 0.9;
+    case "bear": return 0.95;
+    default: return 1;
   }
 }
 
 /* =========================================================
-   STRENGTH LAYER (Marktverhalten)
+   STRENGTH LAYER
 ========================================================= */
 
 function calculateStrengthLayer(item) {
-  const price = Number(item.price || 0);
-  const open = Number(item.open || 0);
-  const high = Number(item.high || 0);
-  const low = Number(item.low || 0);
-  const volume = Number(item.volume || 0);
+  const price = safeNumber(item.price);
+  const open = safeNumber(item.open);
+  const high = safeNumber(item.high);
+  const low = safeNumber(item.low);
+  const volume = safeNumber(item.volume);
 
-  if (!open || !price) return 50;
+  if (!price || !open) return 50;
 
   const momentum = ((price - open) / open) * 100;
-  const volatility = ((high - low) / open) * 100;
+  const intradayRange = ((high - low) / open) * 100;
   const volumeFactor = volume / 10000000;
 
   let score = 50;
@@ -56,64 +62,110 @@ function calculateStrengthLayer(item) {
   // Momentum
   score += momentum * 2;
 
-  // Volumenbestätigung
-  score += Math.min(volumeFactor * 5, 10);
+  // Volumenintelligenz
+  score += clamp(volumeFactor * 5, 0, 15);
 
-  // Gesunde Volatilität
-  if (volatility < 2) score += 5;
-  if (volatility > 6) score -= 5;
+  // Gesunde Struktur
+  if (intradayRange < 2) score += 5;
+  if (intradayRange > 6) score -= 5;
 
   return clamp(score, 0, 100);
 }
 
 /* =========================================================
-   QUALITY LAYER (Fundamental)
+   QUALITY LAYER
 ========================================================= */
 
 function calculateQualityLayer(fundamentals) {
   if (!fundamentals) return 50;
 
+  const revenueGrowth = safeNumber(fundamentals.revenueGrowth);
+  const margin = safeNumber(fundamentals.netMargin);
+  const roe = safeNumber(fundamentals.returnOnEquity);
+  const debt = safeNumber(fundamentals.debtToEquity);
+
   let score = 50;
 
-  const revenueGrowth = Number(fundamentals.revenueGrowth || 0);
-  const profitMargin = Number(fundamentals.netMargin || 0);
-  const debtRatio = Number(fundamentals.debtToEquity || 0);
-  const roe = Number(fundamentals.returnOnEquity || 0);
+  if (revenueGrowth > 15) score += 15;
+  else if (revenueGrowth > 5) score += 8;
 
-  if (revenueGrowth > 10) score += 10;
-  if (profitMargin > 15) score += 10;
-  if (roe > 15) score += 10;
-  if (debtRatio < 1) score += 5;
-  if (debtRatio > 2) score -= 10;
+  if (margin > 20) score += 10;
+  else if (margin > 10) score += 5;
+
+  if (roe > 20) score += 10;
+  else if (roe > 10) score += 5;
+
+  if (debt < 1) score += 5;
+  if (debt > 2) score -= 10;
 
   return clamp(score, 0, 100);
 }
 
 /* =========================================================
-   COMBINATION LOGIC
+   RISK LAYER
 ========================================================= */
 
-function combineLayers(quality, strength, regime) {
-  const baseScore =
-    quality * 0.4 +
-    strength * 0.4 +
-    50 * 0.2; // neutral baseline for regime influence
+function calculateRiskLayer(item) {
+  const open = safeNumber(item.open);
+  const low = safeNumber(item.low);
+  const price = safeNumber(item.price);
 
-  const finalScore = baseScore + regimeModifier(regime);
+  if (!open) return 50;
 
-  return clamp(Math.round(finalScore), 0, 100);
+  const downside = ((open - low) / open) * 100;
+  const overextension = ((price - open) / open) * 100;
+
+  let score = 50;
+
+  if (downside < 1) score += 10;
+  else if (downside > 5) score -= 10;
+
+  if (overextension > 5) score -= 5;
+
+  return clamp(score, 0, 100);
 }
 
 /* =========================================================
-   UTILITY
+   RELATIVE STRENGTH (vs Market Proxy)
+   (Currently simplified – can later integrate index data)
 ========================================================= */
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+function calculateRelativeStrength(changePercent) {
+  const change = safeNumber(changePercent);
+
+  if (change > 3) return 15;
+  if (change > 1) return 8;
+  if (change > 0) return 4;
+  if (change < -3) return -10;
+  if (change < -1) return -5;
+
+  return 0;
 }
 
 /* =========================================================
-   MAIN HQS RESPONSE BUILDER
+   COMBINATION ENGINE
+========================================================= */
+
+function combineAllLayers({
+  quality,
+  strength,
+  risk,
+  relative,
+  regime
+}) {
+  const base =
+    quality * 0.35 +
+    strength * 0.35 +
+    risk * 0.2 +
+    (50 + relative) * 0.1;
+
+  const weighted = base * regimeWeight(regime);
+
+  return clamp(Math.round(weighted), 0, 100);
+}
+
+/* =========================================================
+   MAIN HQS BUILDER
 ========================================================= */
 
 async function buildHQSResponse(item = {}) {
@@ -121,55 +173,54 @@ async function buildHQSResponse(item = {}) {
     throw new Error("Invalid item passed to HQS Engine");
   }
   if (!item.symbol) {
-    throw new Error("Missing symbol in HQS Engine");
+    throw new Error("Missing symbol");
   }
 
   const fundamentals = await getFundamentals(item.symbol);
 
-  const strengthScore = calculateStrengthLayer(item);
   const qualityScore = calculateQualityLayer(fundamentals);
+  const strengthScore = calculateStrengthLayer(item);
+  const riskScore = calculateRiskLayer(item);
+  const relativeScore = calculateRelativeStrength(item.changesPercentage);
+  const regime = detectRegime(item.changesPercentage);
 
-  const regime = detectMarketRegime(item.changesPercentage);
-
-  const hqsScore = combineLayers(
-    qualityScore,
-    strengthScore,
+  const hqsScore = combineAllLayers({
+    quality: qualityScore,
+    strength: strengthScore,
+    risk: riskScore,
+    relative: relativeScore,
     regime
-  );
+  });
 
   return {
-    symbol: String(item.symbol || "").toUpperCase(),
-    price: Number(item.price || 0),
-    changePercent: Number(Number(item.changesPercentage || 0).toFixed(2)),
-    volume: Number(item.volume || 0),
-    marketRegime: regime,
+    symbol: String(item.symbol).toUpperCase(),
+    price: safeNumber(item.price),
+    changePercent: safeNumber(item.changesPercentage),
+    volume: safeNumber(item.volume),
+    regime,
 
     breakdown: {
-      qualityScore: Math.round(qualityScore),
-      strengthScore: Math.round(strengthScore),
-      regimeModifier: regimeModifier(regime)
+      qualityScore,
+      strengthScore,
+      riskScore,
+      relativeModifier: relativeScore
     },
 
     hqsScore,
 
     rating:
-      hqsScore >= 85
-        ? "Strong Buy"
-        : hqsScore >= 70
-        ? "Buy"
-        : hqsScore >= 50
-        ? "Hold"
-        : "Risk",
+      hqsScore >= 85 ? "Strong Buy"
+      : hqsScore >= 70 ? "Buy"
+      : hqsScore >= 50 ? "Hold"
+      : "Risk",
 
     decision:
-      hqsScore >= 70
-        ? "KAUFEN"
-        : hqsScore >= 50
-        ? "HALTEN"
-        : "NICHT KAUFEN",
+      hqsScore >= 70 ? "KAUFEN"
+      : hqsScore >= 50 ? "HALTEN"
+      : "NICHT KAUFEN"
   };
 }
 
 module.exports = {
-  buildHQSResponse,
+  buildHQSResponse
 };
