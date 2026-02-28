@@ -1,28 +1,21 @@
 "use strict";
 
 /*
-  HQS FULL ORCHESTRATOR
-  ----------------------
-  Kombiniert:
-  - Backtest
-  - Portfolio Learning
-  - AutoFactor
-  - HQS Engine
-  - AI Interpretation
+  HQS STOCK ORCHESTRATOR
+  -----------------------
+  Pro Aktie:
+  - Backtest Analyse
+  - HQS Score Berechnung
+  - KI Interpretation
+  - Gewichte werden nur geladen (nicht ständig recalibriert)
 */
 
 const { simulateBacktest } = require("./backtest.service");
-const { runPortfolioLearning } = require("./portfolioLearning.service");
 const { buildHQSResponse } = require("./hqsEngine");
 const { buildInsight } = require("./aiInterpretation.service");
 const { loadLastWeights } = require("./weightHistory.repository");
 
-/*
-  Hauptfunktion:
-  Führt kompletten HQS Zyklus aus
-*/
-
-async function runFullHQSWorkflow({
+async function runStockHQSWorkflow({
   symbol,
   historicalPrices,
   latestMarketData,
@@ -33,25 +26,24 @@ async function runFullHQSWorkflow({
   }
 
   /* =========================
-     1. BACKTEST
+     1. BACKTEST (nur Analyse)
   ========================== */
 
   const trades = simulateBacktest(historicalPrices || []);
 
-  /* =========================
-     2. PORTFOLIO LEARNING
-  ========================== */
+  const volatilityScore =
+    trades.length > 0
+      ? trades.reduce((a, t) => a + Math.abs(t.return), 0) / trades.length
+      : 0;
 
-  const learningResult = await runPortfolioLearning(trades, regime);
-
   /* =========================
-     3. BUILD HQS SCORE
+     2. HQS ENGINE
   ========================== */
 
   const hqsResult = await buildHQSResponse(latestMarketData);
 
   /* =========================
-     4. AI INTERPRETATION
+     3. KI INTERPRETATION
   ========================== */
 
   const insight = buildInsight({
@@ -62,16 +54,18 @@ async function runFullHQSWorkflow({
 
   return {
     symbol,
+    price: latestMarketData.price,
+    regime,
     hqsScore: hqsResult.hqsScore,
     breakdown: hqsResult.breakdown,
-    regime,
-    decision: hqsResult.decision,
     rating: hqsResult.rating,
+    decision: hqsResult.decision,
     aiInsight: insight,
-    learning: learningResult.success || false
+    backtestVolatility: volatilityScore,
+    timestamp: new Date().toISOString()
   };
 }
 
 module.exports = {
-  runFullHQSWorkflow
+  runStockHQSWorkflow
 };
