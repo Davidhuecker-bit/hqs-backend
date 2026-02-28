@@ -1,10 +1,10 @@
 // services/portfolioHqs.service.js
-// Advanced HQS Portfolio Core Engine
+// Advanced HQS Portfolio Engine (Weighted Version)
 
 const { getGlobalMarketData } = require("./aggregator.service");
 
 /**
- * Einzel-Aktien Momentum Score
+ * Momentum Score pro Aktie
  */
 function calculateMomentumScore(stock) {
   let score = 50;
@@ -32,48 +32,79 @@ function calculateRegionScore(stocks) {
 }
 
 /**
- * Konzentrations-Risiko
+ * Konzentrations-Risiko (Gewicht berücksichtigt)
  */
-function calculateConcentrationPenalty(stocks) {
-  const regionCount = {};
+function calculateConcentrationPenalty(portfolio) {
+  const totalWeight = portfolio.reduce((sum, p) => sum + (p.weight || 1), 0);
 
-  for (const stock of stocks) {
-    regionCount[stock.region] = (regionCount[stock.region] || 0) + 1;
+  const regionWeights = {};
+
+  for (const position of portfolio) {
+    const region = position.region;
+    regionWeights[region] =
+      (regionWeights[region] || 0) + (position.weight || 1);
   }
 
-  const maxRegion = Math.max(...Object.values(regionCount));
-  const concentrationRatio = maxRegion / stocks.length;
+  const maxRegionWeight = Math.max(...Object.values(regionWeights));
+  const concentrationRatio = maxRegionWeight / totalWeight;
 
-  if (concentrationRatio > 0.7) return -20;
-  if (concentrationRatio > 0.5) return -10;
+  if (concentrationRatio > 0.7) return -25;
+  if (concentrationRatio > 0.5) return -12;
 
   return 0;
 }
 
 /**
  * Hauptfunktion
+ * @param {Array<{symbol: string, weight?: number}>} portfolio
  */
-async function calculatePortfolioHQS(symbols = []) {
+async function calculatePortfolioHQS(portfolio = []) {
+  if (!Array.isArray(portfolio) || portfolio.length === 0) {
+    return { finalScore: 0, reason: "Empty portfolio" };
+  }
+
+  const symbols = portfolio.map(p => p.symbol);
+
   const marketData = await getGlobalMarketData(symbols);
 
   if (!marketData.length) {
-    return {
-      finalScore: 0,
-      reason: "No market data available",
-    };
+    return { finalScore: 0, reason: "No market data available" };
   }
 
-  const momentumScores = marketData.map(calculateMomentumScore);
+  // Merge Markt + Gewicht
+  const enrichedPortfolio = marketData.map(stock => {
+    const position = portfolio.find(p => p.symbol === stock.symbol);
+    return {
+      ...stock,
+      weight: position?.weight || 1,
+    };
+  });
 
-  const avgMomentum =
-    momentumScores.reduce((sum, val) => sum + val, 0) /
-    momentumScores.length;
+  const totalWeight = enrichedPortfolio.reduce(
+    (sum, p) => sum + p.weight,
+    0
+  );
 
-  const regionScore = calculateRegionScore(marketData);
-  const concentrationPenalty = calculateConcentrationPenalty(marketData);
+  let weightedMomentumSum = 0;
+
+  const breakdown = enrichedPortfolio.map(stock => {
+    const momentumScore = calculateMomentumScore(stock);
+
+    weightedMomentumSum += momentumScore * (stock.weight / totalWeight);
+
+    return {
+      symbol: stock.symbol,
+      region: stock.region,
+      weight: stock.weight,
+      momentumScore,
+    };
+  });
+
+  const regionScore = calculateRegionScore(enrichedPortfolio);
+  const concentrationPenalty = calculateConcentrationPenalty(enrichedPortfolio);
 
   const rawScore =
-    avgMomentum * 0.6 +
+    weightedMomentumSum * 0.6 +
     regionScore * 0.3 +
     50 * 0.1;
 
@@ -83,15 +114,11 @@ async function calculatePortfolioHQS(symbols = []) {
 
   return {
     finalScore,
-    avgMomentum: Math.round(avgMomentum),
+    weightedMomentum: Math.round(weightedMomentumSum),
     regionScore,
     concentrationPenalty,
-    stockCount: marketData.length,
-    breakdown: marketData.map((stock, i) => ({
-      symbol: stock.symbol,
-      region: stock.region,
-      momentumScore: momentumScores[i],
-    })),
+    stockCount: enrichedPortfolio.length,
+    breakdown,
   };
 }
 
