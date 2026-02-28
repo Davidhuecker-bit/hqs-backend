@@ -1,6 +1,7 @@
 // services/providerService.js
+// Multi-Region Provider Service
 // FMP (Primary) + Alpha Vantage (Fallback)
-// Mit globalem Market Normalizer
+// Region aware + Normalized
 
 const axios = require("axios");
 const { normalizeMarketData } = require("./normalizers/marketNormalizer");
@@ -13,10 +14,24 @@ const FMP_API_KEY = process.env.FMP_API_KEY;
 const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 // ============================
-// FMP QUOTE (STABLE ROUTE)
+// REGION RESOLUTION
 // ============================
 
-async function fetchFromFMP(symbol) {
+function resolveRegion(symbol, regionOverride) {
+  if (regionOverride) return regionOverride;
+
+  if (symbol.endsWith(".HK")) return "china";
+  if (symbol.endsWith(".T")) return "japan";
+  if (symbol.endsWith(".NS")) return "india";
+
+  return "us";
+}
+
+// ============================
+// FMP
+// ============================
+
+async function fetchFromFMP(symbol, region) {
   const url = `https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(
     symbol,
   )}&apikey=${encodeURIComponent(FMP_API_KEY || "")}`;
@@ -28,15 +43,15 @@ async function fetchFromFMP(symbol) {
   }
 
   return response.data.map((raw) =>
-    normalizeMarketData(raw, "FMP", "us"),
+    normalizeMarketData(raw, "FMP", region),
   );
 }
 
 // ============================
-// ALPHA VANTAGE FALLBACK
+// ALPHA VANTAGE
 // ============================
 
-async function fetchFromAlphaVantage(symbol) {
+async function fetchFromAlphaVantage(symbol, region) {
   const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
     symbol,
   )}&apikey=${encodeURIComponent(ALPHA_VANTAGE_API_KEY || "")}`;
@@ -59,19 +74,21 @@ async function fetchFromAlphaVantage(symbol) {
     volume: quote["06. volume"],
   };
 
-  return [normalizeMarketData(raw, "ALPHA_VANTAGE", "us")];
+  return [normalizeMarketData(raw, "ALPHA_VANTAGE", region)];
 }
 
 // ============================
 // MAIN FETCH
 // ============================
 
-async function fetchQuote(symbol) {
+async function fetchQuote(symbol, regionOverride = null) {
+  const region = resolveRegion(symbol, regionOverride);
+
   try {
-    return await fetchFromFMP(symbol);
+    return await fetchFromFMP(symbol, region);
   } catch (fmpError) {
     console.warn(`⚠️ FMP failed for ${symbol}, trying Alpha Vantage...`);
-    return await fetchFromAlphaVantage(symbol);
+    return await fetchFromAlphaVantage(symbol, region);
   }
 }
 
