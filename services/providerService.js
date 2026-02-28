@@ -1,10 +1,20 @@
-// services/providerService.js
-// Multi-Region Provider Service
-// FMP (Primary) + Alpha Vantage (Fallback)
-// Region aware + Normalized
+"use strict";
+
+/*
+  Multi-Region Provider Service
+  FMP (Primary) + Alpha Vantage (Fallback)
+  Region aware + Normalized
+*/
 
 const axios = require("axios");
-const { normalizeMarketData } = require("./normalizers/marketNormalizer");
+const path = require("path");
+
+// 🔥 Absolute sichere Require-Variante (Linux safe)
+const { normalizeMarketData } = require(path.join(
+  __dirname,
+  "normalizers",
+  "marketNormalizer"
+));
 
 // ============================
 // ENV
@@ -20,6 +30,8 @@ const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 function resolveRegion(symbol, regionOverride) {
   if (regionOverride) return regionOverride;
 
+  if (!symbol) return "us";
+
   if (symbol.endsWith(".HK")) return "china";
   if (symbol.endsWith(".T")) return "japan";
   if (symbol.endsWith(".NS")) return "india";
@@ -32,18 +44,22 @@ function resolveRegion(symbol, regionOverride) {
 // ============================
 
 async function fetchFromFMP(symbol, region) {
-  const url = `https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(
-    symbol,
-  )}&apikey=${encodeURIComponent(FMP_API_KEY || "")}`;
+  if (!FMP_API_KEY) {
+    throw new Error("FMP_API_KEY not configured");
+  }
 
-  const response = await axios.get(url);
+  const url = `https://financialmodelingprep.com/stable/quote?symbol=${encodeURIComponent(
+    symbol
+  )}&apikey=${encodeURIComponent(FMP_API_KEY)}`;
+
+  const response = await axios.get(url, { timeout: 10000 });
 
   if (!Array.isArray(response.data) || response.data.length === 0) {
     throw new Error("FMP returned empty array");
   }
 
   return response.data.map((raw) =>
-    normalizeMarketData(raw, "FMP", region),
+    normalizeMarketData(raw, "FMP", region)
   );
 }
 
@@ -52,11 +68,15 @@ async function fetchFromFMP(symbol, region) {
 // ============================
 
 async function fetchFromAlphaVantage(symbol, region) {
-  const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
-    symbol,
-  )}&apikey=${encodeURIComponent(ALPHA_VANTAGE_API_KEY || "")}`;
+  if (!ALPHA_VANTAGE_API_KEY) {
+    throw new Error("ALPHA_VANTAGE_API_KEY not configured");
+  }
 
-  const response = await axios.get(url);
+  const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(
+    symbol
+  )}&apikey=${encodeURIComponent(ALPHA_VANTAGE_API_KEY)}`;
+
+  const response = await axios.get(url, { timeout: 10000 });
 
   const quote = response.data?.["Global Quote"];
 
@@ -87,7 +107,11 @@ async function fetchQuote(symbol, regionOverride = null) {
   try {
     return await fetchFromFMP(symbol, region);
   } catch (fmpError) {
-    console.warn(`⚠️ FMP failed for ${symbol}, trying Alpha Vantage...`);
+    console.warn(
+      `⚠️ FMP failed for ${symbol}, trying Alpha Vantage...`,
+      fmpError.message
+    );
+
     return await fetchFromAlphaVantage(symbol, region);
   }
 }
