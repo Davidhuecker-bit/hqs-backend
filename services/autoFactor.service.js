@@ -1,13 +1,12 @@
 "use strict";
 
 /*
-  HQS Auto-Factor Learning Engine
-  --------------------------------
-  Ziel:
-  - Dynamische Gewichtsanpassung
-  - Performance-basiertes Lernen
-  - Regime-sensitives Feintuning
-  - Stabilitäts-Absicherung (keine Extremwerte)
+  HQS Auto-Factor Learning Engine – Hardened Version
+  ---------------------------------------------------
+  - Adaptive Learning Rate
+  - Drift Protection
+  - Regime Sensitivity
+  - Stability Safeguards
 */
 
 function clamp(value, min, max) {
@@ -17,7 +16,14 @@ function clamp(value, min, max) {
 function normalizeWeights(weights) {
   const sum = Object.values(weights).reduce((a, b) => a + b, 0);
 
-  if (!sum || sum === 0) return weights;
+  if (!sum || sum === 0) {
+    return {
+      momentum: 0.25,
+      quality: 0.25,
+      stability: 0.25,
+      relative: 0.25
+    };
+  }
 
   const normalized = {};
   Object.keys(weights).forEach(key => {
@@ -27,16 +33,15 @@ function normalizeWeights(weights) {
   return normalized;
 }
 
-/*
-  PERFORMANCE INPUT STRUCTURE:
+function calculateLearningRate(performance) {
+  const sharpe = Number(performance?.sharpe || 0);
+  const winRate = Number(performance?.winRate || 0);
 
-  performance = {
-    winRate: number,
-    sharpe: number,
-    maxDrawdown: number,
-    totalReturn: number
-  }
-*/
+  // stärkeres Lernen bei starker Performance
+  const strength = clamp((sharpe + winRate / 100) / 2, 0, 2);
+
+  return 0.01 + strength * 0.01; 
+}
 
 function adjustWeights(currentWeights, performance, regime = "neutral") {
   if (!currentWeights) {
@@ -50,30 +55,32 @@ function adjustWeights(currentWeights, performance, regime = "neutral") {
   const drawdown = Number(performance?.maxDrawdown || 0);
   const totalReturn = Number(performance?.totalReturn || 0);
 
+  const lr = calculateLearningRate(performance);
+
   /*
-    ===== 1. WinRate Adjustment =====
+    ===== 1. Momentum & Relative =====
   */
 
   if (winRate > 60) {
-    weights.momentum += 0.02;
-    weights.relative += 0.01;
+    weights.momentum += lr;
+    weights.relative += lr / 2;
   }
 
   if (winRate < 45) {
-    weights.momentum -= 0.02;
-    weights.relative -= 0.01;
+    weights.momentum -= lr;
+    weights.relative -= lr / 2;
   }
 
   /*
-    ===== 2. Sharpe Ratio Adjustment =====
+    ===== 2. Quality & Stability via Sharpe =====
   */
 
   if (sharpe > 1.5) {
-    weights.quality += 0.02;
+    weights.quality += lr;
   }
 
   if (sharpe < 0.8) {
-    weights.stability += 0.02;
+    weights.stability += lr;
   }
 
   /*
@@ -81,21 +88,21 @@ function adjustWeights(currentWeights, performance, regime = "neutral") {
   */
 
   if (drawdown > 20) {
-    weights.stability += 0.03;
-    weights.momentum -= 0.02;
+    weights.stability += lr * 1.5;
+    weights.momentum -= lr;
   }
 
   /*
-    ===== 4. Total Return Confirmation =====
+    ===== 4. Total Return Bias =====
   */
 
   if (totalReturn > 15) {
-    weights.momentum += 0.01;
+    weights.momentum += lr / 2;
   }
 
   if (totalReturn < 0) {
-    weights.stability += 0.02;
-    weights.quality += 0.01;
+    weights.stability += lr;
+    weights.quality += lr / 2;
   }
 
   /*
@@ -103,17 +110,16 @@ function adjustWeights(currentWeights, performance, regime = "neutral") {
   */
 
   if (regime === "bull" || regime === "expansion") {
-    weights.momentum += 0.01;
+    weights.momentum += lr / 2;
   }
 
   if (regime === "bear" || regime === "crash") {
-    weights.stability += 0.02;
-    weights.quality += 0.01;
+    weights.stability += lr;
+    weights.quality += lr / 2;
   }
 
   /*
-    ===== 6. Clamp Limits =====
-    Kein Faktor darf unter 5% oder über 60% liegen
+    ===== 6. Clamp Hard Limits
   */
 
   Object.keys(weights).forEach(key => {
@@ -121,17 +127,11 @@ function adjustWeights(currentWeights, performance, regime = "neutral") {
   });
 
   /*
-    ===== 7. Normalize to 1 =====
+    ===== 7. Normalize to 1
   */
 
-  const normalized = normalizeWeights(weights);
-
-  return normalized;
+  return normalizeWeights(weights);
 }
-
-/*
-  Default Starting Weights
-*/
 
 function getDefaultWeights() {
   return {
