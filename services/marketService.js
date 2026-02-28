@@ -1,5 +1,5 @@
 // services/marketService.js
-// HQS Market Snapshot Service (Massive Only)
+// HQS Market System (Massive + Snapshot + Table Init)
 
 const { fetchQuote } = require("./providerService");
 const { Pool } = require("pg");
@@ -10,13 +10,35 @@ const pool = new Pool({
 });
 
 // ============================
-// SYMBOLS
+// TABLE INIT
+// ============================
+
+async function ensureTablesExist() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS market_snapshots (
+      id SERIAL PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      price NUMERIC,
+      open NUMERIC,
+      high NUMERIC,
+      low NUMERIC,
+      volume BIGINT,
+      source TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  console.log("✅ Tables ensured");
+}
+
+// ============================
+// WATCHLIST
 // ============================
 
 const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
 // ============================
-// BUILD SNAPSHOT
+// SNAPSHOT BUILDER
 // ============================
 
 async function buildMarketSnapshot() {
@@ -60,4 +82,5 @@ async function buildMarketSnapshot() {
 
 module.exports = {
   buildMarketSnapshot,
+  ensureTablesExist,
 };
