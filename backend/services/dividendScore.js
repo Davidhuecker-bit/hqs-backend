@@ -1,19 +1,28 @@
+// backend/services/dividendScore.js
+
 function calculateDividendScore(dividendHistory) {
-  if (!dividendHistory || dividendHistory.length < 5) {
+  if (!Array.isArray(dividendHistory) || dividendHistory.length < 5) {
     return 20;
   }
 
-  const sorted = dividendHistory.sort(
-    (a, b) => new Date(a.ex_dividend_date) - new Date(b.ex_dividend_date)
+  const sorted = [...dividendHistory].sort(
+    (a, b) =>
+      new Date(a.ex_dividend_date) - new Date(b.ex_dividend_date)
   );
 
-  const latest = sorted[sorted.length - 1].cash_amount;
-  const fiveYearsAgo = sorted[Math.max(0, sorted.length - 20)].cash_amount;
+  const latest = sorted[sorted.length - 1]?.cash_amount;
+  const fiveYearsAgo =
+    sorted[Math.max(0, sorted.length - 20)]?.cash_amount;
 
-  if (!fiveYearsAgo || fiveYearsAgo === 0) return 30;
+  if (!latest || !fiveYearsAgo || fiveYearsAgo === 0) {
+    return 30;
+  }
 
   const growthRate = (latest - fiveYearsAgo) / fiveYearsAgo;
 
+  // -----------------------------
+  // Growth Score (35%)
+  // -----------------------------
   let growthScore = 40;
   if (growthRate > 0.1) growthScore = 100;
   else if (growthRate > 0.05) growthScore = 80;
@@ -21,6 +30,9 @@ function calculateDividendScore(dividendHistory) {
   else if (growthRate > 0) growthScore = 40;
   else growthScore = 10;
 
+  // -----------------------------
+  // Stability Score (25%)
+  // -----------------------------
   let cuts = 0;
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].cash_amount < sorted[i - 1].cash_amount) {
@@ -33,6 +45,9 @@ function calculateDividendScore(dividendHistory) {
   else if (cuts <= 3) stabilityScore = 40;
   else if (cuts > 3) stabilityScore = 10;
 
+  // -----------------------------
+  // History Score (20%)
+  // -----------------------------
   const years =
     (new Date(sorted[sorted.length - 1].ex_dividend_date) -
       new Date(sorted[0].ex_dividend_date)) /
@@ -44,7 +59,10 @@ function calculateDividendScore(dividendHistory) {
   else if (years > 10) historyScore = 60;
   else if (years > 5) historyScore = 40;
 
-  const avgPerYear = sorted.length / years;
+  // -----------------------------
+  // Consistency Score (20%)
+  // -----------------------------
+  const avgPerYear = sorted.length / (years || 1);
 
   let consistencyScore = 40;
   if (avgPerYear >= 3.5) consistencyScore = 100;
