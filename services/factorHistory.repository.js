@@ -12,7 +12,6 @@ const pool = new Pool({
 ========================================================= */
 
 async function initFactorTable() {
-
   // Basis-Tabelle erstellen falls nicht vorhanden
   await pool.query(`
     CREATE TABLE IF NOT EXISTS factor_history (
@@ -41,10 +40,7 @@ async function initFactorTable() {
     );
   `);
 
-  /* =========================================================
-     SCHEMA SAFE UPGRADE (für bestehende DBs)
-  ========================================================= */
-
+  // Schema safe upgrade
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS momentum FLOAT;`);
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS quality FLOAT;`);
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS stability FLOAT;`);
@@ -76,7 +72,7 @@ async function saveScoreSnapshot({
   relative,
   regime,
   marketAverage,
-  volatility
+  volatility,
 }) {
   try {
     await pool.query(
@@ -95,8 +91,8 @@ async function saveScoreSnapshot({
         relative ?? null,
         regime,
         marketAverage ?? null,
-        volatility ?? null
-      ],
+        volatility ?? null,
+      ]
     );
   } catch (err) {
     console.error("❌ saveScoreSnapshot error:", err.message);
@@ -115,13 +111,7 @@ async function saveFactorSnapshot(regime, portfolioReturn, factors) {
       (symbol, hqs_score, regime, portfolio_return, factors)
       VALUES ($1,$2,$3,$4,$5)
       `,
-      [
-        "PORTFOLIO",
-        0,
-        regime,
-        portfolioReturn ?? null,
-        factors ?? null,
-      ],
+      ["PORTFOLIO", 0, regime, portfolioReturn ?? null, factors ?? null]
     );
   } catch (err) {
     console.error("❌ saveFactorSnapshot error:", err.message);
@@ -130,12 +120,65 @@ async function saveFactorSnapshot(regime, portfolioReturn, factors) {
 
 /* =========================================================
    UPDATE FORWARD RETURNS (LABELING)
+   ✅ BACKWARD + FORWARD COMPATIBLE
+
+   ALT:
+     updateForwardReturns(symbol, hoursAhead, percentChange)
+
+   NEU:
+     updateForwardReturns(rowId, forward1d, forward3d)
 ========================================================= */
 
-async function updateForwardReturns(symbol, hoursAhead, percentChange) {
+async function updateForwardReturns(a, b, c) {
   try {
-    let column;
+    // ============================
+    // NEW MODE: (rowId, forward1d, forward3d)
+    // ============================
+    if (Number.isFinite(Number(a)) && typeof b === "number") {
+      const rowId = Number(a);
+      const forward1d = b;
+      const forward3d = c;
 
+      const sets = [];
+      const values = [];
+      let idx = 1;
+
+      if (forward1d !== null && forward1d !== undefined) {
+        sets.push(`forward_return_1d = $${idx++}`);
+        values.push(Number(forward1d));
+      }
+
+      if (forward3d !== null && forward3d !== undefined) {
+        sets.push(`forward_return_3d = $${idx++}`);
+        values.push(Number(forward3d));
+      }
+
+      if (!sets.length) return;
+
+      values.push(rowId);
+
+      await pool.query(
+        `
+        UPDATE factor_history
+        SET ${sets.join(", ")}
+        WHERE id = $${idx}
+        `,
+        values
+      );
+
+      return;
+    }
+
+    // ============================
+    // OLD MODE: (symbol, hoursAhead, percentChange)
+    // ============================
+    const symbol = String(a || "").trim().toUpperCase();
+    const hoursAhead = Number(b);
+    const percentChange = c;
+
+    if (!symbol || !Number.isFinite(hoursAhead)) return;
+
+    let column;
     if (hoursAhead === 1) column = "forward_return_1h";
     else if (hoursAhead === 24) column = "forward_return_1d";
     else column = "forward_return_3d";
@@ -145,11 +188,10 @@ async function updateForwardReturns(symbol, hoursAhead, percentChange) {
       UPDATE factor_history
       SET ${column} = $1
       WHERE symbol = $2
-      AND ${column} IS NULL
+        AND ${column} IS NULL
       `,
       [percentChange, symbol]
     );
-
   } catch (err) {
     console.error("❌ updateForwardReturns error:", err.message);
   }
@@ -168,7 +210,7 @@ async function loadFactorHistory(limit = 500) {
       ORDER BY created_at ASC
       LIMIT $1
       `,
-      [limit],
+      [limit]
     );
 
     return res.rows;
@@ -183,5 +225,5 @@ module.exports = {
   saveScoreSnapshot,
   saveFactorSnapshot,
   loadFactorHistory,
-  updateForwardReturns
+  updateForwardReturns,
 };
