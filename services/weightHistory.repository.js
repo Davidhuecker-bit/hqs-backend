@@ -36,7 +36,7 @@ async function saveWeightSnapshot(regime, weights, performance) {
       INSERT INTO weight_history (regime, weights, performance)
       VALUES ($1, $2, $3)
       `,
-      [regime, weights, performance],
+      [regime, weights, performance]
     );
   } catch (err) {
     console.error("❌ saveWeightSnapshot error:", err.message);
@@ -65,8 +65,66 @@ async function loadLastWeights() {
   }
 }
 
+/* =========================================================
+   AGGRESSIVE LEARNING FUNCTION
+========================================================= */
+
+async function computeAdaptiveWeights(regime) {
+  try {
+    const res = await pool.query(`
+      SELECT momentum, quality, stability, relative
+      FROM factor_history
+      WHERE regime = $1
+      ORDER BY created_at DESC
+      LIMIT 200
+    `, [regime]);
+
+    if (!res.rows.length) return null;
+
+    let totals = {
+      momentum: 0,
+      quality: 0,
+      stability: 0,
+      relative: 0
+    };
+
+    res.rows.forEach(row => {
+      totals.momentum += Number(row.momentum) || 0;
+      totals.quality += Number(row.quality) || 0;
+      totals.stability += Number(row.stability) || 0;
+      totals.relative += Number(row.relative) || 0;
+    });
+
+    const sum =
+      totals.momentum +
+      totals.quality +
+      totals.stability +
+      totals.relative;
+
+    if (!sum) return null;
+
+    const weights = {
+      momentum: totals.momentum / sum,
+      quality: totals.quality / sum,
+      stability: totals.stability / sum,
+      relative: totals.relative / sum
+    };
+
+    await saveWeightSnapshot(regime, weights, {
+      sampleSize: res.rows.length
+    });
+
+    return weights;
+
+  } catch (err) {
+    console.error("❌ computeAdaptiveWeights error:", err.message);
+    return null;
+  }
+}
+
 module.exports = {
   initWeightTable,
   saveWeightSnapshot,
   loadLastWeights,
+  computeAdaptiveWeights
 };
