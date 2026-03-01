@@ -14,6 +14,9 @@ const {
 const { analyzeStockWithGuardian } = require("./services/guardianService");
 const { getMarketDataBySegment } = require("./services/aggregator.service");
 
+// ✅ NEU: Portfolio Engine
+const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
+
 // ✅ DB init tables (Learning / HQS)
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
@@ -42,34 +45,31 @@ app.use(express.json());
 
 // ==========================================================
 // RESPONSE FORMATTER
-// Defensive: all score fields fall back to null.
 // ==========================================================
 function formatMarketItem(item) {
   if (!item || typeof item !== "object") return null;
   return {
     symbol: item.symbol || null,
-    price: item.price !== undefined ? item.price : null,
-    change: item.change !== undefined ? item.change : null,
-    changesPercentage: item.changesPercentage !== undefined ? item.changesPercentage : null,
-    high: item.high !== undefined ? item.high : null,
-    low: item.low !== undefined ? item.low : null,
-    open: item.open !== undefined ? item.open : null,
-    previousClose: item.previousClose !== undefined ? item.previousClose : null,
-    marketCap: item.marketCap !== undefined ? item.marketCap : null,
-    score: item.score !== undefined ? item.score : null,
-    rating: item.rating !== undefined ? item.rating : null,
-    risk: item.risk !== undefined ? item.risk : null,
-    momentum: item.momentum !== undefined ? item.momentum : null,
-    stability: item.stability !== undefined ? item.stability : null,
-    timestamp: item.timestamp !== undefined ? item.timestamp : null,
+    price: item.price ?? null,
+    change: item.change ?? null,
+    changesPercentage: item.changesPercentage ?? null,
+    high: item.high ?? null,
+    low: item.low ?? null,
+    open: item.open ?? null,
+    previousClose: item.previousClose ?? null,
+    marketCap: item.marketCap ?? null,
+    score: item.score ?? null,
+    rating: item.rating ?? null,
+    risk: item.risk ?? null,
+    momentum: item.momentum ?? null,
+    stability: item.stability ?? null,
+    timestamp: item.timestamp ?? null,
     source: item.source || null,
   };
 }
 
 // ==========================================================
 // MARKET ROUTE
-// GET /api/market
-// GET /api/market?symbol=AAPL
 // ==========================================================
 app.get("/api/market", async (req, res) => {
   try {
@@ -83,7 +83,6 @@ app.get("/api/market", async (req, res) => {
       ? raw.map(formatMarketItem).filter(Boolean)
       : [];
 
-    // ✅ Wichtig: "stocks" (Frontend-friendly)
     return res.json({
       success: true,
       count: stocks.length,
@@ -126,7 +125,7 @@ app.get("/api/segment", async (req, res) => {
 });
 
 // ==========================================================
-// GUARDIAN ANALYZE (SEGMENT BASED)
+// GUARDIAN ANALYZE
 // ==========================================================
 app.get("/api/guardian/analyze/:ticker", async (req, res) => {
   try {
@@ -181,12 +180,43 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 });
 
 // ==========================================================
+// 🔥 PORTFOLIO ROUTE (NEU)
+// POST /api/portfolio
+// ==========================================================
+app.post("/api/portfolio", async (req, res) => {
+  try {
+    const portfolio = req.body;
+
+    if (!Array.isArray(portfolio) || portfolio.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Portfolio muss ein Array sein.",
+      });
+    }
+
+    const result = await calculatePortfolioHQS(portfolio);
+
+    return res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error("Portfolio API Error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Portfolio Berechnung fehlgeschlagen",
+      error: error.message,
+    });
+  }
+});
+
+// ==========================================================
 // SERVER START
 // ==========================================================
 app.listen(PORT, async () => {
   console.log(`HQS Backend aktiv auf Port ${PORT}`);
 
-  // ✅ Schritt 1: alle Tabellen anlegen
   await ensureTablesExist();
   await initFactorTable();
   await initWeightTable();
@@ -198,7 +228,9 @@ app.listen(PORT, async () => {
   }
 });
 
-// Warmup / Snapshot
+// ==========================================================
+// WARMUP SNAPSHOT
+// ==========================================================
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
