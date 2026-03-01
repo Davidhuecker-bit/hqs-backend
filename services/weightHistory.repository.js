@@ -66,22 +66,22 @@ async function loadLastWeights() {
 }
 
 /* =========================================================
-   AGGRESSIVE LEARNING FUNCTION
+   🚀 PERFORMANCE-BASED REINFORCEMENT LEARNING
 ========================================================= */
 
 async function computeAdaptiveWeights(regime) {
   try {
     const res = await pool.query(`
-      SELECT momentum, quality, stability, relative
+      SELECT momentum, quality, stability, relative, hqs_score
       FROM factor_history
       WHERE regime = $1
       ORDER BY created_at DESC
-      LIMIT 200
+      LIMIT 300
     `, [regime]);
 
     if (!res.rows.length) return null;
 
-    let totals = {
+    let reinforcement = {
       momentum: 0,
       quality: 0,
       stability: 0,
@@ -89,30 +89,35 @@ async function computeAdaptiveWeights(regime) {
     };
 
     res.rows.forEach(row => {
-      totals.momentum += Number(row.momentum) || 0;
-      totals.quality += Number(row.quality) || 0;
-      totals.stability += Number(row.stability) || 0;
-      totals.relative += Number(row.relative) || 0;
+      const performanceSignal = Number(row.hqs_score) || 0;
+
+      reinforcement.momentum += (Number(row.momentum) || 0) * performanceSignal;
+      reinforcement.quality += (Number(row.quality) || 0) * performanceSignal;
+      reinforcement.stability += (Number(row.stability) || 0) * performanceSignal;
+      reinforcement.relative += (Number(row.relative) || 0) * performanceSignal;
     });
 
     const sum =
-      totals.momentum +
-      totals.quality +
-      totals.stability +
-      totals.relative;
+      reinforcement.momentum +
+      reinforcement.quality +
+      reinforcement.stability +
+      reinforcement.relative;
 
     if (!sum) return null;
 
     const weights = {
-      momentum: totals.momentum / sum,
-      quality: totals.quality / sum,
-      stability: totals.stability / sum,
-      relative: totals.relative / sum
+      momentum: reinforcement.momentum / sum,
+      quality: reinforcement.quality / sum,
+      stability: reinforcement.stability / sum,
+      relative: reinforcement.relative / sum
     };
 
     await saveWeightSnapshot(regime, weights, {
-      sampleSize: res.rows.length
+      learningSamples: res.rows.length,
+      mode: "reinforcement"
     });
+
+    console.log("🧠 Adaptive weights updated:", weights);
 
     return weights;
 
