@@ -8,82 +8,83 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+/* =========================================================
+   HELPER
+========================================================= */
+
 function percentChange(oldPrice, newPrice) {
   if (!oldPrice || !newPrice) return null;
   return ((newPrice - oldPrice) / oldPrice) * 100;
 }
 
-async function runForwardLabeling() {
+/* =========================================================
+   FORWARD RETURN LABELING
+========================================================= */
+
+async function runForwardLearning() {
   try {
 
-    const rows = await pool.query(`
+    const baseRows = await pool.query(`
       SELECT id, symbol, created_at
       FROM factor_history
-      WHERE forward_return_1h IS NULL
+      WHERE forward_return_1d IS NULL
       ORDER BY created_at ASC
       LIMIT 200
     `);
 
-    if (!rows.rows.length) return;
+    if (!baseRows.rows.length) return;
 
-    for (const row of rows.rows) {
+    for (const row of baseRows.rows) {
 
-      const priceResult = await pool.query(`
+      const snapshots = await pool.query(`
         SELECT price, created_at
         FROM market_snapshots
         WHERE symbol = $1
         ORDER BY created_at ASC
       `, [row.symbol]);
 
-      if (!priceResult.rows.length) continue;
+      if (!snapshots.rows.length) continue;
 
-      const snapshotList = priceResult.rows;
+      const baseTime = new Date(row.created_at).getTime();
 
-      const baseSnapshot = snapshotList.find(
-        s => new Date(s.created_at).getTime() >= new Date(row.created_at).getTime()
+      const baseSnapshot = snapshots.rows.find(
+        s => new Date(s.created_at).getTime() >= baseTime
       );
 
       if (!baseSnapshot) continue;
 
-      const baseTime = new Date(baseSnapshot.created_at).getTime();
       const basePrice = Number(baseSnapshot.price);
 
-      const oneHour = snapshotList.find(
-        s => new Date(s.created_at).getTime() >= baseTime + 60 * 60 * 1000
-      );
-
-      const oneDay = snapshotList.find(
+      const oneDaySnapshot = snapshots.rows.find(
         s => new Date(s.created_at).getTime() >= baseTime + 24 * 60 * 60 * 1000
       );
 
-      const threeDay = snapshotList.find(
+      const threeDaySnapshot = snapshots.rows.find(
         s => new Date(s.created_at).getTime() >= baseTime + 72 * 60 * 60 * 1000
       );
 
-      if (oneHour) {
-        await updateForwardReturns(row.symbol, 1,
-          percentChange(basePrice, Number(oneHour.price))
+      if (oneDaySnapshot) {
+        await updateForwardReturns(
+          row.symbol,
+          24,
+          percentChange(basePrice, Number(oneDaySnapshot.price))
         );
       }
 
-      if (oneDay) {
-        await updateForwardReturns(row.symbol, 24,
-          percentChange(basePrice, Number(oneDay.price))
-        );
-      }
-
-      if (threeDay) {
-        await updateForwardReturns(row.symbol, 72,
-          percentChange(basePrice, Number(threeDay.price))
+      if (threeDaySnapshot) {
+        await updateForwardReturns(
+          row.symbol,
+          72,
+          percentChange(basePrice, Number(threeDaySnapshot.price))
         );
       }
     }
 
-    console.log("🧠 Forward labeling updated");
+    console.log("🧠 Forward Learning updated");
 
   } catch (err) {
-    console.error("❌ Forward labeling error:", err.message);
+    console.error("❌ Forward Learning Error:", err.message);
   }
 }
 
-module.exports = { runForwardLabeling };
+module.exports = { runForwardLearning };
