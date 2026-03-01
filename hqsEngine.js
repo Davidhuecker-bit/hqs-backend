@@ -1,7 +1,7 @@
 "use strict";
 
 /*
-  HQS Engine – Core Stock Scoring Engine
+  HQS Engine – Core Stock Scoring Engine (Market-Regime Version B)
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
@@ -9,7 +9,7 @@ const { saveScoreSnapshot } = require("./services/factorHistory.repository");
 const { loadLastWeights } = require("./services/weightHistory.repository");
 
 /* =========================================================
-   DEFAULT WEIGHTS (Fallback)
+   DEFAULT WEIGHTS
 ========================================================= */
 
 const DEFAULT_WEIGHTS = {
@@ -45,16 +45,16 @@ function normalizeWeights(weights) {
 }
 
 /* =========================================================
-   REGIME DETECTION
+   REGIME DETECTION – MARKET BASED
 ========================================================= */
 
-function detectRegime(changePercent) {
-  const c = safe(changePercent);
+function detectRegime(symbolChange, marketAverage) {
+  const diff = safe(symbolChange) - safe(marketAverage);
 
-  if (c > 2) return "expansion";
-  if (c > 0.5) return "bull";
-  if (c < -2) return "crash";
-  if (c < -0.5) return "bear";
+  if (marketAverage > 1 && diff > 0.5) return "expansion";
+  if (marketAverage > 0) return "bull";
+  if (marketAverage < -1 && diff < -0.5) return "crash";
+  if (marketAverage < 0) return "bear";
   return "neutral";
 }
 
@@ -63,7 +63,7 @@ function regimeMultiplier(regime) {
     case "expansion": return 1.10;
     case "bull": return 1.05;
     case "bear": return 0.95;
-    case "crash": return 0.88;
+    case "crash": return 0.85;
     default: return 1;
   }
 }
@@ -72,9 +72,8 @@ function regimeMultiplier(regime) {
    FACTORS
 ========================================================= */
 
-function calculateMomentum(item) {
-  const change = safe(item.changesPercentage);
-  return clamp(50 + change * 3, 0, 100);
+function calculateMomentum(changePercent) {
+  return clamp(50 + safe(changePercent) * 3, 0, 100);
 }
 
 function calculateStability(item) {
@@ -86,10 +85,7 @@ function calculateStability(item) {
 
   const range = ((high - low) / open) * 100;
 
-  if (range < 2) return 65;
-  if (range > 6) return 35;
-
-  return clamp(60 - range * 2, 30, 70);
+  return clamp(70 - range * 4, 20, 80);
 }
 
 function calculateQuality(fundamentals) {
@@ -106,43 +102,24 @@ function calculateQuality(fundamentals) {
   return clamp(score, 0, 100);
 }
 
-function calculateRelativeStrength(changePercent, marketProxy = 0.8) {
-  const relative = safe(changePercent) - marketProxy;
-
-  if (relative > 2) return 70;
-  if (relative > 1) return 60;
-  if (relative > 0) return 55;
-  if (relative < -2) return 30;
-  if (relative < -1) return 40;
-
-  return 50;
+function calculateRelativeStrength(symbolChange, marketAverage) {
+  const diff = safe(symbolChange) - safe(marketAverage);
+  return clamp(50 + diff * 5, 0, 100);
 }
 
 /* =========================================================
-   MAIN HQS ENGINE
+   MAIN ENGINE
 ========================================================= */
 
-async function buildHQSResponse(item = {}) {
+async function buildHQSResponse(item = {}, marketAverage = 0) {
   try {
-    if (!item || typeof item !== "object") {
-      throw new Error("Invalid item passed to HQS Engine");
-    }
-
     if (!item.symbol) {
-      throw new Error("Missing symbol in HQS Engine");
+      throw new Error("Missing symbol");
     }
-
-    /* =========================
-       LOAD WEIGHTS
-    ========================== */
 
     let weights = await loadLastWeights();
     if (!weights) weights = DEFAULT_WEIGHTS;
     weights = normalizeWeights(weights);
-
-    /* =========================
-       LOAD FUNDAMENTALS
-    ========================== */
 
     let fundamentals = null;
     try {
@@ -151,20 +128,12 @@ async function buildHQSResponse(item = {}) {
       console.warn("Fundamental load failed:", err.message);
     }
 
-    /* =========================
-       FACTOR CALCULATION
-    ========================== */
+    const regime = detectRegime(item.changesPercentage, marketAverage);
 
-    const regime = detectRegime(item.changesPercentage);
-
-    const momentum = calculateMomentum(item);
+    const momentum = calculateMomentum(item.changesPercentage);
     const stability = calculateStability(item);
     const quality = calculateQuality(fundamentals);
-    const relative = calculateRelativeStrength(item.changesPercentage);
-
-    /* =========================
-       CORE SCORING
-    ========================== */
+    const relative = calculateRelativeStrength(item.changesPercentage, marketAverage);
 
     let baseScore =
       momentum * weights.momentum +
@@ -176,10 +145,6 @@ async function buildHQSResponse(item = {}) {
 
     const finalScore = clamp(Math.round(baseScore), 0, 100);
 
-    /* =========================
-       SAVE SNAPSHOT
-    ========================== */
-
     await saveScoreSnapshot({
       symbol: item.symbol,
       hqsScore: finalScore,
@@ -187,7 +152,7 @@ async function buildHQSResponse(item = {}) {
       quality,
       stability,
       relative,
-      regime
+      regime,
     });
 
     return {
@@ -196,12 +161,7 @@ async function buildHQSResponse(item = {}) {
       changePercent: safe(item.changesPercentage),
       regime,
       weights,
-      breakdown: {
-        momentum,
-        quality,
-        stability,
-        relative
-      },
+      breakdown: { momentum, quality, stability, relative },
       hqsScore: finalScore,
       rating:
         finalScore >= 85 ? "Strong Buy"
@@ -212,12 +172,11 @@ async function buildHQSResponse(item = {}) {
         finalScore >= 70 ? "KAUFEN"
         : finalScore >= 50 ? "HALTEN"
         : "NICHT KAUFEN",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
 
   } catch (error) {
     console.error("HQS Engine Error:", error.message);
-
     return {
       symbol: item?.symbol || null,
       hqsScore: null,
@@ -226,6 +185,4 @@ async function buildHQSResponse(item = {}) {
   }
 }
 
-module.exports = {
-  buildHQSResponse
-};
+module.exports = { buildHQSResponse };
