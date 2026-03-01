@@ -2,6 +2,7 @@
 
 /**
  * Global Market Data Normalizer
+ * + automatische Prozentberechnung
  */
 
 function toNumberOrNull(value) {
@@ -17,6 +18,11 @@ function toNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function calculateChangePercent(price, previousClose) {
+  if (!price || !previousClose) return null;
+  return ((price - previousClose) / previousClose) * 100;
+}
+
 function normalizeMarketData(raw, source, region) {
   if (!raw || typeof raw !== "object") return null;
 
@@ -26,21 +32,35 @@ function normalizeMarketData(raw, source, region) {
 
   if (!symbol) return null;
 
+  const price = toNumberOrNull(raw.price ?? raw.c ?? raw.last);
+  const previousClose = toNumberOrNull(
+    raw.previousClose ?? raw.pc
+  );
+
+  let changesPercentage = toNumberOrNull(
+    raw.changesPercentage ??
+    raw.changePercent ??
+    raw.dp
+  );
+
+  // 🔥 Falls Provider keine Prozentänderung liefert → selbst berechnen
+  if (changesPercentage === null && price && previousClose) {
+    changesPercentage = calculateChangePercent(price, previousClose);
+  }
+
   return {
     symbol,
     exchange: String(raw.exchange || raw.market || "").trim() || null,
     region: String(region || "unknown"),
 
-    price: toNumberOrNull(raw.price ?? raw.c ?? raw.last),
+    price,
     change: toNumberOrNull(raw.change ?? raw.d),
-    changesPercentage: toNumberOrNull(
-      raw.changesPercentage ?? raw.changePercent ?? raw.dp
-    ),
+    changesPercentage,
 
     high: toNumberOrNull(raw.high ?? raw.h),
     low: toNumberOrNull(raw.low ?? raw.l),
     open: toNumberOrNull(raw.open ?? raw.o),
-    previousClose: toNumberOrNull(raw.previousClose ?? raw.pc),
+    previousClose,
 
     volume: toNumberOrNull(raw.volume ?? raw.v),
 
