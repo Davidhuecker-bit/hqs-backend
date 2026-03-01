@@ -1,8 +1,12 @@
 "use strict";
 
-const { getFundamentals } = require("./fundamental.service");
-const { saveScoreSnapshot } = require("./factorHistory.repository");
-const { loadLastWeights } = require("./weightHistory.repository");
+/*
+  HQS Engine – Core Stock Scoring Engine
+*/
+
+const { getFundamentals } = require("./services/fundamental.service");
+const { saveScoreSnapshot } = require("./services/factorHistory.repository");
+const { loadLastWeights } = require("./services/weightHistory.repository");
 
 /* =========================================================
    DEFAULT WEIGHTS (Fallback)
@@ -33,7 +37,7 @@ function normalizeWeights(weights) {
   if (!sum) return DEFAULT_WEIGHTS;
 
   const normalized = {};
-  Object.keys(DEFAULT_WEIGHTS).forEach(key => {
+  Object.keys(DEFAULT_WEIGHTS).forEach((key) => {
     normalized[key] = safe(weights[key]) / sum;
   });
 
@@ -41,7 +45,7 @@ function normalizeWeights(weights) {
 }
 
 /* =========================================================
-   REGIME DETECTION (ZENTRAL IM ENGINE)
+   REGIME DETECTION
 ========================================================= */
 
 function detectRegime(changePercent) {
@@ -88,16 +92,16 @@ function calculateStability(item) {
   return clamp(60 - range * 2, 30, 70);
 }
 
-function calculateQuality(f) {
-  if (!f) return 50;
+function calculateQuality(fundamentals) {
+  if (!fundamentals) return 50;
 
   let score = 50;
 
-  if (safe(f.revenueGrowth) > 10) score += 10;
-  if (safe(f.netMargin) > 15) score += 10;
-  if (safe(f.returnOnEquity) > 15) score += 10;
-  if (safe(f.debtToEquity) < 1) score += 5;
-  if (safe(f.debtToEquity) > 2) score -= 10;
+  if (safe(fundamentals.revenueGrowth) > 10) score += 10;
+  if (safe(fundamentals.netMargin) > 15) score += 10;
+  if (safe(fundamentals.returnOnEquity) > 15) score += 10;
+  if (safe(fundamentals.debtToEquity) < 1) score += 5;
+  if (safe(fundamentals.debtToEquity) > 2) score -= 10;
 
   return clamp(score, 0, 100);
 }
