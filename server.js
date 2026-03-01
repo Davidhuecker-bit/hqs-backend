@@ -64,6 +64,10 @@ function formatMarketItem(item) {
     open: item.open ?? null,
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
+
+    // 🔥 NEU – gespeicherter HQS Score
+    hqsScore: item.hqsScore ?? null,
+
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
   };
@@ -100,8 +104,7 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   🔥 HQS ROUTE
-   GET /api/hqs?symbol=AAPL
+   🔥 HQS ROUTE (nutzt gespeicherten Score)
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -117,6 +120,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
+    // 🔥 Erst gespeicherte Daten holen
     const marketData = await getMarketData(symbol);
 
     if (!marketData.length) {
@@ -126,12 +130,24 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
+    // 🔥 Wenn Score existiert → keine Neuberechnung
+    if (marketData[0].hqsScore !== null) {
+      return res.json({
+        success: true,
+        symbol,
+        hqsScore: marketData[0].hqsScore,
+        source: "database",
+      });
+    }
+
+    // Fallback falls kein Score vorhanden
     const hqs = await buildHQSResponse(marketData[0]);
 
     return res.json({
       success: true,
       symbol,
       hqs,
+      source: "live",
     });
 
   } catch (error) {
@@ -221,7 +237,6 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 
 /* =========================================================
    PORTFOLIO ROUTE
-   POST /api/portfolio
 ========================================================= */
 
 app.post("/api/portfolio", async (req, res) => {
@@ -269,7 +284,7 @@ app.listen(PORT, async () => {
 });
 
 /* =========================================================
-   WARMUP SNAPSHOT
+   AUTO SNAPSHOT
 ========================================================= */
 
 setInterval(async () => {
