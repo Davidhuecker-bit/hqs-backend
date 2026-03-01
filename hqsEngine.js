@@ -3,8 +3,17 @@
 const { getFundamentals } = require("./fundamental.service");
 const { saveScoreSnapshot } = require("./factorHistory.repository");
 const { loadLastWeights } = require("./weightHistory.repository");
-const { getDefaultWeights } = require("./autoFactor.service");
-const { detectMarketRegime } = require("./marketRegime.service");
+
+/* =========================================================
+   DEFAULT WEIGHTS (Fallback)
+========================================================= */
+
+const DEFAULT_WEIGHTS = {
+  momentum: 0.35,
+  quality: 0.35,
+  stability: 0.20,
+  relative: 0.10,
+};
 
 /* =========================================================
    UTIL
@@ -21,10 +30,10 @@ function safe(v, fallback = 0) {
 
 function normalizeWeights(weights) {
   const sum = Object.values(weights || {}).reduce((a, b) => a + safe(b), 0);
-  if (!sum) return getDefaultWeights();
+  if (!sum) return DEFAULT_WEIGHTS;
 
   const normalized = {};
-  Object.keys(weights).forEach(key => {
+  Object.keys(DEFAULT_WEIGHTS).forEach(key => {
     normalized[key] = safe(weights[key]) / sum;
   });
 
@@ -32,8 +41,18 @@ function normalizeWeights(weights) {
 }
 
 /* =========================================================
-   REGIME MULTIPLIER (ZENTRAL)
+   REGIME DETECTION (ZENTRAL IM ENGINE)
 ========================================================= */
+
+function detectRegime(changePercent) {
+  const c = safe(changePercent);
+
+  if (c > 2) return "expansion";
+  if (c > 0.5) return "bull";
+  if (c < -2) return "crash";
+  if (c < -0.5) return "bear";
+  return "neutral";
+}
 
 function regimeMultiplier(regime) {
   switch (regime) {
@@ -96,10 +115,10 @@ function calculateRelativeStrength(changePercent, marketProxy = 0.8) {
 }
 
 /* =========================================================
-   MAIN HQS ENGINE (KONSOLIDIERT)
+   MAIN HQS ENGINE
 ========================================================= */
 
-async function buildHQSResponse(item = {}, options = {}) {
+async function buildHQSResponse(item = {}) {
   try {
     if (!item || typeof item !== "object") {
       throw new Error("Invalid item passed to HQS Engine");
@@ -110,11 +129,11 @@ async function buildHQSResponse(item = {}, options = {}) {
     }
 
     /* =========================
-       LOAD LEARNING WEIGHTS
+       LOAD WEIGHTS
     ========================== */
 
     let weights = await loadLastWeights();
-    if (!weights) weights = getDefaultWeights();
+    if (!weights) weights = DEFAULT_WEIGHTS;
     weights = normalizeWeights(weights);
 
     /* =========================
@@ -132,9 +151,7 @@ async function buildHQSResponse(item = {}, options = {}) {
        FACTOR CALCULATION
     ========================== */
 
-    const regime =
-      options.regime ||
-      await detectMarketRegime(item);
+    const regime = detectRegime(item.changesPercentage);
 
     const momentum = calculateMomentum(item);
     const stability = calculateStability(item);
@@ -150,10 +167,6 @@ async function buildHQSResponse(item = {}, options = {}) {
       quality * weights.quality +
       stability * weights.stability +
       relative * weights.relative;
-
-    /* =========================
-       REGIME ADJUSTMENT
-    ========================== */
 
     baseScore *= regimeMultiplier(regime);
 
@@ -172,10 +185,6 @@ async function buildHQSResponse(item = {}, options = {}) {
       relative,
       regime
     });
-
-    /* =========================
-       RESPONSE
-    ========================== */
 
     return {
       symbol: item.symbol.toUpperCase(),
