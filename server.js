@@ -24,7 +24,6 @@ const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
 
-// ✅ Forward Learning
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
 /* =========================================================
@@ -57,6 +56,19 @@ app.use(express.json());
 function formatMarketItem(item) {
   if (!item || typeof item !== "object") return null;
 
+  const hqsBreakdown =
+    item.momentum !== null ||
+    item.quality !== null ||
+    item.stability !== null ||
+    item.relative !== null
+      ? {
+          momentum: item.momentum ?? null,
+          quality: item.quality ?? null,
+          stability: item.stability ?? null,
+          relative: item.relative ?? null,
+        }
+      : null;
+
   return {
     symbol: item.symbol ?? null,
     price: item.price ?? null,
@@ -68,12 +80,9 @@ function formatMarketItem(item) {
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
 
-    // ✅ DB-first HQS Felder
+    // ✅ DB-first HQS
     hqsScore: item.hqsScore ?? null,
-    momentum: item.momentum ?? null,
-    quality: item.quality ?? null,
-    stability: item.stability ?? null,
-    relative: item.relative ?? null,
+    hqsBreakdown,                // 🔥 genau so heißt es bei dir im Output
     regime: item.regime ?? null,
     hqsCreatedAt: item.hqsCreatedAt ?? null,
 
@@ -124,7 +133,7 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   🔥 HQS ROUTE – DB-first + Live fallback
+   HQS ROUTE (DB-first)
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -147,31 +156,30 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // ✅ DB-first: wenn Score bereits gespeichert → direkt liefern
+    // ✅ DB-first
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
         symbol,
         hqsScore: marketData[0].hqsScore,
-        breakdown: {
+        hqsBreakdown: {
           momentum: marketData[0].momentum ?? null,
           quality: marketData[0].quality ?? null,
           stability: marketData[0].stability ?? null,
           relative: marketData[0].relative ?? null,
         },
         regime: marketData[0].regime ?? null,
-        hqsCreatedAt: marketData[0].hqsCreatedAt ?? null,
         source: "database",
       });
     }
 
-    // 🔥 Market Average berechnen (für Regime / Kontext)
+    // Live fallback
     const fullMarket = await getMarketData();
     const changes = Array.isArray(fullMarket)
       ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
       : [];
     const marketAverage =
-      changes.length > 0 ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
+      changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
 
     const hqs = await buildHQSResponse(marketData[0], marketAverage);
 
@@ -306,10 +314,7 @@ app.listen(PORT, async () => {
   await initWeightTable();
 
   try {
-    // 1) Snapshot + HQS persistieren
     await buildMarketSnapshot();
-
-    // 2) Forward Learning nachziehen (Labeling)
     await runForwardLearning();
   } catch (err) {
     console.error("Startup Fehler:", err.message);
