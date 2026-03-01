@@ -1,5 +1,7 @@
 // services/marketService.js
-// HQS Market System (Massive + Snapshot + Table Init)
+// HQS Market System (Massive + Snapshot + Table Init + Live Fetch)
+
+"use strict";
 
 const { fetchQuote } = require("./providerService");
 const { Pool } = require("pg");
@@ -9,9 +11,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ============================
-// TABLE INIT
-// ============================
+/* =========================================================
+   TABLE INIT
+========================================================= */
 
 async function ensureTablesExist() {
   await pool.query(`
@@ -31,15 +33,44 @@ async function ensureTablesExist() {
   console.log("✅ Tables ensured");
 }
 
-// ============================
-// WATCHLIST
-// ============================
+/* =========================================================
+   WATCHLIST
+========================================================= */
 
 const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
-// ============================
-// SNAPSHOT BUILDER
-// ============================
+/* =========================================================
+   LIVE MARKET DATA (Massive Primary)
+========================================================= */
+
+async function getMarketData(symbol) {
+  try {
+    if (symbol) {
+      const data = await fetchQuote(symbol.toUpperCase());
+      return data || [];
+    }
+
+    // Wenn kein Symbol → Watchlist laden
+    const results = [];
+
+    for (const s of WATCHLIST) {
+      const data = await fetchQuote(s);
+      if (data && data.length) {
+        results.push(...data);
+      }
+    }
+
+    return results;
+
+  } catch (error) {
+    console.error("MarketData Error:", error.message);
+    return [];
+  }
+}
+
+/* =========================================================
+   SNAPSHOT BUILDER
+========================================================= */
 
 async function buildMarketSnapshot() {
   console.log("📦 Building market snapshot...");
@@ -80,7 +111,12 @@ async function buildMarketSnapshot() {
   console.log("✅ Snapshot complete");
 }
 
+/* =========================================================
+   EXPORTS
+========================================================= */
+
 module.exports = {
+  getMarketData,
   buildMarketSnapshot,
   ensureTablesExist,
 };
