@@ -4,6 +4,7 @@ const { getFundamentals } = require("./fundamental.service");
 const { saveScoreSnapshot } = require("./factorHistory.repository");
 const { loadLastWeights } = require("./weightHistory.repository");
 const { getDefaultWeights } = require("./autoFactor.service");
+const { detectMarketRegime } = require("./marketRegime.service");
 
 /* =========================================================
    UTIL
@@ -31,22 +32,12 @@ function normalizeWeights(weights) {
 }
 
 /* =========================================================
-   REGIME DETECTION
+   REGIME MULTIPLIER (ZENTRAL)
 ========================================================= */
-
-function detectRegime(changePercent) {
-  const c = safe(changePercent);
-
-  if (c > 2) return "expansion";
-  if (c > 0.5) return "bull";
-  if (c < -2) return "crash";
-  if (c < -0.5) return "bear";
-  return "neutral";
-}
 
 function regimeMultiplier(regime) {
   switch (regime) {
-    case "expansion": return 1.12;
+    case "expansion": return 1.10;
     case "bull": return 1.05;
     case "bear": return 0.95;
     case "crash": return 0.88;
@@ -105,10 +96,10 @@ function calculateRelativeStrength(changePercent, marketProxy = 0.8) {
 }
 
 /* =========================================================
-   MAIN ADAPTIVE ENGINE
+   MAIN HQS ENGINE (KONSOLIDIERT)
 ========================================================= */
 
-async function buildHQSResponse(item = {}) {
+async function buildHQSResponse(item = {}, options = {}) {
   try {
     if (!item || typeof item !== "object") {
       throw new Error("Invalid item passed to HQS Engine");
@@ -119,16 +110,15 @@ async function buildHQSResponse(item = {}) {
     }
 
     /* =========================
-       LOAD & NORMALIZE WEIGHTS
+       LOAD LEARNING WEIGHTS
     ========================== */
 
     let weights = await loadLastWeights();
     if (!weights) weights = getDefaultWeights();
-
     weights = normalizeWeights(weights);
 
     /* =========================
-       LOAD FUNDAMENTALS (SAFE)
+       LOAD FUNDAMENTALS
     ========================== */
 
     let fundamentals = null;
@@ -142,7 +132,9 @@ async function buildHQSResponse(item = {}) {
        FACTOR CALCULATION
     ========================== */
 
-    const regime = detectRegime(item.changesPercentage);
+    const regime =
+      options.regime ||
+      await detectMarketRegime(item);
 
     const momentum = calculateMomentum(item);
     const stability = calculateStability(item);
@@ -150,7 +142,7 @@ async function buildHQSResponse(item = {}) {
     const relative = calculateRelativeStrength(item.changesPercentage);
 
     /* =========================
-       ADAPTIVE SCORING
+       CORE SCORING
     ========================== */
 
     let baseScore =
@@ -158,6 +150,10 @@ async function buildHQSResponse(item = {}) {
       quality * weights.quality +
       stability * weights.stability +
       relative * weights.relative;
+
+    /* =========================
+       REGIME ADJUSTMENT
+    ========================== */
 
     baseScore *= regimeMultiplier(regime);
 
@@ -186,29 +182,23 @@ async function buildHQSResponse(item = {}) {
       price: safe(item.price),
       changePercent: safe(item.changesPercentage),
       regime,
-
       weights,
-
       breakdown: {
         momentum,
         quality,
         stability,
         relative
       },
-
       hqsScore: finalScore,
-
       rating:
         finalScore >= 85 ? "Strong Buy"
         : finalScore >= 70 ? "Buy"
         : finalScore >= 50 ? "Hold"
         : "Risk",
-
       decision:
         finalScore >= 70 ? "KAUFEN"
         : finalScore >= 50 ? "HALTEN"
         : "NICHT KAUFEN",
-
       timestamp: new Date().toISOString()
     };
 
