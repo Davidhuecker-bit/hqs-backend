@@ -1,5 +1,5 @@
 // services/marketService.js
-// HQS Market System (Massive + Normalizer + Snapshot + Table Init)
+// HQS Market System (Massive + Normalizer + Snapshot Momentum + Table Init)
 
 "use strict";
 
@@ -41,39 +41,46 @@ async function ensureTablesExist() {
 const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
 /* =========================================================
-   LIVE MARKET DATA (Massive Primary + Normalizer)
+   SNAPSHOT MOMENTUM
+========================================================= */
+
+async function getLastSnapshot(symbol) {
+  const result = await pool.query(
+    `
+    SELECT price
+    FROM market_snapshots
+    WHERE symbol = $1
+    ORDER BY created_at DESC
+    LIMIT 1
+    `,
+    [symbol]
+  );
+
+  if (!result.rows.length) return null;
+
+  return Number(result.rows[0].price);
+}
+
+function calculateSnapshotChangePercent(currentPrice, previousPrice) {
+  if (!currentPrice || !previousPrice) return null;
+  return ((currentPrice - previousPrice) / previousPrice) * 100;
+}
+
+/* =========================================================
+   LIVE MARKET DATA
 ========================================================= */
 
 async function getMarketData(symbol) {
   try {
-    // Einzelaktie
     if (symbol) {
-      const raw = await fetchQuote(symbol.toUpperCase());
-
-      if (!raw || !raw.length) return [];
-
-      return raw
-        .map(item =>
-          normalizeMarketData(item, "massive", "us")
-        )
-        .filter(Boolean);
+      return await processSymbol(symbol.toUpperCase());
     }
 
-    // Wenn kein Symbol → Watchlist laden
     const results = [];
 
     for (const s of WATCHLIST) {
-      const raw = await fetchQuote(s);
-
-      if (!raw || !raw.length) continue;
-
-      const normalized = raw
-        .map(item =>
-          normalizeMarketData(item, "massive", "us")
-        )
-        .filter(Boolean);
-
-      results.push(...normalized);
+      const data = await processSymbol(s);
+      results.push(...data);
     }
 
     return results;
@@ -82,6 +89,31 @@ async function getMarketData(symbol) {
     console.error("MarketData Error:", error.message);
     return [];
   }
+}
+
+async function processSymbol(symbol) {
+  const raw = await fetchQuote(symbol);
+
+  if (!raw || !raw.length) return [];
+
+  const normalized = normalizeMarketData(raw[0], "massive", "us");
+
+  if (!normalized) return [];
+
+  // 🔥 Snapshot Momentum Berechnung
+  const lastSnapshotPrice = await getLastSnapshot(symbol);
+
+  if (lastSnapshotPrice) {
+    const snapshotChange =
+      calculateSnapshotChangePercent(
+        normalized.price,
+        lastSnapshotPrice
+      );
+
+    normalized.changesPercentage = snapshotChange;
+  }
+
+  return [normalized];
 }
 
 /* =========================================================
@@ -99,11 +131,8 @@ async function buildMarketSnapshot() {
         throw new Error("No data returned");
       }
 
-      const normalized = normalizeMarketData(
-        raw[0],
-        "massive",
-        "us"
-      );
+      const normalized =
+        normalizeMarketData(raw[0], "massive", "us");
 
       if (!normalized) continue;
 
