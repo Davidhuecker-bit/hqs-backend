@@ -1,162 +1,136 @@
 "use strict";
 
 /*
-  HQS PORTFOLIO ENGINE – FULL PERSISTENT VERSION
+  HQS PORTFOLIO ENGINE – INSTITUTIONAL VERSION
+  ---------------------------------------------
+  - Aggregates single-stock HQS
+  - Weighted portfolio score
+  - Risk metrics
+  - Exposure analysis
+  - Rebalancing suggestion
 */
 
-const axios = require("axios");
-const { getGlobalMarketData } = require("./aggregator.service");
-const { buildDiagnosis } = require("./portfolioDiagnosis.service");
-const { calibrateFactorWeights } = require("./autoFactorCalibration.service");
-const {
-  initFactorTable,
-  saveFactorSnapshot,
-  loadFactorHistory
-} = require("./factorHistory.repository");
-
-const FMP_API_KEY = process.env.FMP_API_KEY;
-
-const DEFAULT_WEIGHTS = {
-  momentum: 0.30,
-  volatility: 0.10,
-  earnings: 0.20,
-  correlation: 0.20,
-  macro: 0.20
-};
+const { buildHQSResponse } = require("./hqsEngine");
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
-function calculateMomentum(stock) {
-  const ch = stock.changesPercentage || 0;
-  if (ch > 4) return 75;
-  if (ch > 2) return 65;
-  if (ch < -4) return 30;
-  if (ch < -2) return 40;
-  return 50;
-}
-
-function calculateVolatility(stock) {
-  if (!stock.high || !stock.low || !stock.price) return 0;
-  const range = (stock.high - stock.low) / stock.price;
-  if (range > 0.08) return -12;
-  if (range > 0.05) return -6;
-  return 0;
-}
-
-async function fetchEarningsDrift(symbol) {
-  try {
-    const url = `https://financialmodelingprep.com/api/v3/analyst-estimates/${symbol}?apikey=${FMP_API_KEY}`;
-    const res = await axios.get(url);
-    const data = res.data;
-    if (!Array.isArray(data) || data.length < 2) return 0;
-
-    const latest = data[0]?.estimatedEpsAvg;
-    const prev = data[1]?.estimatedEpsAvg;
-
-    if (!latest || !prev) return 0;
-    if (latest > prev * 1.05) return 8;
-    if (latest < prev * 0.95) return -8;
-    return 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function detectRegime() {
-  try {
-    const [spy, vix] = await Promise.all([
-      axios.get(`https://financialmodelingprep.com/api/v3/quote/SPY?apikey=${FMP_API_KEY}`),
-      axios.get(`https://financialmodelingprep.com/api/v3/quote/%5EVIX?apikey=${FMP_API_KEY}`)
-    ]);
-
-    const spyCh = spy.data?.[0]?.changesPercentage || 0;
-    const vixLevel = vix.data?.[0]?.price || 20;
-
-    if (vixLevel > 25) return "risk_off";
-    if (spyCh > 1.5) return "risk_on";
-    return "neutral";
-  } catch {
-    return "neutral";
-  }
+function safe(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 async function calculatePortfolioHQS(portfolio = []) {
-  if (!Array.isArray(portfolio) || !portfolio.length)
-    return { finalScore: 0, reason: "Empty portfolio" };
+  if (!Array.isArray(portfolio) || portfolio.length === 0) {
+    return { error: "Empty portfolio" };
+  }
 
-  await initFactorTable();
+  /* =========================================
+     1️⃣ Einzelaktien berechnen
+  ========================================= */
 
-  const symbols = portfolio.map(p => p.symbol);
-  const marketData = await getGlobalMarketData(symbols);
+  const enriched = [];
 
-  if (!marketData.length)
-    return { finalScore: 0, reason: "No market data available" };
+  for (const position of portfolio) {
+    if (!position.symbol) continue;
 
-  const regime = await detectRegime();
+    const hqs = await buildHQSResponse(position.marketData || { symbol: position.symbol });
 
-  const factorHistory = await loadFactorHistory();
+    enriched.push({
+      symbol: position.symbol,
+      weight: safe(position.weight, 1),
+      hqsScore: safe(hqs.hqsScore),
+      stability: safe(hqs.breakdown?.stability),
+      rating: hqs.rating,
+      decision: hqs.decision
+    });
+  }
 
-  const learned = calibrateFactorWeights(
-    factorHistory,
-    {}
-  );
+  if (!enriched.length) {
+    return { error: "No valid HQS results" };
+  }
 
-  const dynamicWeights =
-    learned?.[regime] || DEFAULT_WEIGHTS;
-
-  const enriched = await Promise.all(
-    marketData.map(async stock => {
-      const position = portfolio.find(p => p.symbol === stock.symbol);
-      return {
-        ...stock,
-        weight: position?.weight || 1,
-        momentum: calculateMomentum(stock),
-        volatility: calculateVolatility(stock),
-        earnings: await fetchEarningsDrift(stock.symbol)
-      };
-    })
-  );
+  /* =========================================
+     2️⃣ Portfolio Score (gewichteter Schnitt)
+  ========================================= */
 
   const totalWeight = enriched.reduce((s, p) => s + p.weight, 0);
 
   let weightedScore = 0;
+  let weightedStability = 0;
 
-  for (const s of enriched) {
-    const score =
-      s.momentum * dynamicWeights.momentum +
-      s.volatility * dynamicWeights.volatility +
-      s.earnings * dynamicWeights.earnings;
-
-    weightedScore += score * (s.weight / totalWeight);
+  for (const p of enriched) {
+    weightedScore += p.hqsScore * (p.weight / totalWeight);
+    weightedStability += p.stability * (p.weight / totalWeight);
   }
 
-  const finalScore = Math.round(
-    clamp(weightedScore * 0.6 + 50 * 0.4, 0, 100)
-  );
+  const portfolioScore = clamp(Math.round(weightedScore), 0, 100);
+  const portfolioStability = clamp(Math.round(weightedStability), 0, 100);
 
-  // Persist learning snapshot
-  await saveFactorSnapshot(regime, finalScore / 100, {
-    momentum: dynamicWeights.momentum,
-    volatility: dynamicWeights.volatility,
-    earnings: dynamicWeights.earnings,
-    correlation: dynamicWeights.correlation,
-    macro: dynamicWeights.macro
+  /* =========================================
+     3️⃣ Risikoanalyse
+  ========================================= */
+
+  const highRiskPositions = enriched.filter(p => p.hqsScore < 50);
+  const highRiskWeight =
+    highRiskPositions.reduce((s, p) => s + p.weight, 0) / totalWeight;
+
+  const riskLevel =
+    portfolioScore >= 75 ? "LOW"
+    : portfolioScore >= 60 ? "MEDIUM"
+    : "HIGH";
+
+  /* =========================================
+     4️⃣ Exposure Analyse
+  ========================================= */
+
+  const exposure = {
+    strongBuy: enriched.filter(p => p.hqsScore >= 85).length,
+    buy: enriched.filter(p => p.hqsScore >= 70 && p.hqsScore < 85).length,
+    hold: enriched.filter(p => p.hqsScore >= 50 && p.hqsScore < 70).length,
+    risk: enriched.filter(p => p.hqsScore < 50).length
+  };
+
+  /* =========================================
+     5️⃣ Rebalancing Vorschläge
+  ========================================= */
+
+  const rebalancing = enriched.map(p => {
+    if (p.hqsScore >= 80) {
+      return { symbol: p.symbol, action: "Gewicht erhöhen" };
+    }
+
+    if (p.hqsScore < 50) {
+      return { symbol: p.symbol, action: "Gewicht reduzieren" };
+    }
+
+    return { symbol: p.symbol, action: "Beibehalten" };
   });
 
-  const diagnosis = buildDiagnosis(
-    enriched,
-    finalScore,
-    regime
-  );
+  /* =========================================
+     6️⃣ Finale Antwort
+  ========================================= */
 
   return {
-    finalScore,
-    regime,
-    dynamicWeights,
+    portfolioScore,
+    portfolioStability,
+    riskLevel,
+    highRiskWeight: Number((highRiskWeight * 100).toFixed(1)),
+
+    exposure,
+
+    rebalancing,
+
     breakdown: enriched,
-    diagnosis
+
+    rating:
+      portfolioScore >= 80 ? "Strong Portfolio"
+      : portfolioScore >= 65 ? "Healthy"
+      : portfolioScore >= 50 ? "Neutral"
+      : "Defensive",
+
+    timestamp: new Date().toISOString()
   };
 }
 
