@@ -1,9 +1,10 @@
 // services/marketService.js
-// HQS Market System (Massive + Snapshot + Table Init + Live Fetch)
+// HQS Market System (Massive + Normalizer + Snapshot + Table Init)
 
 "use strict";
 
 const { fetchQuote } = require("./providerService");
+const { normalizeMarketData } = require("./marketNormalizer");
 const { Pool } = require("pg");
 
 const pool = new Pool({
@@ -40,24 +41,39 @@ async function ensureTablesExist() {
 const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
 /* =========================================================
-   LIVE MARKET DATA (Massive Primary)
+   LIVE MARKET DATA (Massive Primary + Normalizer)
 ========================================================= */
 
 async function getMarketData(symbol) {
   try {
+    // Einzelaktie
     if (symbol) {
-      const data = await fetchQuote(symbol.toUpperCase());
-      return data || [];
+      const raw = await fetchQuote(symbol.toUpperCase());
+
+      if (!raw || !raw.length) return [];
+
+      return raw
+        .map(item =>
+          normalizeMarketData(item, "massive", "us")
+        )
+        .filter(Boolean);
     }
 
     // Wenn kein Symbol → Watchlist laden
     const results = [];
 
     for (const s of WATCHLIST) {
-      const data = await fetchQuote(s);
-      if (data && data.length) {
-        results.push(...data);
-      }
+      const raw = await fetchQuote(s);
+
+      if (!raw || !raw.length) continue;
+
+      const normalized = raw
+        .map(item =>
+          normalizeMarketData(item, "massive", "us")
+        )
+        .filter(Boolean);
+
+      results.push(...normalized);
     }
 
     return results;
@@ -77,13 +93,19 @@ async function buildMarketSnapshot() {
 
   for (const symbol of WATCHLIST) {
     try {
-      const data = await fetchQuote(symbol);
+      const raw = await fetchQuote(symbol);
 
-      if (!data || data.length === 0) {
+      if (!raw || raw.length === 0) {
         throw new Error("No data returned");
       }
 
-      const quote = data[0];
+      const normalized = normalizeMarketData(
+        raw[0],
+        "massive",
+        "us"
+      );
+
+      if (!normalized) continue;
 
       await pool.query(
         `
@@ -92,19 +114,23 @@ async function buildMarketSnapshot() {
         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
         `,
         [
-          quote.symbol,
-          quote.price,
-          quote.open,
-          quote.high,
-          quote.low,
-          quote.volume,
-          quote.source,
+          normalized.symbol,
+          normalized.price,
+          normalized.open,
+          normalized.high,
+          normalized.low,
+          normalized.volume,
+          normalized.source,
         ]
       );
 
       console.log(`✅ Snapshot saved for ${symbol}`);
+
     } catch (error) {
-      console.error(`❌ Snapshot error for ${symbol}:`, error.message);
+      console.error(
+        `❌ Snapshot error for ${symbol}:`,
+        error.message
+      );
     }
   }
 
