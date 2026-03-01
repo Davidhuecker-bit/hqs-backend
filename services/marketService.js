@@ -1,10 +1,8 @@
-// services/marketService.js
-// HQS Market System (Massive + Normalizer + Snapshot Momentum + Table Init)
-
 "use strict";
 
 const { fetchQuote } = require("./providerService");
 const { normalizeMarketData } = require("./marketNormalizer");
+const { buildHQSResponse } = require("../hqsEngine");
 const { Pool } = require("pg");
 
 const pool = new Pool({
@@ -31,6 +29,20 @@ async function ensureTablesExist() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS hqs_scores (
+      id SERIAL PRIMARY KEY,
+      symbol TEXT,
+      hqs_score NUMERIC,
+      momentum NUMERIC,
+      quality NUMERIC,
+      stability NUMERIC,
+      relative NUMERIC,
+      regime TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
   console.log("✅ Tables ensured");
 }
 
@@ -41,83 +53,7 @@ async function ensureTablesExist() {
 const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
 /* =========================================================
-   SNAPSHOT MOMENTUM
-========================================================= */
-
-async function getLastSnapshot(symbol) {
-  const result = await pool.query(
-    `
-    SELECT price
-    FROM market_snapshots
-    WHERE symbol = $1
-    ORDER BY created_at DESC
-    LIMIT 1
-    `,
-    [symbol]
-  );
-
-  if (!result.rows.length) return null;
-
-  return Number(result.rows[0].price);
-}
-
-function calculateSnapshotChangePercent(currentPrice, previousPrice) {
-  if (!currentPrice || !previousPrice) return null;
-  return ((currentPrice - previousPrice) / previousPrice) * 100;
-}
-
-/* =========================================================
-   LIVE MARKET DATA
-========================================================= */
-
-async function getMarketData(symbol) {
-  try {
-    if (symbol) {
-      return await processSymbol(symbol.toUpperCase());
-    }
-
-    const results = [];
-
-    for (const s of WATCHLIST) {
-      const data = await processSymbol(s);
-      results.push(...data);
-    }
-
-    return results;
-
-  } catch (error) {
-    console.error("MarketData Error:", error.message);
-    return [];
-  }
-}
-
-async function processSymbol(symbol) {
-  const raw = await fetchQuote(symbol);
-
-  if (!raw || !raw.length) return [];
-
-  const normalized = normalizeMarketData(raw[0], "massive", "us");
-
-  if (!normalized) return [];
-
-  // 🔥 Snapshot Momentum Berechnung
-  const lastSnapshotPrice = await getLastSnapshot(symbol);
-
-  if (lastSnapshotPrice) {
-    const snapshotChange =
-      calculateSnapshotChangePercent(
-        normalized.price,
-        lastSnapshotPrice
-      );
-
-    normalized.changesPercentage = snapshotChange;
-  }
-
-  return [normalized];
-}
-
-/* =========================================================
-   SNAPSHOT BUILDER
+   SNAPSHOT + HQS PIPELINE
 ========================================================= */
 
 async function buildMarketSnapshot() {
@@ -126,16 +62,12 @@ async function buildMarketSnapshot() {
   for (const symbol of WATCHLIST) {
     try {
       const raw = await fetchQuote(symbol);
+      if (!raw || !raw.length) continue;
 
-      if (!raw || raw.length === 0) {
-        throw new Error("No data returned");
-      }
-
-      const normalized =
-        normalizeMarketData(raw[0], "massive", "us");
-
+      const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
+      // Snapshot speichern
       await pool.query(
         `
         INSERT INTO market_snapshots 
@@ -153,13 +85,31 @@ async function buildMarketSnapshot() {
         ]
       );
 
-      console.log(`✅ Snapshot saved for ${symbol}`);
+      // 🔥 HQS berechnen
+      const hqs = await buildHQSResponse(normalized);
 
-    } catch (error) {
-      console.error(
-        `❌ Snapshot error for ${symbol}:`,
-        error.message
+      // 🔥 Score speichern
+      await pool.query(
+        `
+        INSERT INTO hqs_scores
+        (symbol, hqs_score, momentum, quality, stability, relative, regime, created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+        `,
+        [
+          hqs.symbol,
+          hqs.hqsScore,
+          hqs.breakdown.momentum,
+          hqs.breakdown.quality,
+          hqs.breakdown.stability,
+          hqs.breakdown.relative,
+          hqs.regime
+        ]
       );
+
+      console.log(`✅ Snapshot + HQS saved for ${symbol}`);
+
+    } catch (err) {
+      console.error(`❌ Error for ${symbol}:`, err.message);
     }
   }
 
@@ -167,8 +117,46 @@ async function buildMarketSnapshot() {
 }
 
 /* =========================================================
-   EXPORTS
+   MARKET DATA (MIT FERTIGEM SCORE)
 ========================================================= */
+
+async function getMarketData(symbol) {
+  try {
+    const symbols = symbol ? [symbol] : WATCHLIST;
+
+    const results = [];
+
+    for (const s of symbols) {
+      const raw = await fetchQuote(s);
+      if (!raw || !raw.length) continue;
+
+      const normalized = normalizeMarketData(raw[0], "massive", "us");
+      if (!normalized) continue;
+
+      const scoreResult = await pool.query(
+        `
+        SELECT hqs_score
+        FROM hqs_scores
+        WHERE symbol = $1
+        ORDER BY created_at DESC
+        LIMIT 1
+        `,
+        [s]
+      );
+
+      normalized.hqsScore =
+        scoreResult.rows.length ? Number(scoreResult.rows[0].hqs_score) : null;
+
+      results.push(normalized);
+    }
+
+    return results;
+
+  } catch (error) {
+    console.error("MarketData Error:", error.message);
+    return [];
+  }
+}
 
 module.exports = {
   getMarketData,
