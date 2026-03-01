@@ -24,6 +24,9 @@ const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
 
+// ✅ NEW: Forward Learning
+const { runForwardLearning } = require("./services/forwardLearning.service");
+
 /* =========================================================
    APP INIT
 ========================================================= */
@@ -42,7 +45,7 @@ app.use(
     ],
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  })
+  }),
 );
 
 app.use(express.json());
@@ -71,6 +74,18 @@ function formatMarketItem(item) {
 }
 
 /* =========================================================
+   HEALTH
+========================================================= */
+
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    status: "HQS Backend running",
+    time: new Date().toISOString(),
+  });
+});
+
+/* =========================================================
    MARKET ROUTE
 ========================================================= */
 
@@ -91,7 +106,6 @@ app.get("/api/market", async (req, res) => {
       count: stocks.length,
       stocks,
     });
-
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -106,9 +120,7 @@ app.get("/api/market", async (req, res) => {
 
 app.get("/api/hqs", async (req, res) => {
   try {
-    const symbol = String(req.query.symbol || "")
-      .trim()
-      .toUpperCase();
+    const symbol = String(req.query.symbol || "").trim().toUpperCase();
 
     if (!symbol) {
       return res.status(400).json({
@@ -126,8 +138,8 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Wenn Score bereits gespeichert → direkt liefern
-    if (marketData[0].hqsScore !== null) {
+    // ✅ Wenn Score bereits gespeichert → direkt liefern
+    if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
         symbol,
@@ -136,14 +148,17 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // 🔥 Market Average berechnen (für Regime Detection)
+    // 🔥 Market Average berechnen (für Regime / Kontext)
     const fullMarket = await getMarketData();
-    const changes = fullMarket.map(s => Number(s.changesPercentage) || 0);
+    const changes = Array.isArray(fullMarket)
+      ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
+      : [];
     const marketAverage =
-      changes.length
+      changes.length > 0
         ? changes.reduce((a, b) => a + b, 0) / changes.length
         : 0;
 
+    // ✅ Extra-Arg ist safe (JS ignoriert es, falls Engine es nicht nutzt)
     const hqs = await buildHQSResponse(marketData[0], marketAverage);
 
     return res.json({
@@ -151,8 +166,8 @@ app.get("/api/hqs", async (req, res) => {
       symbol,
       hqs,
       source: "live",
+      marketAverage: Number(marketAverage.toFixed(4)),
     });
-
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -180,7 +195,6 @@ app.get("/api/segment", async (req, res) => {
 
     const result = await getMarketDataBySegment({ segment, symbol });
     return res.json(result);
-
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -229,7 +243,6 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
       success: true,
       guardian: guardianResult,
     });
-
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -259,7 +272,6 @@ app.post("/api/portfolio", async (req, res) => {
       success: true,
       ...result,
     });
-
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -280,19 +292,24 @@ app.listen(PORT, async () => {
   await initWeightTable();
 
   try {
+    // 1) Snapshot + HQS persistieren
     await buildMarketSnapshot();
+
+    // 2) Forward Learning nachziehen (labeling)
+    await runForwardLearning();
   } catch (err) {
-    console.error("Initial Snapshot Fehler:", err.message);
+    console.error("Startup Fehler:", err.message);
   }
 });
 
 /* =========================================================
-   AUTO SNAPSHOT
+   AUTO SNAPSHOT + FORWARD LEARNING
 ========================================================= */
 
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
+    await runForwardLearning();
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
   }
