@@ -8,10 +8,11 @@ const pool = new Pool({
 });
 
 /* =========================================================
-   INIT TABLE
+   INIT TABLE (Schema-safe Upgrade)
 ========================================================= */
 
 async function initFactorTable() {
+  // Tabelle erstellen falls nicht vorhanden
   await pool.query(`
     CREATE TABLE IF NOT EXISTS factor_history (
       id SERIAL PRIMARY KEY,
@@ -32,7 +33,38 @@ async function initFactorTable() {
     );
   `);
 
-  console.log("✅ factor_history ready");
+  // 🔥 Schema-Upgrade falls alte Version existiert
+  await pool.query(`
+    ALTER TABLE factor_history
+    ADD COLUMN IF NOT EXISTS momentum FLOAT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE factor_history
+    ADD COLUMN IF NOT EXISTS quality FLOAT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE factor_history
+    ADD COLUMN IF NOT EXISTS stability FLOAT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE factor_history
+    ADD COLUMN IF NOT EXISTS relative FLOAT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE factor_history
+    ADD COLUMN IF NOT EXISTS portfolio_return FLOAT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE factor_history
+    ADD COLUMN IF NOT EXISTS factors JSONB;
+  `);
+
+  console.log("✅ factor_history ready (schema verified)");
 }
 
 /* =========================================================
@@ -58,10 +90,10 @@ async function saveScoreSnapshot({
       [
         symbol,
         hqsScore,
-        momentum,
-        quality,
-        stability,
-        relative,
+        momentum ?? null,
+        quality ?? null,
+        stability ?? null,
+        relative ?? null,
         regime,
       ],
     );
@@ -86,8 +118,8 @@ async function saveFactorSnapshot(regime, portfolioReturn, factors) {
         "PORTFOLIO",
         0,
         regime,
-        portfolioReturn,
-        factors,
+        portfolioReturn ?? null,
+        factors ?? null,
       ],
     );
   } catch (err) {
