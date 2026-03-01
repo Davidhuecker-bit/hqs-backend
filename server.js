@@ -22,13 +22,15 @@ const { getMarketDataBySegment } = require("./services/aggregator.service");
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
+
+// ✅ Weight Learning (reinforcement)
 const {
   initWeightTable,
   loadLastWeights,
-  computeAdaptiveWeights,
+  computeAdaptiveWeightsAll,
 } = require("./services/weightHistory.repository");
 
-// Forward Learning
+// ✅ Forward Learning
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
 /* =========================================================
@@ -71,7 +73,12 @@ function formatMarketItem(item) {
     open: item.open ?? null,
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
+
+    // gespeicherter HQS Score + optional Breakdown/Regime
     hqsScore: item.hqsScore ?? null,
+    hqsBreakdown: item.hqsBreakdown ?? null,
+    regime: item.regime ?? null,
+
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
   };
@@ -91,6 +98,8 @@ app.get("/", (req, res) => {
 
 /* =========================================================
    MARKET ROUTE
+   GET /api/market
+   GET /api/market?symbol=AAPL
 ========================================================= */
 
 app.get("/api/market", async (req, res) => {
@@ -119,8 +128,8 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   HQS ROUTE
-   - DB Score first, fallback live
+   HQS ROUTE (DB-first)
+   GET /api/hqs?symbol=AAPL
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -143,6 +152,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
+    // DB-first: wenn hqsScore existiert -> direkt liefern
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
@@ -152,7 +162,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Market Average als Kontext (optional)
+    // Market Average als Kontext
     const fullMarket = await getMarketData();
     const changes = Array.isArray(fullMarket)
       ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
@@ -160,7 +170,6 @@ app.get("/api/hqs", async (req, res) => {
     const marketAverage =
       changes.length > 0 ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
 
-    // Extra Arg ist safe (Engine ignoriert, wenn nicht genutzt)
     const hqs = await buildHQSResponse(marketData[0], marketAverage);
 
     return res.json({
@@ -180,10 +189,11 @@ app.get("/api/hqs", async (req, res) => {
 });
 
 /* =========================================================
-   WEIGHTS ROUTES
+   WEIGHTS ROUTE
+   GET /api/weights
+   GET /api/weights?regime=neutral
 ========================================================= */
 
-// GET /api/weights?regime=neutral
 app.get("/api/weights", async (req, res) => {
   try {
     const regime = String(req.query.regime || "").trim().toLowerCase() || null;
@@ -194,27 +204,6 @@ app.get("/api/weights", async (req, res) => {
       regime: regime || "latest",
       weights: weights || null,
       source: weights ? "database" : "none",
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-// GET /api/weights/recompute?regime=neutral
-app.get("/api/weights/recompute", async (req, res) => {
-  try {
-    const regime = String(req.query.regime || "neutral").trim().toLowerCase();
-    const weights = await computeAdaptiveWeights(regime);
-
-    return res.json({
-      success: true,
-      regime,
-      weights: weights || null,
-      source: weights ? "reinforcement" : "insufficient-data",
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -301,6 +290,7 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 
 /* =========================================================
    PORTFOLIO ROUTE
+   POST /api/portfolio
 ========================================================= */
 
 app.post("/api/portfolio", async (req, res) => {
@@ -340,21 +330,28 @@ app.listen(PORT, async () => {
   await initWeightTable();
 
   try {
+    // 1) Snapshot + HQS persistieren
     await buildMarketSnapshot();
+
+    // 2) Forward Learning Labels nachziehen
     await runForwardLearning();
+
+    // 3) Adaptive Weights updaten (alle Regimes)
+    await computeAdaptiveWeightsAll();
   } catch (err) {
     console.error("Startup Fehler:", err.message);
   }
 });
 
 /* =========================================================
-   AUTO SNAPSHOT + LEARNING
+   AUTO SNAPSHOT + FORWARD LEARNING + WEIGHTS
 ========================================================= */
 
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
     await runForwardLearning();
+    await computeAdaptiveWeightsAll();
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
   }
