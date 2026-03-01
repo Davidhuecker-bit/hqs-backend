@@ -8,11 +8,12 @@ const pool = new Pool({
 });
 
 /* =========================================================
-   INIT TABLE (Schema-safe Upgrade)
+   INIT TABLE (FULL QUANT + SAFE UPGRADE)
 ========================================================= */
 
 async function initFactorTable() {
-  // Tabelle erstellen falls nicht vorhanden
+
+  // Basis-Tabelle erstellen falls nicht vorhanden
   await pool.query(`
     CREATE TABLE IF NOT EXISTS factor_history (
       id SERIAL PRIMARY KEY,
@@ -26,6 +27,13 @@ async function initFactorTable() {
 
       regime TEXT NOT NULL,
 
+      market_average FLOAT,
+      volatility FLOAT,
+
+      forward_return_1h FLOAT,
+      forward_return_1d FLOAT,
+      forward_return_3d FLOAT,
+
       portfolio_return FLOAT,
       factors JSONB,
 
@@ -33,38 +41,26 @@ async function initFactorTable() {
     );
   `);
 
-  // 🔥 Schema-Upgrade falls alte Version existiert
-  await pool.query(`
-    ALTER TABLE factor_history
-    ADD COLUMN IF NOT EXISTS momentum FLOAT;
-  `);
+  /* =========================================================
+     SCHEMA SAFE UPGRADE (für bestehende DBs)
+  ========================================================= */
 
-  await pool.query(`
-    ALTER TABLE factor_history
-    ADD COLUMN IF NOT EXISTS quality FLOAT;
-  `);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS momentum FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS quality FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS stability FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS relative FLOAT;`);
 
-  await pool.query(`
-    ALTER TABLE factor_history
-    ADD COLUMN IF NOT EXISTS stability FLOAT;
-  `);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS market_average FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS volatility FLOAT;`);
 
-  await pool.query(`
-    ALTER TABLE factor_history
-    ADD COLUMN IF NOT EXISTS relative FLOAT;
-  `);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS forward_return_1h FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS forward_return_1d FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS forward_return_3d FLOAT;`);
 
-  await pool.query(`
-    ALTER TABLE factor_history
-    ADD COLUMN IF NOT EXISTS portfolio_return FLOAT;
-  `);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS portfolio_return FLOAT;`);
+  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS factors JSONB;`);
 
-  await pool.query(`
-    ALTER TABLE factor_history
-    ADD COLUMN IF NOT EXISTS factors JSONB;
-  `);
-
-  console.log("✅ factor_history ready (schema verified)");
+  console.log("✅ factor_history ready (FULL QUANT MODE)");
 }
 
 /* =========================================================
@@ -79,13 +75,16 @@ async function saveScoreSnapshot({
   stability,
   relative,
   regime,
+  marketAverage,
+  volatility
 }) {
   try {
     await pool.query(
       `
       INSERT INTO factor_history
-      (symbol, hqs_score, momentum, quality, stability, relative, regime)
-      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      (symbol, hqs_score, momentum, quality, stability, relative, regime,
+       market_average, volatility)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
       `,
       [
         symbol,
@@ -95,6 +94,8 @@ async function saveScoreSnapshot({
         stability ?? null,
         relative ?? null,
         regime,
+        marketAverage ?? null,
+        volatility ?? null
       ],
     );
   } catch (err) {
@@ -128,23 +129,41 @@ async function saveFactorSnapshot(regime, portfolioReturn, factors) {
 }
 
 /* =========================================================
-   LOAD HISTORY (for calibration)
+   UPDATE FORWARD RETURNS (LABELING)
+========================================================= */
+
+async function updateForwardReturns(symbol, hoursAhead, percentChange) {
+  try {
+    let column;
+
+    if (hoursAhead === 1) column = "forward_return_1h";
+    else if (hoursAhead === 24) column = "forward_return_1d";
+    else column = "forward_return_3d";
+
+    await pool.query(
+      `
+      UPDATE factor_history
+      SET ${column} = $1
+      WHERE symbol = $2
+      AND ${column} IS NULL
+      `,
+      [percentChange, symbol]
+    );
+
+  } catch (err) {
+    console.error("❌ updateForwardReturns error:", err.message);
+  }
+}
+
+/* =========================================================
+   LOAD HISTORY (für Calibration / Reinforcement)
 ========================================================= */
 
 async function loadFactorHistory(limit = 500) {
   try {
     const res = await pool.query(
       `
-      SELECT symbol,
-             hqs_score,
-             momentum,
-             quality,
-             stability,
-             relative,
-             regime,
-             portfolio_return,
-             factors,
-             created_at
+      SELECT *
       FROM factor_history
       ORDER BY created_at ASC
       LIMIT $1
@@ -164,4 +183,5 @@ module.exports = {
   saveScoreSnapshot,
   saveFactorSnapshot,
   loadFactorHistory,
+  updateForwardReturns
 };
