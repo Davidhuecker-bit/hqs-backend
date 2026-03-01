@@ -1,5 +1,15 @@
 "use strict";
 
+/*
+  HQS Market System
+  - Massive Provider
+  - Normalizer
+  - Snapshot Speicherung
+  - HQS Berechnung bei Snapshot
+  - Score Speicherung
+  - Market liefert gespeicherten Score
+*/
+
 const { fetchQuote } = require("./providerService");
 const { normalizeMarketData } = require("./marketNormalizer");
 const { buildHQSResponse } = require("../hqsEngine");
@@ -15,6 +25,7 @@ const pool = new Pool({
 ========================================================= */
 
 async function ensureTablesExist() {
+  // Markt Snapshots
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_snapshots (
       id SERIAL PRIMARY KEY,
@@ -29,10 +40,11 @@ async function ensureTablesExist() {
     );
   `);
 
+  // 🔥 HQS Score Historie
   await pool.query(`
     CREATE TABLE IF NOT EXISTS hqs_scores (
       id SERIAL PRIMARY KEY,
-      symbol TEXT,
+      symbol TEXT NOT NULL,
       hqs_score NUMERIC,
       momentum NUMERIC,
       quality NUMERIC,
@@ -67,7 +79,7 @@ async function buildMarketSnapshot() {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
-      // Snapshot speichern
+      // 1️⃣ Snapshot speichern
       await pool.query(
         `
         INSERT INTO market_snapshots 
@@ -85,10 +97,10 @@ async function buildMarketSnapshot() {
         ]
       );
 
-      // 🔥 HQS berechnen
+      // 2️⃣ HQS berechnen
       const hqs = await buildHQSResponse(normalized);
 
-      // 🔥 Score speichern
+      // 3️⃣ Score speichern
       await pool.query(
         `
         INSERT INTO hqs_scores
@@ -98,11 +110,11 @@ async function buildMarketSnapshot() {
         [
           hqs.symbol,
           hqs.hqsScore,
-          hqs.breakdown.momentum,
-          hqs.breakdown.quality,
-          hqs.breakdown.stability,
-          hqs.breakdown.relative,
-          hqs.regime
+          hqs.breakdown?.momentum ?? null,
+          hqs.breakdown?.quality ?? null,
+          hqs.breakdown?.stability ?? null,
+          hqs.breakdown?.relative ?? null,
+          hqs.regime ?? null,
         ]
       );
 
@@ -117,13 +129,12 @@ async function buildMarketSnapshot() {
 }
 
 /* =========================================================
-   MARKET DATA (MIT FERTIGEM SCORE)
+   MARKET DATA MIT GESPEICHERTEM SCORE
 ========================================================= */
 
 async function getMarketData(symbol) {
   try {
     const symbols = symbol ? [symbol] : WATCHLIST;
-
     const results = [];
 
     for (const s of symbols) {
@@ -133,6 +144,7 @@ async function getMarketData(symbol) {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
+      // 🔥 letzten gespeicherten Score holen
       const scoreResult = await pool.query(
         `
         SELECT hqs_score
@@ -145,7 +157,9 @@ async function getMarketData(symbol) {
       );
 
       normalized.hqsScore =
-        scoreResult.rows.length ? Number(scoreResult.rows[0].hqs_score) : null;
+        scoreResult.rows.length
+          ? Number(scoreResult.rows[0].hqs_score)
+          : null;
 
       results.push(normalized);
     }
@@ -157,6 +171,10 @@ async function getMarketData(symbol) {
     return [];
   }
 }
+
+/* =========================================================
+   EXPORTS
+========================================================= */
 
 module.exports = {
   getMarketData,
