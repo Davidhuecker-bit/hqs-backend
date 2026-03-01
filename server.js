@@ -64,10 +64,7 @@ function formatMarketItem(item) {
     open: item.open ?? null,
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
-
-    // 🔥 NEU – gespeicherter HQS Score
     hqsScore: item.hqsScore ?? null,
-
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
   };
@@ -104,7 +101,7 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   🔥 HQS ROUTE (nutzt gespeicherten Score)
+   🔥 HQS ROUTE – Adaptive Engine integriert
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -120,7 +117,6 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // 🔥 Erst gespeicherte Daten holen
     const marketData = await getMarketData(symbol);
 
     if (!marketData.length) {
@@ -130,7 +126,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // 🔥 Wenn Score existiert → keine Neuberechnung
+    // Wenn Score bereits gespeichert → direkt liefern
     if (marketData[0].hqsScore !== null) {
       return res.json({
         success: true,
@@ -140,8 +136,15 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Fallback falls kein Score vorhanden
-    const hqs = await buildHQSResponse(marketData[0]);
+    // 🔥 Market Average berechnen (für Regime Detection)
+    const fullMarket = await getMarketData();
+    const changes = fullMarket.map(s => Number(s.changesPercentage) || 0);
+    const marketAverage =
+      changes.length
+        ? changes.reduce((a, b) => a + b, 0) / changes.length
+        : 0;
+
+    const hqs = await buildHQSResponse(marketData[0], marketAverage);
 
     return res.json({
       success: true,
