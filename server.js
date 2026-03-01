@@ -1,193 +1,208 @@
 "use strict";
 
-require("dotenv").config();
 const express = require("express");
-const axios = require("axios");
-const { Pool } = require("pg");
-const cron = require("node-cron");
+const cors = require("cors");
+require("dotenv").config();
 
-const { buildHQSResponse } = require("./hqsEngine");
-const { simulateStrategy } = require("./services/backtestEngine");
-const { recalibrate } = require("./services/autoRecalibration.service");
-const { initWeightTable, loadLastWeights } = require("./services/weightHistory.repository");
+// Core Services
+const {
+  getMarketData,
+  buildMarketSnapshot,
+  ensureTablesExist,
+} = require("./services/marketService");
+
+const { analyzeStockWithGuardian } = require("./services/guardianService");
+const { getMarketDataBySegment } = require("./services/aggregator.service");
+
+// ✅ DB init tables (Learning / HQS)
 const { initFactorTable } = require("./services/factorHistory.repository");
-const { getDefaultWeights } = require("./services/autoFactor.service");
+const { initWeightTable } = require("./services/weightHistory.repository");
 
 const app = express();
-app.use(express.json());
-
 const PORT = process.env.PORT || 8080;
 
-/* ==============================
-   DATABASE
-============================== */
+// ==========================================================
+// CORS
+// ==========================================================
+app.use(
+  cors({
+    origin: [
+      "https://dhsystemhqs.de",
+      "https://www.dhsystemhqs.de",
+      "https://hqs-frontend-v8.vercel.app",
+      /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
+      "http://localhost:3000",
+    ],
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+app.use(express.json());
 
-/* ==============================
-   SAFE MIGRATION
-============================== */
-
-async function ensureTablesExist() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS market_snapshots (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      price NUMERIC,
-      hqs_score INTEGER,
-      open NUMERIC,
-      high NUMERIC,
-      low NUMERIC,
-      volume BIGINT,
-      source TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  console.log("✅ Tables ensured and migrated");
-}
-
-/* ==============================
-   MASSIVE API
-============================== */
-
-const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
-
-async function fetchSnapshot(symbol) {
-  const url = `https://api.massive.com/v2/aggs/ticker/${symbol}/prev?adjusted=true&apiKey=${MASSIVE_API_KEY}`;
-  const response = await axios.get(url);
-
-  if (!response.data.results || response.data.results.length === 0) {
-    throw new Error("No data from Massive");
-  }
-
-  const r = response.data.results[0];
-
+// ==========================================================
+// RESPONSE FORMATTER
+// Defensive: all score fields fall back to null.
+// ==========================================================
+function formatMarketItem(item) {
+  if (!item || typeof item !== "object") return null;
   return {
-    symbol,
-    price: r.c,
-    open: r.o,
-    high: r.h,
-    low: r.l,
-    volume: r.v,
-    changesPercentage: r.p || 0,
-    source: "MASSIVE",
+    symbol: item.symbol || null,
+    price: item.price !== undefined ? item.price : null,
+    change: item.change !== undefined ? item.change : null,
+    changesPercentage: item.changesPercentage !== undefined ? item.changesPercentage : null,
+    high: item.high !== undefined ? item.high : null,
+    low: item.low !== undefined ? item.low : null,
+    open: item.open !== undefined ? item.open : null,
+    previousClose: item.previousClose !== undefined ? item.previousClose : null,
+    marketCap: item.marketCap !== undefined ? item.marketCap : null,
+    score: item.score !== undefined ? item.score : null,
+    rating: item.rating !== undefined ? item.rating : null,
+    risk: item.risk !== undefined ? item.risk : null,
+    momentum: item.momentum !== undefined ? item.momentum : null,
+    stability: item.stability !== undefined ? item.stability : null,
+    timestamp: item.timestamp !== undefined ? item.timestamp : null,
+    source: item.source || null,
   };
 }
 
-/* ==============================
-   BUILD SNAPSHOT + LEARNING LOOP
-============================== */
+// ==========================================================
+// MARKET ROUTE
+// GET /api/market
+// GET /api/market?symbol=AAPL
+// ==========================================================
+app.get("/api/market", async (req, res) => {
+  try {
+    const symbol = req.query.symbol
+      ? String(req.query.symbol).trim().toUpperCase()
+      : null;
 
-async function buildMarketSnapshot() {
-  const symbols = ["AAPL", "MSFT", "NVDA", "AMD"];
+    const raw = await getMarketData(symbol || undefined);
 
-  console.log("📊 Building market snapshot...");
+    const stocks = Array.isArray(raw)
+      ? raw.map(formatMarketItem).filter(Boolean)
+      : [];
 
-  let weights = await loadLastWeights();
-  if (!weights) {
-    weights = getDefaultWeights();
+    // ✅ Wichtig: "stocks" (Frontend-friendly)
+    return res.json({
+      success: true,
+      count: stocks.length,
+      stocks,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      count: 0,
+      stocks: [],
+      error: error.message,
+    });
   }
+});
 
-  const history = [];
+// ==========================================================
+// SEGMENT ROUTE
+// ==========================================================
+app.get("/api/segment", async (req, res) => {
+  try {
+    const segment = String(req.query.segment || "").toLowerCase();
+    const symbol = String(req.query.symbol || "").toUpperCase();
 
-  for (const symbol of symbols) {
-    try {
-      const raw = await fetchSnapshot(symbol);
-
-      const enriched = await buildHQSResponse(raw, weights);
-
-      await pool.query(
-        `
-        INSERT INTO market_snapshots
-        (symbol, price, hqs_score, open, high, low, volume, source)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        `,
-        [
-          enriched.symbol,
-          enriched.price,
-          enriched.hqsScore,
-          raw.open,
-          raw.high,
-          raw.low,
-          raw.volume,
-          raw.source,
-        ]
-      );
-
-      history.push({
-        symbol: enriched.symbol,
-        price: enriched.price,
-        hqsScore: enriched.hqsScore,
+    if (!segment || !symbol) {
+      return res.status(400).json({
+        success: false,
+        message: "segment und symbol sind erforderlich.",
       });
-
-      console.log(`✅ Snapshot saved for ${symbol}`);
-    } catch (err) {
-      console.error(`❌ Snapshot error for ${symbol}:`, err.message);
     }
+
+    const result = await getMarketDataBySegment({ segment, symbol });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Segment Fehler",
+      error: error.message,
+    });
   }
+});
 
-  /* ==============================
-     BACKTEST + RECALIBRATION
-  ============================== */
+// ==========================================================
+// GUARDIAN ANALYZE (SEGMENT BASED)
+// ==========================================================
+app.get("/api/guardian/analyze/:ticker", async (req, res) => {
+  try {
+    const ticker = String(req.params.ticker || "").toUpperCase();
+    const segment = String(req.query.segment || "usa").toLowerCase();
 
-  if (history.length > 1) {
-    const performance = simulateStrategy(history);
+    if (!ticker) {
+      return res.status(400).json({
+        success: false,
+        message: "Ticker fehlt.",
+      });
+    }
 
-    const regime = "bull"; // später SPY-basierend
+    const segmentData = await getMarketDataBySegment({
+      segment,
+      symbol: ticker,
+    });
 
-    await recalibrate(performance, regime);
+    if (!segmentData.success) {
+      return res.status(404).json({
+        success: false,
+        message: "Segmentdaten nicht verfügbar.",
+        error: segmentData.error,
+      });
+    }
 
-    console.log("🧠 Recalibration complete");
+    const guardianResult = await analyzeStockWithGuardian({
+      symbol: ticker,
+      segment,
+      provider: segmentData.provider,
+      fallbackUsed: segmentData.fallbackUsed,
+      marketData: segmentData.data,
+    });
+
+    return res.json({
+      success: true,
+      timestamp: new Date().toISOString(),
+      guardian: guardianResult,
+      marketMeta: {
+        segment,
+        provider: segmentData.provider,
+        fallbackUsed: segmentData.fallbackUsed,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Guardian Analyse fehlgeschlagen",
+      error: error.message,
+    });
   }
-
-  console.log("✅ Snapshot cycle complete");
-}
-
-/* ==============================
-   CRON JOB (alle 15 Minuten)
-============================== */
-
-cron.schedule("*/15 * * * *", async () => {
-  console.log("⏱ Running scheduled snapshot...");
-  await buildMarketSnapshot();
 });
 
-/* ==============================
-   API ROUTES
-============================== */
-
-app.get("/", (req, res) => {
-  res.json({ status: "HQS Backend running" });
-});
-
-app.get("/market/latest", async (req, res) => {
-  const result = await pool.query(`
-    SELECT DISTINCT ON (symbol)
-    symbol, price, hqs_score, open, high, low, volume, source, created_at
-    FROM market_snapshots
-    ORDER BY symbol, created_at DESC;
-  `);
-
-  res.json(result.rows);
-});
-
-/* ==============================
-   START SERVER
-============================== */
-
+// ==========================================================
+// SERVER START
+// ==========================================================
 app.listen(PORT, async () => {
-  console.log(`🚀 HQS Backend running on port ${PORT}`);
+  console.log(`HQS Backend aktiv auf Port ${PORT}`);
+
+  // ✅ Schritt 1: alle Tabellen anlegen
+  await ensureTablesExist();
+  await initFactorTable();
+  await initWeightTable();
 
   try {
-    await ensureTablesExist();
-    await initWeightTable();
-    await initFactorTable();
     await buildMarketSnapshot();
   } catch (err) {
-    console.error("Startup error:", err.message);
+    console.error("Initial Snapshot Fehler:", err.message);
   }
 });
+
+// Warmup / Snapshot
+setInterval(async () => {
+  try {
+    await buildMarketSnapshot();
+  } catch (err) {
+    console.error("Warmup Fehler:", err.message);
+  }
+}, 15 * 60 * 1000);
