@@ -37,6 +37,14 @@ async function calculatePortfolioHQS(portfolio = []) {
     return { error: "Empty portfolio" };
   }
 
+  // ✅ marketAverage einmal berechnen (Konsistenz mit Snapshot/Server HQS Route)
+  const fullMarket = await getMarketData();
+  const changes = Array.isArray(fullMarket)
+    ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
+    : [];
+  const marketAverage =
+    changes.length > 0 ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
+
   /* =========================================
      1) Einzelaktien (DB-first, Live fallback)
   ========================================= */
@@ -50,9 +58,10 @@ async function calculatePortfolioHQS(portfolio = []) {
     const weight = clamp(safe(position?.weight, 1), 0, 1e9);
 
     // 1) Falls der Client schon marketData mitsendet
-    let marketItem = position?.marketData && typeof position.marketData === "object"
-      ? { ...position.marketData, symbol }
-      : null;
+    let marketItem =
+      position?.marketData && typeof position.marketData === "object"
+        ? { ...position.marketData, symbol }
+        : null;
 
     // 2) Sonst DB/Provider über getMarketData holen (liefert hqsScore aus hqs_scores)
     if (!marketItem) {
@@ -72,8 +81,8 @@ async function calculatePortfolioHQS(portfolio = []) {
         weight,
         hqsScore: clamp(Math.round(cachedScore), 0, 100),
 
-        // stability haben wir DB-seitig aktuell nicht sicher -> neutraler Fallback
-        stability: safe(marketItem?.stability, 55),
+        // ✅ FIX: stability kommt (wenn vorhanden) aus hqsBreakdown
+        stability: safe(marketItem?.hqsBreakdown?.stability, 55),
 
         rating: deriveRating(cachedScore),
         decision: deriveDecision(cachedScore),
@@ -84,8 +93,8 @@ async function calculatePortfolioHQS(portfolio = []) {
       continue;
     }
 
-    // 4) Live fallback: Score wirklich berechnen
-    const hqs = await buildHQSResponse(marketItem || { symbol });
+    // 4) Live fallback: Score wirklich berechnen (mit marketAverage)
+    const hqs = await buildHQSResponse(marketItem || { symbol }, marketAverage);
 
     enriched.push({
       symbol,
@@ -180,6 +189,10 @@ async function calculatePortfolioHQS(portfolio = []) {
         : portfolioScore >= 50
         ? "Neutral"
         : "Defensive",
+    meta: {
+      marketAverage: Number(marketAverage.toFixed(4)),
+      symbolCount: enriched.length,
+    },
     timestamp: new Date().toISOString(),
   };
 }
