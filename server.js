@@ -4,29 +4,33 @@ const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
-// Core Services
+/* =========================================================
+   CORE SERVICES
+========================================================= */
+
 const {
   getMarketData,
   buildMarketSnapshot,
   ensureTablesExist,
 } = require("./services/marketService");
 
+const { buildHQSResponse } = require("./hqsEngine");
+
 const { analyzeStockWithGuardian } = require("./services/guardianService");
 const { getMarketDataBySegment } = require("./services/aggregator.service");
 
-// ✅ NEU: Portfolio Engine
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 
-// ✅ DB init tables (Learning / HQS)
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
+
+/* =========================================================
+   APP INIT
+========================================================= */
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ==========================================================
-// CORS
-// ==========================================================
 app.use(
   cors({
     origin: [
@@ -38,18 +42,20 @@ app.use(
     ],
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  }),
+  })
 );
 
 app.use(express.json());
 
-// ==========================================================
-// RESPONSE FORMATTER
-// ==========================================================
+/* =========================================================
+   RESPONSE FORMATTER
+========================================================= */
+
 function formatMarketItem(item) {
   if (!item || typeof item !== "object") return null;
+
   return {
-    symbol: item.symbol || null,
+    symbol: item.symbol ?? null,
     price: item.price ?? null,
     change: item.change ?? null,
     changesPercentage: item.changesPercentage ?? null,
@@ -58,19 +64,15 @@ function formatMarketItem(item) {
     open: item.open ?? null,
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
-    score: item.score ?? null,
-    rating: item.rating ?? null,
-    risk: item.risk ?? null,
-    momentum: item.momentum ?? null,
-    stability: item.stability ?? null,
     timestamp: item.timestamp ?? null,
-    source: item.source || null,
+    source: item.source ?? null,
   };
 }
 
-// ==========================================================
-// MARKET ROUTE
-// ==========================================================
+/* =========================================================
+   MARKET ROUTE
+========================================================= */
+
 app.get("/api/market", async (req, res) => {
   try {
     const symbol = req.query.symbol
@@ -88,19 +90,63 @@ app.get("/api/market", async (req, res) => {
       count: stocks.length,
       stocks,
     });
+
   } catch (error) {
     return res.status(500).json({
       success: false,
-      count: 0,
-      stocks: [],
       error: error.message,
     });
   }
 });
 
-// ==========================================================
-// SEGMENT ROUTE
-// ==========================================================
+/* =========================================================
+   🔥 HQS ROUTE
+   GET /api/hqs?symbol=AAPL
+========================================================= */
+
+app.get("/api/hqs", async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || "")
+      .trim()
+      .toUpperCase();
+
+    if (!symbol) {
+      return res.status(400).json({
+        success: false,
+        message: "Symbol fehlt.",
+      });
+    }
+
+    const marketData = await getMarketData(symbol);
+
+    if (!marketData.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Keine Marktdaten gefunden.",
+      });
+    }
+
+    const hqs = await buildHQSResponse(marketData[0]);
+
+    return res.json({
+      success: true,
+      symbol,
+      hqs,
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "HQS Berechnung fehlgeschlagen",
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
+   SEGMENT ROUTE
+========================================================= */
+
 app.get("/api/segment", async (req, res) => {
   try {
     const segment = String(req.query.segment || "").toLowerCase();
@@ -115,18 +161,19 @@ app.get("/api/segment", async (req, res) => {
 
     const result = await getMarketDataBySegment({ segment, symbol });
     return res.json(result);
+
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "Segment Fehler",
       error: error.message,
     });
   }
 });
 
-// ==========================================================
-// GUARDIAN ANALYZE
-// ==========================================================
+/* =========================================================
+   GUARDIAN ROUTE
+========================================================= */
+
 app.get("/api/guardian/analyze/:ticker", async (req, res) => {
   try {
     const ticker = String(req.params.ticker || "").toUpperCase();
@@ -148,7 +195,6 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "Segmentdaten nicht verfügbar.",
-        error: segmentData.error,
       });
     }
 
@@ -162,32 +208,27 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 
     return res.json({
       success: true,
-      timestamp: new Date().toISOString(),
       guardian: guardianResult,
-      marketMeta: {
-        segment,
-        provider: segmentData.provider,
-        fallbackUsed: segmentData.fallbackUsed,
-      },
     });
+
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "Guardian Analyse fehlgeschlagen",
       error: error.message,
     });
   }
 });
 
-// ==========================================================
-// 🔥 PORTFOLIO ROUTE (NEU)
-// POST /api/portfolio
-// ==========================================================
+/* =========================================================
+   PORTFOLIO ROUTE
+   POST /api/portfolio
+========================================================= */
+
 app.post("/api/portfolio", async (req, res) => {
   try {
     const portfolio = req.body;
 
-    if (!Array.isArray(portfolio) || portfolio.length === 0) {
+    if (!Array.isArray(portfolio) || !portfolio.length) {
       return res.status(400).json({
         success: false,
         message: "Portfolio muss ein Array sein.",
@@ -200,20 +241,19 @@ app.post("/api/portfolio", async (req, res) => {
       success: true,
       ...result,
     });
-  } catch (error) {
-    console.error("Portfolio API Error:", error.message);
 
+  } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "Portfolio Berechnung fehlgeschlagen",
       error: error.message,
     });
   }
 });
 
-// ==========================================================
-// SERVER START
-// ==========================================================
+/* =========================================================
+   SERVER START
+========================================================= */
+
 app.listen(PORT, async () => {
   console.log(`HQS Backend aktiv auf Port ${PORT}`);
 
@@ -228,9 +268,10 @@ app.listen(PORT, async () => {
   }
 });
 
-// ==========================================================
-// WARMUP SNAPSHOT
-// ==========================================================
+/* =========================================================
+   WARMUP SNAPSHOT
+========================================================= */
+
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
