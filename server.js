@@ -22,9 +22,13 @@ const { getMarketDataBySegment } = require("./services/aggregator.service");
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
-const { initWeightTable, computeAdaptiveWeightsAll } = require("./services/weightHistory.repository");
+const {
+  initWeightTable,
+  loadLastWeights,
+  computeAdaptiveWeights,
+} = require("./services/weightHistory.repository");
 
-// ✅ Forward Learning
+// Forward Learning
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
 /* =========================================================
@@ -115,7 +119,8 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   🔥 HQS ROUTE – nutzt gespeicherten Score + Live-Fallback
+   HQS ROUTE
+   - DB Score first, fallback live
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -138,7 +143,6 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // ✅ Wenn Score bereits gespeichert → direkt liefern
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
@@ -148,17 +152,15 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // 🔥 Market Average berechnen (für Kontext / optional)
+    // Market Average als Kontext (optional)
     const fullMarket = await getMarketData();
     const changes = Array.isArray(fullMarket)
       ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
       : [];
     const marketAverage =
-      changes.length > 0
-        ? changes.reduce((a, b) => a + b, 0) / changes.length
-        : 0;
+      changes.length > 0 ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
 
-    // ✅ Extra-Arg ist safe: JS ignoriert es, falls Engine es nicht nutzt
+    // Extra Arg ist safe (Engine ignoriert, wenn nicht genutzt)
     const hqs = await buildHQSResponse(marketData[0], marketAverage);
 
     return res.json({
@@ -172,6 +174,52 @@ app.get("/api/hqs", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "HQS Berechnung fehlgeschlagen",
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
+   WEIGHTS ROUTES
+========================================================= */
+
+// GET /api/weights?regime=neutral
+app.get("/api/weights", async (req, res) => {
+  try {
+    const regime = String(req.query.regime || "").trim().toLowerCase() || null;
+    const weights = await loadLastWeights(regime);
+
+    return res.json({
+      success: true,
+      regime: regime || "latest",
+      weights: weights || null,
+      source: weights ? "database" : "none",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// GET /api/weights/recompute?regime=neutral
+app.get("/api/weights/recompute", async (req, res) => {
+  try {
+    const regime = String(req.query.regime || "neutral").trim().toLowerCase();
+    const weights = await computeAdaptiveWeights(regime);
+
+    return res.json({
+      success: true,
+      regime,
+      weights: weights || null,
+      source: weights ? "reinforcement" : "insufficient-data",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
       error: error.message,
     });
   }
@@ -292,28 +340,21 @@ app.listen(PORT, async () => {
   await initWeightTable();
 
   try {
-    // 1) Snapshot + HQS persistieren
     await buildMarketSnapshot();
-
-    // 2) Forward Returns labeln (erst sinnvoll nach 24h+)
     await runForwardLearning();
-
-    // 3) Weights updaten (läuft sofort mit Proxy, später mit echten Labels stärker)
-    await computeAdaptiveWeightsAll();
   } catch (err) {
     console.error("Startup Fehler:", err.message);
   }
 });
 
 /* =========================================================
-   AUTO LOOP
+   AUTO SNAPSHOT + LEARNING
 ========================================================= */
 
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
     await runForwardLearning();
-    await computeAdaptiveWeightsAll();
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
   }
