@@ -22,7 +22,7 @@ const { getMarketDataBySegment } = require("./services/aggregator.service");
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
-const { initWeightTable } = require("./services/weightHistory.repository");
+const { initWeightTable, computeAdaptiveWeightsAll } = require("./services/weightHistory.repository");
 
 // ✅ Forward Learning
 const { runForwardLearning } = require("./services/forwardLearning.service");
@@ -74,6 +74,18 @@ function formatMarketItem(item) {
 }
 
 /* =========================================================
+   HEALTH
+========================================================= */
+
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    status: "HQS Backend running",
+    time: new Date().toISOString(),
+  });
+});
+
+/* =========================================================
    MARKET ROUTE
 ========================================================= */
 
@@ -103,14 +115,12 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   🔥 HQS ROUTE (nutzt gespeicherten Score)
+   🔥 HQS ROUTE – nutzt gespeicherten Score + Live-Fallback
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
   try {
-    const symbol = String(req.query.symbol || "")
-      .trim()
-      .toUpperCase();
+    const symbol = String(req.query.symbol || "").trim().toUpperCase();
 
     if (!symbol) {
       return res.status(400).json({
@@ -119,7 +129,6 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Erst gespeicherte Daten holen
     const marketData = await getMarketData(symbol);
 
     if (!marketData.length) {
@@ -129,7 +138,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Wenn Score existiert → direkt liefern
+    // ✅ Wenn Score bereits gespeichert → direkt liefern
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
@@ -139,14 +148,25 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Fallback falls kein Score vorhanden
-    const hqs = await buildHQSResponse(marketData[0]);
+    // 🔥 Market Average berechnen (für Kontext / optional)
+    const fullMarket = await getMarketData();
+    const changes = Array.isArray(fullMarket)
+      ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
+      : [];
+    const marketAverage =
+      changes.length > 0
+        ? changes.reduce((a, b) => a + b, 0) / changes.length
+        : 0;
+
+    // ✅ Extra-Arg ist safe: JS ignoriert es, falls Engine es nicht nutzt
+    const hqs = await buildHQSResponse(marketData[0], marketAverage);
 
     return res.json({
       success: true,
       symbol,
       hqs,
       source: "live",
+      marketAverage: Number(marketAverage.toFixed(4)),
     });
   } catch (error) {
     return res.status(500).json({
@@ -272,27 +292,28 @@ app.listen(PORT, async () => {
   await initWeightTable();
 
   try {
+    // 1) Snapshot + HQS persistieren
     await buildMarketSnapshot();
-  } catch (err) {
-    console.error("Initial Snapshot Fehler:", err.message);
-  }
 
-  // ✅ optional: direkt 1x forward learning laufen lassen
-  try {
+    // 2) Forward Returns labeln (erst sinnvoll nach 24h+)
     await runForwardLearning();
+
+    // 3) Weights updaten (läuft sofort mit Proxy, später mit echten Labels stärker)
+    await computeAdaptiveWeightsAll();
   } catch (err) {
-    console.error("ForwardLearning Start Fehler:", err.message);
+    console.error("Startup Fehler:", err.message);
   }
 });
 
 /* =========================================================
-   AUTO SNAPSHOT + FORWARD LEARNING
+   AUTO LOOP
 ========================================================= */
 
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
     await runForwardLearning();
+    await computeAdaptiveWeightsAll();
   } catch (err) {
     console.error("Warmup Fehler:", err.message);
   }
