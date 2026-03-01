@@ -24,7 +24,7 @@ const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
 
-// ✅ NEW: Forward Learning
+// ✅ Forward Learning
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
 /* =========================================================
@@ -45,7 +45,7 @@ app.use(
     ],
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type", "Authorization"],
-  }),
+  })
 );
 
 app.use(express.json());
@@ -72,18 +72,6 @@ function formatMarketItem(item) {
     source: item.source ?? null,
   };
 }
-
-/* =========================================================
-   HEALTH
-========================================================= */
-
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    status: "HQS Backend running",
-    time: new Date().toISOString(),
-  });
-});
 
 /* =========================================================
    MARKET ROUTE
@@ -115,12 +103,14 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   🔥 HQS ROUTE – Adaptive Engine integriert
+   🔥 HQS ROUTE (nutzt gespeicherten Score)
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
   try {
-    const symbol = String(req.query.symbol || "").trim().toUpperCase();
+    const symbol = String(req.query.symbol || "")
+      .trim()
+      .toUpperCase();
 
     if (!symbol) {
       return res.status(400).json({
@@ -129,6 +119,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
+    // Erst gespeicherte Daten holen
     const marketData = await getMarketData(symbol);
 
     if (!marketData.length) {
@@ -138,7 +129,7 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // ✅ Wenn Score bereits gespeichert → direkt liefern
+    // Wenn Score existiert → direkt liefern
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
@@ -148,25 +139,14 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // 🔥 Market Average berechnen (für Regime / Kontext)
-    const fullMarket = await getMarketData();
-    const changes = Array.isArray(fullMarket)
-      ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
-      : [];
-    const marketAverage =
-      changes.length > 0
-        ? changes.reduce((a, b) => a + b, 0) / changes.length
-        : 0;
-
-    // ✅ Extra-Arg ist safe (JS ignoriert es, falls Engine es nicht nutzt)
-    const hqs = await buildHQSResponse(marketData[0], marketAverage);
+    // Fallback falls kein Score vorhanden
+    const hqs = await buildHQSResponse(marketData[0]);
 
     return res.json({
       success: true,
       symbol,
       hqs,
       source: "live",
-      marketAverage: Number(marketAverage.toFixed(4)),
     });
   } catch (error) {
     return res.status(500).json({
@@ -292,13 +272,16 @@ app.listen(PORT, async () => {
   await initWeightTable();
 
   try {
-    // 1) Snapshot + HQS persistieren
     await buildMarketSnapshot();
+  } catch (err) {
+    console.error("Initial Snapshot Fehler:", err.message);
+  }
 
-    // 2) Forward Learning nachziehen (labeling)
+  // ✅ optional: direkt 1x forward learning laufen lassen
+  try {
     await runForwardLearning();
   } catch (err) {
-    console.error("Startup Fehler:", err.message);
+    console.error("ForwardLearning Start Fehler:", err.message);
   }
 });
 
