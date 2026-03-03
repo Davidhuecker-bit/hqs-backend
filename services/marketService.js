@@ -1,18 +1,27 @@
 "use strict";
 
 /*
-  HQS Market System
-  - Massive Provider
-  - Normalizer
+  HQS Market System – Enterprise Upgrade
   - Snapshot Speicherung
-  - HQS Berechnung bei Snapshot
-  - Score Speicherung
-  - Market liefert gespeicherten Score + Breakdown (DB-first)
+  - HQS Berechnung
+  - Trend Analyse
+  - Monte Carlo Simulation
+  - Regime Detection
+  - Adaptive Weights
 */
 
 const { fetchQuote } = require("./providerService");
 const { normalizeMarketData } = require("./marketNormalizer");
 const { buildHQSResponse } = require("../hqsEngine");
+
+const { getHistoricalPrices } = require("../services/historicalService");
+const { buildTrendScore } = require("../engines/trendEngine");
+const { monteCarloSimulation } = require("../engines/monteCarloEngine");
+const { detectMarketRegime } = require("../engines/marketRegimeEngine");
+
+const { computeAdaptiveWeights } = require("../database/weightEngine");
+const logger = require("../utils/logger");
+
 const { Pool } = require("pg");
 
 const pool = new Pool({
@@ -53,7 +62,7 @@ async function ensureTablesExist() {
     );
   `);
 
-  console.log("✅ Tables ensured");
+  logger.info("Tables ensured");
 }
 
 /* =========================================================
@@ -63,7 +72,7 @@ async function ensureTablesExist() {
 const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
 /* =========================================================
-   INTERNAL: LOAD LATEST HQS SCORE + BREAKDOWN
+   LOAD LATEST HQS SCORE
 ========================================================= */
 
 async function loadLatestHqsScore(symbol) {
@@ -97,25 +106,23 @@ async function loadLatestHqsScore(symbol) {
       stability: row.stability !== null ? Number(row.stability) : null,
       relative: row.relative !== null ? Number(row.relative) : null,
       regime: row.regime ?? null,
-      hqsCreatedAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      hqsCreatedAt: row.created_at
+        ? new Date(row.created_at).toISOString()
+        : null,
     };
   } catch (err) {
-    console.error("❌ loadLatestHqsScore error:", err.message);
+    logger.error("loadLatestHqsScore error", { message: err.message });
     return null;
   }
 }
 
 /* =========================================================
-   SNAPSHOT + HQS PIPELINE (MARKET BASED REGIME)
+   SNAPSHOT + ADVANCED HQS PIPELINE
 ========================================================= */
 
 async function buildMarketSnapshot() {
-  console.log("📦 Building market snapshot...");
+  logger.info("Building market snapshot...");
 
-  const changes = [];
-  const marketData = [];
-
-  // 1) Erst alle Daten sammeln
   for (const symbol of WATCHLIST) {
     try {
       const raw = await fetchQuote(symbol);
@@ -124,19 +131,40 @@ async function buildMarketSnapshot() {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
-      marketData.push(normalized);
-      changes.push(Number(normalized.changesPercentage) || 0);
-    } catch (err) {
-      console.error(`❌ Fetch error for ${symbol}:`, err.message);
-    }
-  }
+      // 🔥 HISTORICAL DATA
+      const historical = await getHistoricalPrices(symbol);
+      const prices = historical.map(d => d.close).filter(Boolean);
 
-  const marketAverage =
-    changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
+      if (prices.length < 30) continue;
 
-  // 2) Snapshot + HQS persistieren
-  for (const normalized of marketData) {
-    try {
+      const trendData = buildTrendScore(prices);
+
+      // 🔥 REGIME DETECTION
+      const regime = detectMarketRegime(
+        trendData.trend,
+        trendData.volatility
+      );
+
+      // 🔥 ADAPTIVE WEIGHTS
+      const adaptiveWeights = await computeAdaptiveWeights(regime);
+
+      // 🔥 HQS BERECHNUNG (mit Markt-Ø optional)
+      const hqs = await buildHQSResponse(
+        normalized,
+        0,
+        adaptiveWeights
+      );
+
+      // 🔥 MONTE CARLO
+      const scenarios = monteCarloSimulation(
+        prices[0],
+        trendData.trend,
+        trendData.volatility,
+        252,
+        1000
+      );
+
+      // Snapshot speichern
       await pool.query(
         `
         INSERT INTO market_snapshots
@@ -154,10 +182,7 @@ async function buildMarketSnapshot() {
         ]
       );
 
-      // HQS berechnen mit Marktvergleich
-      // (falls Engine den 2. Parameter nicht nutzt -> JS ignoriert ihn)
-      const hqs = await buildHQSResponse(normalized, marketAverage);
-
+      // HQS speichern
       await pool.query(
         `
         INSERT INTO hqs_scores
@@ -171,26 +196,30 @@ async function buildMarketSnapshot() {
           hqs.breakdown?.quality ?? null,
           hqs.breakdown?.stability ?? null,
           hqs.breakdown?.relative ?? null,
-          hqs.regime ?? null,
+          regime,
         ]
       );
 
-      console.log(`✅ Snapshot + HQS saved for ${normalized.symbol}`);
+      logger.info(`Snapshot + Advanced HQS saved for ${symbol}`);
+
     } catch (err) {
-      console.error(`❌ Error for ${normalized.symbol}:`, err.message);
+      logger.error(`Snapshot error for ${symbol}`, { message: err.message });
     }
   }
 
-  console.log("✅ Snapshot complete");
+  logger.info("Snapshot complete");
 }
 
 /* =========================================================
-   MARKET DATA MIT GESPEICHERTEM SCORE + BREAKDOWN
+   MARKET DATA (DB-FIRST + SCENARIOS)
 ========================================================= */
 
 async function getMarketData(symbol) {
   try {
-    const symbols = symbol ? [String(symbol).trim().toUpperCase()] : WATCHLIST;
+    const symbols = symbol
+      ? [String(symbol).trim().toUpperCase()]
+      : WATCHLIST;
+
     const results = [];
 
     for (const s of symbols) {
@@ -200,33 +229,38 @@ async function getMarketData(symbol) {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
-      // 🔥 DB-first: letzten gespeicherten Score + Breakdown holen
       const cached = await loadLatestHqsScore(s);
 
       if (cached) {
-        normalized.hqsScore = cached.hqsScore;
-        normalized.momentum = cached.momentum;
-        normalized.quality = cached.quality;
-        normalized.stability = cached.stability;
-        normalized.relative = cached.relative;
-        normalized.regime = cached.regime;
-        normalized.hqsCreatedAt = cached.hqsCreatedAt;
-      } else {
-        normalized.hqsScore = null;
-        normalized.momentum = null;
-        normalized.quality = null;
-        normalized.stability = null;
-        normalized.relative = null;
-        normalized.regime = null;
-        normalized.hqsCreatedAt = null;
+        Object.assign(normalized, cached);
+      }
+
+      // 🔥 Historical + Trend + MonteCarlo für API Response
+      const historical = await getHistoricalPrices(s);
+      const prices = historical.map(d => d.close).filter(Boolean);
+
+      if (prices.length > 30) {
+        const trendData = buildTrendScore(prices);
+
+        normalized.trend = trendData.trend;
+        normalized.volatility = trendData.volatility;
+
+        normalized.scenarios = monteCarloSimulation(
+          prices[0],
+          trendData.trend,
+          trendData.volatility,
+          252,
+          500
+        );
       }
 
       results.push(normalized);
     }
 
     return results;
+
   } catch (error) {
-    console.error("MarketData Error:", error.message);
+    logger.error("MarketData Error", { message: error.message });
     return [];
   }
 }
