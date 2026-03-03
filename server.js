@@ -5,6 +5,12 @@ const cors = require("cors");
 require("dotenv").config();
 
 /* =========================================================
+   LOGGER
+========================================================= */
+
+const logger = require("./utils/logger");
+
+/* =========================================================
    CORE SERVICES
 ========================================================= */
 
@@ -80,11 +86,15 @@ function formatMarketItem(item) {
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
 
-    // ✅ DB-first HQS
     hqsScore: item.hqsScore ?? null,
-    hqsBreakdown,                // 🔥 genau so heißt es bei dir im Output
+    hqsBreakdown,
     regime: item.regime ?? null,
     hqsCreatedAt: item.hqsCreatedAt ?? null,
+
+    // 🔥 Neue Advanced Daten
+    trend: item.trend ?? null,
+    volatility: item.volatility ?? null,
+    scenarios: item.scenarios ?? null,
 
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
@@ -125,6 +135,7 @@ app.get("/api/market", async (req, res) => {
       stocks,
     });
   } catch (error) {
+    logger.error("Market route error", { message: error.message });
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -133,7 +144,7 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   HQS ROUTE (DB-first)
+   HQS ROUTE
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -156,7 +167,6 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // ✅ DB-first
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
@@ -169,134 +179,26 @@ app.get("/api/hqs", async (req, res) => {
           relative: marketData[0].relative ?? null,
         },
         regime: marketData[0].regime ?? null,
+        trend: marketData[0].trend ?? null,
+        volatility: marketData[0].volatility ?? null,
+        scenarios: marketData[0].scenarios ?? null,
         source: "database",
       });
     }
 
-    // Live fallback
-    const fullMarket = await getMarketData();
-    const changes = Array.isArray(fullMarket)
-      ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
-      : [];
-    const marketAverage =
-      changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
-
-    const hqs = await buildHQSResponse(marketData[0], marketAverage);
+    const hqs = await buildHQSResponse(marketData[0], 0);
 
     return res.json({
       success: true,
       symbol,
       hqs,
       source: "live",
-      marketAverage: Number(marketAverage.toFixed(4)),
     });
   } catch (error) {
+    logger.error("HQS route error", { message: error.message });
     return res.status(500).json({
       success: false,
       message: "HQS Berechnung fehlgeschlagen",
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-   SEGMENT ROUTE
-========================================================= */
-
-app.get("/api/segment", async (req, res) => {
-  try {
-    const segment = String(req.query.segment || "").toLowerCase();
-    const symbol = String(req.query.symbol || "").toUpperCase();
-
-    if (!segment || !symbol) {
-      return res.status(400).json({
-        success: false,
-        message: "segment und symbol sind erforderlich.",
-      });
-    }
-
-    const result = await getMarketDataBySegment({ segment, symbol });
-    return res.json(result);
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-   GUARDIAN ROUTE
-========================================================= */
-
-app.get("/api/guardian/analyze/:ticker", async (req, res) => {
-  try {
-    const ticker = String(req.params.ticker || "").toUpperCase();
-    const segment = String(req.query.segment || "usa").toLowerCase();
-
-    if (!ticker) {
-      return res.status(400).json({
-        success: false,
-        message: "Ticker fehlt.",
-      });
-    }
-
-    const segmentData = await getMarketDataBySegment({
-      segment,
-      symbol: ticker,
-    });
-
-    if (!segmentData.success) {
-      return res.status(404).json({
-        success: false,
-        message: "Segmentdaten nicht verfügbar.",
-      });
-    }
-
-    const guardianResult = await analyzeStockWithGuardian({
-      symbol: ticker,
-      segment,
-      provider: segmentData.provider,
-      fallbackUsed: segmentData.fallbackUsed,
-      marketData: segmentData.data,
-    });
-
-    return res.json({
-      success: true,
-      guardian: guardianResult,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-   PORTFOLIO ROUTE
-========================================================= */
-
-app.post("/api/portfolio", async (req, res) => {
-  try {
-    const portfolio = req.body;
-
-    if (!Array.isArray(portfolio) || !portfolio.length) {
-      return res.status(400).json({
-        success: false,
-        message: "Portfolio muss ein Array sein.",
-      });
-    }
-
-    const result = await calculatePortfolioHQS(portfolio);
-
-    return res.json({
-      success: true,
-      ...result,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
       error: error.message,
     });
   }
@@ -307,17 +209,19 @@ app.post("/api/portfolio", async (req, res) => {
 ========================================================= */
 
 app.listen(PORT, async () => {
-  console.log(`HQS Backend aktiv auf Port ${PORT}`);
-
-  await ensureTablesExist();
-  await initFactorTable();
-  await initWeightTable();
+  logger.info(`HQS Backend running on port ${PORT}`);
 
   try {
+    await ensureTablesExist();
+    await initFactorTable();
+    await initWeightTable();
+
     await buildMarketSnapshot();
     await runForwardLearning();
+
+    logger.info("Startup completed successfully");
   } catch (err) {
-    console.error("Startup Fehler:", err.message);
+    logger.error("Startup error", { message: err.message });
   }
 });
 
@@ -329,7 +233,8 @@ setInterval(async () => {
   try {
     await buildMarketSnapshot();
     await runForwardLearning();
+    logger.info("Auto snapshot + learning executed");
   } catch (err) {
-    console.error("Warmup Fehler:", err.message);
+    logger.error("Auto interval error", { message: err.message });
   }
 }, 15 * 60 * 1000);
