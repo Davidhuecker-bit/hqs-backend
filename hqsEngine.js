@@ -2,11 +2,23 @@
 
 /*
   HQS Engine – Core Stock Scoring Engine (Market-Regime Version B)
+  Upgrade:
+  - accepts adaptiveWeights (3rd param)
+  - accepts regimeHint (4th param) from advanced regime engines
+  - keeps DB-first weights as fallback
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
 const { saveScoreSnapshot } = require("./services/factorHistory.repository");
 const { loadLastWeights } = require("./services/weightHistory.repository");
+
+// optional logger (falls vorhanden)
+let logger = null;
+try {
+  logger = require("./utils/logger");
+} catch (_) {
+  logger = null;
+}
 
 /* =========================================================
    DEFAULT WEIGHTS
@@ -24,7 +36,9 @@ const DEFAULT_WEIGHTS = {
 ========================================================= */
 
 function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
+  const n = Number(v);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
 }
 
 function safe(v, fallback = 0) {
@@ -33,15 +47,41 @@ function safe(v, fallback = 0) {
 }
 
 function normalizeWeights(weights) {
-  const sum = Object.values(weights || {}).reduce((a, b) => a + safe(b), 0);
-  if (!sum) return DEFAULT_WEIGHTS;
+  const base = weights && typeof weights === "object" ? weights : {};
+
+  // nur erlaubte Keys
+  let total = 0;
+  for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+    const val = safe(base[k], 0);
+    // negative oder NaN werden zu 0
+    total += val > 0 ? val : 0;
+  }
+
+  if (total <= 0) return { ...DEFAULT_WEIGHTS };
 
   const normalized = {};
-  Object.keys(DEFAULT_WEIGHTS).forEach((key) => {
-    normalized[key] = safe(weights[key]) / sum;
-  });
+  for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+    const val = safe(base[k], 0);
+    normalized[k] = (val > 0 ? val : 0) / total;
+  }
 
   return normalized;
+}
+
+function mapRegimeHint(regimeHint) {
+  if (!regimeHint) return null;
+
+  const r = String(regimeHint).trim().toLowerCase();
+
+  // advanced engine outputs
+  if (r === "bullish") return "bull";
+  if (r === "bearish") return "bear";
+  if (r === "neutral") return "neutral";
+
+  // already internal?
+  if (["expansion", "bull", "bear", "crash", "neutral"].includes(r)) return r;
+
+  return null;
 }
 
 /* =========================================================
@@ -60,11 +100,16 @@ function detectRegime(symbolChange, marketAverage) {
 
 function regimeMultiplier(regime) {
   switch (regime) {
-    case "expansion": return 1.10;
-    case "bull": return 1.05;
-    case "bear": return 0.95;
-    case "crash": return 0.85;
-    default: return 1;
+    case "expansion":
+      return 1.10;
+    case "bull":
+      return 1.05;
+    case "bear":
+      return 0.95;
+    case "crash":
+      return 0.85;
+    default:
+      return 1;
   }
 }
 
@@ -84,7 +129,6 @@ function calculateStability(item) {
   if (!open) return 50;
 
   const range = ((high - low) / open) * 100;
-
   return clamp(70 - range * 4, 20, 80);
 }
 
@@ -109,32 +153,49 @@ function calculateRelativeStrength(symbolChange, marketAverage) {
 
 /* =========================================================
    MAIN ENGINE
+   Signature:
+     buildHQSResponse(item, marketAverage=0, adaptiveWeights=null, regimeHint=null)
 ========================================================= */
 
-async function buildHQSResponse(item = {}, marketAverage = 0) {
+async function buildHQSResponse(item = {}, marketAverage = 0, adaptiveWeights = null, regimeHint = null) {
   try {
-    if (!item.symbol) {
-      throw new Error("Missing symbol");
+    if (!item.symbol) throw new Error("Missing symbol");
+
+    // 1) weights source priority:
+    // adaptiveWeights -> DB-last weights -> default
+    let weightsRaw = null;
+    let weightsSource = "default";
+
+    if (adaptiveWeights && typeof adaptiveWeights === "object") {
+      weightsRaw = adaptiveWeights;
+      weightsSource = "adaptive";
+    } else {
+      weightsRaw = await loadLastWeights();
+      if (weightsRaw) weightsSource = "database";
     }
 
-    let weights = await loadLastWeights();
-    if (!weights) weights = DEFAULT_WEIGHTS;
-    weights = normalizeWeights(weights);
+    const weights = normalizeWeights(weightsRaw || DEFAULT_WEIGHTS);
 
+    // 2) fundamentals (best-effort)
     let fundamentals = null;
     try {
       fundamentals = await getFundamentals(item.symbol);
     } catch (err) {
-      console.warn("Fundamental load failed:", err.message);
+      if (logger?.warn) logger.warn("Fundamental load failed", { message: err.message });
+      else console.warn("Fundamental load failed:", err.message);
     }
 
-    const regime = detectRegime(item.changesPercentage, marketAverage);
+    // 3) regime
+    const mappedHint = mapRegimeHint(regimeHint);
+    const regime = mappedHint || detectRegime(item.changesPercentage, marketAverage);
 
+    // 4) factors
     const momentum = calculateMomentum(item.changesPercentage);
     const stability = calculateStability(item);
     const quality = calculateQuality(fundamentals);
     const relative = calculateRelativeStrength(item.changesPercentage, marketAverage);
 
+    // 5) score
     let baseScore =
       momentum * weights.momentum +
       quality * weights.quality +
@@ -145,6 +206,7 @@ async function buildHQSResponse(item = {}, marketAverage = 0) {
 
     const finalScore = clamp(Math.round(baseScore), 0, 100);
 
+    // 6) persist snapshot
     await saveScoreSnapshot({
       symbol: item.symbol,
       hqsScore: finalScore,
@@ -156,11 +218,12 @@ async function buildHQSResponse(item = {}, marketAverage = 0) {
     });
 
     return {
-      symbol: item.symbol.toUpperCase(),
+      symbol: String(item.symbol).toUpperCase(),
       price: safe(item.price),
       changePercent: safe(item.changesPercentage),
       regime,
       weights,
+      weightsSource,
       breakdown: { momentum, quality, stability, relative },
       hqsScore: finalScore,
       rating:
@@ -174,13 +237,14 @@ async function buildHQSResponse(item = {}, marketAverage = 0) {
         : "NICHT KAUFEN",
       timestamp: new Date().toISOString(),
     };
-
   } catch (error) {
-    console.error("HQS Engine Error:", error.message);
+    if (logger?.error) logger.error("HQS Engine Error", { message: error.message });
+    else console.error("HQS Engine Error:", error.message);
+
     return {
       symbol: item?.symbol || null,
       hqsScore: null,
-      error: "HQS calculation failed"
+      error: "HQS calculation failed",
     };
   }
 }
