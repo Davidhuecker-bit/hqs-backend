@@ -61,4 +61,24 @@ async function runDailyBriefing() {
   const titleMatch = text.match(/^TITEL:\s*(.+)$/m);
   const title = titleMatch ? titleMatch[1].trim() : "Dein Morgen-Update";
 
-  await
+  await createNotification({
+    userId,
+    title,
+    body: text,
+    kind: "daily_briefing",
+  });
+
+  logger.info("Daily briefing created", { userId });
+  logger.info("Daily briefing job finished");
+}
+
+if (require.main === module) {
+  runDailyBriefing()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      logger.error("Daily briefing fatal", { message: e.message });
+      process.exit(1);
+    });
+}
+
+module.exports = { runDailyBriefing };
