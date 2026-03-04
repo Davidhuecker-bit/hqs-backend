@@ -2,14 +2,19 @@
 
 const { Pool } = require("pg");
 let logger = null;
+
 try {
   logger = require("../utils/logger");
 } catch (_) {
   logger = null;
 }
 
+const connectionString =
+  process.env.DATABASE_URL ||
+  `postgresql://${process.env.PGUSER}:${process.env.PGPASSWORD}@${process.env.PGHOST}:${process.env.PGPORT}/${process.env.PGDATABASE}`;
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString,
   ssl: { rejectUnauthorized: false },
 });
 
@@ -27,8 +32,7 @@ async function initJobLocksTable() {
 /**
  * Atomarer Lock:
  * - Insert wenn nicht vorhanden
- * - Update nur wenn abgelaufen (locked_until < NOW())
- * - Wenn Update/Insert passiert ist => gewonnen
+ * - Update nur wenn abgelaufen
  */
 async function acquireLock(name, ttlSeconds = 600) {
   const lockName = String(name || "").trim();
@@ -48,10 +52,11 @@ async function acquireLock(name, ttlSeconds = 600) {
     [lockName, String(ttl)]
   );
 
-  // rowCount === 1 => wir haben Insert gemacht ODER Update durchgeführt (also gewonnen)
   const won = res.rowCount === 1;
 
-  if (logger?.info) logger.info("lock acquire", { name: lockName, won, ttlSeconds: ttl });
+  if (logger?.info)
+    logger.info("lock acquire", { name: lockName, won, ttlSeconds: ttl });
+
   return won;
 }
 
