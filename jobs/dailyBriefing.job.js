@@ -6,9 +6,13 @@ const logger = require("../utils/logger");
 const { acquireLock } = require("../services/jobLock.repository");
 const { getMarketData } = require("../services/marketService");
 
-const { createNotification } = require("../services/notifications.repository");
+const {
+  getActiveBriefingUsers,
+  getUserWatchlistSymbols,
+  createNotification,
+} = require("../services/notifications.repository");
 
-// ✅ OpenAI statt Gemini
+// ✅ OpenAI
 const { generateBriefingText } = require("../services/openai.service");
 
 function buildFactsFromMarket(stocks) {
@@ -40,36 +44,80 @@ async function runDailyBriefing() {
 
   logger.info("Daily briefing job started");
 
-  // V1: Demo-User userId=1
-  const userId = 1;
-  const symbols = ["AAPL", "MSFT", "NVDA", "AMD"];
-
-  const stocks = [];
-  for (const sym of symbols) {
-    const arr = await getMarketData(sym);
-    if (Array.isArray(arr) && arr[0]) stocks.push(arr[0]);
+  // 1) Aktive User laden
+  const users = await getActiveBriefingUsers(500);
+  if (!users.length) {
+    logger.warn("No active briefing users found");
+    return;
   }
 
-  const facts = buildFactsFromMarket(stocks);
+  let createdCount = 0;
+  let skippedCount = 0;
 
-  const text = await generateBriefingText({
-    userName: "Nutzer",
-    symbols,
-    facts,
+  for (const u of users) {
+    try {
+      const userId = u.id;
+
+      // 2) Watchlist je User laden
+      const wl = await getUserWatchlistSymbols(userId, 50);
+      const symbols = wl.map((x) => x.symbol).filter(Boolean);
+
+      if (!symbols.length) {
+        skippedCount++;
+        logger.warn("User has no watchlist, skipping", { userId });
+        continue;
+      }
+
+      // 3) Marktdaten holen (DB-first steckt ja in getMarketData)
+      const stocks = [];
+      for (const sym of symbols) {
+        const arr = await getMarketData(sym);
+        if (Array.isArray(arr) && arr[0]) stocks.push(arr[0]);
+      }
+
+      if (!stocks.length) {
+        skippedCount++;
+        logger.warn("No market data for user symbols, skipping", { userId });
+        continue;
+      }
+
+      // 4) Fakten bauen
+      const facts = buildFactsFromMarket(stocks);
+
+      // 5) OpenAI Text erstellen
+      const text = await generateBriefingText({
+        userName: "Nutzer",
+        symbols,
+        facts,
+      });
+
+      const titleMatch = text.match(/^TITEL:\s*(.+)$/m);
+      const title = titleMatch ? titleMatch[1].trim() : "Dein Morgen-Update";
+
+      // 6) In-App Notification speichern
+      await createNotification({
+        userId,
+        title,
+        body: text,
+        kind: "daily_briefing",
+      });
+
+      createdCount++;
+      logger.info("Daily briefing created", { userId });
+    } catch (e) {
+      // Wichtig: pro User abfangen, damit Job weiterläuft
+      logger.error("Daily briefing user failed", {
+        userId: u?.id,
+        message: e.message,
+      });
+    }
+  }
+
+  logger.info("Daily briefing job finished", {
+    created: createdCount,
+    skipped: skippedCount,
+    users: users.length,
   });
-
-  const titleMatch = text.match(/^TITEL:\s*(.+)$/m);
-  const title = titleMatch ? titleMatch[1].trim() : "Dein Morgen-Update";
-
-  await createNotification({
-    userId,
-    title,
-    body: text,
-    kind: "daily_briefing",
-  });
-
-  logger.info("Daily briefing created", { userId });
-  logger.info("Daily briefing job finished");
 }
 
 if (require.main === module) {
