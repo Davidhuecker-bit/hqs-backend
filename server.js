@@ -31,8 +31,18 @@ const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
-// ✅ NEW: Locking for forward learning (prevents double runs)
+// ✅ Locking (prevents double runs)
 const { acquireLock } = require("./services/jobLock.repository");
+
+/* =========================================================
+   NOTIFICATIONS (In-App)
+========================================================= */
+
+const notificationsRoutes = require("./routes/notifications.routes");
+const {
+  initNotificationTables,
+  seedDemoUserIfEmpty,
+} = require("./services/notifications.repository");
 
 /* =========================================================
    APP INIT
@@ -56,6 +66,13 @@ app.use(
 );
 
 app.use(express.json());
+
+/* =========================================================
+   ROUTES
+========================================================= */
+
+// ✅ In-App Notification Center
+app.use("/api/notifications", notificationsRoutes);
 
 /* =========================================================
    RESPONSE FORMATTER
@@ -94,7 +111,7 @@ function formatMarketItem(item) {
     regime: item.regime ?? null,
     hqsCreatedAt: item.hqsCreatedAt ?? null,
 
-    // ✅ Advanced (DB-first wenn du market_advanced_metrics nutzt)
+    // ✅ Advanced (DB-first wenn market_advanced_metrics genutzt wird)
     trend: item.trend ?? null,
     volatility: item.volatility ?? null,
     scenarios: item.scenarios ?? null,
@@ -333,7 +350,6 @@ app.post("/api/portfolio", async (req, res) => {
 ========================================================= */
 
 async function runForwardLearningLocked() {
-  // verhindert Doppel-Runs bei Deploy/Restart
   const won = await acquireLock("forward_learning_job", 12 * 60);
   if (!won) {
     logger.warn("Forward learning skipped (lock held)");
@@ -352,10 +368,16 @@ app.listen(PORT, async () => {
   logger.info(`HQS Backend aktiv auf Port ${PORT}`);
 
   try {
+    // Core tables
     await ensureTablesExist();
     await initFactorTable();
     await initWeightTable();
 
+    // Notification center tables
+    await initNotificationTables();
+    await seedDemoUserIfEmpty();
+
+    // Warm start
     await buildMarketSnapshot();
     await runForwardLearningLocked();
 
