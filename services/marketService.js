@@ -1,13 +1,13 @@
 "use strict";
 
 /*
-  HQS Market System – Enterprise Upgrade (STABLE + DELAYED SAFE)
+  HQS Market System – Enterprise Upgrade (DB-FIRST ADVANCED + WATCHLIST DB + LOCKED)
   - Snapshot Speicherung
-  - HQS Berechnung
-  - Trend Analyse (optional)
-  - Monte Carlo Simulation (optional)
-  - Regime Detection (optional)
-  - Adaptive Weights (fallback safe)
+  - HQS Berechnung (DB-first)
+  - Advanced Metrics (Trend/Vol/Scenarios) DB-first via market_advanced_metrics
+  - Watchlist aus DB (watchlist_symbols)
+  - Job Locking (job_locks) gegen Doppel-Snapshots
+  - Historical optional (DELAYED safe via historicalService)
 */
 
 const { fetchQuote } = require("./providerService");
@@ -20,6 +20,21 @@ const { monteCarloSimulation } = require("../engines/monteCarloEngine");
 const { detectMarketRegime } = require("../engines/marketRegimeEngine");
 
 const { computeAdaptiveWeights } = require("./weightHistory.repository");
+
+const {
+  initWatchlistTable,
+  seedDefaultWatchlist,
+  getActiveWatchlistSymbols,
+} = require("./watchlist.repository");
+
+const {
+  initAdvancedMetricsTable,
+  upsertAdvancedMetrics,
+  loadAdvancedMetrics,
+} = require("./advancedMetrics.repository");
+
+const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
+
 const logger = require("../utils/logger");
 
 const { Pool } = require("pg");
@@ -62,14 +77,14 @@ async function ensureTablesExist() {
     );
   `);
 
+  // ✅ NEW TABLES
+  await initAdvancedMetricsTable();
+  await initJobLocksTable();
+  await initWatchlistTable();
+  await seedDefaultWatchlist();
+
   logger.info("Tables ensured");
 }
-
-/* =========================================================
-   WATCHLIST
-========================================================= */
-
-const WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMD"];
 
 /* =========================================================
    INTERNAL: LOAD LATEST HQS SCORE + BREAKDOWN
@@ -115,13 +130,29 @@ async function loadLatestHqsScore(symbol) {
 }
 
 /* =========================================================
-   SNAPSHOT + HQS PIPELINE (HISTORICAL OPTIONAL)
+   SNAPSHOT + HQS PIPELINE
+   - uses DB watchlist
+   - computes advanced metrics ONCE and stores to DB
+   - locked against duplicates
 ========================================================= */
 
 async function buildMarketSnapshot() {
+  // ✅ Locking gegen Doppel-Jobs (Deploy/Restart)
+  const won = await acquireLock("snapshot_job", 12 * 60); // 12 min TTL
+  if (!won) {
+    logger.warn("Snapshot job skipped (lock held)");
+    return;
+  }
+
   logger.info("Building market snapshot...");
 
-  for (const symbol of WATCHLIST) {
+  const watchlist = await getActiveWatchlistSymbols(250);
+  if (!watchlist.length) {
+    logger.warn("No active watchlist symbols found");
+    return;
+  }
+
+  for (const symbol of watchlist) {
     try {
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) continue;
@@ -130,19 +161,20 @@ async function buildMarketSnapshot() {
       if (!normalized) continue;
 
       // -----------------------------------------------------
-      // DEFAULT FALLBACKS (HISTORICAL OPTIONAL)
+      // DEFAULTS (HISTORICAL OPTIONAL)
       // -----------------------------------------------------
       let trendData = null;
       let scenarios = null;
 
-      // Default regime & weights even without historical
       let regime = "neutral";
       let adaptiveWeights = await computeAdaptiveWeights(regime);
 
       // -----------------------------------------------------
-      // TRY HISTORICAL (may be DELAYED / empty)
+      // TRY HISTORICAL -> compute & persist advanced metrics
       // -----------------------------------------------------
       try {
+        // Du kannst hier auf "max" stellen, wenn du wirklich 5 Jahre willst:
+        // const historical = await getHistoricalPrices(symbol, "max");
         const historical = await getHistoricalPrices(symbol, "1y");
 
         const prices = (historical || [])
@@ -152,25 +184,30 @@ async function buildMarketSnapshot() {
         if (prices.length >= 30) {
           trendData = buildTrendScore(prices);
 
-          // Regime expects annual volatility
           regime = detectMarketRegime(trendData.trend, trendData.volatilityAnnual);
 
           adaptiveWeights = await computeAdaptiveWeights(regime);
 
-          // Monte Carlo uses daily sigma
           scenarios = monteCarloSimulation(
             prices[0],
             trendData.trend,
             trendData.volatilityDaily,
             252,
-            1000
+            800
           );
+
+          // ✅ STORE ADVANCED METRICS DB-FIRST
+          await upsertAdvancedMetrics(symbol, {
+            regime,
+            trend: trendData.trend,
+            volatilityAnnual: trendData.volatilityAnnual,
+            volatilityDaily: trendData.volatilityDaily,
+            scenarios,
+          });
         } else {
-          // Not enough data -> keep neutral fallback
           logger.warn("Historical insufficient; using fallback", { symbol, points: prices.length });
         }
       } catch (histErr) {
-        // historical is optional — do NOT fail snapshot
         logger.warn("Historical unavailable; using fallback", { symbol, message: histErr.message });
       }
 
@@ -219,7 +256,6 @@ async function buildMarketSnapshot() {
         ]
       );
 
-      // Optional: log extra diagnostics
       if (trendData) {
         logger.info("Advanced metrics computed", {
           symbol,
@@ -239,12 +275,15 @@ async function buildMarketSnapshot() {
 }
 
 /* =========================================================
-   MARKET DATA (DB-FIRST + ADVANCED OPTIONAL)
+   MARKET DATA (DB-FIRST HQS + DB-FIRST ADVANCED)
 ========================================================= */
 
 async function getMarketData(symbol) {
   try {
-    const symbols = symbol ? [String(symbol).trim().toUpperCase()] : WATCHLIST;
+    const symbols = symbol
+      ? [String(symbol).trim().toUpperCase()]
+      : await getActiveWatchlistSymbols(250);
+
     const results = [];
 
     for (const s of symbols) {
@@ -254,42 +293,34 @@ async function getMarketData(symbol) {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
-      // DB-first
+      // -----------------------
+      // DB-first HQS
+      // -----------------------
       const cached = await loadLatestHqsScore(s);
       if (cached) Object.assign(normalized, cached);
 
-      // Advanced optional (if historical available)
-      try {
-        const historical = await getHistoricalPrices(s, "1y");
-        const prices = (historical || [])
-          .map((d) => Number(d?.close))
-          .filter((n) => Number.isFinite(n) && n > 0);
+      // -----------------------
+      // DB-first Advanced Metrics
+      // -----------------------
+      const adv = await loadAdvancedMetrics(s);
 
-        if (prices.length >= 30) {
-          const trendData = buildTrendScore(prices);
+      if (adv) {
+        normalized.regime = normalized.regime ?? adv.regime ?? null;
+        normalized.trend = adv.trend ?? null;
 
-          normalized.trend = trendData.trend;
-          normalized.volatility = trendData.volatilityAnnual;
-          normalized.volatilityDaily = trendData.volatilityDaily;
+        // frontend-friendly naming
+        normalized.volatility = adv.volatility ?? null;
+        normalized.volatilityDaily = adv.volatilityDaily ?? null;
 
-          normalized.scenarios = monteCarloSimulation(
-            prices[0],
-            trendData.trend,
-            trendData.volatilityDaily,
-            252,
-            500
-          );
-        } else {
-          normalized.trend = null;
-          normalized.volatility = null;
-          normalized.volatilityDaily = null;
-          normalized.scenarios = null;
-        }
-      } catch (_) {
+        normalized.scenarios = adv.scenarios ?? null;
+        normalized.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
+      } else {
+        // wirklich DB-first: keine Live-Berechnung mehr hier
         normalized.trend = null;
         normalized.volatility = null;
         normalized.volatilityDaily = null;
         normalized.scenarios = null;
+        normalized.advancedUpdatedAt = null;
       }
 
       results.push(normalized);
