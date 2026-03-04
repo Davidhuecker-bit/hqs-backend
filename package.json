@@ -9,7 +9,10 @@
     "check": "node --check server.js",
     "prestart": "npm run check",
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+
+    "job:daily-briefing": "node jobs/dailyBriefing.job.js",
+    "job:daily-briefing:check": "node --check jobs/dailyBriefing.job.js"
   },
   "engines": {
     "node": ">=18 <23"
