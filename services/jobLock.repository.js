@@ -2,7 +2,11 @@
 
 const { Pool } = require("pg");
 let logger = null;
-try { logger = require("../utils/logger"); } catch (_) { logger = null; }
+try {
+  logger = require("../utils/logger");
+} catch (_) {
+  logger = null;
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -20,39 +24,34 @@ async function initJobLocksTable() {
   if (logger?.info) logger.info("job_locks ready");
 }
 
+/**
+ * Atomarer Lock:
+ * - Insert wenn nicht vorhanden
+ * - Update nur wenn abgelaufen (locked_until < NOW())
+ * - Wenn Update/Insert passiert ist => gewonnen
+ */
 async function acquireLock(name, ttlSeconds = 600) {
   const lockName = String(name || "").trim();
+  const ttl = Number(ttlSeconds);
+
   if (!lockName) return false;
+  if (!Number.isFinite(ttl) || ttl <= 0) return false;
 
   const res = await pool.query(
     `
     INSERT INTO job_locks(name, locked_until)
     VALUES ($1, NOW() + ($2 || ' seconds')::interval)
-    ON CONFLICT(name) DO UPDATE SET
-      locked_until = CASE
-        WHEN job_locks.locked_until < NOW()
-          THEN NOW() + ($2 || ' seconds')::interval
-        ELSE job_locks.locked_until
-      END
-    RETURNING locked_until
+    ON CONFLICT(name) DO UPDATE
+      SET locked_until = NOW() + ($2 || ' seconds')::interval
+      WHERE job_locks.locked_until < NOW()
     `,
-    [lockName, String(ttlSeconds)]
+    [lockName, String(ttl)]
   );
 
-  const lockedUntil = res.rows?.[0]?.locked_until ? new Date(res.rows[0].locked_until) : null;
-  const ok = lockedUntil && lockedUntil > new Date();
+  // rowCount === 1 => wir haben Insert gemacht ODER Update durchgeführt (also gewonnen)
+  const won = res.rowCount === 1;
 
-  // ok heißt hier: lock existiert. Aber wir müssen prüfen, ob wir ihn gerade "neu" bekommen haben.
-  // Trick: wenn locked_until schon vorher in der Zukunft war, bleibt es unverändert -> dann haben wir NICHT gewonnen.
-  // Das können wir nur sicher prüfen, indem wir danach lesen:
-  const check = await pool.query(`SELECT locked_until FROM job_locks WHERE name=$1`, [lockName]);
-  const lu = new Date(check.rows[0].locked_until);
-
-  // Wenn lock_until jetzt mindestens ttlSeconds-1 in der Zukunft liegt, dann waren wir der Setter.
-  const threshold = new Date(Date.now() + (ttlSeconds - 1) * 1000);
-  const won = lu > threshold;
-
-  if (logger?.info) logger.info("lock acquire", { name: lockName, won, lockedUntil: lu.toISOString() });
+  if (logger?.info) logger.info("lock acquire", { name: lockName, won, ttlSeconds: ttl });
   return won;
 }
 
