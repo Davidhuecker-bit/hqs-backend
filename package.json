@@ -21,6 +21,8 @@
     "express": "^4.22.1",
     "@upstash/redis": "^1.28.4",
     "pg": "^8.11.5",
-    "openai": "^4.57.0"
+    "openai": "^4.57.0",
+    "node-cache": "^5.1.2",
+    "winston": "^3.13.1"
   }
 }
