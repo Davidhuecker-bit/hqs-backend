@@ -2,6 +2,36 @@
 
 const { Pool } = require("pg");
 
+// optional logger (falls vorhanden)
+let logger = null;
+try {
+  logger = require("../utils/logger");
+} catch (_) {
+  logger = null;
+}
+
+// Regime Normalisierung (wichtig für RL / Queries)
+let normalizeRegime = null;
+try {
+  ({ normalizeRegime } = require("./weightHistory.repository"));
+} catch (_) {
+  normalizeRegime = null;
+}
+
+function normalizeRegimeLocal(regime) {
+  const r = String(regime || "").trim().toLowerCase();
+  if (r === "bullish") return "bull";
+  if (r === "bearish") return "bear";
+  if (r === "neutral") return "neutral";
+  if (["expansion", "bull", "bear", "crash", "neutral"].includes(r)) return r;
+  return "neutral";
+}
+
+function normRegime(regime) {
+  if (typeof normalizeRegime === "function") return normalizeRegime(regime);
+  return normalizeRegimeLocal(regime);
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -40,7 +70,7 @@ async function initFactorTable() {
     );
   `);
 
-  // Schema safe upgrade
+  // Schema safe upgrade (idempotent)
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS momentum FLOAT;`);
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS quality FLOAT;`);
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS stability FLOAT;`);
@@ -56,7 +86,8 @@ async function initFactorTable() {
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS portfolio_return FLOAT;`);
   await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS factors JSONB;`);
 
-  console.log("✅ factor_history ready (FULL QUANT MODE)");
+  if (logger?.info) logger.info("factor_history ready (FULL QUANT MODE)");
+  else console.log("✅ factor_history ready (FULL QUANT MODE)");
 }
 
 /* =========================================================
@@ -75,6 +106,8 @@ async function saveScoreSnapshot({
   volatility,
 }) {
   try {
+    const normalizedRegime = normRegime(regime);
+
     await pool.query(
       `
       INSERT INTO factor_history
@@ -83,19 +116,20 @@ async function saveScoreSnapshot({
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
       `,
       [
-        symbol,
-        hqsScore,
+        String(symbol || "").trim().toUpperCase(),
+        Number(hqsScore),
         momentum ?? null,
         quality ?? null,
         stability ?? null,
         relative ?? null,
-        regime,
+        normalizedRegime,
         marketAverage ?? null,
         volatility ?? null,
       ]
     );
   } catch (err) {
-    console.error("❌ saveScoreSnapshot error:", err.message);
+    if (logger?.error) logger.error("saveScoreSnapshot error", { message: err.message });
+    else console.error("❌ saveScoreSnapshot error:", err.message);
   }
 }
 
@@ -105,16 +139,19 @@ async function saveScoreSnapshot({
 
 async function saveFactorSnapshot(regime, portfolioReturn, factors) {
   try {
+    const normalizedRegime = normRegime(regime);
+
     await pool.query(
       `
       INSERT INTO factor_history
       (symbol, hqs_score, regime, portfolio_return, factors)
       VALUES ($1,$2,$3,$4,$5)
       `,
-      ["PORTFOLIO", 0, regime, portfolioReturn ?? null, factors ?? null]
+      ["PORTFOLIO", 0, normalizedRegime, portfolioReturn ?? null, factors ?? null]
     );
   } catch (err) {
-    console.error("❌ saveFactorSnapshot error:", err.message);
+    if (logger?.error) logger.error("saveFactorSnapshot error", { message: err.message });
+    else console.error("❌ saveFactorSnapshot error:", err.message);
   }
 }
 
@@ -131,9 +168,7 @@ async function saveFactorSnapshot(regime, portfolioReturn, factors) {
 
 async function updateForwardReturns(a, b, c) {
   try {
-    // ============================
     // NEW MODE: (rowId, forward1d, forward3d)
-    // ============================
     if (Number.isFinite(Number(a)) && typeof b === "number") {
       const rowId = Number(a);
       const forward1d = b;
@@ -169,9 +204,7 @@ async function updateForwardReturns(a, b, c) {
       return;
     }
 
-    // ============================
     // OLD MODE: (symbol, hoursAhead, percentChange)
-    // ============================
     const symbol = String(a || "").trim().toUpperCase();
     const hoursAhead = Number(b);
     const percentChange = c;
@@ -193,7 +226,8 @@ async function updateForwardReturns(a, b, c) {
       [percentChange, symbol]
     );
   } catch (err) {
-    console.error("❌ updateForwardReturns error:", err.message);
+    if (logger?.error) logger.error("updateForwardReturns error", { message: err.message });
+    else console.error("❌ updateForwardReturns error:", err.message);
   }
 }
 
@@ -215,7 +249,8 @@ async function loadFactorHistory(limit = 500) {
 
     return res.rows;
   } catch (err) {
-    console.error("❌ loadFactorHistory error:", err.message);
+    if (logger?.error) logger.error("loadFactorHistory error", { message: err.message });
+    else console.error("❌ loadFactorHistory error:", err.message);
     return [];
   }
 }
