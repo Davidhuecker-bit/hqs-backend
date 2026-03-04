@@ -2,7 +2,9 @@
 
 /**
  * Global Market Data Normalizer
- * + automatische Prozentberechnung
+ * - robust numeric parsing
+ * - calculates change + changesPercentage if missing
+ * - consistent null checks (no falsy-bugs)
  */
 
 function toNumberOrNull(value) {
@@ -18,34 +20,52 @@ function toNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function hasNum(x) {
+  return x !== null && x !== undefined && Number.isFinite(Number(x));
+}
+
 function calculateChangePercent(price, previousClose) {
-  if (!price || !previousClose) return null;
-  return ((price - previousClose) / previousClose) * 100;
+  if (!hasNum(price) || !hasNum(previousClose) || Number(previousClose) === 0) return null;
+  return ((Number(price) - Number(previousClose)) / Number(previousClose)) * 100;
+}
+
+function calculateChange(price, previousClose) {
+  if (!hasNum(price) || !hasNum(previousClose)) return null;
+  return Number(price) - Number(previousClose);
 }
 
 function normalizeMarketData(raw, source, region) {
   if (!raw || typeof raw !== "object") return null;
 
-  const symbol = String(raw.symbol || raw.ticker || "")
+  const symbol = String(raw.symbol || raw.ticker || raw.T || "")
     .trim()
     .toUpperCase();
 
   if (!symbol) return null;
 
   const price = toNumberOrNull(raw.price ?? raw.c ?? raw.last);
-  const previousClose = toNumberOrNull(
-    raw.previousClose ?? raw.pc
-  );
+  const open = toNumberOrNull(raw.open ?? raw.o);
 
-  let changesPercentage = toNumberOrNull(
-    raw.changesPercentage ??
-    raw.changePercent ??
-    raw.dp
-  );
+  // previousClose may come in many forms; if missing, use open as fallback
+  let previousClose = toNumberOrNull(raw.previousClose ?? raw.pc);
+  if (previousClose === null && open !== null) previousClose = open;
 
-  // 🔥 Falls Provider keine Prozentänderung liefert → selbst berechnen
-  if (changesPercentage === null && price && previousClose) {
+  // provider can supply either change or percent or both
+  let change = toNumberOrNull(raw.change ?? raw.d);
+  let changesPercentage = toNumberOrNull(raw.changesPercentage ?? raw.changePercent ?? raw.dp);
+
+  // compute missing values if possible
+  if (changesPercentage === null && price !== null && previousClose !== null) {
     changesPercentage = calculateChangePercent(price, previousClose);
+  }
+
+  if (change === null && price !== null && previousClose !== null) {
+    change = calculateChange(price, previousClose);
+  }
+
+  // if change missing but percent + previousClose present, compute change
+  if (change === null && changesPercentage !== null && previousClose !== null) {
+    change = (Number(previousClose) * Number(changesPercentage)) / 100;
   }
 
   return {
@@ -54,18 +74,18 @@ function normalizeMarketData(raw, source, region) {
     region: String(region || "unknown"),
 
     price,
-    change: toNumberOrNull(raw.change ?? raw.d),
+    change,
     changesPercentage,
 
     high: toNumberOrNull(raw.high ?? raw.h),
     low: toNumberOrNull(raw.low ?? raw.l),
-    open: toNumberOrNull(raw.open ?? raw.o),
+    open,
     previousClose,
 
     volume: toNumberOrNull(raw.volume ?? raw.v),
 
     timestamp: new Date().toISOString(),
-    source: String(source || "unknown")
+    source: String(source || "unknown"),
   };
 }
 
