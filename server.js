@@ -31,20 +31,21 @@ const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
-// ✅ Locking (prevents double runs)
 const { acquireLock } = require("./services/jobLock.repository");
 
 /* =========================================================
-   OPPORTUNITY SCANNER
+   NEW ENGINES
 ========================================================= */
 
 const opportunitiesRoutes = require("./routes/opportunities.routes");
+const discoveryRoutes = require("./routes/discovery.routes");
 
 /* =========================================================
-   NOTIFICATIONS (In-App)
+   NOTIFICATIONS
 ========================================================= */
 
 const notificationsRoutes = require("./routes/notifications.routes");
+
 const {
   initNotificationTables,
   seedDemoUserIfEmpty,
@@ -77,11 +78,11 @@ app.use(express.json());
    ROUTES
 ========================================================= */
 
-// ✅ In-App Notification Center
 app.use("/api/notifications", notificationsRoutes);
 
-// ✅ Opportunity Scanner
 app.use("/api/opportunities", opportunitiesRoutes);
+
+app.use("/api/discovery", discoveryRoutes);
 
 /* =========================================================
    RESPONSE FORMATTER
@@ -114,13 +115,11 @@ function formatMarketItem(item) {
     previousClose: item.previousClose ?? null,
     marketCap: item.marketCap ?? null,
 
-    // ✅ DB-first HQS
     hqsScore: item.hqsScore ?? null,
     hqsBreakdown,
     regime: item.regime ?? null,
     hqsCreatedAt: item.hqsCreatedAt ?? null,
 
-    // ✅ Advanced
     trend: item.trend ?? null,
     volatility: item.volatility ?? null,
     scenarios: item.scenarios ?? null,
@@ -174,7 +173,7 @@ app.get("/api/market", async (req, res) => {
 });
 
 /* =========================================================
-   HQS ROUTE (DB-first)
+   HQS ROUTE
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -209,12 +208,10 @@ app.get("/api/hqs", async (req, res) => {
           relative: marketData[0].relative ?? null,
         },
         regime: marketData[0].regime ?? null,
-
         trend: marketData[0].trend ?? null,
         volatility: marketData[0].volatility ?? null,
         scenarios: marketData[0].scenarios ?? null,
         advancedUpdatedAt: marketData[0].advancedUpdatedAt ?? null,
-
         source: "database",
       });
     }
@@ -263,9 +260,11 @@ app.get("/api/segment", async (req, res) => {
     }
 
     const result = await getMarketDataBySegment({ segment, symbol });
+
     return res.json(result);
   } catch (error) {
     logger.error("Segment route error", { message: error.message });
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -315,6 +314,7 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
     });
   } catch (error) {
     logger.error("Guardian route error", { message: error.message });
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -345,6 +345,7 @@ app.post("/api/portfolio", async (req, res) => {
     });
   } catch (error) {
     logger.error("Portfolio route error", { message: error.message });
+
     return res.status(500).json({
       success: false,
       error: error.message,
@@ -353,7 +354,7 @@ app.post("/api/portfolio", async (req, res) => {
 });
 
 /* =========================================================
-   SAFE FORWARD LEARNING RUNNER (LOCKED)
+   SAFE FORWARD LEARNING RUNNER
 ========================================================= */
 
 async function runForwardLearningLocked() {
@@ -365,6 +366,7 @@ async function runForwardLearningLocked() {
   }
 
   await runForwardLearning();
+
   logger.info("Forward learning executed");
 }
 
