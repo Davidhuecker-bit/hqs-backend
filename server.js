@@ -31,6 +31,9 @@ const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
+// ✅ NEW: Locking for forward learning (prevents double runs)
+const { acquireLock } = require("./services/jobLock.repository");
+
 /* =========================================================
    APP INIT
 ========================================================= */
@@ -91,10 +94,11 @@ function formatMarketItem(item) {
     regime: item.regime ?? null,
     hqsCreatedAt: item.hqsCreatedAt ?? null,
 
-    // ✅ Advanced Addons (aus neuem marketService)
+    // ✅ Advanced (DB-first wenn du market_advanced_metrics nutzt)
     trend: item.trend ?? null,
     volatility: item.volatility ?? null,
     scenarios: item.scenarios ?? null,
+    advancedUpdatedAt: item.advancedUpdatedAt ?? null,
 
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
@@ -185,12 +189,13 @@ app.get("/api/hqs", async (req, res) => {
         trend: marketData[0].trend ?? null,
         volatility: marketData[0].volatility ?? null,
         scenarios: marketData[0].scenarios ?? null,
+        advancedUpdatedAt: marketData[0].advancedUpdatedAt ?? null,
 
         source: "database",
       });
     }
 
-    // Live fallback (wie vorher, nur marketAverage optional)
+    // Live fallback
     const fullMarket = await getMarketData();
     const changes = Array.isArray(fullMarket)
       ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
@@ -218,7 +223,7 @@ app.get("/api/hqs", async (req, res) => {
 });
 
 /* =========================================================
-   SEGMENT ROUTE (WAR IM ALTEN CODE → wieder drin)
+   SEGMENT ROUTE
 ========================================================= */
 
 app.get("/api/segment", async (req, res) => {
@@ -245,7 +250,7 @@ app.get("/api/segment", async (req, res) => {
 });
 
 /* =========================================================
-   GUARDIAN ROUTE (WAR IM ALTEN CODE → wieder drin)
+   GUARDIAN ROUTE
 ========================================================= */
 
 app.get("/api/guardian/analyze/:ticker", async (req, res) => {
@@ -294,7 +299,7 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 });
 
 /* =========================================================
-   PORTFOLIO ROUTE (WAR IM ALTEN CODE → wieder drin)
+   PORTFOLIO ROUTE
 ========================================================= */
 
 app.post("/api/portfolio", async (req, res) => {
@@ -324,6 +329,22 @@ app.post("/api/portfolio", async (req, res) => {
 });
 
 /* =========================================================
+   SAFE FORWARD LEARNING RUNNER (LOCKED)
+========================================================= */
+
+async function runForwardLearningLocked() {
+  // verhindert Doppel-Runs bei Deploy/Restart
+  const won = await acquireLock("forward_learning_job", 12 * 60);
+  if (!won) {
+    logger.warn("Forward learning skipped (lock held)");
+    return;
+  }
+
+  await runForwardLearning();
+  logger.info("Forward learning executed");
+}
+
+/* =========================================================
    SERVER START
 ========================================================= */
 
@@ -336,7 +357,7 @@ app.listen(PORT, async () => {
     await initWeightTable();
 
     await buildMarketSnapshot();
-    await runForwardLearning();
+    await runForwardLearningLocked();
 
     logger.info("Startup completed successfully");
   } catch (err) {
@@ -351,7 +372,7 @@ app.listen(PORT, async () => {
 setInterval(async () => {
   try {
     await buildMarketSnapshot();
-    await runForwardLearning();
+    await runForwardLearningLocked();
     logger.info("Warmup executed");
   } catch (err) {
     logger.error("Warmup Fehler", { message: err.message });
