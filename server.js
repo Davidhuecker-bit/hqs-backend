@@ -35,6 +35,12 @@ const { runForwardLearning } = require("./services/forwardLearning.service");
 const { acquireLock } = require("./services/jobLock.repository");
 
 /* =========================================================
+   OPPORTUNITY SCANNER
+========================================================= */
+
+const opportunitiesRoutes = require("./routes/opportunities.routes");
+
+/* =========================================================
    NOTIFICATIONS (In-App)
 ========================================================= */
 
@@ -74,6 +80,9 @@ app.use(express.json());
 // ✅ In-App Notification Center
 app.use("/api/notifications", notificationsRoutes);
 
+// ✅ Opportunity Scanner
+app.use("/api/opportunities", opportunitiesRoutes);
+
 /* =========================================================
    RESPONSE FORMATTER
 ========================================================= */
@@ -111,7 +120,7 @@ function formatMarketItem(item) {
     regime: item.regime ?? null,
     hqsCreatedAt: item.hqsCreatedAt ?? null,
 
-    // ✅ Advanced (DB-first wenn market_advanced_metrics genutzt wird)
+    // ✅ Advanced
     trend: item.trend ?? null,
     volatility: item.volatility ?? null,
     scenarios: item.scenarios ?? null,
@@ -188,7 +197,6 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // ✅ DB-first
     if (marketData[0].hqsScore !== null && marketData[0].hqsScore !== undefined) {
       return res.json({
         success: true,
@@ -202,7 +210,6 @@ app.get("/api/hqs", async (req, res) => {
         },
         regime: marketData[0].regime ?? null,
 
-        // ✅ Advanced
         trend: marketData[0].trend ?? null,
         volatility: marketData[0].volatility ?? null,
         scenarios: marketData[0].scenarios ?? null,
@@ -212,11 +219,11 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    // Live fallback
     const fullMarket = await getMarketData();
     const changes = Array.isArray(fullMarket)
       ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
       : [];
+
     const marketAverage =
       changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
 
@@ -351,6 +358,7 @@ app.post("/api/portfolio", async (req, res) => {
 
 async function runForwardLearningLocked() {
   const won = await acquireLock("forward_learning_job", 12 * 60);
+
   if (!won) {
     logger.warn("Forward learning skipped (lock held)");
     return;
@@ -368,16 +376,13 @@ app.listen(PORT, async () => {
   logger.info(`HQS Backend aktiv auf Port ${PORT}`);
 
   try {
-    // Core tables
     await ensureTablesExist();
     await initFactorTable();
     await initWeightTable();
 
-    // Notification center tables
     await initNotificationTables();
     await seedDemoUserIfEmpty();
 
-    // Warm start
     await buildMarketSnapshot();
     await runForwardLearningLocked();
 
@@ -395,6 +400,7 @@ setInterval(async () => {
   try {
     await buildMarketSnapshot();
     await runForwardLearningLocked();
+
     logger.info("Warmup executed");
   } catch (err) {
     logger.error("Warmup Fehler", { message: err.message });
