@@ -3,9 +3,15 @@
 const axios = require("axios");
 const NodeCache = require("node-cache");
 
+// optional logger
 let logger = null;
-try { logger = require("../utils/logger"); } catch (_) { logger = null; }
+try {
+  logger = require("../utils/logger");
+} catch (_) {
+  logger = null;
+}
 
+// 6h Cache (Historical ändert sich kaum)
 const cache = new NodeCache({ stdTTL: 6 * 60 * 60, checkperiod: 10 * 60 });
 
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
@@ -15,7 +21,7 @@ function periodToDays(period) {
   if (p === "1m") return 35;
   if (p === "3m") return 110;
   if (p === "6m") return 220;
-  if (p === "1y" || p === "1year") return 400;
+  if (p === "1y" || p === "1year") return 400; // Puffer wegen WE/Feiertage
   if (p === "max") return 3650;
   return 400;
 }
@@ -34,8 +40,10 @@ function sleep(ms) {
 /**
  * Massive/Polygon-like aggregates historical
  * Returns: [{ date: "YYYY-MM-DD", close: number }] oldest->newest
- * IMPORTANT: Accepts status "OK" and "DELAYED"
- * If delayed/no results -> returns [] (does NOT throw), so snapshots can still run.
+ *
+ * IMPORTANT:
+ * - Accepts status "OK" and "DELAYED"
+ * - If delayed/no results -> returns [] (does NOT throw), so snapshots can still run
  */
 async function getHistoricalPrices(symbol, period = "1y") {
   const sym = String(symbol || "").trim().toUpperCase();
@@ -49,6 +57,7 @@ async function getHistoricalPrices(symbol, period = "1y") {
 
   const days = periodToDays(period);
   const cacheKey = `massive_hist_${sym}_${String(period).toLowerCase()}`;
+
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
@@ -60,7 +69,6 @@ async function getHistoricalPrices(symbol, period = "1y") {
     `/range/1/day/${fmtDate(from)}/${fmtDate(to)}` +
     `?adjusted=true&sort=asc&limit=5000&apiKey=${MASSIVE_API_KEY}`;
 
-  // Retry, falls "DELAYED" kurzzeitig ist
   const maxTries = 3;
 
   for (let attempt = 1; attempt <= maxTries; attempt++) {
@@ -70,27 +78,28 @@ async function getHistoricalPrices(symbol, period = "1y") {
 
       const status = String(data?.status || "").toUpperCase();
 
-      // ✅ Accept OK and DELAYED (we try to read results anyway)
+      // ✅ Accept OK and DELAYED
       if (status !== "OK" && status !== "DELAYED") {
         throw new Error(`Massive historical not OK (${data?.status || "no status"})`);
       }
 
       const results = Array.isArray(data?.results) ? data.results : [];
 
-      // Wenn delayed und leer: retry
+      // DELAYED & empty -> retry
       if (!results.length && status === "DELAYED" && attempt < maxTries) {
         if (logger?.warn) logger.warn("Massive historical delayed; retrying", { sym, attempt });
         await sleep(700 * attempt);
         continue;
       }
 
-      // Wenn immer noch leer: KEIN throw -> leeres Array zurückgeben
+      // still empty -> no crash, return []
       if (!results.length) {
         if (logger?.warn) logger.warn("Massive historical returned no results", { sym, status });
         cache.set(cacheKey, []);
         return [];
       }
 
+      // normalize
       const normalized = results
         .map((r) => {
           const close = Number(r?.c);
@@ -109,12 +118,18 @@ async function getHistoricalPrices(symbol, period = "1y") {
       return normalized;
     } catch (err) {
       if (attempt < maxTries) {
-        if (logger?.warn) logger.warn("Massive historical fetch failed; retrying", { sym, attempt, message: err.message });
+        if (logger?.warn) {
+          logger.warn("Massive historical fetch failed; retrying", {
+            sym,
+            attempt,
+            message: err.message,
+          });
+        }
         await sleep(700 * attempt);
         continue;
       }
 
-      // Final attempt: return [] (don’t kill snapshots)
+      // final attempt -> no crash, return []
       const msg = `Massive historical fetch failed for ${sym}: ${err.message}`;
       if (logger?.error) logger.error("Historical Data Error", { message: msg });
       else console.error("Historical Data Error:", msg);
