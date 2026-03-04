@@ -2,10 +2,37 @@
 
 const { Pool } = require("pg");
 
+// optional logger (falls vorhanden)
+let logger = null;
+try {
+  logger = require("../utils/logger");
+} catch (_) {
+  logger = null;
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+/* =========================================================
+   REGIME NORMALIZATION
+========================================================= */
+
+function normalizeRegime(regime) {
+  const r = String(regime || "").trim().toLowerCase();
+
+  // from advanced regime engine
+  if (r === "bullish") return "bull";
+  if (r === "bearish") return "bear";
+  if (r === "neutral") return "neutral";
+
+  // internal accepted
+  if (["expansion", "bull", "bear", "crash", "neutral"].includes(r)) return r;
+
+  // default
+  return "neutral";
+}
 
 /* =========================================================
    INIT TABLE
@@ -22,7 +49,8 @@ async function initWeightTable() {
     );
   `);
 
-  console.log("✅ weight_history ready");
+  if (logger?.info) logger.info("weight_history ready");
+  else console.log("✅ weight_history ready");
 }
 
 /* =========================================================
@@ -30,26 +58,33 @@ async function initWeightTable() {
 ========================================================= */
 
 async function saveWeightSnapshot(regime, weights, performance) {
+  const normalizedRegime = normalizeRegime(regime);
+
   try {
     await pool.query(
       `
       INSERT INTO weight_history (regime, weights, performance)
       VALUES ($1, $2, $3)
       `,
-      [regime, weights, performance]
+      [normalizedRegime, weights, performance]
     );
   } catch (err) {
-    console.error("❌ saveWeightSnapshot error:", err.message);
+    if (logger?.error) logger.error("saveWeightSnapshot error", { message: err.message });
+    else console.error("❌ saveWeightSnapshot error:", err.message);
   }
 }
 
 /* =========================================================
    LOAD LAST WEIGHTS
+   - tries regime-specific first
+   - falls back to latest global
 ========================================================= */
 
 async function loadLastWeights(regime = null) {
   try {
-    if (regime) {
+    const normalizedRegime = regime ? normalizeRegime(regime) : null;
+
+    if (normalizedRegime) {
       const res = await pool.query(
         `
         SELECT weights
@@ -58,10 +93,11 @@ async function loadLastWeights(regime = null) {
         ORDER BY created_at DESC
         LIMIT 1
         `,
-        [regime]
+        [normalizedRegime]
       );
-      if (!res.rows.length) return null;
-      return res.rows[0].weights;
+
+      if (res.rows.length) return res.rows[0].weights;
+      // fallback to global if none found for regime
     }
 
     const res = await pool.query(`
@@ -74,20 +110,26 @@ async function loadLastWeights(regime = null) {
     if (!res.rows.length) return null;
     return res.rows[0].weights;
   } catch (err) {
-    console.error("❌ loadLastWeights error:", err.message);
+    if (logger?.error) logger.error("loadLastWeights error", { message: err.message });
+    else console.error("❌ loadLastWeights error:", err.message);
     return null;
   }
 }
 
 /* =========================================================
    🚀 PERFORMANCE-BASED REINFORCEMENT LEARNING
-   - nutzt factor_history
-   - erstellt adaptive weights pro Regime
+   - uses factor_history
+   - creates adaptive weights per regime
+   Notes:
+   - If there are no samples for the given regime, fallback to neutral, then global.
 ========================================================= */
 
 async function computeAdaptiveWeights(regime = "neutral") {
+  const normalizedRegime = normalizeRegime(regime);
+
   try {
-    const res = await pool.query(
+    // 1) try requested regime
+    let res = await pool.query(
       `
       SELECT momentum, quality, stability, relative, hqs_score
       FROM factor_history
@@ -95,8 +137,33 @@ async function computeAdaptiveWeights(regime = "neutral") {
       ORDER BY created_at DESC
       LIMIT 300
       `,
-      [regime]
+      [normalizedRegime]
     );
+
+    // 2) fallback to neutral if empty and not already neutral
+    if (!res.rows.length && normalizedRegime !== "neutral") {
+      res = await pool.query(
+        `
+        SELECT momentum, quality, stability, relative, hqs_score
+        FROM factor_history
+        WHERE regime = 'neutral'
+        ORDER BY created_at DESC
+        LIMIT 300
+        `
+      );
+    }
+
+    // 3) fallback to global (no regime filter)
+    if (!res.rows.length) {
+      res = await pool.query(
+        `
+        SELECT momentum, quality, stability, relative, hqs_score
+        FROM factor_history
+        ORDER BY created_at DESC
+        LIMIT 300
+        `
+      );
+    }
 
     if (!res.rows.length) return null;
 
@@ -131,17 +198,20 @@ async function computeAdaptiveWeights(regime = "neutral") {
       relative: reinforcement.relative / sum,
     };
 
-    await saveWeightSnapshot(regime, weights, {
+    await saveWeightSnapshot(normalizedRegime, weights, {
       learningSamples: res.rows.length,
       mode: "reinforcement",
       updatedAt: new Date().toISOString(),
+      usedRegime: normalizedRegime,
     });
 
-    console.log(`🧠 Adaptive weights updated for ${regime}:`, weights);
+    if (logger?.info) logger.info("Adaptive weights updated", { regime: normalizedRegime, weights });
+    else console.log(`🧠 Adaptive weights updated for ${normalizedRegime}:`, weights);
 
     return weights;
   } catch (err) {
-    console.error("❌ computeAdaptiveWeights error:", err.message);
+    if (logger?.error) logger.error("computeAdaptiveWeights error", { message: err.message });
+    else console.error("❌ computeAdaptiveWeights error:", err.message);
     return null;
   }
 }
@@ -151,4 +221,5 @@ module.exports = {
   saveWeightSnapshot,
   loadLastWeights,
   computeAdaptiveWeights,
+  normalizeRegime, // export for reuse if needed
 };
