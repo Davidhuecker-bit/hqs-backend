@@ -2,14 +2,36 @@
 
 const { Pool } = require("pg");
 let logger = null;
-try { logger = require("../utils/logger"); } catch (_) { logger = null; }
+try {
+  logger = require("../utils/logger");
+} catch (_) {
+  logger = null;
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
+/**
+ * JSONB Safety:
+ * - entfernt undefined
+ * - verhindert crash bei nicht-serialisierbaren Werten
+ */
+function safeJson(value) {
+  if (value === undefined) return null;
+  if (value === null) return null;
+
+  try {
+    // JSON stringify/parse macht es "clean"
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return null;
+  }
+}
+
 async function initAdvancedMetricsTable() {
+  // 1) Basis-Tabelle
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_advanced_metrics (
       id SERIAL PRIMARY KEY,
@@ -23,11 +45,26 @@ async function initAdvancedMetricsTable() {
     );
   `);
 
+  // 2) Migration-safe Upgrades (falls Tabelle alt ist)
+  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS regime TEXT;`);
+  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS trend FLOAT;`);
+  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS volatility_annual FLOAT;`);
+  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS volatility_daily FLOAT;`);
+  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS scenarios JSONB;`);
+  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`);
+
+  // Index (optional, aber hilft)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_market_advanced_metrics_symbol
+    ON market_advanced_metrics(symbol);
+  `);
+
   if (logger?.info) logger.info("market_advanced_metrics ready");
 }
 
 async function upsertAdvancedMetrics(symbol, payload) {
   const sym = String(symbol || "").toUpperCase();
+
   const {
     regime = null,
     trend = null,
@@ -35,6 +72,8 @@ async function upsertAdvancedMetrics(symbol, payload) {
     volatilityDaily = null,
     scenarios = null,
   } = payload || {};
+
+  const cleanScenarios = safeJson(scenarios);
 
   await pool.query(
     `
@@ -56,7 +95,7 @@ async function upsertAdvancedMetrics(symbol, payload) {
       trend,
       volatilityAnnual,
       volatilityDaily,
-      scenarios,
+      cleanScenarios,
     ]
   );
 
@@ -65,6 +104,7 @@ async function upsertAdvancedMetrics(symbol, payload) {
 
 async function loadAdvancedMetrics(symbol) {
   const sym = String(symbol || "").toUpperCase();
+
   const res = await pool.query(
     `
     SELECT regime, trend, volatility_annual, volatility_daily, scenarios, updated_at
@@ -77,11 +117,21 @@ async function loadAdvancedMetrics(symbol) {
   if (!res.rows.length) return null;
 
   const row = res.rows[0];
+
+  const volAnnual = row.volatility_annual !== null ? Number(row.volatility_annual) : null;
+  const volDaily = row.volatility_daily !== null ? Number(row.volatility_daily) : null;
+
   return {
     regime: row.regime ?? null,
     trend: row.trend !== null ? Number(row.trend) : null,
-    volatility: row.volatility_annual !== null ? Number(row.volatility_annual) : null,
-    volatilityDaily: row.volatility_daily !== null ? Number(row.volatility_daily) : null,
+
+    // ✅ bestehendes Feld (frontend-friendly)
+    volatility: volAnnual,
+
+    // ✅ neue Aliase (falls du später genauer nutzen willst)
+    volatilityAnnual: volAnnual,
+    volatilityDaily: volDaily,
+
     scenarios: row.scenarios ?? null,
     advancedUpdatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
   };
