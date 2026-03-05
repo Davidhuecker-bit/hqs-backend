@@ -16,13 +16,29 @@ const cache = new NodeCache({ stdTTL: 6 * 60 * 60, checkperiod: 10 * 60 });
 
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
 
+const http = axios.create({
+  timeout: 20000,
+  headers: {
+    "User-Agent": "HQS-Backend/1.0",
+    Accept: "application/json",
+  },
+});
+
 function periodToDays(period) {
-  const p = String(period || "1y").toLowerCase();
+  const p = String(period || "1y").toLowerCase().trim();
+
   if (p === "1m") return 35;
   if (p === "3m") return 110;
   if (p === "6m") return 220;
-  if (p === "1y" || p === "1year") return 400; // Puffer wegen WE/Feiertage
+
+  if (p === "1y" || p === "1year" || p === "12m") return 400; // Puffer wegen WE/Feiertage
+
+  // ✅ NEW: 5 years shorthand
+  if (p === "5y" || p === "5years") return 3650;
+
+  // ✅ max (bei Massive kostenlos bis 5 Jahre bei dir möglich)
   if (p === "max") return 3650;
+
   return 400;
 }
 
@@ -37,6 +53,10 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function safeUrlWithoutKey(url) {
+  return String(url || "").replace(/apiKey=[^&]+/i, "apiKey=***");
+}
+
 /**
  * Massive/Polygon-like aggregates historical
  * Returns: [{ date: "YYYY-MM-DD", close: number }] oldest->newest
@@ -44,6 +64,7 @@ function sleep(ms) {
  * IMPORTANT:
  * - Accepts status "OK" and "DELAYED"
  * - If delayed/no results -> returns [] (does NOT throw), so snapshots can still run
+ * - ✅ NEW: if "max" returns empty, fallback to "1y"
  */
 async function getHistoricalPrices(symbol, period = "1y") {
   const sym = String(symbol || "").trim().toUpperCase();
@@ -55,9 +76,10 @@ async function getHistoricalPrices(symbol, period = "1y") {
     throw new Error(msg);
   }
 
-  const days = periodToDays(period);
-  const cacheKey = `massive_hist_${sym}_${String(period).toLowerCase()}`;
+  const per = String(period || "1y").toLowerCase().trim();
+  const days = periodToDays(per);
 
+  const cacheKey = `massive_hist_${sym}_${per}`;
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
@@ -73,7 +95,7 @@ async function getHistoricalPrices(symbol, period = "1y") {
 
   for (let attempt = 1; attempt <= maxTries; attempt++) {
     try {
-      const res = await axios.get(url, { timeout: 20000 });
+      const res = await http.get(url);
       const data = res?.data;
 
       const status = String(data?.status || "").toUpperCase();
@@ -87,15 +109,30 @@ async function getHistoricalPrices(symbol, period = "1y") {
 
       // DELAYED & empty -> retry
       if (!results.length && status === "DELAYED" && attempt < maxTries) {
-        if (logger?.warn) logger.warn("Massive historical delayed; retrying", { sym, attempt });
+        if (logger?.warn) logger.warn("Massive historical delayed; retrying", { sym, attempt, period: per });
         await sleep(700 * attempt);
         continue;
       }
 
-      // still empty -> no crash, return []
+      // still empty -> no crash, return [] (but with fallback option)
       if (!results.length) {
-        if (logger?.warn) logger.warn("Massive historical returned no results", { sym, status });
+        if (logger?.warn) {
+          logger.warn("Massive historical returned no results", {
+            sym,
+            status,
+            period: per,
+            url: safeUrlWithoutKey(url),
+          });
+        }
+
         cache.set(cacheKey, []);
+
+        // ✅ NEW: fallback if max/5y empty -> try 1y once
+        if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
+          if (logger?.warn) logger.warn("Historical fallback to 1y", { sym, from: per });
+          return await getHistoricalPrices(sym, "1y");
+        }
+
         return [];
       }
 
@@ -114,6 +151,11 @@ async function getHistoricalPrices(symbol, period = "1y") {
         })
         .filter(Boolean);
 
+      // optional debug if truncated
+      if (logger?.info && results.length >= 5000) {
+        logger.info("Historical hit limit=5000 (may be truncated)", { sym, period: per });
+      }
+
       cache.set(cacheKey, normalized);
       return normalized;
     } catch (err) {
@@ -122,7 +164,9 @@ async function getHistoricalPrices(symbol, period = "1y") {
           logger.warn("Massive historical fetch failed; retrying", {
             sym,
             attempt,
+            period: per,
             message: err.message,
+            url: safeUrlWithoutKey(url),
           });
         }
         await sleep(700 * attempt);
@@ -135,6 +179,13 @@ async function getHistoricalPrices(symbol, period = "1y") {
       else console.error("Historical Data Error:", msg);
 
       cache.set(cacheKey, []);
+
+      // ✅ NEW: fallback if max/5y fails hard -> try 1y once
+      if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
+        if (logger?.warn) logger.warn("Historical fallback to 1y after error", { sym, from: per });
+        return await getHistoricalPrices(sym, "1y");
+      }
+
       return [];
     }
   }
