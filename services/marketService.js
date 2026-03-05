@@ -8,6 +8,8 @@
   - Watchlist aus DB (watchlist_symbols)
   - Job Locking (job_locks) gegen Doppel-Snapshots
   - Historical optional (DELAYED safe via historicalService)
+  - ✅ NEW: Multi-Horizon Scenarios (30/90/180/252d) für Wochen/Monate-Discovery
+  - ✅ NEW: HIST_PERIOD env (1y/max) -> 5 Jahre möglich
 */
 
 const { fetchQuote } = require("./providerService");
@@ -44,6 +46,17 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// ✅ Historical Period (du kannst auf "max" stellen für 5 Jahre)
+const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
+
+// MonteCarlo Simulationen pro Symbol (mehr = genauer, aber teurer)
+const MC_SIMS = Number(process.env.MC_SIMS || 800);
+
+function safeNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /* =========================================================
    TABLE INIT
 ========================================================= */
@@ -77,7 +90,7 @@ async function ensureTablesExist() {
     );
   `);
 
-  // ✅ NEW TABLES
+  // ✅ NEW TABLES (deine bestehenden initializations)
   await initAdvancedMetricsTable();
   await initJobLocksTable();
   await initWatchlistTable();
@@ -130,6 +143,41 @@ async function loadLatestHqsScore(symbol) {
 }
 
 /* =========================================================
+   NEW: MULTI HORIZON SCENARIOS
+   - 30 / 90 / 180 / 252 Tage (Wochen/Monate)
+========================================================= */
+
+function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
+  const price0 = safeNum(S, 0);
+  const drift = safeNum(mu, 0);
+  const sig = safeNum(sigmaDaily, 0);
+
+  if (!Number.isFinite(price0) || price0 <= 0) return null;
+
+  const sim = Number.isFinite(simulations) && simulations > 100 ? simulations : 800;
+
+  const h30 = monteCarloSimulation(price0, drift, sig, 30, sim);
+  const h90 = monteCarloSimulation(price0, drift, sig, 90, sim);
+  const h180 = monteCarloSimulation(price0, drift, sig, 180, sim);
+  const h252 = monteCarloSimulation(price0, drift, sig, 252, sim);
+
+  // Wir speichern ein klares Format für Discovery (Forecast)
+  return {
+    horizons: {
+      "30": { base: h30.realistic, bull: h30.optimistic, bear: h30.pessimistic },
+      "90": { base: h90.realistic, bull: h90.optimistic, bear: h90.pessimistic },
+      "180": { base: h180.realistic, bull: h180.optimistic, bear: h180.pessimistic },
+      "252": { base: h252.realistic, bull: h252.optimistic, bear: h252.pessimistic },
+    },
+    meta: {
+      simulations: sim,
+      sigmaDaily: sig,
+      mu: drift,
+    },
+  };
+}
+
+/* =========================================================
    SNAPSHOT + HQS PIPELINE
    - uses DB watchlist
    - computes advanced metrics ONCE and stores to DB
@@ -173,9 +221,7 @@ async function buildMarketSnapshot() {
       // TRY HISTORICAL -> compute & persist advanced metrics
       // -----------------------------------------------------
       try {
-        // Du kannst hier auf "max" stellen, wenn du wirklich 5 Jahre willst:
-        // const historical = await getHistoricalPrices(symbol, "max");
-        const historical = await getHistoricalPrices(symbol, "1y");
+        const historical = await getHistoricalPrices(symbol, HIST_PERIOD);
 
         const prices = (historical || [])
           .map((d) => Number(d?.close))
@@ -184,16 +230,17 @@ async function buildMarketSnapshot() {
         if (prices.length >= 30) {
           trendData = buildTrendScore(prices);
 
+          // Regime expects annual volatility
           regime = detectMarketRegime(trendData.trend, trendData.volatilityAnnual);
 
           adaptiveWeights = await computeAdaptiveWeights(regime);
 
-          scenarios = monteCarloSimulation(
+          // ✅ NEW: Multi-Horizon scenarios (Wochen/Monate)
+          scenarios = buildMultiHorizonScenarios(
             prices[0],
             trendData.trend,
             trendData.volatilityDaily,
-            252,
-            800
+            MC_SIMS
           );
 
           // ✅ STORE ADVANCED METRICS DB-FIRST
@@ -205,10 +252,18 @@ async function buildMarketSnapshot() {
             scenarios,
           });
         } else {
-          logger.warn("Historical insufficient; using fallback", { symbol, points: prices.length });
+          logger.warn("Historical insufficient; using fallback", {
+            symbol,
+            points: prices.length,
+            period: HIST_PERIOD,
+          });
         }
       } catch (histErr) {
-        logger.warn("Historical unavailable; using fallback", { symbol, message: histErr.message });
+        logger.warn("Historical unavailable; using fallback", {
+          symbol,
+          period: HIST_PERIOD,
+          message: histErr.message,
+        });
       }
 
       // -----------------------------------------------------
@@ -262,6 +317,7 @@ async function buildMarketSnapshot() {
           regime,
           trend: trendData.trend,
           volAnnual: trendData.volatilityAnnual,
+          period: HIST_PERIOD,
         });
       }
 
@@ -315,7 +371,6 @@ async function getMarketData(symbol) {
         normalized.scenarios = adv.scenarios ?? null;
         normalized.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
       } else {
-        // wirklich DB-first: keine Live-Berechnung mehr hier
         normalized.trend = null;
         normalized.volatility = null;
         normalized.volatilityDaily = null;
