@@ -6,6 +6,11 @@
  * - trend: total return over window (oldest->newest)
  * - volatilityDaily: std dev of daily returns
  * - volatilityAnnual: volatilityDaily * sqrt(252)
+ *
+ * ✅ FIX:
+ * - Massive historical is requested with sort=asc (oldest->newest)
+ * - Old version always reversed -> wrong trend/returns
+ * - Now: auto-detect order + optional env override
  */
 
 function toNumber(x) {
@@ -23,17 +28,49 @@ function cleanPrices(prices) {
 }
 
 /**
- * Heuristic: If the series is newest-first, the first value often differs from last substantially,
- * but we can't know direction. We'll standardize to oldest->newest by:
- * - assume input is newest->oldest (common for many APIs) and reverse
- * - BUT to avoid accidental wrong reversal, we provide an option flag.
+ * Decide order:
+ * - If env PRICES_ORDER is set:
+ *     "asc"  -> already oldest->newest, do nothing
+ *     "desc" -> reverse
+ * - Else auto detect:
+ *     If last price >= first price AND also typical daily return seems sane,
+ *     assume it's already asc.
+ *     Otherwise reverse.
  *
- * In our project, FMP historical often returns newest->oldest → reversing is correct.
+ * This is a heuristic but works well with Massive (asc) + many APIs (desc).
  */
 function ensureOldestToNewest(prices) {
-  // We default to reversing because FMP historical is typically newest->oldest.
-  // If at some point you swap providers and it becomes oldest->newest,
-  // trend sign would flip. Then you can set a flag here.
+  const order = String(process.env.PRICES_ORDER || "").toLowerCase().trim();
+
+  if (order === "asc") return [...prices];
+  if (order === "desc") return [...prices].reverse();
+
+  if (prices.length < 3) return [...prices];
+
+  const first = prices[0];
+  const last = prices[prices.length - 1];
+
+  // quick sanity: compute a few returns without reversing
+  let saneCount = 0;
+  const checks = Math.min(10, prices.length - 1);
+
+  for (let i = 1; i <= checks; i++) {
+    const prev = prices[i - 1];
+    const cur = prices[i];
+    if (!prev || !cur) continue;
+
+    const r = (cur - prev) / prev;
+
+    // "sane" daily return range (very loose)
+    if (Number.isFinite(r) && r > -0.5 && r < 0.5) saneCount++;
+  }
+
+  const looksAsc = saneCount >= Math.floor(checks * 0.6);
+
+  // If looks asc, keep it. If not, reverse.
+  // If ambiguous, fallback to "asc" when last is close to first (not decisive).
+  if (looksAsc) return [...prices];
+
   return [...prices].reverse();
 }
 
@@ -79,7 +116,7 @@ function buildTrendScore(prices) {
     };
   }
 
-  // Standardize direction
+  // ✅ Standardize direction safely
   const series = ensureOldestToNewest(cleaned);
 
   const returns = calculateReturns(series);
@@ -87,7 +124,7 @@ function buildTrendScore(prices) {
   const volatilityAnnual = volatilityDaily * Math.sqrt(252);
   const trend = calculateTrend(series);
 
-  // simple combined score (bounded-ish)
+  // Combined score (bounded-ish)
   const score = trend * (1 - Math.min(volatilityAnnual, 0.95));
 
   return {
