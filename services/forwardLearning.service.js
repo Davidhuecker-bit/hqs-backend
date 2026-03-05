@@ -1,21 +1,21 @@
 "use strict";
 
 /*
-  Forward Learning Service (v1)
+  Forward Learning Service (v2) - STABIL / DB-SAFE
   ------------------------------------------------------------
   Zweck:
   - Nimmt factor_history Einträge (Einzelaktien) ohne Forward-Label
-  - Sucht zugehörige market_snapshots Preise
-  - Berechnet Forward Returns (1h / 1d / 3d) als Prozent
-  - Schreibt Labels zurück in factor_history
+  - Sucht einen "Basis-Snapshot" nach MIN_DELAY Minuten
+  - Berechnet Forward Returns (1d / 3d) als Prozent ab BASIS-SNAPSHOT
+  - Schreibt Labels zurück in factor_history via updateForwardReturns(rowId, ret1d, ret3d)
 
   Wichtig:
   - Keine neuen Tabellen
-  - Nutzt dein factorHistory.repository updateForwardReturns()
-  - Läuft "safe": wenn Daten fehlen -> skip
+  - Läuft safe: wenn Daten fehlen -> skip
 */
 
 const { Pool } = require("pg");
+const logger = require("../utils/logger");
 const { updateForwardReturns } = require("./factorHistory.repository");
 
 const pool = new Pool({
@@ -29,7 +29,11 @@ const DEFAULT_LIMIT = Number(process.env.FORWARD_LEARNING_LIMIT || 40);
 // Minimaler Abstand in Minuten zwischen factor_history Event und "Basis-Snapshot"
 const MIN_DELAY_MINUTES = Number(process.env.FORWARD_LEARNING_MIN_DELAY_MINUTES || 10);
 
-// Hilfsfunktion
+function toMsMinutes(minutes) {
+  const m = Number(minutes);
+  return (Number.isFinite(m) && m > 0 ? m : 0) * 60 * 1000;
+}
+
 function percentChange(oldPrice, newPrice) {
   const o = Number(oldPrice);
   const n = Number(newPrice);
@@ -37,13 +41,32 @@ function percentChange(oldPrice, newPrice) {
   return ((n - o) / o) * 100;
 }
 
-function toMs(minutes) {
-  return Math.max(0, Number(minutes) || 0) * 60 * 1000;
+function toIso(dt) {
+  try {
+    return new Date(dt).toISOString();
+  } catch {
+    return null;
+  }
+}
+
+async function findFirstSnapshotAtOrAfter(symbol, isoTime) {
+  const res = await pool.query(
+    `
+    SELECT price, created_at
+    FROM market_snapshots
+    WHERE symbol = $1
+      AND created_at >= $2
+    ORDER BY created_at ASC
+    LIMIT 1
+    `,
+    [symbol, isoTime]
+  );
+
+  return res.rows?.[0] || null;
 }
 
 async function runForwardLearning() {
   try {
-    // 1) Kandidaten suchen (nur EINZELAKTIEN, nicht PORTFOLIO)
     const baseRows = await pool.query(
       `
       SELECT id, symbol, created_at
@@ -56,74 +79,71 @@ async function runForwardLearning() {
       [DEFAULT_LIMIT]
     );
 
-    if (!baseRows.rows.length) return;
+    const rows = baseRows.rows || [];
+    if (!rows.length) {
+      logger.info("Forward learning: nothing to update");
+      return { updated: 0 };
+    }
 
-    for (const row of baseRows.rows) {
+    let updated = 0;
+
+    for (const row of rows) {
       const rowId = Number(row.id);
       const symbol = String(row.symbol || "").trim().toUpperCase();
-      if (!rowId || !symbol) continue;
+      if (!Number.isFinite(rowId) || rowId <= 0 || !symbol) continue;
 
-      const baseTime = new Date(row.created_at).getTime();
-      if (!Number.isFinite(baseTime)) continue;
+      const createdAt = new Date(row.created_at);
+      const baseTimeMs = createdAt.getTime();
+      if (!Number.isFinite(baseTimeMs)) continue;
 
-      // 2) Snapshots laden (aufsteigend)
-      const snapsRes = await pool.query(
-        `
-        SELECT price, created_at
-        FROM market_snapshots
-        WHERE symbol = $1
-        ORDER BY created_at ASC
-        `,
-        [symbol]
-      );
+      // 1) Basis-Zeitpunkt: created_at + MIN_DELAY
+      const baseSnapshotMinTime = new Date(baseTimeMs + toMsMinutes(MIN_DELAY_MINUTES));
+      const baseMinIso = toIso(baseSnapshotMinTime);
+      if (!baseMinIso) continue;
 
-      const snapshots = snapsRes.rows || [];
-      if (!snapshots.length) continue;
+      // 2) Basis-Snapshot finden
+      const baseSnap = await findFirstSnapshotAtOrAfter(symbol, baseMinIso);
+      if (!baseSnap) continue;
 
-      // 3) Basis-Snapshot finden:
-      //    - frühester Snapshot, der >= created_at + MIN_DELAY ist
-      const baseSnapshotMinTime = baseTime + toMs(MIN_DELAY_MINUTES);
+      const basePrice = Number(baseSnap.price);
+      const baseSnapTime = new Date(baseSnap.created_at);
+      const baseSnapMs = baseSnapTime.getTime();
 
-      const baseSnapshot = snapshots.find((s) => {
-        const t = new Date(s.created_at).getTime();
-        return Number.isFinite(t) && t >= baseSnapshotMinTime;
-      });
-
-      if (!baseSnapshot) continue;
-
-      const basePrice = Number(baseSnapshot.price);
       if (!Number.isFinite(basePrice) || basePrice <= 0) continue;
+      if (!Number.isFinite(baseSnapMs)) continue;
 
-      // 4) Ziel-Zeitpunkte
-      const t1h = baseTime + 1 * 60 * 60 * 1000;
-      const t1d = baseTime + 24 * 60 * 60 * 1000;
-      const t3d = baseTime + 72 * 60 * 60 * 1000;
+      // 3) Targets ab BASIS-SNAPSHOT (wichtig!)
+      const t1dIso = toIso(new Date(baseSnapMs + 24 * 60 * 60 * 1000));
+      const t3dIso = toIso(new Date(baseSnapMs + 72 * 60 * 60 * 1000));
+      if (!t1dIso || !t3dIso) continue;
 
-      // 5) Zielsnapshots suchen (erster Snapshot >= targetTime)
-      const snap1h = snapshots.find((s) => new Date(s.created_at).getTime() >= t1h);
-      const snap1d = snapshots.find((s) => new Date(s.created_at).getTime() >= t1d);
-      const snap3d = snapshots.find((s) => new Date(s.created_at).getTime() >= t3d);
+      const snap1d = await findFirstSnapshotAtOrAfter(symbol, t1dIso);
+      const snap3d = await findFirstSnapshotAtOrAfter(symbol, t3dIso);
 
-      // 6) Returns berechnen
-      const ret1h = snap1h ? percentChange(basePrice, Number(snap1h.price)) : null;
       const ret1d = snap1d ? percentChange(basePrice, Number(snap1d.price)) : null;
       const ret3d = snap3d ? percentChange(basePrice, Number(snap3d.price)) : null;
 
-      // 7) Schreiben:
-      // - 1d/3d via NEUEM Interface (rowId, forward1d, forward3d)
-      // - 1h optional via ALTEM Interface (symbol, 1, ret1h)
-      if (ret1d !== null || ret3d !== null) {
-        await updateForwardReturns(rowId, ret1d, ret3d);
-      }
+      // 4) Nur speichern wenn wir überhaupt was berechnen konnten
+      if (ret1d === null && ret3d === null) continue;
 
-      if (ret1h !== null) {
-        await updateForwardReturns(symbol, 1, ret1h);
-      }
+      await updateForwardReturns(rowId, ret1d, ret3d);
+      updated++;
+
+      logger.info("Forward learning updated", {
+        id: rowId,
+        symbol,
+        basePrice,
+        baseSnapAt: toIso(baseSnap.created_at),
+        ret1d,
+        ret3d,
+      });
     }
 
-    console.log("🧠 Forward Learning updated");
+    logger.info("Forward learning done", { updated });
+    return { updated };
   } catch (err) {
-    console.error("❌ Forward Learning Error:", err.message);
+    logger.error("Forward learning fatal", { message: err.message });
+    return { updated: 0, error: err.message };
   }
 }
 
