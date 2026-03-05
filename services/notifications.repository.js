@@ -59,6 +59,22 @@ async function initNotificationTables() {
     );
   `);
 
+  // ✅ Performance Indexe (safe)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_created
+    ON notifications(user_id, created_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_notifications_user_kind_created
+    ON notifications(user_id, kind, created_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_user_devices_user_active
+    ON user_devices(user_id, is_active);
+  `);
+
   if (logger?.info) logger.info("✅ notification tables ready");
 }
 
@@ -128,6 +144,113 @@ async function createNotification({ userId, title, body, kind = "daily_briefing"
     id: res.rows[0].id,
     createdAt: new Date(res.rows[0].created_at).toISOString(),
   };
+}
+
+/**
+ * ✅ NEW:
+ * verhindert Spam: pro user+kind nur 1 Notification pro Tag
+ * returns { inserted: boolean, id?, createdAt? }
+ */
+async function createNotificationOncePerDay({ userId, title, body, kind }) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return { inserted: false };
+
+  const k = String(kind || "daily_briefing");
+  const t = String(title || "").trim() || "Update";
+  const b = String(body || "").trim() || "";
+
+  // check: existiert heute schon eine?
+  const exists = await pool.query(
+    `
+    SELECT id
+    FROM notifications
+    WHERE user_id = $1
+      AND kind = $2
+      AND created_at >= date_trunc('day', NOW())
+    LIMIT 1
+    `,
+    [uid, k]
+  );
+
+  if (exists.rows.length) {
+    return { inserted: false, id: exists.rows[0].id };
+  }
+
+  const created = await createNotification({ userId: uid, title: t, body: b, kind: k });
+  return { inserted: true, ...created };
+}
+
+/**
+ * ✅ NEW:
+ * holt die letzte Notification eines Typs (für Debug/Frontend)
+ */
+async function getLatestNotificationByKind(userId, kind = "daily_briefing") {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return null;
+
+  const k = String(kind || "daily_briefing");
+
+  const res = await pool.query(
+    `
+    SELECT id, title, body, kind, is_read, created_at
+    FROM notifications
+    WHERE user_id = $1 AND kind = $2
+    ORDER BY created_at DESC
+    LIMIT 1
+    `,
+    [uid, k]
+  );
+
+  if (!res.rows.length) return null;
+
+  const r = res.rows[0];
+  return {
+    id: r.id,
+    title: r.title,
+    body: r.body,
+    kind: r.kind,
+    isRead: !!r.is_read,
+    createdAt: new Date(r.created_at).toISOString(),
+  };
+}
+
+/**
+ * ✅ NEW:
+ * Helper für Discovery Push/In-App Notification
+ * Erwartet discovery-Pick Objekt:
+ * { symbol, discoveryScore, confidence, reason, regime }
+ */
+async function createDiscoveryNotification({ userId, pick }) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return { inserted: false };
+
+  const sym = String(pick?.symbol || "").toUpperCase() || "Aktie";
+  const score = pick?.discoveryScore ?? pick?.opportunityScore ?? null;
+  const conf = pick?.confidence ?? null;
+  const reason = String(pick?.reason || "").trim();
+  const regime = pick?.regime ? String(pick.regime) : "neutral";
+
+  const title = `Hidden Winner Kandidat: ${sym}`;
+
+  const bodyLines = [
+    `Symbol: ${sym}`,
+    score !== null ? `Score: ${Number(score).toFixed(1)}` : null,
+    conf !== null ? `Sicherheit: ${Number(conf)} / 100` : null,
+    `Marktphase: ${regime}`,
+    reason ? `Warum: ${reason}` : null,
+    "",
+    "Hinweis: Keine Kauf-/Verkaufsempfehlung. Nur Analyse.",
+  ].filter(Boolean);
+
+  const body = bodyLines.join("\n");
+
+  // 1 pro Tag
+  return await createNotificationOncePerDay({
+    userId: uid,
+    title,
+    body,
+    kind: "discovery_pick",
+  });
 }
 
 async function listNotifications(userId, limit = 50) {
@@ -201,7 +324,12 @@ module.exports = {
   seedDemoUserIfEmpty,
   getActiveBriefingUsers,
   getUserWatchlistSymbols,
+
   createNotification,
+  createNotificationOncePerDay,      // ✅ new
+  getLatestNotificationByKind,       // ✅ new
+  createDiscoveryNotification,       // ✅ new
+
   listNotifications,
   unreadCount,
   markRead,
