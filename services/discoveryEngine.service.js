@@ -1,95 +1,144 @@
 "use strict";
 
 const { Pool } = require("pg");
+const logger = require("../utils/logger");
 
-let logger = null;
-try {
-  logger = require("../utils/logger");
-} catch (_) {
-  logger = null;
-}
+// ✅ nutzt dein neues Learning-System (7d/30d kompatibel)
+const { saveDiscovery } = require("./discoveryLearning.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
-/* =========================================================
-   TABLE INIT (AUTO)
-========================================================= */
+// Einstellungen
+const DEFAULT_LIMIT = Number(process.env.DISCOVERY_LIMIT || 10);
+// verhindert, dass du jeden Tag dieselben Symbole "neu" findest
+const COOLDOWN_DAYS = Number(process.env.DISCOVERY_COOLDOWN_DAYS || 7);
 
-async function ensureDiscoveryTablesExist() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS discovery_history (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      discovered_on DATE NOT NULL DEFAULT CURRENT_DATE,
-
-      discovery_score NUMERIC,
-      confidence INTEGER,
-      reason TEXT,
-
-      regime TEXT,
-      hqs_score NUMERIC,
-
-      price_at_discovery NUMERIC,
-
-      checked BOOLEAN NOT NULL DEFAULT FALSE,
-      return_7d NUMERIC,
-      return_30d NUMERIC,
-
-      created_at TIMESTAMP NOT NULL DEFAULT NOW()
-    );
-  `);
-
-  // Ein Symbol nur 1x pro Tag speichern
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_discovery_history_symbol_day
-    ON discovery_history(symbol, discovered_on);
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS ix_discovery_history_checked_created
-    ON discovery_history(checked, created_at);
-  `);
-
-  if (logger?.info) logger.info("discovery_history ready");
+function clamp(n, min, max) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return min;
+  return Math.max(min, Math.min(max, x));
 }
 
-/* =========================================================
-   HELPERS
-========================================================= */
+function safeNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
 
+// DB-Feldwerte bei dir sind teilweise 0..1 oder 0..100 je nach Tabelle.
+// Wir behandeln beides robust.
+function norm0to1(x) {
+  const n = safeNum(x, 0);
+  if (n > 1.5) return clamp(n / 100, 0, 1);
+  return clamp(n, 0, 1);
+}
+
+/**
+ * Hidden-Winner Score:
+ * - nicht kurzfristig "pump", sondern Wochen/Monate
+ * - Qualität/Stabilität wichtig
+ * - Trend + relative wichtig
+ * - Volatilität zieht ab
+ * - Momentum "sweet spot": nicht tot, nicht überhitzt
+ */
 function calculateDiscoveryScore(row) {
-  const hqs = Number(row.hqs_score || 0);
-  const momentum = Number(row.momentum || 0);
-  const relative = Number(row.relative || 0);
-  const trend = Number(row.trend || 0);
-  const volatility = Number(row.volatility || 0);
+  const hqs = safeNum(row.hqs_score, 0); // meist 0..100
+  const trend = safeNum(row.trend, 0); // z.B. 0.12
+  const vol = safeNum(row.volatility, 0); // annual
 
-  let score =
-    hqs * 0.5 +
-    momentum * 15 +
-    relative * 10 +
-    trend * 20 -
-    volatility * 5;
+  const momentum = norm0to1(row.momentum);
+  const quality = norm0to1(row.quality);
+  const stability = norm0to1(row.stability);
+  const relative = norm0to1(row.relative);
+
+  const regime = String(row.regime || "neutral").toLowerCase();
+
+  // Regime-aware Gewichte
+  let wTrend = 22;
+  let wMom = 14;
+  let wQual = 18;
+  let wStab = 18;
+  let wRel = 12;
+  let wVol = 10;
+
+  if (regime === "bull") {
+    wTrend = 26;
+    wMom = 16;
+    wVol = 8;
+  } else if (regime === "bear" || regime === "crash") {
+    wTrend = 16;
+    wMom = 10;
+    wQual = 22;
+    wStab = 22;
+    wVol = 14;
+  }
+
+  // Momentum-Sweet-Spot (Hidden Winner: noch nicht komplett gelaufen)
+  const momSweet =
+    momentum >= 0.45 && momentum <= 0.82 ? 1 :
+    momentum >= 0.35 && momentum <= 0.90 ? 0.6 : 0;
+
+  const score =
+    hqs * 0.35 +
+    (trend * wTrend) +
+    (momentum * wMom) +
+    (quality * wQual) +
+    (stability * wStab) +
+    (relative * wRel) +
+    (momSweet * 8) -
+    (vol * wVol);
 
   return Number(score.toFixed(2));
+}
+
+function buildConfidence(row, discoveryScore) {
+  const hqs = safeNum(row.hqs_score, 0);
+  const quality = norm0to1(row.quality);
+  const stability = norm0to1(row.stability);
+  const vol = safeNum(row.volatility, 0);
+  const trend = safeNum(row.trend, 0);
+
+  let c =
+    hqs * 0.35 +
+    quality * 25 +
+    stability * 25 +
+    (trend > 0 ? 10 : 0) -
+    vol * 18 +
+    clamp(discoveryScore, -20, 60) * 0.6;
+
+  return clamp(Math.round(c), 0, 100);
 }
 
 function generateReason(row) {
   const reasons = [];
 
-  if (Number(row.momentum) > 0.7) reasons.push("Momentum breakout");
-  if (Number(row.relative) > 0.7) reasons.push("Market outperformance");
-  if (Number(row.trend) > 0.6) reasons.push("Strong trend");
+  const quality = norm0to1(row.quality);
+  const stability = norm0to1(row.stability);
+  const relative = norm0to1(row.relative);
+  const momentum = norm0to1(row.momentum);
+  const trend = safeNum(row.trend, 0);
+  const vol = safeNum(row.volatility, 0);
 
-  if (!reasons.length) reasons.push("Improving fundamentals");
+  if (quality >= 0.65) reasons.push("gute Qualität");
+  if (stability >= 0.65) reasons.push("stabil");
+  if (relative >= 0.65) reasons.push("stärker als der Markt");
+  if (trend > 0.10) reasons.push("Trend nach oben");
 
-  return reasons.join(" + ");
+  // Hidden Hinweis
+  if (momentum >= 0.45 && momentum <= 0.82) reasons.push("noch nicht überhitzt");
+  if (vol > 0.9) reasons.push("aber schwankt stark");
+
+  if (!reasons.length) reasons.push("solide Werte");
+
+  // einfache Sprache (max 3 Punkte)
+  return reasons.slice(0, 3).join(" + ");
 }
 
 async function getCurrentPrice(symbol) {
+  const sym = String(symbol || "").trim().toUpperCase();
+
   const res = await pool.query(
     `
     SELECT price
@@ -98,7 +147,7 @@ async function getCurrentPrice(symbol) {
     ORDER BY created_at DESC
     LIMIT 1
     `,
-    [symbol]
+    [sym]
   );
 
   if (!res.rows.length) return null;
@@ -107,97 +156,122 @@ async function getCurrentPrice(symbol) {
   return Number.isFinite(p) ? p : null;
 }
 
-async function saveDiscovery(payload) {
-  const symbol = String(payload?.symbol || "").trim().toUpperCase();
-  if (!symbol) return;
+/**
+ * Cooldown: wenn Symbol in den letzten X Tagen bereits gespeichert ist -> skip
+ */
+async function wasRecentlyDiscovered(symbol, days) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  const d = Number(days);
+  if (!sym || !Number.isFinite(d) || d <= 0) return false;
 
-  const discoveryScore = Number(payload?.discoveryScore);
-  const confidence = Number(payload?.confidence);
-  const reason = String(payload?.reason || "");
-  const regime = payload?.regime ? String(payload.regime) : null;
-  const hqsScore = Number(payload?.hqsScore);
-
-  const priceNow = await getCurrentPrice(symbol);
-
-  // Speichere pro Tag nur einmal je Symbol (Upsert)
-  await pool.query(
+  const res = await pool.query(
     `
-    INSERT INTO discovery_history
-      (symbol, discovered_on, discovery_score, confidence, reason, regime, hqs_score, price_at_discovery)
-    VALUES
-      ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7)
-    ON CONFLICT(symbol, discovered_on) DO UPDATE SET
-      discovery_score = EXCLUDED.discovery_score,
-      confidence      = EXCLUDED.confidence,
-      reason          = EXCLUDED.reason,
-      regime          = EXCLUDED.regime,
-      hqs_score       = EXCLUDED.hqs_score,
-      price_at_discovery = COALESCE(EXCLUDED.price_at_discovery, discovery_history.price_at_discovery)
+    SELECT 1
+    FROM discovery_history
+    WHERE symbol = $1
+      AND created_at > NOW() - ($2 || ' days')::interval
+    LIMIT 1
     `,
-    [
-      symbol,
-      Number.isFinite(discoveryScore) ? discoveryScore : null,
-      Number.isFinite(confidence) ? confidence : null,
-      reason || null,
-      regime,
-      Number.isFinite(hqsScore) ? hqsScore : null,
-      Number.isFinite(priceNow) ? priceNow : null,
-    ]
+    [sym, String(d)]
   );
+
+  return !!res.rows.length;
 }
 
 /* =========================================================
    MAIN: DISCOVER
 ========================================================= */
 
-async function discoverStocks(limit = 10) {
-  await ensureDiscoveryTablesExist();
+async function discoverStocks(limit = DEFAULT_LIMIT) {
+  const lim = clamp(Number(limit) || DEFAULT_LIMIT, 1, 25);
 
+  // DB-first: wir nutzen market_advanced_metrics (wie bisher)
+  // aber holen mehr Felder, falls vorhanden (quality/stability)
   const result = await pool.query(`
     SELECT
       symbol,
       hqs_score,
       momentum,
+      quality,
+      stability,
       relative,
       trend,
       volatility,
       regime
     FROM market_advanced_metrics
     ORDER BY trend DESC
-    LIMIT 100
+    LIMIT 200
   `);
 
   const rows = result.rows || [];
 
-  const discoveries = rows.map((row) => {
-    const discoveryScore = calculateDiscoveryScore(row);
+  // Hard Filter (Wochen/Monate, nicht 1-Tages-Hype)
+  const filtered = rows.filter((row) => {
+    const hqs = safeNum(row.hqs_score, 0);
+    const q = norm0to1(row.quality);
+    const s = norm0to1(row.stability);
+    const vol = safeNum(row.volatility, 0);
 
-    return {
-      symbol: row.symbol,
-      regime: row.regime,
-      hqsScore: Number(row.hqs_score || 0),
-      discoveryScore,
-      confidence: Math.min(100, Math.max(0, Math.round(discoveryScore * 0.9))),
-      reason: generateReason(row),
-    };
+    if (hqs < 55) return false;
+    if (q < 0.45) return false;
+    if (s < 0.45) return false;
+    if (vol > 1.6) return false; // zu wild
+
+    return true;
   });
 
-  discoveries.sort((a, b) => b.discoveryScore - a.discoveryScore);
+  const discoveries = [];
 
-  const top = discoveries.slice(0, limit);
+  for (const row of filtered) {
+    const discoveryScore = calculateDiscoveryScore(row);
+    const confidence = buildConfidence(row, discoveryScore);
+    const reason = generateReason(row);
 
-  // ✅ SAVE to DB (discovery_history)
-  for (const d of top) {
+    discoveries.push({
+      symbol: String(row.symbol || "").toUpperCase(),
+      regime: row.regime ?? null,
+      hqsScore: safeNum(row.hqs_score, 0),
+      discoveryScore,
+      confidence,
+      reason,
+    });
+  }
+
+  // Ranking (Score + Confidence)
+  discoveries.sort((a, b) => (b.discoveryScore * 0.7 + b.confidence * 0.3) - (a.discoveryScore * 0.7 + a.confidence * 0.3));
+
+  // Cooldown rausfiltern (damit es wirklich "neu" bleibt)
+  const final = [];
+  for (const d of discoveries) {
+    if (final.length >= lim) break;
+
     try {
-      await saveDiscovery(d);
+      const recent = await wasRecentlyDiscovered(d.symbol, COOLDOWN_DAYS);
+      if (recent) continue;
+    } catch (_) {
+      // wenn check fehlschlägt: nicht killen
+    }
+
+    final.push(d);
+  }
+
+  // Save: in discovery_history mit Preis
+  let saved = 0;
+  for (const d of final) {
+    try {
+      const priceNow = await getCurrentPrice(d.symbol);
+      if (priceNow !== null) {
+        await saveDiscovery(d.symbol, d.discoveryScore, priceNow);
+        saved++;
+      }
     } catch (e) {
-      if (logger?.warn) logger.warn("saveDiscovery failed", { symbol: d.symbol, message: e.message });
+      logger.warn("saveDiscovery failed", { symbol: d.symbol, message: e.message });
     }
   }
 
-  if (logger?.info) logger.info("discoverStocks done", { limit, saved: top.length });
+  logger.info("discoverStocks done", { requested: lim, returned: final.length, saved, cooldownDays: COOLDOWN_DAYS });
 
-  return top;
+  return final;
 }
 
 module.exports = {
