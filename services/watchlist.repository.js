@@ -22,34 +22,61 @@ async function initWatchlistTable() {
     );
   `);
 
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_watchlist_active
+    ON watchlist_symbols(is_active, priority, symbol);
+  `);
+
   if (logger?.info) logger.info("watchlist_symbols ready");
 }
 
-async function seedDefaultWatchlist() {
-  // Seed nur wenn noch leer
-  const res = await pool.query(`SELECT COUNT(*)::int AS c FROM watchlist_symbols;`);
-  if ((res.rows?.[0]?.c ?? 0) > 0) return;
+function parseSymbolsFromEnv() {
+  // Unterstützt: "AAPL,MSFT,NVDA" ODER Zeilen ODER Semikolon
+  const raw = String(process.env.SYMBOLS || "").trim();
+  if (!raw) return [];
 
-  const defaults = [
-    ["AAPL", true, 10, "us"],
-    ["MSFT", true, 20, "us"],
-    ["NVDA", true, 30, "us"],
-    ["AMD",  true, 40, "us"],
-  ];
+  const parts = raw
+    .split(/[\n,;]+/g)
+    .map((s) => String(s || "").trim().toUpperCase())
+    .filter(Boolean);
 
-  for (const [symbol, is_active, priority, region] of defaults) {
-    await pool.query(
-      `INSERT INTO watchlist_symbols(symbol, is_active, priority, region)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT(symbol) DO NOTHING`,
-      [symbol, is_active, priority, region]
-    );
-  }
-
-  if (logger?.info) logger.info("watchlist_symbols seeded");
+  // unique
+  return [...new Set(parts)];
 }
 
-async function getActiveWatchlistSymbols(limit = 200) {
+async function seedDefaultWatchlist() {
+  // Wenn schon was drin ist -> nix überschreiben
+  const r = await pool.query(`SELECT COUNT(*)::int AS c FROM watchlist_symbols;`);
+  if ((r.rows?.[0]?.c ?? 0) > 0) {
+    if (logger?.info) logger.info("watchlist already seeded", { count: r.rows[0].c });
+    return;
+  }
+
+  // 1) Wenn SYMBOLS gesetzt -> nimm die
+  const envSymbols = parseSymbolsFromEnv();
+
+  // 2) Fallback
+  const defaults = envSymbols.length ? envSymbols : ["AAPL", "MSFT", "NVDA", "AMD"];
+
+  let prio = 10;
+  for (const sym of defaults) {
+    await pool.query(
+      `
+      INSERT INTO watchlist_symbols(symbol, is_active, priority, region)
+      VALUES ($1, TRUE, $2, 'us')
+      ON CONFLICT(symbol) DO NOTHING
+      `,
+      [sym, prio]
+    );
+    prio += 10;
+  }
+
+  if (logger?.info) logger.info("watchlist seeded", { count: defaults.length, usedEnv: envSymbols.length > 0 });
+}
+
+async function getActiveWatchlistSymbols(limit = 250) {
+  const lim = Math.max(1, Math.min(Number(limit) || 250, 2000));
+
   const res = await pool.query(
     `
     SELECT symbol
@@ -58,10 +85,10 @@ async function getActiveWatchlistSymbols(limit = 200) {
     ORDER BY priority ASC, symbol ASC
     LIMIT $1
     `,
-    [limit]
+    [lim]
   );
 
-  return res.rows.map(r => String(r.symbol).toUpperCase());
+  return res.rows.map((r) => String(r.symbol).toUpperCase());
 }
 
 module.exports = {
