@@ -12,7 +12,10 @@
     "dev": "node --watch server.js",
 
     "job:daily-briefing": "node jobs/dailyBriefing.job.js",
-    "job:daily-briefing:check": "node --check jobs/dailyBriefing.job.js"
+    "job:daily-briefing:check": "node --check jobs/dailyBriefing.job.js",
+
+    "job:discovery-notify": "node jobs/discoveryNotify.job.js",
+    "job:discovery-notify:check": "node --check jobs/discoveryNotify.job.js"
   },
   "engines": {
     "node": ">=18 <23"
