@@ -35,6 +35,32 @@ function norm0to1(x) {
   return clamp(n, 0, 1);
 }
 
+/* =========================================================
+   TABLE INIT (SAFE)
+   - Needed for cooldown checks
+   - Creates only if missing (does not break existing table)
+========================================================= */
+async function ensureDiscoveryHistoryTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS discovery_history (
+      id SERIAL PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      discovery_score NUMERIC,
+      price_at_discovery NUMERIC,
+      created_at TIMESTAMP DEFAULT NOW(),
+      checked BOOLEAN DEFAULT FALSE,
+      return_7d NUMERIC,
+      return_30d NUMERIC
+    );
+  `);
+
+  // Optional: Index for cooldown + checks
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_discovery_history_symbol_created
+    ON discovery_history(symbol, created_at DESC);
+  `);
+}
+
 /**
  * Hidden-Winner Score:
  * - nicht kurzfristig "pump", sondern Wochen/Monate
@@ -180,26 +206,37 @@ async function wasRecentlyDiscovered(symbol, days) {
 
 /* =========================================================
    MAIN: DISCOVER
+   ✅ FIX: market_advanced_metrics hat kein hqs_score/quality/stability
+      -> kommt aus hqs_scores (latest row)
 ========================================================= */
 
 async function discoverStocks(limit = DEFAULT_LIMIT) {
+  await ensureDiscoveryHistoryTable();
+
   const lim = clamp(Number(limit) || DEFAULT_LIMIT, 1, 25);
 
-  // DB-first: wir nutzen market_advanced_metrics (wie bisher)
-  // aber holen mehr Felder, falls vorhanden (quality/stability)
+  // ✅ FIXED QUERY: Advanced (trend/vol/regime) + latest HQS metrics
   const result = await pool.query(`
     SELECT
-      symbol,
-      hqs_score,
-      momentum,
-      quality,
-      stability,
-      relative,
-      trend,
-      volatility,
-      regime
-    FROM market_advanced_metrics
-    ORDER BY trend DESC
+      m.symbol,
+      m.regime,
+      m.trend,
+      m.volatility_annual AS volatility,
+
+      h.hqs_score,
+      h.momentum,
+      h.quality,
+      h.stability,
+      h.relative
+    FROM market_advanced_metrics m
+    LEFT JOIN LATERAL (
+      SELECT hqs_score, momentum, quality, stability, relative
+      FROM hqs_scores
+      WHERE symbol = m.symbol
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) h ON TRUE
+    ORDER BY m.trend DESC
     LIMIT 200
   `);
 
@@ -238,7 +275,11 @@ async function discoverStocks(limit = DEFAULT_LIMIT) {
   }
 
   // Ranking (Score + Confidence)
-  discoveries.sort((a, b) => (b.discoveryScore * 0.7 + b.confidence * 0.3) - (a.discoveryScore * 0.7 + a.confidence * 0.3));
+  discoveries.sort(
+    (a, b) =>
+      (b.discoveryScore * 0.7 + b.confidence * 0.3) -
+      (a.discoveryScore * 0.7 + a.confidence * 0.3)
+  );
 
   // Cooldown rausfiltern (damit es wirklich "neu" bleibt)
   const final = [];
@@ -269,7 +310,12 @@ async function discoverStocks(limit = DEFAULT_LIMIT) {
     }
   }
 
-  logger.info("discoverStocks done", { requested: lim, returned: final.length, saved, cooldownDays: COOLDOWN_DAYS });
+  logger.info("discoverStocks done", {
+    requested: lim,
+    returned: final.length,
+    saved,
+    cooldownDays: COOLDOWN_DAYS,
+  });
 
   return final;
 }
