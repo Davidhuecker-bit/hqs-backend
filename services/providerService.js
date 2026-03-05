@@ -3,6 +3,7 @@
 // services/providerService.js
 // HQS Massive Provider (Primary Source)
 // Clean, normalized, snapshot-ready
+// ✅ Enterprise-safe: retry, backoff, better error logs (no API key leak)
 
 const axios = require("axios");
 
@@ -31,11 +32,47 @@ function num(x, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function hasNum(x) {
+  return x !== null && x !== undefined && Number.isFinite(Number(x));
+}
+
 function calcChangesPercentage(price, previousClose) {
-  const p = num(price);
-  const prev = num(previousClose);
-  if (!p || !prev) return null;
+  const p = num(price, null);
+  const prev = num(previousClose, null);
+  if (!hasNum(p) || !hasNum(prev) || Number(prev) === 0) return null;
   return ((p - prev) / prev) * 100;
+}
+
+// ============================
+// AXIOS INSTANCE
+// ============================
+
+const http = axios.create({
+  timeout: 15000,
+  headers: {
+    "User-Agent": "HQS-Backend/1.0",
+    Accept: "application/json",
+  },
+});
+
+// backoff helper
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function shouldRetry(err) {
+  const status = err?.response?.status;
+  if (!status) {
+    // network / timeout / dns
+    return true;
+  }
+  // retry on rate limit and server errors
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+function safeUrlWithoutKey(url) {
+  // remove apiKey from logs
+  return String(url || "").replace(/apiKey=[^&]+/i, "apiKey=***");
 }
 
 // ============================
@@ -51,12 +88,12 @@ function normalizeMassiveData(raw, symbolFallback) {
   const open = num(raw?.o, null);
 
   // We don't truly have previousClose from "prev" unless provider gives it.
-  // Best approximation: previous close ≈ open (same session) if nothing else.
-  // If your provider has a better field for previous close, swap it here.
-  const previousClose = open ?? close;
+  // fallback: open, else close
+  const previousClose = open !== null ? open : close;
 
   const changesPercentage = calcChangesPercentage(close, previousClose);
-  const change = (close !== null && previousClose !== null) ? close - previousClose : null;
+  const change =
+    hasNum(close) && hasNum(previousClose) ? Number(close) - Number(previousClose) : null;
 
   return {
     symbol,
@@ -89,20 +126,47 @@ async function fetchFromMassive(symbol) {
     sym
   )}/prev?apiKey=${MASSIVE_API_KEY}`;
 
-  const response = await axios.get(url, { timeout: 15000 });
+  const maxTries = Number(process.env.MASSIVE_RETRIES || 3);
 
-  const data = response?.data;
-  if (!data || data.status !== "OK") {
-    throw new Error(`Massive response not OK (${data?.status || "no status"})`);
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    try {
+      const response = await http.get(url);
+      const data = response?.data;
+
+      const status = String(data?.status || "").toUpperCase();
+
+      if (!data || status !== "OK") {
+        throw new Error(`Massive response not OK (${data?.status || "no status"})`);
+      }
+
+      if (!Array.isArray(data.results) || data.results.length === 0) {
+        throw new Error("Massive returned empty results");
+      }
+
+      const normalized = normalizeMassiveData(data.results[0], sym);
+      return [normalized];
+    } catch (err) {
+      const status = err?.response?.status;
+      const msg = `Massive fetch failed (attempt ${attempt}/${maxTries}) for ${sym}: ${err.message}`;
+
+      if (logger?.warn) {
+        logger.warn(msg, {
+          status: status ?? null,
+          url: safeUrlWithoutKey(url),
+        });
+      } else {
+        console.warn("⚠️ " + msg);
+      }
+
+      const retry = attempt < maxTries && shouldRetry(err);
+      if (!retry) throw err;
+
+      // simple backoff
+      await sleep(400 * attempt);
+    }
   }
 
-  if (!Array.isArray(data.results) || data.results.length === 0) {
-    throw new Error("Massive returned empty results");
-  }
-
-  const normalized = normalizeMassiveData(data.results[0], sym);
-
-  return [normalized];
+  throw new Error("Massive fetch failed after retries");
 }
 
 // ============================
