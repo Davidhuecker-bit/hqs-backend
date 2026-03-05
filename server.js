@@ -31,7 +31,7 @@ const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
-const { acquireLock } = require("./services/jobLock.repository");
+const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
 
 /* =========================================================
    NEW ENGINES
@@ -39,6 +39,12 @@ const { acquireLock } = require("./services/jobLock.repository");
 
 const opportunitiesRoutes = require("./routes/opportunities.routes");
 const discoveryRoutes = require("./routes/discovery.routes");
+
+/* =========================================================
+   DISCOVERY (Learning DB)
+========================================================= */
+
+const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
 
 /* =========================================================
    NOTIFICATIONS
@@ -79,9 +85,7 @@ app.use(express.json());
 ========================================================= */
 
 app.use("/api/notifications", notificationsRoutes);
-
 app.use("/api/opportunities", opportunitiesRoutes);
-
 app.use("/api/discovery", discoveryRoutes);
 
 /* =========================================================
@@ -381,6 +385,10 @@ app.listen(PORT, async () => {
     await ensureTablesExist();
     await initFactorTable();
     await initWeightTable();
+
+    // ✅ Locks + Discovery Tables immer sicherstellen
+    await initJobLocksTable();
+    await initDiscoveryTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
