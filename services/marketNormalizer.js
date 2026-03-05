@@ -5,13 +5,14 @@
  * - robust numeric parsing
  * - calculates change + changesPercentage if missing
  * - consistent null checks (no falsy-bugs)
+ * - ✅ NEW: optional fields (marketCap, name, currency, avgVolume) for better discovery/UI
  */
 
 function toNumberOrNull(value) {
   if (value === null || value === undefined) return null;
 
   if (typeof value === "string") {
-    const cleaned = value.replace("%", "").replace(",", ".");
+    const cleaned = value.replace("%", "").replace(",", ".").trim();
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : null;
   }
@@ -34,10 +35,18 @@ function calculateChange(price, previousClose) {
   return Number(price) - Number(previousClose);
 }
 
+function toTextOrNull(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
 function normalizeMarketData(raw, source, region) {
   if (!raw || typeof raw !== "object") return null;
 
-  const symbol = String(raw.symbol || raw.ticker || raw.T || "")
+  const symbol = String(
+    raw.symbol || raw.ticker || raw.T || raw.S || raw.sym || ""
+  )
     .trim()
     .toUpperCase();
 
@@ -68,9 +77,15 @@ function normalizeMarketData(raw, source, region) {
     change = (Number(previousClose) * Number(changesPercentage)) / 100;
   }
 
+  // ✅ extra optional fields (if provider has them)
+  const marketCap = toNumberOrNull(raw.marketCap ?? raw.mktCap ?? raw.market_cap);
+  const avgVolume = toNumberOrNull(raw.avgVolume ?? raw.avgVol ?? raw.averageVolume ?? raw.average_volume);
+  const currency = toTextOrNull(raw.currency ?? raw.curr);
+  const name = toTextOrNull(raw.name ?? raw.companyName ?? raw.company_name);
+
   return {
     symbol,
-    exchange: String(raw.exchange || raw.market || "").trim() || null,
+    exchange: toTextOrNull(raw.exchange || raw.market) || null,
     region: String(region || "unknown"),
 
     price,
@@ -83,6 +98,11 @@ function normalizeMarketData(raw, source, region) {
     previousClose,
 
     volume: toNumberOrNull(raw.volume ?? raw.v),
+    avgVolume,
+
+    marketCap,
+    currency,
+    name,
 
     timestamp: new Date().toISOString(),
     source: String(source || "unknown"),
