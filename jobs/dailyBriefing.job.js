@@ -9,11 +9,19 @@ const { getMarketData } = require("../services/marketService");
 const {
   getActiveBriefingUsers,
   getUserWatchlistSymbols,
-  createNotification,
+  createNotificationOncePerDay, // ✅ NEW (anti spam)
 } = require("../services/notifications.repository");
 
 // ✅ OpenAI
 const { generateBriefingText } = require("../services/openai.service");
+
+// ✅ NEW: Discovery (Hidden Winner)
+let discoverStocks = null;
+try {
+  ({ discoverStocks } = require("../services/discoveryEngine.service"));
+} catch (_) {
+  discoverStocks = null;
+}
 
 function buildFactsFromMarket(stocks) {
   const lines = [];
@@ -35,6 +43,25 @@ function buildFactsFromMarket(stocks) {
   return lines.join("\n");
 }
 
+function buildHiddenWinnerBlock(pick) {
+  if (!pick) return "";
+
+  const sym = String(pick.symbol || "").toUpperCase();
+  const conf = pick.confidence !== null && pick.confidence !== undefined ? `${pick.confidence}/100` : "unbekannt";
+  const reason = pick.reason ? String(pick.reason) : "unbekannt";
+  const regime = pick.regime ? String(pick.regime) : "neutral";
+
+  return `
+HIDDEN WINNER (Wochen/Monate):
+- Kandidat: ${sym}
+- Sicherheit: ${conf}
+- Marktphase: ${regime}
+- Warum: ${reason}
+
+Hinweis: Keine Kauf-/Verkaufsempfehlung. Nur Analyse.
+`.trim();
+}
+
 async function runDailyBriefing() {
   const won = await acquireLock("daily_briefing_job", 15 * 60);
   if (!won) {
@@ -43,6 +70,18 @@ async function runDailyBriefing() {
   }
 
   logger.info("Daily briefing job started");
+
+  // ✅ Discovery einmalig erzeugen (nicht pro User)
+  let hiddenWinner = null;
+  if (typeof discoverStocks === "function") {
+    try {
+      const picks = await discoverStocks(1);
+      hiddenWinner = Array.isArray(picks) && picks[0] ? picks[0] : null;
+      if (hiddenWinner) logger.info("Hidden winner pick loaded", { symbol: hiddenWinner.symbol });
+    } catch (e) {
+      logger.warn("Hidden winner pick failed (ignored)", { message: e.message });
+    }
+  }
 
   // 1) Aktive User laden
   const users = await getActiveBriefingUsers(500);
@@ -53,6 +92,7 @@ async function runDailyBriefing() {
 
   let createdCount = 0;
   let skippedCount = 0;
+  let alreadyToday = 0;
 
   for (const u of users) {
     try {
@@ -94,16 +134,24 @@ async function runDailyBriefing() {
       const titleMatch = text.match(/^TITEL:\s*(.+)$/m);
       const title = titleMatch ? titleMatch[1].trim() : "Dein Morgen-Update";
 
-      // 6) In-App Notification speichern
-      await createNotification({
+      // ✅ NEW: Hidden Winner Block anhängen (wenn vorhanden)
+      const body = hiddenWinner ? `${text}\n\n${buildHiddenWinnerBlock(hiddenWinner)}` : text;
+
+      // ✅ 6) In-App Notification speichern (nur 1x pro Tag pro User)
+      const created = await createNotificationOncePerDay({
         userId,
         title,
-        body: text,
+        body,
         kind: "daily_briefing",
       });
 
-      createdCount++;
-      logger.info("Daily briefing created", { userId });
+      if (created.inserted) {
+        createdCount++;
+        logger.info("Daily briefing created", { userId });
+      } else {
+        alreadyToday++;
+        logger.info("Daily briefing skipped (already today)", { userId });
+      }
     } catch (e) {
       // Wichtig: pro User abfangen, damit Job weiterläuft
       logger.error("Daily briefing user failed", {
@@ -116,6 +164,7 @@ async function runDailyBriefing() {
   logger.info("Daily briefing job finished", {
     created: createdCount,
     skipped: skippedCount,
+    alreadyToday,
     users: users.length,
   });
 }
