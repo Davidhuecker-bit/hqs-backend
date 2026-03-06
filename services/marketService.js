@@ -8,8 +8,9 @@
   - Watchlist aus DB (watchlist_symbols)
   - Job Locking (job_locks) gegen Doppel-Snapshots
   - Historical optional (DELAYED safe via historicalService)
-  - ✅ NEW: Multi-Horizon Scenarios (30/90/180/252d) für Wochen/Monate-Discovery
-  - ✅ NEW: HIST_PERIOD env (1y/max) -> 5 Jahre möglich
+  - ✅ Multi-Horizon Scenarios (30/90/180/252d)
+  - ✅ HIST_PERIOD env (1y/max)
+  - ✅ NEW: Snapshot kann batchweise aus Universe scannen (Cursor)
 */
 
 const { fetchQuote } = require("./providerService");
@@ -37,6 +38,9 @@ const {
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 
+// ✅ Universe (Symbol-Liste + Cursor Batch)
+const { initUniverseTables, getUniverseBatch } = require("./universe.repository");
+
 const logger = require("../utils/logger");
 
 const { Pool } = require("pg");
@@ -46,11 +50,17 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ✅ Historical Period (du kannst auf "max" stellen für 5 Jahre)
+// ✅ Historical Period (1y/max)
 const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 
-// MonteCarlo Simulationen pro Symbol (mehr = genauer, aber teurer)
+// MonteCarlo Simulationen pro Symbol
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
+
+// ✅ Batch Size für Universe Scan
+const SNAPSHOT_BATCH_SIZE = Number(process.env.SNAPSHOT_BATCH_SIZE || 150);
+
+// ✅ Snapshot Quelle: "universe" oder "watchlist"
+const SNAPSHOT_SOURCE = String(process.env.SNAPSHOT_SOURCE || "watchlist").toLowerCase();
 
 function safeNum(v, fallback = 0) {
   const n = Number(v);
@@ -90,11 +100,14 @@ async function ensureTablesExist() {
     );
   `);
 
-  // ✅ NEW TABLES (deine bestehenden initializations)
+  // Existing init chain
   await initAdvancedMetricsTable();
   await initJobLocksTable();
   await initWatchlistTable();
   await seedDefaultWatchlist();
+
+  // ✅ Universe init (wichtig, sonst gibt's keine Tabelle & keinen Cursor)
+  await initUniverseTables();
 
   logger.info("Tables ensured");
 }
@@ -143,8 +156,7 @@ async function loadLatestHqsScore(symbol) {
 }
 
 /* =========================================================
-   NEW: MULTI HORIZON SCENARIOS
-   - 30 / 90 / 180 / 252 Tage (Wochen/Monate)
+   MULTI HORIZON SCENARIOS
 ========================================================= */
 
 function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
@@ -161,7 +173,6 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
   const h180 = monteCarloSimulation(price0, drift, sig, 180, sim);
   const h252 = monteCarloSimulation(price0, drift, sig, 252, sim);
 
-  // Wir speichern ein klares Format für Discovery (Forecast)
   return {
     horizons: {
       "30": { base: h30.realistic, bull: h30.optimistic, bear: h30.pessimistic },
@@ -179,13 +190,11 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
 
 /* =========================================================
    SNAPSHOT + HQS PIPELINE
-   - uses DB watchlist
-   - computes advanced metrics ONCE and stores to DB
    - locked against duplicates
+   - ✅ optional Universe Batch Scan (Cursor)
 ========================================================= */
 
 async function buildMarketSnapshot() {
-  // ✅ Locking gegen Doppel-Jobs (Deploy/Restart)
   const won = await acquireLock("snapshot_job", 12 * 60); // 12 min TTL
   if (!won) {
     logger.warn("Snapshot job skipped (lock held)");
@@ -194,13 +203,34 @@ async function buildMarketSnapshot() {
 
   logger.info("Building market snapshot...");
 
-  const watchlist = await getActiveWatchlistSymbols(250);
-  if (!watchlist.length) {
-    logger.warn("No active watchlist symbols found");
+  // ✅ Entscheidet ob Universe oder Watchlist
+  let symbols = [];
+  if (SNAPSHOT_SOURCE === "universe") {
+    const batch = await getUniverseBatch(SNAPSHOT_BATCH_SIZE);
+    symbols = batch.symbols;
+
+    logger.info("Snapshot source = universe", {
+      batchSize: symbols.length,
+      cursor: batch.cursor,
+      nextCursor: batch.nextCursor,
+    });
+  } else {
+    symbols = await getActiveWatchlistSymbols(250);
+    logger.info("Snapshot source = watchlist", { count: symbols.length });
+  }
+
+  if (!symbols.length) {
+    logger.warn("No symbols found for snapshot run", {
+      SNAPSHOT_SOURCE,
+      hint:
+        SNAPSHOT_SOURCE === "universe"
+          ? "universe_symbols ist leer -> erst universeRefresh ausführen"
+          : "watchlist leer/disabled",
+    });
     return;
   }
 
-  for (const symbol of watchlist) {
+  for (const symbol of symbols) {
     try {
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) continue;
@@ -208,18 +238,12 @@ async function buildMarketSnapshot() {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
-      // -----------------------------------------------------
-      // DEFAULTS (HISTORICAL OPTIONAL)
-      // -----------------------------------------------------
       let trendData = null;
       let scenarios = null;
 
       let regime = "neutral";
       let adaptiveWeights = await computeAdaptiveWeights(regime);
 
-      // -----------------------------------------------------
-      // TRY HISTORICAL -> compute & persist advanced metrics
-      // -----------------------------------------------------
       try {
         const historical = await getHistoricalPrices(symbol, HIST_PERIOD);
 
@@ -230,12 +254,9 @@ async function buildMarketSnapshot() {
         if (prices.length >= 30) {
           trendData = buildTrendScore(prices);
 
-          // Regime expects annual volatility
           regime = detectMarketRegime(trendData.trend, trendData.volatilityAnnual);
-
           adaptiveWeights = await computeAdaptiveWeights(regime);
 
-          // ✅ NEW: Multi-Horizon scenarios (Wochen/Monate)
           scenarios = buildMultiHorizonScenarios(
             prices[0],
             trendData.trend,
@@ -243,7 +264,6 @@ async function buildMarketSnapshot() {
             MC_SIMS
           );
 
-          // ✅ STORE ADVANCED METRICS DB-FIRST
           await upsertAdvancedMetrics(symbol, {
             regime,
             trend: trendData.trend,
@@ -266,14 +286,8 @@ async function buildMarketSnapshot() {
         });
       }
 
-      // -----------------------------------------------------
-      // HQS ALWAYS RUNS
-      // -----------------------------------------------------
       const hqs = await buildHQSResponse(normalized, 0, adaptiveWeights, regime);
 
-      // -----------------------------------------------------
-      // SAVE SNAPSHOT
-      // -----------------------------------------------------
       await pool.query(
         `
         INSERT INTO market_snapshots
@@ -291,9 +305,6 @@ async function buildMarketSnapshot() {
         ]
       );
 
-      // -----------------------------------------------------
-      // SAVE HQS SCORE
-      // -----------------------------------------------------
       await pool.query(
         `
         INSERT INTO hqs_scores
@@ -332,6 +343,7 @@ async function buildMarketSnapshot() {
 
 /* =========================================================
    MARKET DATA (DB-FIRST HQS + DB-FIRST ADVANCED)
+   - bleibt bewusst Watchlist/Symbol basiert (UI/Users)
 ========================================================= */
 
 async function getMarketData(symbol) {
@@ -349,25 +361,16 @@ async function getMarketData(symbol) {
       const normalized = normalizeMarketData(raw[0], "massive", "us");
       if (!normalized) continue;
 
-      // -----------------------
-      // DB-first HQS
-      // -----------------------
       const cached = await loadLatestHqsScore(s);
       if (cached) Object.assign(normalized, cached);
 
-      // -----------------------
-      // DB-first Advanced Metrics
-      // -----------------------
       const adv = await loadAdvancedMetrics(s);
 
       if (adv) {
         normalized.regime = normalized.regime ?? adv.regime ?? null;
         normalized.trend = adv.trend ?? null;
-
-        // frontend-friendly naming
         normalized.volatility = adv.volatility ?? null;
         normalized.volatilityDaily = adv.volatilityDaily ?? null;
-
         normalized.scenarios = adv.scenarios ?? null;
         normalized.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
       } else {
