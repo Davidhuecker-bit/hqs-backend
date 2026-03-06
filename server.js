@@ -70,6 +70,9 @@ const {
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// ✅ MAIN-SWITCH: Jobs im API-Server nur wenn RUN_JOBS=true
+const RUN_JOBS = String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
+
 app.use(
   cors({
     origin: [
@@ -381,11 +384,10 @@ async function runForwardLearningLocked() {
 }
 
 /* =========================================================
-   UNIVERSE REFRESH RUNNER (1x/Tag)
+   UNIVERSE REFRESH RUNNER (optional)
 ========================================================= */
 
 async function runUniverseRefreshLocked() {
-  // 2h TTL gegen Doppel-Starts
   const won = await acquireLock("universe_refresh_job", 2 * 60 * 60);
   if (!won) {
     logger.warn("Universe refresh skipped (lock held)");
@@ -408,29 +410,48 @@ app.listen(PORT, async () => {
     await initFactorTable();
     await initWeightTable();
 
-    // ✅ Locks + Discovery Tables immer sicherstellen
     await initJobLocksTable();
     await initDiscoveryTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
 
-    // ✅ Universe 1x beim Start aktualisieren (wenn Key vorhanden)
-    // Wenn FMP_API_KEY fehlt, läuft der Rest trotzdem weiter.
-    try {
-      if (process.env.FMP_API_KEY) {
-        await runUniverseRefreshLocked();
-      } else {
-        logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
-      }
-    } catch (uErr) {
-      logger.warn("Universe refresh failed on startup (continuing)", {
-        message: uErr.message,
-      });
-    }
+    // ✅ Jobs im API-Server nur wenn RUN_JOBS=true
+    if (RUN_JOBS) {
+      logger.info("RUN_JOBS=true -> starting background jobs inside API server");
 
-    await buildMarketSnapshot();
-    await runForwardLearningLocked();
+      // optional: universe refresh on startup
+      try {
+        if (process.env.FMP_API_KEY) {
+          await runUniverseRefreshLocked();
+        } else {
+          logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
+        }
+      } catch (uErr) {
+        logger.warn("Universe refresh failed on startup (continuing)", {
+          message: uErr.message,
+        });
+      }
+
+      await buildMarketSnapshot();
+      await runForwardLearningLocked();
+
+      // warmup interval only when RUN_JOBS=true
+      setInterval(async () => {
+        try {
+          await buildMarketSnapshot();
+          await runForwardLearningLocked();
+          logger.info("Warmup executed");
+        } catch (err) {
+          logger.error("Warmup Fehler", { message: err.message });
+        }
+      }, 15 * 60 * 1000);
+
+      // daily universe scheduler only when RUN_JOBS=true
+      scheduleDailyUniverseRefresh();
+    } else {
+      logger.info("RUN_JOBS=false -> API server will NOT run background jobs (Cron services will do it)");
+    }
 
     logger.info("Startup completed successfully");
   } catch (err) {
@@ -439,23 +460,8 @@ app.listen(PORT, async () => {
 });
 
 /* =========================================================
-   AUTO SNAPSHOT + FORWARD LEARNING
-========================================================= */
-
-setInterval(async () => {
-  try {
-    await buildMarketSnapshot();
-    await runForwardLearningLocked();
-
-    logger.info("Warmup executed");
-  } catch (err) {
-    logger.error("Warmup Fehler", { message: err.message });
-  }
-}, 15 * 60 * 1000);
-
-/* =========================================================
    DAILY UNIVERSE REFRESH (default 02:10)
-   - simple scheduler without extra deps
+   - only activated when scheduleDailyUniverseRefresh() is called
 ========================================================= */
 
 function msUntilNextLocalTime(targetHour, targetMinute) {
@@ -481,10 +487,7 @@ async function scheduleDailyUniverseRefresh() {
     } catch (err) {
       logger.error("Daily universe refresh failed", { message: err.message });
     } finally {
-      // reschedule
       scheduleDailyUniverseRefresh();
     }
   }, delay);
 }
-
-scheduleDailyUniverseRefresh();
