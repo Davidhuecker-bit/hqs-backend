@@ -15,7 +15,10 @@
     "job:daily-briefing:check": "node --check jobs/dailyBriefing.job.js",
 
     "job:discovery-notify": "node jobs/discoveryNotify.job.js",
-    "job:discovery-notify:check": "node --check jobs/discoveryNotify.job.js"
+    "job:discovery-notify:check": "node --check jobs/discoveryNotify.job.js",
+
+    "job:universe-refresh": "node jobs/universeRefresh.job.js",
+    "job:universe-refresh:check": "node --check jobs/universeRefresh.job.js"
   },
   "engines": {
     "node": ">=18 <23"
