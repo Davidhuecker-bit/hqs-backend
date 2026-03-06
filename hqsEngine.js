@@ -49,17 +49,17 @@ function safe(v, fallback = 0) {
 function normalizeWeights(weights) {
   const base = weights && typeof weights === "object" ? weights : {};
 
-  // nur erlaubte Keys
   let total = 0;
+
   for (const k of Object.keys(DEFAULT_WEIGHTS)) {
     const val = safe(base[k], 0);
-    // negative oder NaN werden zu 0
     total += val > 0 ? val : 0;
   }
 
   if (total <= 0) return { ...DEFAULT_WEIGHTS };
 
   const normalized = {};
+
   for (const k of Object.keys(DEFAULT_WEIGHTS)) {
     const val = safe(base[k], 0);
     normalized[k] = (val > 0 ? val : 0) / total;
@@ -73,12 +73,10 @@ function mapRegimeHint(regimeHint) {
 
   const r = String(regimeHint).trim().toLowerCase();
 
-  // advanced engine outputs
   if (r === "bullish") return "bull";
   if (r === "bearish") return "bear";
   if (r === "neutral") return "neutral";
 
-  // already internal?
   if (["expansion", "bull", "bear", "crash", "neutral"].includes(r)) return r;
 
   return null;
@@ -95,6 +93,7 @@ function detectRegime(symbolChange, marketAverage) {
   if (marketAverage > 0) return "bull";
   if (marketAverage < -1 && diff < -0.5) return "crash";
   if (marketAverage < 0) return "bear";
+
   return "neutral";
 }
 
@@ -117,8 +116,10 @@ function regimeMultiplier(regime) {
    FACTORS
 ========================================================= */
 
-function calculateMomentum(changePercent) {
-  return clamp(50 + safe(changePercent) * 3, 0, 100);
+function calculateMomentum(changePercent, trend = 0) {
+  const base = 50 + safe(changePercent) * 3;
+  const trendBoost = safe(trend) * 20;
+  return clamp(base + trendBoost, 0, 100);
 }
 
 function calculateStability(item) {
@@ -129,7 +130,11 @@ function calculateStability(item) {
   if (!open) return 50;
 
   const range = ((high - low) / open) * 100;
-  return clamp(70 - range * 4, 20, 80);
+
+  const stability =
+    70 - range * 3;
+
+  return clamp(stability, 20, 85);
 }
 
 function calculateQuality(fundamentals) {
@@ -140,6 +145,10 @@ function calculateQuality(fundamentals) {
   if (safe(fundamentals.revenueGrowth) > 10) score += 10;
   if (safe(fundamentals.netMargin) > 15) score += 10;
   if (safe(fundamentals.returnOnEquity) > 15) score += 10;
+
+  if (safe(fundamentals.revenueGrowth) > 20) score += 5;
+  if (safe(fundamentals.netMargin) > 25) score += 5;
+
   if (safe(fundamentals.debtToEquity) < 1) score += 5;
   if (safe(fundamentals.debtToEquity) > 2) score -= 10;
 
@@ -148,21 +157,22 @@ function calculateQuality(fundamentals) {
 
 function calculateRelativeStrength(symbolChange, marketAverage) {
   const diff = safe(symbolChange) - safe(marketAverage);
-  return clamp(50 + diff * 5, 0, 100);
+  return clamp(50 + diff * 4, 0, 100);
 }
 
 /* =========================================================
    MAIN ENGINE
-   Signature:
-     buildHQSResponse(item, marketAverage=0, adaptiveWeights=null, regimeHint=null)
 ========================================================= */
 
-async function buildHQSResponse(item = {}, marketAverage = 0, adaptiveWeights = null, regimeHint = null) {
+async function buildHQSResponse(
+  item = {},
+  marketAverage = 0,
+  adaptiveWeights = null,
+  regimeHint = null
+) {
   try {
     if (!item.symbol) throw new Error("Missing symbol");
 
-    // 1) weights source priority:
-    // adaptiveWeights -> DB-last weights -> default
     let weightsRaw = null;
     let weightsSource = "default";
 
@@ -176,26 +186,28 @@ async function buildHQSResponse(item = {}, marketAverage = 0, adaptiveWeights = 
 
     const weights = normalizeWeights(weightsRaw || DEFAULT_WEIGHTS);
 
-    // 2) fundamentals (best-effort)
     let fundamentals = null;
+
     try {
       fundamentals = await getFundamentals(item.symbol);
     } catch (err) {
-      if (logger?.warn) logger.warn("Fundamental load failed", { message: err.message });
+      if (logger?.warn)
+        logger.warn("Fundamental load failed", { message: err.message });
       else console.warn("Fundamental load failed:", err.message);
     }
 
-    // 3) regime
     const mappedHint = mapRegimeHint(regimeHint);
-    const regime = mappedHint || detectRegime(item.changesPercentage, marketAverage);
+    const regime =
+      mappedHint || detectRegime(item.changesPercentage, marketAverage);
 
-    // 4) factors
-    const momentum = calculateMomentum(item.changesPercentage);
+    const momentum = calculateMomentum(item.changesPercentage, item.trend);
     const stability = calculateStability(item);
     const quality = calculateQuality(fundamentals);
-    const relative = calculateRelativeStrength(item.changesPercentage, marketAverage);
+    const relative = calculateRelativeStrength(
+      item.changesPercentage,
+      marketAverage
+    );
 
-    // 5) score
     let baseScore =
       momentum * weights.momentum +
       quality * weights.quality +
@@ -206,7 +218,6 @@ async function buildHQSResponse(item = {}, marketAverage = 0, adaptiveWeights = 
 
     const finalScore = clamp(Math.round(baseScore), 0, 100);
 
-    // 6) persist snapshot
     await saveScoreSnapshot({
       symbol: item.symbol,
       hqsScore: finalScore,
@@ -227,18 +238,24 @@ async function buildHQSResponse(item = {}, marketAverage = 0, adaptiveWeights = 
       breakdown: { momentum, quality, stability, relative },
       hqsScore: finalScore,
       rating:
-        finalScore >= 85 ? "Strong Buy"
-        : finalScore >= 70 ? "Buy"
-        : finalScore >= 50 ? "Hold"
-        : "Risk",
+        finalScore >= 85
+          ? "Strong Buy"
+          : finalScore >= 70
+          ? "Buy"
+          : finalScore >= 50
+          ? "Hold"
+          : "Risk",
       decision:
-        finalScore >= 70 ? "KAUFEN"
-        : finalScore >= 50 ? "HALTEN"
-        : "NICHT KAUFEN",
+        finalScore >= 70
+          ? "KAUFEN"
+          : finalScore >= 50
+          ? "HALTEN"
+          : "NICHT KAUFEN",
       timestamp: new Date().toISOString(),
     };
   } catch (error) {
-    if (logger?.error) logger.error("HQS Engine Error", { message: error.message });
+    if (logger?.error)
+      logger.error("HQS Engine Error", { message: error.message });
     else console.error("HQS Engine Error:", error.message);
 
     return {
