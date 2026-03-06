@@ -34,6 +34,12 @@ const { runForwardLearning } = require("./services/forwardLearning.service");
 const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
 
 /* =========================================================
+   UNIVERSE (Symbol-Liste)
+========================================================= */
+
+const { refreshUniverse } = require("./services/universe.service");
+
+/* =========================================================
    NEW ENGINES
 ========================================================= */
 
@@ -375,6 +381,22 @@ async function runForwardLearningLocked() {
 }
 
 /* =========================================================
+   UNIVERSE REFRESH RUNNER (1x/Tag)
+========================================================= */
+
+async function runUniverseRefreshLocked() {
+  // 2h TTL gegen Doppel-Starts
+  const won = await acquireLock("universe_refresh_job", 2 * 60 * 60);
+  if (!won) {
+    logger.warn("Universe refresh skipped (lock held)");
+    return;
+  }
+
+  await refreshUniverse();
+  logger.info("Universe refresh executed");
+}
+
+/* =========================================================
    SERVER START
 ========================================================= */
 
@@ -392,6 +414,20 @@ app.listen(PORT, async () => {
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
+
+    // ✅ Universe 1x beim Start aktualisieren (wenn Key vorhanden)
+    // Wenn FMP_API_KEY fehlt, läuft der Rest trotzdem weiter.
+    try {
+      if (process.env.FMP_API_KEY) {
+        await runUniverseRefreshLocked();
+      } else {
+        logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
+      }
+    } catch (uErr) {
+      logger.warn("Universe refresh failed on startup (continuing)", {
+        message: uErr.message,
+      });
+    }
 
     await buildMarketSnapshot();
     await runForwardLearningLocked();
@@ -416,3 +452,39 @@ setInterval(async () => {
     logger.error("Warmup Fehler", { message: err.message });
   }
 }, 15 * 60 * 1000);
+
+/* =========================================================
+   DAILY UNIVERSE REFRESH (default 02:10)
+   - simple scheduler without extra deps
+========================================================= */
+
+function msUntilNextLocalTime(targetHour, targetMinute) {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(targetHour, targetMinute, 0, 0);
+  if (next <= now) next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
+}
+
+async function scheduleDailyUniverseRefresh() {
+  const hour = Number(process.env.UNIVERSE_REFRESH_HOUR || 2);
+  const minute = Number(process.env.UNIVERSE_REFRESH_MINUTE || 10);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+  setTimeout(async () => {
+    try {
+      if (process.env.FMP_API_KEY) {
+        await runUniverseRefreshLocked();
+      } else {
+        logger.warn("FMP_API_KEY missing -> Universe refresh skipped");
+      }
+    } catch (err) {
+      logger.error("Daily universe refresh failed", { message: err.message });
+    } finally {
+      // reschedule
+      scheduleDailyUniverseRefresh();
+    }
+  }, delay);
+}
+
+scheduleDailyUniverseRefresh();
