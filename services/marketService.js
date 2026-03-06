@@ -1,17 +1,10 @@
 "use strict";
 
 /*
-  HQS Market System – Enterprise Upgrade (DB-FIRST ADVANCED + WATCHLIST DB + LOCKED)
-  - Snapshot Speicherung
-  - HQS Berechnung (DB-first)
-  - Advanced Metrics (Trend/Vol/Scenarios) DB-first via market_advanced_metrics
-  - Watchlist aus DB (watchlist_symbols)
-  - Job Locking (job_locks) gegen Doppel-Snapshots
-  - Historical optional (DELAYED safe via historicalService)
-  - ✅ Multi-Horizon Scenarios (30/90/180/252d)
-  - ✅ HIST_PERIOD env (1y/max)
-  - ✅ NEW: Snapshot kann batchweise aus Universe scannen (Cursor)
+  HQS Market System – Enterprise Upgrade (FMP MARKET SCANNER)
 */
+
+const axios = require("axios");
 
 const { fetchQuote } = require("./providerService");
 const { normalizeMarketData } = require("./marketNormalizer");
@@ -38,11 +31,7 @@ const {
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 
-// ✅ Universe (Symbol-Liste + Cursor Batch)
-const { initUniverseTables, getUniverseBatch } = require("./universe.repository");
-
 const logger = require("../utils/logger");
-
 const { Pool } = require("pg");
 
 const pool = new Pool({
@@ -50,17 +39,44 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ✅ Historical Period (1y/max)
 const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
-
-// MonteCarlo Simulationen pro Symbol
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 
-// ✅ Batch Size für Universe Scan
-const SNAPSHOT_BATCH_SIZE = Number(process.env.SNAPSHOT_BATCH_SIZE || 150);
+/* =========================================================
+   FMP MARKET SYMBOLS
+========================================================= */
 
-// ✅ Snapshot Quelle: "universe" oder "watchlist"
-const SNAPSHOT_SOURCE = String(process.env.SNAPSHOT_SOURCE || "watchlist").toLowerCase();
+async function getMarketSymbolsFromFMP() {
+  try {
+    const exchanges = ["NASDAQ", "NYSE", "AMEX"];
+    let symbols = [];
+
+    for (const exchange of exchanges) {
+      const url =
+        `https://financialmodelingprep.com/api/v3/stock-screener?exchange=${exchange}&limit=1000&apikey=${process.env.FMP_API_KEY}`;
+
+      const res = await axios.get(url);
+
+      if (Array.isArray(res.data)) {
+        const list = res.data.map((s) => s.symbol).filter(Boolean);
+        symbols = symbols.concat(list);
+      }
+    }
+
+    symbols = [...new Set(symbols)];
+
+    logger.info("FMP market symbols loaded", {
+      count: symbols.length,
+    });
+
+    return symbols;
+  } catch (err) {
+    logger.error("FMP screener failed", {
+      message: err.message,
+    });
+    return [];
+  }
+}
 
 function safeNum(v, fallback = 0) {
   const n = Number(v);
@@ -100,20 +116,16 @@ async function ensureTablesExist() {
     );
   `);
 
-  // Existing init chain
   await initAdvancedMetricsTable();
   await initJobLocksTable();
   await initWatchlistTable();
   await seedDefaultWatchlist();
 
-  // ✅ Universe init (wichtig, sonst gibt's keine Tabelle & keinen Cursor)
-  await initUniverseTables();
-
   logger.info("Tables ensured");
 }
 
 /* =========================================================
-   INTERNAL: LOAD LATEST HQS SCORE + BREAKDOWN
+   LOAD LATEST HQS SCORE
 ========================================================= */
 
 async function loadLatestHqsScore(symbol) {
@@ -147,7 +159,9 @@ async function loadLatestHqsScore(symbol) {
       stability: row.stability !== null ? Number(row.stability) : null,
       relative: row.relative !== null ? Number(row.relative) : null,
       regime: row.regime ?? null,
-      hqsCreatedAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      hqsCreatedAt: row.created_at
+        ? new Date(row.created_at).toISOString()
+        : null,
     };
   } catch (err) {
     logger.error("loadLatestHqsScore error", { message: err.message });
@@ -156,7 +170,7 @@ async function loadLatestHqsScore(symbol) {
 }
 
 /* =========================================================
-   MULTI HORIZON SCENARIOS
+   SCENARIO ENGINE
 ========================================================= */
 
 function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
@@ -180,22 +194,16 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
       "180": { base: h180.realistic, bull: h180.optimistic, bear: h180.pessimistic },
       "252": { base: h252.realistic, bull: h252.optimistic, bear: h252.pessimistic },
     },
-    meta: {
-      simulations: sim,
-      sigmaDaily: sig,
-      mu: drift,
-    },
   };
 }
 
 /* =========================================================
-   SNAPSHOT + HQS PIPELINE
-   - locked against duplicates
-   - ✅ optional Universe Batch Scan (Cursor)
+   SNAPSHOT PIPELINE
 ========================================================= */
 
 async function buildMarketSnapshot() {
-  const won = await acquireLock("snapshot_job", 12 * 60); // 12 min TTL
+  const won = await acquireLock("snapshot_job", 12 * 60);
+
   if (!won) {
     logger.warn("Snapshot job skipped (lock held)");
     return;
@@ -203,30 +211,10 @@ async function buildMarketSnapshot() {
 
   logger.info("Building market snapshot...");
 
-  // ✅ Entscheidet ob Universe oder Watchlist
-  let symbols = [];
-  if (SNAPSHOT_SOURCE === "universe") {
-    const batch = await getUniverseBatch(SNAPSHOT_BATCH_SIZE);
-    symbols = batch.symbols;
-
-    logger.info("Snapshot source = universe", {
-      batchSize: symbols.length,
-      cursor: batch.cursor,
-      nextCursor: batch.nextCursor,
-    });
-  } else {
-    symbols = await getActiveWatchlistSymbols(250);
-    logger.info("Snapshot source = watchlist", { count: symbols.length });
-  }
+  const symbols = await getMarketSymbolsFromFMP();
 
   if (!symbols.length) {
-    logger.warn("No symbols found for snapshot run", {
-      SNAPSHOT_SOURCE,
-      hint:
-        SNAPSHOT_SOURCE === "universe"
-          ? "universe_symbols ist leer -> erst universeRefresh ausführen"
-          : "watchlist leer/disabled",
-    });
+    logger.warn("No symbols received from FMP");
     return;
   }
 
@@ -271,17 +259,10 @@ async function buildMarketSnapshot() {
             volatilityDaily: trendData.volatilityDaily,
             scenarios,
           });
-        } else {
-          logger.warn("Historical insufficient; using fallback", {
-            symbol,
-            points: prices.length,
-            period: HIST_PERIOD,
-          });
         }
       } catch (histErr) {
-        logger.warn("Historical unavailable; using fallback", {
+        logger.warn("Historical unavailable", {
           symbol,
-          period: HIST_PERIOD,
           message: histErr.message,
         });
       }
@@ -318,21 +299,11 @@ async function buildMarketSnapshot() {
           hqs.breakdown?.quality ?? null,
           hqs.breakdown?.stability ?? null,
           hqs.breakdown?.relative ?? null,
-          hqs.regime ?? regime,
+          regime,
         ]
       );
 
-      if (trendData) {
-        logger.info("Advanced metrics computed", {
-          symbol,
-          regime,
-          trend: trendData.trend,
-          volAnnual: trendData.volatilityAnnual,
-          period: HIST_PERIOD,
-        });
-      }
-
-      logger.info(`Snapshot + HQS saved for ${symbol}`);
+      logger.info(`Snapshot saved for ${symbol}`);
     } catch (err) {
       logger.error(`Snapshot error for ${symbol}`, { message: err.message });
     }
@@ -342,8 +313,7 @@ async function buildMarketSnapshot() {
 }
 
 /* =========================================================
-   MARKET DATA (DB-FIRST HQS + DB-FIRST ADVANCED)
-   - bleibt bewusst Watchlist/Symbol basiert (UI/Users)
+   MARKET DATA (API / UI)
 ========================================================= */
 
 async function getMarketData(symbol) {
@@ -370,15 +340,7 @@ async function getMarketData(symbol) {
         normalized.regime = normalized.regime ?? adv.regime ?? null;
         normalized.trend = adv.trend ?? null;
         normalized.volatility = adv.volatility ?? null;
-        normalized.volatilityDaily = adv.volatilityDaily ?? null;
         normalized.scenarios = adv.scenarios ?? null;
-        normalized.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
-      } else {
-        normalized.trend = null;
-        normalized.volatility = null;
-        normalized.volatilityDaily = null;
-        normalized.scenarios = null;
-        normalized.advancedUpdatedAt = null;
       }
 
       results.push(normalized);
@@ -390,10 +352,6 @@ async function getMarketData(symbol) {
     return [];
   }
 }
-
-/* =========================================================
-   EXPORTS
-========================================================= */
 
 module.exports = {
   getMarketData,
