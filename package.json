@@ -18,7 +18,10 @@
     "job:discovery-notify:check": "node --check jobs/discoveryNotify.job.js",
 
     "job:universe-refresh": "node jobs/universeRefresh.job.js",
-    "job:universe-refresh:check": "node --check jobs/universeRefresh.job.js"
+    "job:universe-refresh:check": "node --check jobs/universeRefresh.job.js",
+
+    "job:snapshot-scan": "node jobs/snapshotScan.job.js",
+    "job:snapshot-scan:check": "node --check jobs/snapshotScan.job.js"
   },
   "engines": {
     "node": ">=18 <23"
