@@ -31,7 +31,10 @@ const { buildIntegratedMarketView } = require("../engines/integrationEngine");
 const { analyzeCrossAssetEnvironment } = require("../engines/crossAssetEngine");
 const { analyzeCapitalFlows } = require("../engines/capitalFlowEngine");
 const { analyzeMacroEvents } = require("../engines/eventIntelligenceEngine");
-const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
+const {
+  evaluateMarketMemory,
+  buildSetupSignature,
+} = require("../engines/marketMemoryEngine");
 const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
 const { orchestrateMarket } = require("../engines/marketOrchestrator");
 
@@ -49,6 +52,11 @@ const {
   loadAdvancedMetrics,
 } = require("./advancedMetrics.repository");
 
+const {
+  initOutcomeTrackingTable,
+  createOutcomeTrackingEntry,
+} = require("./outcomeTracking.repository");
+
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 
 const logger = require("../utils/logger");
@@ -61,6 +69,7 @@ const pool = new Pool({
 
 const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
+const OUTCOME_HORIZON_DAYS = Number(process.env.OUTCOME_HORIZON_DAYS || 30);
 
 /* =========================================================
    IN-MEMORY AI STORES
@@ -149,6 +158,7 @@ async function ensureTablesExist() {
   await initJobLocksTable();
   await initWatchlistTable();
   await seedDefaultWatchlist();
+  await initOutcomeTrackingTable();
 
   logger.info("Tables ensured");
 }
@@ -419,6 +429,15 @@ async function buildMarketSnapshot() {
          MEMORY + META LEARNING
       ============================= */
 
+      const setupSignature = buildSetupSignature({
+        regime,
+        strategy: strategy?.strategy || "balanced",
+        discoveries,
+        narratives,
+        features,
+        crossSignals: crossAsset?.signals || [],
+      });
+
       const marketMemory = evaluateMarketMemory({
         memoryStore: marketMemoryStore,
         symbol,
@@ -472,7 +491,8 @@ async function buildMarketSnapshot() {
         capitalFlows,
         macroContext: {
           ...macroContext,
-          marketBreadth: capitalFlows?.marketBreadth ?? macroContext.marketBreadth,
+          marketBreadth:
+            capitalFlows?.marketBreadth ?? macroContext.marketBreadth,
         },
         eventIntelligence,
         marketMemory,
@@ -488,7 +508,9 @@ async function buildMarketSnapshot() {
         hqs,
         features,
         discoveries,
-        learning: null,
+        learning: {
+          confidence: 0.5,
+        },
         brain,
         strategy,
         narratives,
@@ -551,6 +573,43 @@ async function buildMarketSnapshot() {
           regime,
         ]
       );
+
+      /* =============================
+         OUTCOME TRACKING
+      ============================= */
+
+      await createOutcomeTrackingEntry({
+        symbol: normalized.symbol,
+        predictionType: "market_view",
+        regime,
+        strategy: strategy?.strategy || "balanced",
+        hqsScore: hqs?.hqsScore,
+        aiScore: brain?.aiScore,
+        finalConviction: finalView?.finalConviction,
+        finalConfidence: finalView?.finalConfidence,
+        memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
+        opportunityStrength: orchestrator?.opportunityStrength || 0,
+        orchestratorConfidence:
+          orchestrator?.orchestratorConfidence || 0,
+        setupSignature,
+        horizonDays: OUTCOME_HORIZON_DAYS,
+        entryPrice: normalized?.price,
+        payload: {
+          symbol: normalized.symbol,
+          regime,
+          hqs,
+          features,
+          discoveries,
+          narratives,
+          simulations,
+          resilienceScore,
+          research,
+          brain,
+          strategy,
+          orchestrator,
+          finalView,
+        },
+      });
 
       logger.info(`Snapshot saved for ${symbol}`);
     } catch (err) {
