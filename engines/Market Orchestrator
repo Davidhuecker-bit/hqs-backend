@@ -1,0 +1,225 @@
+"use strict";
+
+/*
+  Market Orchestrator
+
+  Zentrale Intelligenzschicht.
+  Bewertet alle Engine-Signale und erzeugt eine
+  konsolidierte Marktentscheidung.
+*/
+
+function safe(n, fallback = 0) {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : fallback;
+}
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+/* =========================================================
+   MARKET RISK MODE
+========================================================= */
+
+function detectRiskMode(context = {}) {
+
+  const vix = safe(context.vixTrend);
+  const breadth = safe(context.marketBreadth);
+  const dollar = safe(context.dollarTrend);
+
+  if (vix > 0.18 && breadth < 0.45) {
+    return {
+      mode: "risk_off",
+      label: "Risk Off Environment"
+    };
+  }
+
+  if (breadth > 0.60 && dollar < 0) {
+    return {
+      mode: "risk_on",
+      label: "Risk On Expansion"
+    };
+  }
+
+  return {
+    mode: "neutral",
+    label: "Neutral Market"
+  };
+}
+
+/* =========================================================
+   DOMINANT NARRATIVE
+========================================================= */
+
+function detectDominantNarrative(narratives = [], crossSignals = []) {
+
+  const all = [...narratives, ...crossSignals];
+
+  if (!all.length) return null;
+
+  const counter = {};
+
+  for (const n of all) {
+
+    const key = n.type || n.label;
+
+    counter[key] = (counter[key] || 0) + 1;
+
+  }
+
+  const dominant = Object.entries(counter)
+    .sort((a, b) => b[1] - a[1])[0];
+
+  if (!dominant) return null;
+
+  return {
+    narrative: dominant[0],
+    strength: dominant[1]
+  };
+}
+
+/* =========================================================
+   SECTOR BIAS
+========================================================= */
+
+function detectSectorBias(capitalFlows = {}, crossAsset = {}) {
+
+  const leaders = capitalFlows?.sectorFlows?.leaders || [];
+
+  if (!leaders.length) {
+    return {
+      bias: "neutral",
+      sectors: []
+    };
+  }
+
+  return {
+    bias: "sector_rotation",
+    sectors: leaders.map(s => s.sector)
+  };
+}
+
+/* =========================================================
+   SIGNAL CONSISTENCY
+========================================================= */
+
+function calculateSignalConsistency({
+
+  trend,
+  aiScore,
+  resilienceScore,
+  discoveries
+
+}) {
+
+  let score = 0;
+
+  if (trend > 0) score += 1;
+  if (aiScore > 70) score += 1;
+  if (resilienceScore > 0.5) score += 1;
+  if ((discoveries || []).length > 0) score += 1;
+
+  return clamp(score / 4, 0, 1);
+}
+
+/* =========================================================
+   OPPORTUNITY STRENGTH
+========================================================= */
+
+function calculateOpportunityStrength({
+
+  aiScore,
+  conviction,
+  signalConsistency
+
+}) {
+
+  const a = safe(aiScore);
+  const c = safe(conviction);
+
+  const base =
+    a * 0.5 +
+    c * 0.4 +
+    signalConsistency * 10;
+
+  return clamp(Math.round(base), 0, 100);
+}
+
+/* =========================================================
+   MAIN ORCHESTRATOR
+========================================================= */
+
+function orchestrateMarket({
+
+  trendData,
+  aiScore,
+  conviction,
+  resilienceScore,
+  narratives = [],
+  discoveries = [],
+  crossAssetSignals = [],
+  capitalFlows = {},
+  macroContext = {}
+
+}) {
+
+  const riskMode = detectRiskMode(macroContext);
+
+  const dominantNarrative =
+    detectDominantNarrative(
+      narratives,
+      crossAssetSignals
+    );
+
+  const sectorBias =
+    detectSectorBias(
+      capitalFlows,
+      crossAssetSignals
+    );
+
+  const signalConsistency =
+    calculateSignalConsistency({
+      trend: trendData?.trend,
+      aiScore,
+      resilienceScore,
+      discoveries
+    });
+
+  const opportunityStrength =
+    calculateOpportunityStrength({
+      aiScore,
+      conviction,
+      signalConsistency
+    });
+
+  return {
+
+    riskMode,
+
+    dominantNarrative,
+
+    sectorBias,
+
+    signalConsistency,
+
+    opportunityStrength,
+
+    orchestratorSummary: {
+
+      marketState: riskMode.label,
+
+      narrative: dominantNarrative?.narrative || "none",
+
+      sectors: sectorBias.sectors || [],
+
+      opportunityStrength
+
+    }
+
+  };
+
+}
+
+module.exports = {
+  orchestrateMarket
+};
