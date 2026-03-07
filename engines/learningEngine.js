@@ -1,8 +1,8 @@
 "use strict";
 
 /*
-  Learning Engine
-  Evaluates model predictions against real performance
+ Ultra Learning Engine
+ Self adapting prediction intelligence
 */
 
 function safe(n, fallback = 0) {
@@ -15,7 +15,7 @@ function clamp(v, min, max) {
 }
 
 /* ===============================
-   PERFORMANCE SCORE
+ PREDICTION ERROR
 ================================ */
 
 function calculatePredictionError(predicted, actual) {
@@ -24,13 +24,49 @@ function calculatePredictionError(predicted, actual) {
   const a = safe(actual);
 
   return a - p;
+
 }
 
 /* ===============================
-   FEATURE IMPORTANCE
+ TIME ADJUSTMENT
 ================================ */
 
-function calculateFeatureImpact(features, performance) {
+function calculateHorizonAdjustment(actualReturn, horizonDays) {
+
+  const r = safe(actualReturn);
+  const h = safe(horizonDays);
+
+  if (!h) return r;
+
+  const normalized = r / Math.sqrt(h);
+
+  return normalized;
+
+}
+
+/* ===============================
+ PERFORMANCE SCORE
+================================ */
+
+function normalizePerformance(actualReturn) {
+
+  const r = safe(actualReturn);
+
+  if (r > 0.20) return 1;
+  if (r > 0.10) return 0.7;
+  if (r > 0.03) return 0.4;
+  if (r > -0.03) return 0;
+  if (r > -0.10) return -0.5;
+
+  return -1;
+
+}
+
+/* ===============================
+ FEATURE IMPACT
+================================ */
+
+function calculateFeatureImpact(features, performanceScore) {
 
   const impacts = {};
 
@@ -38,18 +74,49 @@ function calculateFeatureImpact(features, performance) {
 
     const value = safe(features[key]);
 
-    impacts[key] = value * performance;
+    impacts[key] = value * performanceScore;
 
   }
 
   return impacts;
+
 }
 
 /* ===============================
-   WEIGHT ADJUSTMENT
+ SIGNAL COMBINATION
 ================================ */
 
-function adjustWeights(currentWeights, impacts) {
+function detectFeatureCombination(features) {
+
+  const keys = Object.keys(features)
+    .filter(k => safe(features[k]) > 0.6)
+    .sort();
+
+  return keys.join("+");
+
+}
+
+/* ===============================
+ LEARNING RATE
+================================ */
+
+function calculateLearningRate(regime) {
+
+  if (regime === "crash") return 0.005;
+
+  if (regime === "bear") return 0.003;
+
+  if (regime === "bull") return 0.002;
+
+  return 0.002;
+
+}
+
+/* ===============================
+ WEIGHT ADJUSTMENT
+================================ */
+
+function adjustWeights(currentWeights, impacts, learningRate) {
 
   const updated = { ...currentWeights };
 
@@ -59,15 +126,21 @@ function adjustWeights(currentWeights, impacts) {
 
     if (!updated[key]) continue;
 
-    updated[key] = clamp(updated[key] + impact * 0.001, 0.01, 1);
+    updated[key] =
+      clamp(
+        updated[key] + impact * learningRate,
+        0.01,
+        1
+      );
 
   }
 
   return updated;
+
 }
 
 /* ===============================
-   CONFIDENCE SCORE
+ CONFIDENCE SCORE
 ================================ */
 
 function calculateConfidence(error) {
@@ -77,21 +150,63 @@ function calculateConfidence(error) {
   const confidence = 1 - clamp(e, 0, 1);
 
   return clamp(confidence, 0, 1);
+
 }
 
 /* ===============================
-   MAIN LEARNING FUNCTION
+ MAIN LEARNING FUNCTION
 ================================ */
 
-function evaluateLearning(symbol, prediction, actualReturn, features, weights) {
+function evaluateLearning({
 
-  const error = calculatePredictionError(prediction, actualReturn);
+  symbol,
+  prediction,
+  actualReturn,
+  features = {},
+  weights = {},
+  regime = "neutral",
+  horizonDays = 30
 
-  const impacts = calculateFeatureImpact(features, actualReturn);
+}) {
 
-  const newWeights = adjustWeights(weights, impacts);
+  const horizonAdjusted =
+    calculateHorizonAdjustment(
+      actualReturn,
+      horizonDays
+    );
 
-  const confidence = calculateConfidence(error);
+  const error =
+    calculatePredictionError(
+      prediction,
+      horizonAdjusted
+    );
+
+  const performanceScore =
+    normalizePerformance(
+      horizonAdjusted
+    );
+
+  const impacts =
+    calculateFeatureImpact(
+      features,
+      performanceScore
+    );
+
+  const learningRate =
+    calculateLearningRate(regime);
+
+  const newWeights =
+    adjustWeights(
+      weights,
+      impacts,
+      learningRate
+    );
+
+  const confidence =
+    calculateConfidence(error);
+
+  const featureCombination =
+    detectFeatureCombination(features);
 
   return {
 
@@ -100,6 +215,12 @@ function evaluateLearning(symbol, prediction, actualReturn, features, weights) {
     error,
 
     confidence,
+
+    performanceScore,
+
+    learningRate,
+
+    featureCombination,
 
     impacts,
 
