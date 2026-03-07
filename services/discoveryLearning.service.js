@@ -10,10 +10,34 @@ const {
   updateDiscoveryResult30d,
 } = require("./discoveryLearning.repository");
 
+const {
+  getDueOutcomePredictions,
+  completeOutcomePrediction,
+  calculateActualReturn,
+  getSetupHistory,
+} = require("./outcomeTracking.repository");
+
+const { fetchQuote } = require("./providerService");
+const { evaluateLearning } = require("../engines/learningEngine");
+const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
+const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+/* =========================================================
+   IN-MEMORY AI STORES
+   (später DB/Redis möglich)
+========================================================= */
+
+let marketMemoryStore = {};
+let metaLearningStore = {};
+
+/* =========================================================
+   DISCOVERY SAVE
+========================================================= */
 
 async function saveDiscovery(symbol, score, price) {
   const sym = String(symbol || "").trim().toUpperCase();
@@ -41,6 +65,10 @@ async function saveDiscovery(symbol, score, price) {
     });
   }
 }
+
+/* =========================================================
+   DISCOVERY EVALUATION (BESTEHEND)
+========================================================= */
 
 async function evaluateDiscoveries() {
   let done7 = 0;
@@ -98,6 +126,265 @@ async function evaluateDiscoveries() {
   return { updated7d: done7, updated30d: done30 };
 }
 
+/* =========================================================
+   OUTCOME + LEARNING EVALUATION
+========================================================= */
+
+async function evaluateTrackedPredictions(limit = 200) {
+  const due = await getDueOutcomePredictions(limit);
+
+  if (!due.length) {
+    logger.info("No due tracked predictions found");
+    return {
+      due: 0,
+      evaluated: 0,
+      failed: 0,
+      learningUpdated: 0,
+      memoryUpdated: 0,
+      metaUpdated: 0,
+    };
+  }
+
+  let evaluated = 0;
+  let failed = 0;
+  let learningUpdated = 0;
+  let memoryUpdated = 0;
+  let metaUpdated = 0;
+
+  for (const row of due) {
+    try {
+      const symbol = String(row.symbol || "").trim().toUpperCase();
+      if (!symbol) {
+        failed++;
+        continue;
+      }
+
+      const raw = await fetchQuote(symbol);
+      if (!raw || !raw.length) {
+        failed++;
+        logger.warn("Tracked prediction: no quote found", {
+          id: row.id,
+          symbol,
+        });
+        continue;
+      }
+
+      const quote = raw[0] || {};
+      const exitPrice = Number(
+        quote.price ?? quote.c ?? quote.close ?? quote.lastPrice
+      );
+
+      if (!Number.isFinite(exitPrice) || exitPrice <= 0) {
+        failed++;
+        logger.warn("Tracked prediction: invalid exit price", {
+          id: row.id,
+          symbol,
+          exitPrice,
+        });
+        continue;
+      }
+
+      const actualReturn = calculateActualReturn(row.entry_price, exitPrice);
+
+      const ok = await completeOutcomePrediction({
+        id: row.id,
+        exitPrice,
+        actualReturn,
+      });
+
+      if (!ok) {
+        failed++;
+        continue;
+      }
+
+      evaluated++;
+
+      const payload = row.payload || {};
+
+      /* =========================
+         LEARNING ENGINE
+      ========================= */
+
+      try {
+        const learning = evaluateLearning({
+          symbol,
+          prediction: Number(row.ai_score || 0) / 100,
+          actualReturn,
+          features: payload.features || {},
+          weights: {
+            momentum: 0.35,
+            quality: 0.35,
+            stability: 0.20,
+            relative: 0.10,
+          },
+          regime: row.regime || "neutral",
+          horizonDays: row.horizon_days || 30,
+        });
+
+        if (learning) {
+          learningUpdated++;
+        }
+      } catch (e) {
+        logger.warn("Learning update failed", {
+          id: row.id,
+          symbol,
+          message: e.message,
+        });
+      }
+
+      /* =========================
+         MARKET MEMORY
+      ========================= */
+
+      try {
+        const memory = evaluateMarketMemory({
+          memoryStore: marketMemoryStore,
+          symbol,
+          regime: row.regime || "neutral",
+          strategy: row.strategy || "balanced",
+          discoveries: payload.discoveries || [],
+          narratives: payload.narratives || [],
+          features: payload.features || {},
+          crossSignals:
+            payload?.globalContext?.crossAsset?.signals || [],
+          prediction: Number(row.ai_score || 0) / 100,
+          actualReturn,
+          confidence: Number(row.final_confidence || 0) / 100,
+          persist: true,
+        });
+
+        if (memory?.updatedStore) {
+          marketMemoryStore = memory.updatedStore;
+          memoryUpdated++;
+        }
+      } catch (e) {
+        logger.warn("Market memory update failed", {
+          id: row.id,
+          symbol,
+          message: e.message,
+        });
+      }
+
+      /* =========================
+         META LEARNING
+      ========================= */
+
+      try {
+        const meta = evaluateMetaLearning({
+          metaStore: metaLearningStore,
+          context: {
+            regime: row.regime || "neutral",
+            riskMode:
+              payload?.globalContext?.orchestrator?.riskMode?.mode || "neutral",
+            strategy: row.strategy || "balanced",
+            dominantNarrative:
+              payload?.globalContext?.orchestrator?.dominantNarrative?.narrative ||
+              "none",
+          },
+          signalMetrics: {
+            trendScore: Number(payload?.features?.trendStrength || 0),
+            discoveryCount: Array.isArray(payload?.discoveries)
+              ? payload.discoveries.length
+              : 0,
+            capitalFlowStrength: Number(
+              payload?.globalContext?.orchestrator?.capitalFlowStrength || 0
+            ),
+            eventCount: Array.isArray(
+              payload?.globalContext?.eventIntelligence?.events
+            )
+              ? payload.globalContext.eventIntelligence.events.length
+              : 0,
+            memoryScore: Number(row.memory_score || 0),
+            narrativeCount: Array.isArray(payload?.narratives)
+              ? payload.narratives.length
+              : 0,
+            strategyScore: Number(
+              payload?.strategy?.strategyAdjustedScore || 0
+            ),
+            crossAssetCount: Array.isArray(
+              payload?.globalContext?.crossAsset?.signals
+            )
+              ? payload.globalContext.crossAsset.signals.length
+              : 0,
+          },
+          actualReturn,
+          symbol,
+          persist: true,
+        });
+
+        if (meta?.updatedStore) {
+          metaLearningStore = meta.updatedStore;
+          metaUpdated++;
+        }
+      } catch (e) {
+        logger.warn("Meta learning update failed", {
+          id: row.id,
+          symbol,
+          message: e.message,
+        });
+      }
+
+      /* =========================
+         OPTIONAL SETUP HISTORY LOG
+      ========================= */
+
+      try {
+        if (row.setup_signature) {
+          const history = await getSetupHistory(row.setup_signature, 50);
+
+          logger.info("Tracked prediction evaluated", {
+            id: row.id,
+            symbol,
+            entryPrice: Number(row.entry_price || 0),
+            exitPrice,
+            actualReturn,
+            setupSignature: row.setup_signature,
+            setupHistoryCount: history.length,
+          });
+        } else {
+          logger.info("Tracked prediction evaluated", {
+            id: row.id,
+            symbol,
+            entryPrice: Number(row.entry_price || 0),
+            exitPrice,
+            actualReturn,
+          });
+        }
+      } catch (e) {
+        logger.warn("Setup history lookup failed", {
+          id: row.id,
+          symbol,
+          message: e.message,
+        });
+      }
+    } catch (e) {
+      failed++;
+      logger.warn("Tracked prediction evaluation failed", {
+        id: row?.id,
+        symbol: row?.symbol,
+        message: e.message,
+      });
+    }
+  }
+
+  const result = {
+    due: due.length,
+    evaluated,
+    failed,
+    learningUpdated,
+    memoryUpdated,
+    metaUpdated,
+  };
+
+  logger.info("Tracked prediction evaluation finished", result);
+
+  return result;
+}
+
+/* =========================================================
+   HELPERS
+========================================================= */
+
 async function getCurrentPrice(symbol) {
   const sym = String(symbol || "").trim().toUpperCase();
 
@@ -131,4 +418,5 @@ function calcReturnPct(priceNow, priceThen) {
 module.exports = {
   saveDiscovery,
   evaluateDiscoveries,
+  evaluateTrackedPredictions,
 };
