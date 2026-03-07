@@ -15,6 +15,99 @@ function clamp(v, min, max) {
 }
 
 /* ===============================
+   GLOBAL REGIME EXTRACTION
+================================ */
+
+function extractGlobalRegime(globalContext = {}) {
+  const orchestratorMode = String(
+    globalContext?.orchestrator?.riskMode?.mode || ""
+  ).toLowerCase();
+
+  if (orchestratorMode) return orchestratorMode;
+
+  const regime = String(globalContext?.regime || "").toLowerCase();
+  if (regime) return regime;
+
+  return "neutral";
+}
+
+/* ===============================
+   CONTEXT BOOSTS
+================================ */
+
+function calculateGlobalBoost(globalContext = {}) {
+  let boost = 0;
+
+  const regime = extractGlobalRegime(globalContext);
+
+  if (regime === "risk_on") boost += 4;
+  if (regime === "neutral") boost += 1;
+  if (regime === "risk_off") boost -= 4;
+  if (regime === "panic") boost -= 8;
+
+  const opportunityStrength = safe(
+    globalContext?.orchestrator?.opportunityStrength,
+    0
+  );
+
+  if (opportunityStrength >= 85) boost += 4;
+  else if (opportunityStrength >= 70) boost += 2;
+  else if (opportunityStrength < 40) boost -= 2;
+
+  const orchestratorConfidence = safe(
+    globalContext?.orchestrator?.orchestratorConfidence,
+    0
+  );
+
+  if (orchestratorConfidence >= 80) boost += 3;
+  else if (orchestratorConfidence >= 60) boost += 1;
+  else if (orchestratorConfidence < 40) boost -= 2;
+
+  return boost;
+}
+
+function calculateMemoryBoost(globalContext = {}) {
+  const memoryScore = safe(globalContext?.marketMemory?.memoryScore, 0);
+
+  if (memoryScore >= 85) return 6;
+  if (memoryScore >= 70) return 4;
+  if (memoryScore >= 55) return 2;
+  if (memoryScore < 35) return -2;
+
+  return 0;
+}
+
+function calculateMetaBoost(globalContext = {}) {
+  const strongest =
+    globalContext?.metaLearning?.strongest || [];
+
+  if (!Array.isArray(strongest) || !strongest.length) return 0;
+
+  const avg =
+    strongest.reduce((sum, e) => sum + safe(e?.weight, 1), 0) /
+    strongest.length;
+
+  if (avg >= 1.2) return 3;
+  if (avg >= 1.0) return 1;
+  if (avg < 0.85) return -2;
+
+  return 0;
+}
+
+function calculateEventPenalty(globalContext = {}) {
+  const events = globalContext?.eventIntelligence?.events || [];
+  const eventStress = safe(globalContext?.orchestrator?.eventStress, 0);
+
+  let penalty = 0;
+
+  if (events.length >= 2) penalty += 2;
+  if (eventStress > 0.6) penalty += 6;
+  else if (eventStress > 0.3) penalty += 3;
+
+  return penalty;
+}
+
+/* ===============================
    FINAL CONVICTION SCORE
 ================================ */
 
@@ -26,34 +119,42 @@ function calculateFinalConviction({
   narratives,
   discoveries,
   researchSignals,
-  globalContext
+  globalContext,
 }) {
   const hqs = safe(hqsScore);
   const ai = safe(aiScore);
   const strategy = safe(strategyAdjustedScore);
   const resilience = safe(resilienceScore) * 100;
 
-  const narrativeBoost = Array.isArray(narratives) ? narratives.length * 2 : 0;
-  const discoveryBoost = Array.isArray(discoveries) ? discoveries.length * 2 : 0;
-  const researchBoost = Array.isArray(researchSignals) ? researchSignals.length * 3 : 0;
+  const narrativeBoost = Array.isArray(narratives)
+    ? narratives.length * 2
+    : 0;
 
-  let globalBoost = 0;
-  const regime = String(globalContext?.regime || "").toLowerCase();
+  const discoveryBoost = Array.isArray(discoveries)
+    ? discoveries.length * 2
+    : 0;
 
-  if (regime === "risk_on") globalBoost += 4;
-  if (regime === "neutral") globalBoost += 1;
-  if (regime === "risk_off") globalBoost -= 4;
-  if (regime === "panic") globalBoost -= 8;
+  const researchBoost = Array.isArray(researchSignals)
+    ? researchSignals.length * 3
+    : 0;
+
+  const globalBoost = calculateGlobalBoost(globalContext);
+  const memoryBoost = calculateMemoryBoost(globalContext);
+  const metaBoost = calculateMetaBoost(globalContext);
+  const eventPenalty = calculateEventPenalty(globalContext);
 
   let conviction =
-    hqs * 0.25 +
-    ai * 0.30 +
-    strategy * 0.20 +
-    resilience * 0.15 +
+    hqs * 0.22 +
+    ai * 0.28 +
+    strategy * 0.18 +
+    resilience * 0.12 +
     narrativeBoost +
     discoveryBoost +
     researchBoost +
-    globalBoost;
+    globalBoost +
+    memoryBoost +
+    metaBoost -
+    eventPenalty;
 
   return clamp(Math.round(conviction), 0, 100);
 }
@@ -86,6 +187,71 @@ function buildFinalDecision(score) {
 }
 
 /* ===============================
+   FINAL CONFIDENCE
+================================ */
+
+function buildFinalConfidence({
+  learning,
+  brain,
+  globalContext,
+  resilienceScore,
+}) {
+  const learningConfidence = safe(learning?.confidence, 0.5) * 100;
+  const resilience = safe(resilienceScore, 0.5) * 100;
+  const orchestratorConfidence = safe(
+    globalContext?.orchestrator?.orchestratorConfidence,
+    0
+  );
+
+  const confidence =
+    learningConfidence * 0.25 +
+    resilience * 0.20 +
+    orchestratorConfidence * 0.55;
+
+  return clamp(Math.round(confidence), 0, 100);
+}
+
+/* ===============================
+   EXPLAINABILITY SUMMARY
+================================ */
+
+function buildWhyItIsInteresting({
+  narratives = [],
+  discoveries = [],
+  globalContext = {},
+  strategy = {},
+  features = {},
+}) {
+  const reasons = [];
+
+  const trendStrength = safe(features?.trendStrength, 0);
+  const relativeVolume = safe(features?.relativeVolume, 0);
+  const liquidityScore = safe(features?.liquidityScore, 0);
+
+  if (trendStrength > 1) reasons.push("starker Trend");
+  if (relativeVolume > 1.2) reasons.push("überdurchschnittliches Volumen");
+  if (liquidityScore >= 70) reasons.push("hohe Liquidität");
+
+  if (Array.isArray(discoveries) && discoveries.length > 0) {
+    reasons.push("aktives Marktsignal");
+  }
+
+  if (Array.isArray(narratives) && narratives.length > 0) {
+    reasons.push("starkes Markt-Narrativ");
+  }
+
+  if (String(strategy?.strategy || "") === "momentum") {
+    reasons.push("passt zur Momentum-Strategie");
+  }
+
+  const riskMode = globalContext?.orchestrator?.riskMode?.mode;
+  if (riskMode === "risk_on") reasons.push("positives Marktumfeld");
+  if (riskMode === "risk_off") reasons.push("vorsichtiges Marktumfeld");
+
+  return reasons.slice(0, 5);
+}
+
+/* ===============================
    MAIN INTEGRATION
 ================================ */
 
@@ -101,7 +267,7 @@ function buildIntegratedMarketView({
   simulations,
   resilienceScore,
   research,
-  globalContext
+  globalContext,
 }) {
   const finalConviction = calculateFinalConviction({
     hqsScore: hqs?.hqsScore,
@@ -111,7 +277,25 @@ function buildIntegratedMarketView({
     narratives,
     discoveries,
     researchSignals: research?.researchSignals,
-    globalContext
+    globalContext,
+  });
+
+  const finalConfidence = buildFinalConfidence({
+    learning,
+    brain,
+    globalContext,
+    resilienceScore,
+  });
+
+  const finalRating = buildFinalRating(finalConviction);
+  const finalDecision = buildFinalDecision(finalConviction);
+
+  const whyInteresting = buildWhyItIsInteresting({
+    narratives,
+    discoveries,
+    globalContext,
+    strategy,
+    features,
   });
 
   return {
@@ -121,8 +305,9 @@ function buildIntegratedMarketView({
     aiScore: safe(brain?.aiScore),
 
     finalConviction,
-    finalRating: buildFinalRating(finalConviction),
-    finalDecision: buildFinalDecision(finalConviction),
+    finalConfidence,
+    finalRating,
+    finalDecision,
 
     regime: hqs?.regime ?? null,
 
@@ -136,17 +321,28 @@ function buildIntegratedMarketView({
     research: research ?? {},
     globalContext: globalContext ?? {},
 
+    whyInteresting,
+
     components: {
       hqs: safe(hqs?.hqsScore),
       ai: safe(brain?.aiScore),
       strategyAdjusted: safe(strategy?.strategyAdjustedScore),
-      resilience: safe(resilienceScore)
+      resilience: safe(resilienceScore),
+      memoryScore: safe(globalContext?.marketMemory?.memoryScore, 0),
+      opportunityStrength: safe(
+        globalContext?.orchestrator?.opportunityStrength,
+        0
+      ),
+      orchestratorConfidence: safe(
+        globalContext?.orchestrator?.orchestratorConfidence,
+        0
+      ),
     },
 
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   };
 }
 
 module.exports = {
-  buildIntegratedMarketView
+  buildIntegratedMarketView,
 };
