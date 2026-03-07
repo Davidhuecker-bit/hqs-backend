@@ -19,11 +19,21 @@ const { detectMarketRegime } = require("../engines/marketRegimeEngine");
 const { buildFeatures } = require("../engines/featureEngine");
 const { discoverOpportunities } = require("../engines/discoveryEngine");
 const { detectNarrative } = require("../engines/narrativeEngine");
-const { runMarketSimulations, calculateResilience } = require("../engines/marketSimulationEngine");
+const {
+  runMarketSimulations,
+  calculateResilience,
+} = require("../engines/marketSimulationEngine");
 const { runResearch } = require("../engines/researchEngine");
 const { buildAIScore } = require("../engines/marketBrain");
 const { applyStrategy } = require("../engines/strategyEngine");
 const { buildIntegratedMarketView } = require("../engines/integrationEngine");
+
+const { analyzeCrossAssetEnvironment } = require("../engines/crossAssetEngine");
+const { analyzeCapitalFlows } = require("../engines/capitalFlowEngine");
+const { analyzeMacroEvents } = require("../engines/eventIntelligenceEngine");
+const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
+const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
+const { orchestrateMarket } = require("../engines/marketOrchestrator");
 
 const { computeAdaptiveWeights } = require("./weightHistory.repository");
 
@@ -53,17 +63,23 @@ const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 
 /* =========================================================
+   IN-MEMORY AI STORES
+   (später DB/Redis möglich)
+========================================================= */
+
+let marketMemoryStore = {};
+let metaLearningStore = {};
+
+/* =========================================================
    FMP MARKET SYMBOLS
 ========================================================= */
 
 async function getMarketSymbolsFromFMP() {
   try {
-
     const exchanges = ["NASDAQ", "NYSE", "AMEX"];
     let symbols = [];
 
     for (const exchange of exchanges) {
-
       const url =
         `https://financialmodelingprep.com/api/v3/stock-screener?exchange=${exchange}&limit=1000&apikey=${process.env.FMP_API_KEY}`;
 
@@ -73,7 +89,6 @@ async function getMarketSymbolsFromFMP() {
         const list = res.data.map((s) => s.symbol).filter(Boolean);
         symbols = symbols.concat(list);
       }
-
     }
 
     symbols = [...new Set(symbols)];
@@ -83,15 +98,12 @@ async function getMarketSymbolsFromFMP() {
     });
 
     return symbols;
-
   } catch (err) {
-
     logger.error("FMP screener failed", {
       message: err.message,
     });
 
     return [];
-
   }
 }
 
@@ -105,7 +117,6 @@ function safeNum(v, fallback = 0) {
 ========================================================= */
 
 async function ensureTablesExist() {
-
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_snapshots (
       id SERIAL PRIMARY KEY,
@@ -140,7 +151,6 @@ async function ensureTablesExist() {
   await seedDefaultWatchlist();
 
   logger.info("Tables ensured");
-
 }
 
 /* =========================================================
@@ -148,9 +158,7 @@ async function ensureTablesExist() {
 ========================================================= */
 
 async function loadLatestHqsScore(symbol) {
-
   try {
-
     const res = await pool.query(
       `
       SELECT
@@ -184,15 +192,10 @@ async function loadLatestHqsScore(symbol) {
         ? new Date(row.created_at).toISOString()
         : null,
     };
-
   } catch (err) {
-
     logger.error("loadLatestHqsScore error", { message: err.message });
-
     return null;
-
   }
-
 }
 
 /* =========================================================
@@ -200,14 +203,14 @@ async function loadLatestHqsScore(symbol) {
 ========================================================= */
 
 function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
-
   const price0 = safeNum(S, 0);
   const drift = safeNum(mu, 0);
   const sig = safeNum(sigmaDaily, 0);
 
   if (!Number.isFinite(price0) || price0 <= 0) return null;
 
-  const sim = Number.isFinite(simulations) && simulations > 100 ? simulations : 800;
+  const sim =
+    Number.isFinite(simulations) && simulations > 100 ? simulations : 800;
 
   const h30 = monteCarloSimulation(price0, drift, sig, 30, sim);
   const h90 = monteCarloSimulation(price0, drift, sig, 90, sim);
@@ -222,7 +225,47 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
       "252": { base: h252.realistic, bull: h252.optimistic, bear: h252.pessimistic },
     },
   };
+}
 
+/* =========================================================
+   HELPER: MACRO / FLOW FALLBACK CONTEXT
+   (später mit echten Daten füttern)
+========================================================= */
+
+function buildMacroContextFallback({ trendData, normalized }) {
+  return {
+    vixTrend: safeNum(trendData?.volatilityAnnual, 0) - 0.2,
+    marketBreadth: safeNum(trendData?.trend, 0) > 0 ? 0.62 : 0.42,
+    dollarTrend: 0,
+    marketTrend: safeNum(trendData?.trend, 0),
+    oilTrend: 0,
+    goldTrend: 0,
+    bondTrend: 0,
+    techTrend: safeNum(normalized?.changesPercentage, 0) / 100,
+  };
+}
+
+function buildCapitalFlowFallback({ normalized }) {
+  const volume = safeNum(normalized?.volume, 0);
+  const avgVolume = safeNum(normalized?.avgVolume, volume || 1);
+
+  return {
+    sectorData: normalized?.sector
+      ? [
+          {
+            sector: String(normalized.sector).toLowerCase(),
+            performance: safeNum(normalized?.changesPercentage, 0) / 100,
+          },
+        ]
+      : [],
+    etfFlows: [],
+    advancers: safeNum(normalized?.changesPercentage, 0) >= 0 ? 3200 : 1800,
+    decliners: safeNum(normalized?.changesPercentage, 0) >= 0 ? 1800 : 3200,
+    volumeData: {
+      volume,
+      avgVolume,
+    },
+  };
 }
 
 /* =========================================================
@@ -230,7 +273,6 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
 ========================================================= */
 
 async function buildMarketSnapshot() {
-
   const won = await acquireLock("snapshot_job", 12 * 60);
 
   if (!won) {
@@ -248,9 +290,7 @@ async function buildMarketSnapshot() {
   }
 
   for (const symbol of symbols) {
-
     try {
-
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) continue;
 
@@ -264,7 +304,6 @@ async function buildMarketSnapshot() {
       let adaptiveWeights = await computeAdaptiveWeights(regime);
 
       try {
-
         const historical = await getHistoricalPrices(symbol, HIST_PERIOD);
 
         const prices = (historical || [])
@@ -272,7 +311,6 @@ async function buildMarketSnapshot() {
           .filter((n) => Number.isFinite(n) && n > 0);
 
         if (prices.length >= 30) {
-
           trendData = buildTrendScore(prices);
 
           regime = detectMarketRegime(
@@ -296,16 +334,12 @@ async function buildMarketSnapshot() {
             volatilityDaily: trendData.volatilityDaily,
             scenarios,
           });
-
         }
-
       } catch (histErr) {
-
         logger.warn("Historical unavailable", {
           symbol,
           message: histErr.message,
         });
-
       }
 
       const hqs = await buildHQSResponse(
@@ -316,13 +350,13 @@ async function buildMarketSnapshot() {
       );
 
       /* =============================
-         NEW AI LAYER
+         CORE AI LAYER
       ============================= */
 
       const features = buildFeatures(normalized, {
         trend: trendData?.trend,
         volatilityAnnual: trendData?.volatilityAnnual,
-        avgVolume: normalized.avgVolume
+        avgVolume: normalized.avgVolume,
       });
 
       const discoveries = discoverOpportunities(
@@ -335,7 +369,7 @@ async function buildMarketSnapshot() {
       const narratives = detectNarrative({
         sector: normalized.sector,
         trend: trendData?.trend,
-        relative: hqs?.breakdown?.relative
+        relative: hqs?.breakdown?.relative,
       });
 
       const simulations = runMarketSimulations(features, trendData);
@@ -354,7 +388,7 @@ async function buildMarketSnapshot() {
         hqsScore: hqs?.hqsScore,
         features,
         advanced: trendData,
-        discoveries
+        discoveries,
       });
 
       const strategy = applyStrategy(
@@ -363,6 +397,91 @@ async function buildMarketSnapshot() {
         features,
         trendData
       );
+
+      /* =============================
+         NEW MACRO / FLOW / EVENT LAYER
+      ============================= */
+
+      const macroContext = buildMacroContextFallback({
+        trendData,
+        normalized,
+      });
+
+      const crossAsset = analyzeCrossAssetEnvironment(macroContext);
+
+      const capitalFlows = analyzeCapitalFlows(
+        buildCapitalFlowFallback({ normalized })
+      );
+
+      const eventIntelligence = analyzeMacroEvents(macroContext);
+
+      /* =============================
+         MEMORY + META LEARNING
+      ============================= */
+
+      const marketMemory = evaluateMarketMemory({
+        memoryStore: marketMemoryStore,
+        symbol,
+        regime,
+        strategy: strategy?.strategy || "balanced",
+        discoveries,
+        narratives,
+        features,
+        crossSignals: crossAsset?.signals || [],
+        prediction: safeNum(brain?.aiScore, 0) / 100,
+        actualReturn: 0,
+        confidence: 0.5,
+        persist: false,
+      });
+
+      const metaLearning = evaluateMetaLearning({
+        metaStore: metaLearningStore,
+        context: {
+          regime,
+          riskMode: "neutral",
+          strategy: strategy?.strategy || "balanced",
+          dominantNarrative: narratives?.[0]?.type || "none",
+        },
+        signalMetrics: {
+          trendScore: safeNum(trendData?.trendStrength, 0),
+          discoveryCount: discoveries?.length || 0,
+          capitalFlowStrength: capitalFlows?.marketBreadth || 0,
+          eventCount: eventIntelligence?.events?.length || 0,
+          memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
+          narrativeCount: narratives?.length || 0,
+          strategyScore: safeNum(strategy?.strategyAdjustedScore, 0),
+          crossAssetCount: crossAsset?.signals?.length || 0,
+        },
+        actualReturn: 0,
+        symbol,
+        persist: false,
+      });
+
+      /* =============================
+         ORCHESTRATOR
+      ============================= */
+
+      const orchestrator = orchestrateMarket({
+        trendData,
+        aiScore: brain?.aiScore,
+        conviction: brain?.aiScore,
+        resilienceScore,
+        narratives,
+        discoveries,
+        crossAssetSignals: crossAsset?.signals || [],
+        capitalFlows,
+        macroContext: {
+          ...macroContext,
+          marketBreadth: capitalFlows?.marketBreadth ?? macroContext.marketBreadth,
+        },
+        eventIntelligence,
+        marketMemory,
+        metaLearning,
+      });
+
+      /* =============================
+         FINAL INTEGRATION
+      ============================= */
 
       const finalView = buildIntegratedMarketView({
         symbol,
@@ -376,10 +495,24 @@ async function buildMarketSnapshot() {
         simulations,
         resilienceScore,
         research,
-        globalContext: null
+        globalContext: {
+          crossAsset,
+          capitalFlows,
+          eventIntelligence,
+          orchestrator,
+          marketMemory: marketMemory?.memoryStats || null,
+          metaLearning: metaLearning?.trustProfile || null,
+        },
       });
 
-      logger.info("AI Market View", finalView);
+      logger.info("AI Market View", {
+        symbol,
+        finalConviction: finalView?.finalConviction,
+        finalRating: finalView?.finalRating,
+        aiScore: brain?.aiScore,
+        opportunityStrength: orchestrator?.opportunityStrength,
+        orchestratorConfidence: orchestrator?.orchestratorConfidence,
+      });
 
       /* =============================
          DATABASE STORAGE
@@ -420,19 +553,14 @@ async function buildMarketSnapshot() {
       );
 
       logger.info(`Snapshot saved for ${symbol}`);
-
     } catch (err) {
-
       logger.error(`Snapshot error for ${symbol}`, {
-        message: err.message
+        message: err.message,
       });
-
     }
-
   }
 
   logger.info("Snapshot complete");
-
 }
 
 /* =========================================================
@@ -440,9 +568,7 @@ async function buildMarketSnapshot() {
 ========================================================= */
 
 async function getMarketData(symbol) {
-
   try {
-
     const symbols = symbol
       ? [String(symbol).trim().toUpperCase()]
       : await getActiveWatchlistSymbols(250);
@@ -450,7 +576,6 @@ async function getMarketData(symbol) {
     const results = [];
 
     for (const s of symbols) {
-
       const raw = await fetchQuote(s);
       if (!raw || !raw.length) continue;
 
@@ -463,30 +588,23 @@ async function getMarketData(symbol) {
       const adv = await loadAdvancedMetrics(s);
 
       if (adv) {
-
         normalized.regime = normalized.regime ?? adv.regime ?? null;
         normalized.trend = adv.trend ?? null;
         normalized.volatility = adv.volatility ?? null;
         normalized.scenarios = adv.scenarios ?? null;
-
       }
 
       results.push(normalized);
-
     }
 
     return results;
-
   } catch (error) {
-
     logger.error("MarketData Error", {
-      message: error.message
+      message: error.message,
     });
 
     return [];
-
   }
-
 }
 
 module.exports = {
