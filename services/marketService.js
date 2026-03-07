@@ -1,7 +1,7 @@
 "use strict";
 
 /*
-  HQS Market System – Enterprise Upgrade (FMP MARKET SCANNER)
+  HQS Market System – Enterprise AI Market Pipeline
 */
 
 const axios = require("axios");
@@ -11,9 +11,19 @@ const { normalizeMarketData } = require("./marketNormalizer");
 const { buildHQSResponse } = require("../hqsEngine");
 
 const { getHistoricalPrices } = require("./historicalService");
+
 const { buildTrendScore } = require("../engines/trendEngine");
 const { monteCarloSimulation } = require("../engines/monteCarloEngine");
 const { detectMarketRegime } = require("../engines/marketRegimeEngine");
+
+const { buildFeatures } = require("../engines/featureEngine");
+const { discoverOpportunities } = require("../engines/discoveryEngine");
+const { detectNarrative } = require("../engines/narrativeEngine");
+const { runMarketSimulations, calculateResilience } = require("../engines/marketSimulationEngine");
+const { runResearch } = require("../engines/researchEngine");
+const { buildAIScore } = require("../engines/marketBrain");
+const { applyStrategy } = require("../engines/strategyEngine");
+const { buildIntegratedMarketView } = require("../engines/integrationEngine");
 
 const { computeAdaptiveWeights } = require("./weightHistory.repository");
 
@@ -48,10 +58,12 @@ const MC_SIMS = Number(process.env.MC_SIMS || 800);
 
 async function getMarketSymbolsFromFMP() {
   try {
+
     const exchanges = ["NASDAQ", "NYSE", "AMEX"];
     let symbols = [];
 
     for (const exchange of exchanges) {
+
       const url =
         `https://financialmodelingprep.com/api/v3/stock-screener?exchange=${exchange}&limit=1000&apikey=${process.env.FMP_API_KEY}`;
 
@@ -61,6 +73,7 @@ async function getMarketSymbolsFromFMP() {
         const list = res.data.map((s) => s.symbol).filter(Boolean);
         symbols = symbols.concat(list);
       }
+
     }
 
     symbols = [...new Set(symbols)];
@@ -70,11 +83,15 @@ async function getMarketSymbolsFromFMP() {
     });
 
     return symbols;
+
   } catch (err) {
+
     logger.error("FMP screener failed", {
       message: err.message,
     });
+
     return [];
+
   }
 }
 
@@ -88,6 +105,7 @@ function safeNum(v, fallback = 0) {
 ========================================================= */
 
 async function ensureTablesExist() {
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_snapshots (
       id SERIAL PRIMARY KEY,
@@ -122,6 +140,7 @@ async function ensureTablesExist() {
   await seedDefaultWatchlist();
 
   logger.info("Tables ensured");
+
 }
 
 /* =========================================================
@@ -129,7 +148,9 @@ async function ensureTablesExist() {
 ========================================================= */
 
 async function loadLatestHqsScore(symbol) {
+
   try {
+
     const res = await pool.query(
       `
       SELECT
@@ -163,17 +184,23 @@ async function loadLatestHqsScore(symbol) {
         ? new Date(row.created_at).toISOString()
         : null,
     };
+
   } catch (err) {
+
     logger.error("loadLatestHqsScore error", { message: err.message });
+
     return null;
+
   }
+
 }
 
 /* =========================================================
-   SCENARIO ENGINE
+   MONTE CARLO SCENARIOS
 ========================================================= */
 
 function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
+
   const price0 = safeNum(S, 0);
   const drift = safeNum(mu, 0);
   const sig = safeNum(sigmaDaily, 0);
@@ -195,6 +222,7 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
       "252": { base: h252.realistic, bull: h252.optimistic, bear: h252.pessimistic },
     },
   };
+
 }
 
 /* =========================================================
@@ -202,6 +230,7 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
 ========================================================= */
 
 async function buildMarketSnapshot() {
+
   const won = await acquireLock("snapshot_job", 12 * 60);
 
   if (!won) {
@@ -219,7 +248,9 @@ async function buildMarketSnapshot() {
   }
 
   for (const symbol of symbols) {
+
     try {
+
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) continue;
 
@@ -233,6 +264,7 @@ async function buildMarketSnapshot() {
       let adaptiveWeights = await computeAdaptiveWeights(regime);
 
       try {
+
         const historical = await getHistoricalPrices(symbol, HIST_PERIOD);
 
         const prices = (historical || [])
@@ -240,9 +272,14 @@ async function buildMarketSnapshot() {
           .filter((n) => Number.isFinite(n) && n > 0);
 
         if (prices.length >= 30) {
+
           trendData = buildTrendScore(prices);
 
-          regime = detectMarketRegime(trendData.trend, trendData.volatilityAnnual);
+          regime = detectMarketRegime(
+            trendData.trend,
+            trendData.volatilityAnnual
+          );
+
           adaptiveWeights = await computeAdaptiveWeights(regime);
 
           scenarios = buildMultiHorizonScenarios(
@@ -259,15 +296,94 @@ async function buildMarketSnapshot() {
             volatilityDaily: trendData.volatilityDaily,
             scenarios,
           });
+
         }
+
       } catch (histErr) {
+
         logger.warn("Historical unavailable", {
           symbol,
           message: histErr.message,
         });
+
       }
 
-      const hqs = await buildHQSResponse(normalized, 0, adaptiveWeights, regime);
+      const hqs = await buildHQSResponse(
+        normalized,
+        0,
+        adaptiveWeights,
+        regime
+      );
+
+      /* =============================
+         NEW AI LAYER
+      ============================= */
+
+      const features = buildFeatures(normalized, {
+        trend: trendData?.trend,
+        volatilityAnnual: trendData?.volatilityAnnual,
+        avgVolume: normalized.avgVolume
+      });
+
+      const discoveries = discoverOpportunities(
+        symbol,
+        normalized,
+        features,
+        trendData
+      );
+
+      const narratives = detectNarrative({
+        sector: normalized.sector,
+        trend: trendData?.trend,
+        relative: hqs?.breakdown?.relative
+      });
+
+      const simulations = runMarketSimulations(features, trendData);
+      const resilienceScore = calculateResilience(simulations);
+
+      const research = runResearch(
+        symbol,
+        normalized,
+        features,
+        trendData,
+        hqs?.hqsScore
+      );
+
+      const brain = buildAIScore({
+        symbol,
+        hqsScore: hqs?.hqsScore,
+        features,
+        advanced: trendData,
+        discoveries
+      });
+
+      const strategy = applyStrategy(
+        symbol,
+        brain?.aiScore,
+        features,
+        trendData
+      );
+
+      const finalView = buildIntegratedMarketView({
+        symbol,
+        hqs,
+        features,
+        discoveries,
+        learning: null,
+        brain,
+        strategy,
+        narratives,
+        simulations,
+        resilienceScore,
+        research,
+        globalContext: null
+      });
+
+      logger.info("AI Market View", finalView);
+
+      /* =============================
+         DATABASE STORAGE
+      ============================= */
 
       await pool.query(
         `
@@ -304,12 +420,19 @@ async function buildMarketSnapshot() {
       );
 
       logger.info(`Snapshot saved for ${symbol}`);
+
     } catch (err) {
-      logger.error(`Snapshot error for ${symbol}`, { message: err.message });
+
+      logger.error(`Snapshot error for ${symbol}`, {
+        message: err.message
+      });
+
     }
+
   }
 
   logger.info("Snapshot complete");
+
 }
 
 /* =========================================================
@@ -317,7 +440,9 @@ async function buildMarketSnapshot() {
 ========================================================= */
 
 async function getMarketData(symbol) {
+
   try {
+
     const symbols = symbol
       ? [String(symbol).trim().toUpperCase()]
       : await getActiveWatchlistSymbols(250);
@@ -325,6 +450,7 @@ async function getMarketData(symbol) {
     const results = [];
 
     for (const s of symbols) {
+
       const raw = await fetchQuote(s);
       if (!raw || !raw.length) continue;
 
@@ -337,20 +463,30 @@ async function getMarketData(symbol) {
       const adv = await loadAdvancedMetrics(s);
 
       if (adv) {
+
         normalized.regime = normalized.regime ?? adv.regime ?? null;
         normalized.trend = adv.trend ?? null;
         normalized.volatility = adv.volatility ?? null;
         normalized.scenarios = adv.scenarios ?? null;
+
       }
 
       results.push(normalized);
+
     }
 
     return results;
+
   } catch (error) {
-    logger.error("MarketData Error", { message: error.message });
+
+    logger.error("MarketData Error", {
+      message: error.message
+    });
+
     return [];
+
   }
+
 }
 
 module.exports = {
