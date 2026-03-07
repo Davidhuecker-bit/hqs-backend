@@ -3,10 +3,22 @@
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
+const { buildAIScore } = require("../engines/marketBrain");
+const { applyStrategy } = require("../engines/strategyEngine");
+const { detectNarrative } = require("../engines/narrativeEngine");
+const { discoverOpportunities } = require("../engines/discoveryEngine");
+const { runMarketSimulations, calculateResilience } = require("../engines/marketSimulationEngine");
+const { buildFeatures } = require("../engines/featureEngine");
+const { buildIntegratedMarketView } = require("../engines/integrationEngine");
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+/* =========================================================
+   UTIL
+========================================================= */
 
 function clamp(n, min, max) {
   const x = Number(n);
@@ -30,6 +42,7 @@ function norm0to1(x) {
 ========================================================= */
 
 function calculateOpportunityScore(row) {
+
   const hqs = safeNum(row.hqs_score, 0);
 
   const momentum = norm0to1(row.momentum);
@@ -55,6 +68,7 @@ function calculateOpportunityScore(row) {
 ========================================================= */
 
 function calculateConfidence(row, opportunityScore) {
+
   const hqs = safeNum(row.hqs_score, 0);
   const quality = norm0to1(row.quality);
   const stability = norm0to1(row.stability);
@@ -71,10 +85,11 @@ function calculateConfidence(row, opportunityScore) {
 }
 
 /* =========================================================
-   OPPORTUNITY TYPE CLASSIFICATION
+   OPPORTUNITY TYPE
 ========================================================= */
 
 function classifyOpportunity(row) {
+
   const momentum = norm0to1(row.momentum);
   const quality = norm0to1(row.quality);
   const stability = norm0to1(row.stability);
@@ -99,6 +114,7 @@ function classifyOpportunity(row) {
 ========================================================= */
 
 function generateReason(row) {
+
   const reasons = [];
 
   const quality = norm0to1(row.quality);
@@ -112,10 +128,10 @@ function generateReason(row) {
   if (relative >= 0.65) reasons.push("stärker als der Markt");
 
   if (momentum >= 0.50 && momentum <= 0.85)
-    reasons.push("läuft gut, aber nicht überhitzt");
+    reasons.push("läuft gut");
 
   if (volatility > 0.9)
-    reasons.push("Achtung: schwankt stark");
+    reasons.push("hohe Schwankung");
 
   if (!reasons.length)
     reasons.push("solide Werte");
@@ -128,6 +144,7 @@ function generateReason(row) {
 ========================================================= */
 
 async function getTopOpportunities(arg = 10) {
+
   let options;
 
   if (typeof arg === "object" && arg !== null) {
@@ -137,17 +154,18 @@ async function getTopOpportunities(arg = 10) {
   }
 
   const limit = clamp(Number(options.limit || 10), 1, 25);
+
   const minHqs =
     options.minHqs === null || options.minHqs === undefined
       ? null
       : clamp(Number(options.minHqs), 0, 100);
 
-  const regime = options.regime
-    ? String(options.regime).trim().toLowerCase()
-    : null;
+  const regime =
+    options.regime
+      ? String(options.regime).trim().toLowerCase()
+      : null;
 
-  const res = await pool.query(
-    `
+  const res = await pool.query(`
     WITH latest_hqs AS (
       SELECT DISTINCT ON (symbol)
         symbol,
@@ -188,13 +206,14 @@ async function getTopOpportunities(arg = 10) {
 
     ORDER BY h.hqs_score DESC
     LIMIT 250
-    `
-  );
+  `);
 
   let rows = res.rows || [];
 
   if (minHqs !== null) {
-    rows = rows.filter((r) => safeNum(r.hqs_score, 0) >= minHqs);
+    rows = rows.filter(
+      (r) => safeNum(r.hqs_score, 0) >= minHqs
+    );
   }
 
   if (regime) {
@@ -204,10 +223,63 @@ async function getTopOpportunities(arg = 10) {
   }
 
   const opportunities = rows.map((row) => {
+
     const opportunityScore = calculateOpportunityScore(row);
 
+    const features = buildFeatures(row, {
+      trend: row.trend,
+      volatilityAnnual: row.volatility
+    });
+
+    const discoveries = discoverOpportunities(
+      row.symbol,
+      row,
+      features,
+      row
+    );
+
+    const narratives = detectNarrative({
+      sector: row.sector,
+      trend: row.trend,
+      relative: row.relative
+    });
+
+    const simulations = runMarketSimulations(features, row);
+    const resilienceScore = calculateResilience(simulations);
+
+    const brain = buildAIScore({
+      symbol: row.symbol,
+      hqsScore: row.hqs_score,
+      features,
+      advanced: row,
+      discoveries
+    });
+
+    const strategy = applyStrategy(
+      row.symbol,
+      brain.aiScore,
+      features,
+      row
+    );
+
+    const finalView = buildIntegratedMarketView({
+      symbol: row.symbol,
+      hqs: { hqsScore: row.hqs_score },
+      features,
+      discoveries,
+      brain,
+      strategy,
+      narratives,
+      simulations,
+      resilienceScore,
+      research: null,
+      globalContext: null
+    });
+
     return {
-      symbol: String(row.symbol || "").toUpperCase(),
+
+      symbol: row.symbol.toUpperCase(),
+
       regime: row.regime ?? null,
 
       type: classifyOpportunity(row),
@@ -215,21 +287,36 @@ async function getTopOpportunities(arg = 10) {
       hqsScore: safeNum(row.hqs_score, 0),
 
       opportunityScore,
+
       confidence: calculateConfidence(row, opportunityScore),
 
-      reason: generateReason(row),
+      aiScore: brain.aiScore,
+
+      finalConviction: finalView.finalConviction,
+      finalRating: finalView.finalRating,
+      finalDecision: finalView.finalDecision,
+
+      strategy: strategy.strategy,
+      narratives,
+      discoveries,
 
       trend: row.trend ?? null,
       volatility: row.volatility ?? null,
-      scenarios: row.scenarios ?? null,
+
+      resilienceScore,
+
+      reason: generateReason(row),
 
       advancedUpdatedAt: row.advanced_updated_at
         ? new Date(row.advanced_updated_at).toISOString()
         : null,
     };
+
   });
 
-  opportunities.sort((a, b) => b.opportunityScore - a.opportunityScore);
+  opportunities.sort(
+    (a, b) => b.finalConviction - a.finalConviction
+  );
 
   const out = opportunities.slice(0, limit);
 
