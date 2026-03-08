@@ -18,15 +18,31 @@
 require("dotenv").config();
 
 const logger = require("../utils/logger");
-const { ensureTablesExist, buildMarketSnapshot } = require("../services/marketService");
+const {
+  ensureTablesExist,
+  buildMarketSnapshot,
+} = require("../services/marketService");
 const { initJobLocksTable } = require("../services/jobLock.repository");
+const {
+  initOutcomeTrackingTable,
+} = require("../services/outcomeTracking.repository");
 
 async function run() {
   logger.info("snapshotScan job started");
 
   await initJobLocksTable();
+
+  logger.info("snapshotScan: initOutcomeTrackingTable start");
+  await initOutcomeTrackingTable();
+  logger.info("snapshotScan: initOutcomeTrackingTable done");
+
+  logger.info("snapshotScan: ensureTablesExist start");
   await ensureTablesExist();
+  logger.info("snapshotScan: ensureTablesExist done");
+
+  logger.info("snapshotScan: buildMarketSnapshot start");
   await buildMarketSnapshot();
+  logger.info("snapshotScan: buildMarketSnapshot done");
 
   logger.info("snapshotScan job finished");
 }
