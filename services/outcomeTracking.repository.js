@@ -64,6 +64,16 @@ async function initOutcomeTrackingTable() {
     ON outcome_tracking(is_evaluated, evaluation_due_at);
   `);
 
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_outcome_tracking_setup_signature
+    ON outcome_tracking(setup_signature);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_outcome_tracking_predicted_at
+    ON outcome_tracking(predicted_at DESC);
+  `);
+
   logger.info("Outcome tracking table ensured");
 }
 
