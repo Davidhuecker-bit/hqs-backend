@@ -2,9 +2,8 @@
 
 /*
   HQS Market System – Enterprise AI Market Pipeline
+  DB-first snapshot scanning (watchlist based)
 */
-
-const axios = require("axios");
 
 const { fetchQuote } = require("./providerService");
 const { normalizeMarketData } = require("./marketNormalizer");
@@ -70,6 +69,7 @@ const pool = new Pool({
 const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 const OUTCOME_HORIZON_DAYS = Number(process.env.OUTCOME_HORIZON_DAYS || 30);
+const SNAPSHOT_SYMBOL_LIMIT = Number(process.env.SNAPSHOT_SYMBOL_LIMIT || 250);
 
 /* =========================================================
    IN-MEMORY AI STORES
@@ -80,45 +80,36 @@ let marketMemoryStore = {};
 let metaLearningStore = {};
 
 /* =========================================================
-   FMP MARKET SYMBOLS
+   UTIL
 ========================================================= */
-
-async function getMarketSymbolsFromFMP() {
-  try {
-    const exchanges = ["NASDAQ", "NYSE", "AMEX"];
-    let symbols = [];
-
-    for (const exchange of exchanges) {
-      const url =
-        `https://financialmodelingprep.com/api/v3/stock-screener?exchange=${exchange}&limit=1000&apikey=${process.env.FMP_API_KEY}`;
-
-      const res = await axios.get(url);
-
-      if (Array.isArray(res.data)) {
-        const list = res.data.map((s) => s.symbol).filter(Boolean);
-        symbols = symbols.concat(list);
-      }
-    }
-
-    symbols = [...new Set(symbols)];
-
-    logger.info("FMP market symbols loaded", {
-      count: symbols.length,
-    });
-
-    return symbols;
-  } catch (err) {
-    logger.error("FMP screener failed", {
-      message: err.message,
-    });
-
-    return [];
-  }
-}
 
 function safeNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+async function getSnapshotSymbols() {
+  const symbols = await getActiveWatchlistSymbols(SNAPSHOT_SYMBOL_LIMIT);
+
+  if (!Array.isArray(symbols) || !symbols.length) {
+    logger.warn("No symbols found in watchlist_symbols", {
+      limit: SNAPSHOT_SYMBOL_LIMIT,
+    });
+    return [];
+  }
+
+  const clean = [...new Set(
+    symbols
+      .map((s) => String(s || "").trim().toUpperCase())
+      .filter(Boolean)
+  )];
+
+  logger.info("Snapshot symbols loaded from watchlist", {
+    count: clean.length,
+    limit: SNAPSHOT_SYMBOL_LIMIT,
+  });
+
+  return clean;
 }
 
 /* =========================================================
@@ -239,7 +230,6 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
 
 /* =========================================================
    HELPER: MACRO / FLOW FALLBACK CONTEXT
-   (später mit echten Daten füttern)
 ========================================================= */
 
 function buildMacroContextFallback({ trendData, normalized }) {
@@ -292,10 +282,10 @@ async function buildMarketSnapshot() {
 
   logger.info("Building market snapshot...");
 
-  const symbols = await getMarketSymbolsFromFMP();
+  const symbols = await getSnapshotSymbols();
 
   if (!symbols.length) {
-    logger.warn("No symbols received from FMP");
+    logger.warn("No symbols available for snapshot run");
     return;
   }
 
@@ -304,7 +294,8 @@ async function buildMarketSnapshot() {
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) continue;
 
-      const normalized = normalizeMarketData(raw[0], "massive", "us");
+      const providerSource = String(raw?.[0]?.source || "massive").toLowerCase();
+      const normalized = normalizeMarketData(raw[0], providerSource, "us");
       if (!normalized) continue;
 
       let trendData = null;
@@ -343,6 +334,12 @@ async function buildMarketSnapshot() {
             volatilityAnnual: trendData.volatilityAnnual,
             volatilityDaily: trendData.volatilityDaily,
             scenarios,
+          });
+        } else {
+          logger.warn("Historical insufficient", {
+            symbol,
+            points: prices.length,
+            period: HIST_PERIOD,
           });
         }
       } catch (histErr) {
@@ -529,6 +526,7 @@ async function buildMarketSnapshot() {
 
       logger.info("AI Market View", {
         symbol,
+        source: normalized.source,
         finalConviction: finalView?.finalConviction,
         finalRating: finalView?.finalRating,
         aiScore: brain?.aiScore,
@@ -638,7 +636,8 @@ async function getMarketData(symbol) {
       const raw = await fetchQuote(s);
       if (!raw || !raw.length) continue;
 
-      const normalized = normalizeMarketData(raw[0], "massive", "us");
+      const providerSource = String(raw?.[0]?.source || "massive").toLowerCase();
+      const normalized = normalizeMarketData(raw[0], providerSource, "us");
       if (!normalized) continue;
 
       const cached = await loadLatestHqsScore(s);
