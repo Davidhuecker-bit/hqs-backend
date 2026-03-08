@@ -40,7 +40,6 @@ function parseSymbolsFromEnv() {
     .map((s) => String(s || "").trim().toUpperCase())
     .filter(Boolean);
 
-  // unique
   return [...new Set(parts)];
 }
 
@@ -55,8 +54,52 @@ async function seedDefaultWatchlist() {
   // 1) Wenn SYMBOLS gesetzt -> nimm die
   const envSymbols = parseSymbolsFromEnv();
 
-  // 2) Fallback
-  const defaults = envSymbols.length ? envSymbols : ["AAPL", "MSFT", "NVDA", "AMD"];
+  // 2) Fallback: 300er Startuniversum
+  const defaults = envSymbols.length ? envSymbols : [
+    "AAPL","MSFT","NVDA","AVGO","ORCL","CRM","ADBE","NOW","INTU","IBM",
+    "AMD","QCOM","TXN","AMAT","MU","KLAC","LRCX","PANW","CRWD","FTNT",
+    "SNPS","CDNS","ANET","MSI","ADSK","ADI","NXPI","MCHP","ACN","UBER",
+    "SHOP","SQ","DOCU","ZS","DDOG","NET","OKTA","HPE","HPQ","PLTR",
+
+    "GOOGL","META","NFLX","DIS","T","VZ","TMUS","CMCSA","CHTR","WBD",
+    "EA","RBLX","SPOT","SNAP","TTWO","ROKU","MTCH","FOXA","FOX","PINS",
+
+    "AMZN","TSLA","HD","MCD","NKE","SBUX","BKNG","ABNB","LOW","TJX",
+    "ROST","CMG","MAR","HLT","AZO","ORLY","DRI","YUM","DPZ","LULU",
+    "GM","F","BBY","LEN","DHI","PHM","NVR","ULTA","LVS","EBAY",
+
+    "WMT","COST","PG","KO","PEP","PM","MO","CL","KMB","GIS",
+    "KHC","KR","SYY","DG","DLTR","EL","HSY","MNST","ADM","TSN",
+
+    "LLY","JNJ","UNH","MRK","ABBV","PFE","ABT","BMY","TMO","DHR",
+    "ISRG","SYK","MDT","GILD","AMGN","CVS","HCA","HUM","CI","COR",
+    "MCK","CAH","REGN","VRTX","ZTS","IQV","EW","BSX","BDX","CNC",
+
+    "JPM","BAC","WFC","GS","MS","C","SCHW","BLK","BX","SPGI",
+    "ICE","CME","CB","PGR","AIG","ALL","MMC","AJG","TRV","USB",
+    "PNC","TFC","COF","MCO","AXP","V","MA","DFS","KKR","APO",
+    "BRO","FITB","MTB","RF","HBAN",
+
+    "XOM","CVX","COP","EOG","SLB","MPC","PSX","VLO","OXY","KMI",
+    "WMB","HES","DVN","FANG","EPD","ET","BKR","HAL","EQT","APA",
+
+    "GE","CAT","DE","HON","RTX","LMT","NOC","GD","BA","ETN",
+    "EMR","PH","UPS","FDX","WM","RSG","UNP","NSC","CSX","JBHT",
+    "ODFL","LHX","TDG","PWR","JCI","CARR","OTIS","XYL","ITW","HWM",
+
+    "LIN","APD","SHW","ECL","NUE","FCX","NEM","DOW","DD","ALB",
+    "MLM","VMC","PPG","CE","CF",
+
+    "NEE","SO","DUK","AEP","SRE","EXC","XEL","PEG","ED","EIX",
+    "D","DOM","ES","WEC","ATO",
+
+    "AMT","PLD","EQIX","CCI","O","PSA","SPG","DLR","WELL","VICI",
+    "CBRE","AVB","EQR","INVH","EXR",
+
+    "APP","AFRM","ARM","CELH","CAVA","DASH","DUOL","HUBS","MDB","MNDY",
+    "ONON","RDDT","RIVN","SNOW","SOFI","TOST","UPST","VRT","DAY","COIN",
+    "HOOD","GLW","COHR","SMCI","MP","RKLB","ASTS","BILL","APPF","ZM"
+  ];
 
   let prio = 10;
   for (const sym of defaults) {
@@ -71,7 +114,12 @@ async function seedDefaultWatchlist() {
     prio += 10;
   }
 
-  if (logger?.info) logger.info("watchlist seeded", { count: defaults.length, usedEnv: envSymbols.length > 0 });
+  if (logger?.info) {
+    logger.info("watchlist seeded", {
+      count: defaults.length,
+      usedEnv: envSymbols.length > 0
+    });
+  }
 }
 
 async function getActiveWatchlistSymbols(limit = 250) {
