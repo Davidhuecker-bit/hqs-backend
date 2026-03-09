@@ -3,6 +3,13 @@
 /*
   HQS Market System – Enterprise AI Market Pipeline
   DB-first snapshot scanning (watchlist based)
+
+  Enthält:
+  - Step 1: Snapshot Summary
+  - Step 2: System Health Score
+  - Step 3: Priority-aware Snapshot Loading
+  - Step 4: Extended Diagnostics (source + tier)
+  - Step 5: Run Recommendations / Quality Warnings
 */
 
 const { fetchQuote } = require("./providerService");
@@ -70,6 +77,8 @@ const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 const OUTCOME_HORIZON_DAYS = Number(process.env.OUTCOME_HORIZON_DAYS || 30);
 const SNAPSHOT_SYMBOL_LIMIT = Number(process.env.SNAPSHOT_SYMBOL_LIMIT || 250);
+const SNAPSHOT_REGION = String(process.env.SNAPSHOT_REGION || "us").toLowerCase().trim();
+const SNAPSHOT_FAIL_FAST_THRESHOLD = Number(process.env.SNAPSHOT_FAIL_FAST_THRESHOLD || 35);
 
 /* =========================================================
    IN-MEMORY AI STORES
@@ -88,30 +97,205 @@ function safeNum(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-async function getSnapshotSymbols() {
-  const symbols = await getActiveWatchlistSymbols(SNAPSHOT_SYMBOL_LIMIT);
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
 
-  if (!Array.isArray(symbols) || !symbols.length) {
-    logger.warn("No symbols found in watchlist_symbols", {
-      limit: SNAPSHOT_SYMBOL_LIMIT,
+function pct(part, total) {
+  const p = Number(part);
+  const t = Number(total);
+  if (!Number.isFinite(p) || !Number.isFinite(t) || t <= 0) return 0;
+  return (p / t) * 100;
+}
+
+function normalizePriority(priority) {
+  return clamp(safeNum(priority, 100), 1, 9999);
+}
+
+function classifyPriorityTier(priority) {
+  const p = normalizePriority(priority);
+
+  if (p <= 30) return "core";
+  if (p <= 80) return "high";
+  if (p <= 180) return "standard";
+  return "extended";
+}
+
+function createEmptyTierStats() {
+  return {
+    total: 0,
+    quotesLoaded: 0,
+    normalizedOk: 0,
+    historicalOk: 0,
+    snapshotsSaved: 0,
+    outcomeTracked: 0,
+    failed: 0,
+    skipped: 0,
+  };
+}
+
+function createEmptySourceStats() {
+  return {
+    total: 0,
+    normalizedOk: 0,
+    snapshotsSaved: 0,
+    outcomeTracked: 0,
+    failed: 0,
+  };
+}
+
+function ensureTierBucket(summary, tier) {
+  if (!summary.byTier[tier]) {
+    summary.byTier[tier] = createEmptyTierStats();
+  }
+  return summary.byTier[tier];
+}
+
+function ensureSourceBucket(summary, source) {
+  const key = String(source || "unknown").toUpperCase();
+  if (!summary.bySource[key]) {
+    summary.bySource[key] = createEmptySourceStats();
+  }
+  return summary.bySource[key];
+}
+
+function buildSystemHealth(summary) {
+  const symbolsTotal = safeNum(summary?.symbolsTotal, 0);
+  const normalizedOk = safeNum(summary?.normalizedOk, 0);
+  const historicalOk = safeNum(summary?.historicalOk, 0);
+  const outcomeTracked = safeNum(summary?.outcomeTracked, 0);
+  const failed = safeNum(summary?.failed, 0);
+  const snapshotsSaved = safeNum(summary?.snapshotsSaved, 0);
+  const skipped = safeNum(summary?.skipped, 0);
+
+  const successRate = pct(normalizedOk, symbolsTotal);
+  const historicalCoverage = pct(historicalOk, normalizedOk || symbolsTotal);
+  const trackingCoverage = pct(outcomeTracked, snapshotsSaved || normalizedOk || symbolsTotal);
+  const failureRate = pct(failed, symbolsTotal);
+  const skipRate = pct(skipped, symbolsTotal);
+  const snapshotCoverage = pct(snapshotsSaved, symbolsTotal);
+
+  const score = clamp(
+    Math.round(
+      successRate * 0.32 +
+      historicalCoverage * 0.20 +
+      trackingCoverage * 0.18 +
+      snapshotCoverage * 0.20 +
+      (100 - failureRate) * 0.07 +
+      (100 - skipRate) * 0.03
+    ),
+    0,
+    100
+  );
+
+  let status = "critical";
+  if (score >= 90) status = "excellent";
+  else if (score >= 75) status = "good";
+  else if (score >= 55) status = "warning";
+
+  return {
+    successRate: Number(successRate.toFixed(2)),
+    historicalCoverage: Number(historicalCoverage.toFixed(2)),
+    trackingCoverage: Number(trackingCoverage.toFixed(2)),
+    snapshotCoverage: Number(snapshotCoverage.toFixed(2)),
+    failureRate: Number(failureRate.toFixed(2)),
+    skipRate: Number(skipRate.toFixed(2)),
+    systemHealthScore: score,
+    status,
+  };
+}
+
+function buildRunRecommendations(summary, health) {
+  const recommendations = [];
+
+  if (safeNum(summary.symbolsTotal, 0) < 100) {
+    recommendations.push("Watchlist ist noch zu klein für starkes Lernen.");
+  }
+
+  if (safeNum(health.successRate, 0) < 85) {
+    recommendations.push("Quote-/Normalisierungs-Erfolgsrate prüfen.");
+  }
+
+  if (safeNum(health.historicalCoverage, 0) < 70) {
+    recommendations.push("Historische Datenabdeckung ist zu niedrig.");
+  }
+
+  if (safeNum(health.trackingCoverage, 0) < 85) {
+    recommendations.push("Outcome-Tracking schreibt nicht für genug Symbole.");
+  }
+
+  if (safeNum(health.failureRate, 0) > 10) {
+    recommendations.push("Fehlerquote zu hoch: Provider/Inputs prüfen.");
+  }
+
+  if (safeNum(summary.failed, 0) >= SNAPSHOT_FAIL_FAST_THRESHOLD) {
+    recommendations.push("Viele Symbolfehler in einem Lauf: genauer Log-Check nötig.");
+  }
+
+  if (!recommendations.length) {
+    recommendations.push("Lauf sieht gesund aus.");
+  }
+
+  return recommendations;
+}
+
+async function getSnapshotCandidates(limit = SNAPSHOT_SYMBOL_LIMIT) {
+  const lim = clamp(Number(limit) || SNAPSHOT_SYMBOL_LIMIT, 1, 2000);
+
+  const res = await pool.query(
+    `
+    SELECT
+      symbol,
+      priority,
+      region
+    FROM watchlist_symbols
+    WHERE is_active = TRUE
+      AND LOWER(COALESCE(region, 'us')) = $1
+    ORDER BY priority ASC, symbol ASC
+    LIMIT $2
+    `,
+    [SNAPSHOT_REGION || "us", lim]
+  );
+
+  const rows = Array.isArray(res.rows) ? res.rows : [];
+
+  if (!rows.length) {
+    logger.warn("No snapshot candidates found in watchlist_symbols", {
+      region: SNAPSHOT_REGION,
+      limit: lim,
     });
     return [];
   }
 
-  const clean = [
-    ...new Set(
-      symbols
-        .map((s) => String(s || "").trim().toUpperCase())
-        .filter(Boolean)
-    ),
-  ];
+  const candidates = rows
+    .map((row) => {
+      const symbol = String(row.symbol || "").trim().toUpperCase();
+      const priority = normalizePriority(row.priority);
+      const region = String(row.region || "us").toLowerCase();
+      const tier = classifyPriorityTier(priority);
 
-  logger.info("Snapshot symbols loaded from watchlist", {
-    count: clean.length,
-    limit: SNAPSHOT_SYMBOL_LIMIT,
+      return {
+        symbol,
+        priority,
+        tier,
+        region,
+      };
+    })
+    .filter((row) => row.symbol);
+
+  const tierMix = candidates.reduce((acc, item) => {
+    acc[item.tier] = (acc[item.tier] || 0) + 1;
+    return acc;
+  }, {});
+
+  logger.info("Snapshot candidates loaded", {
+    count: candidates.length,
+    limit: lim,
+    region: SNAPSHOT_REGION,
+    tierMix,
   });
 
-  return clean;
+  return candidates;
 }
 
 /* =========================================================
@@ -295,33 +479,56 @@ async function buildMarketSnapshot() {
     outcomeTracked: 0,
     skipped: 0,
     failed: 0,
+    byTier: {},
+    bySource: {},
   };
 
-  const symbols = await getSnapshotSymbols();
-  summary.symbolsTotal = symbols.length;
+  const candidates = await getSnapshotCandidates(SNAPSHOT_SYMBOL_LIMIT);
+  summary.symbolsTotal = candidates.length;
 
-  if (!symbols.length) {
+  if (!candidates.length) {
+    const health = buildSystemHealth(summary);
+    const recommendations = buildRunRecommendations(summary, health);
+
     logger.warn("No symbols available for snapshot run");
-    logger.info("Snapshot complete", summary);
+    logger.info("Snapshot complete", {
+      summary,
+      health,
+      recommendations,
+    });
     return;
   }
 
-  for (const symbol of symbols) {
+  for (const candidate of candidates) {
+    const symbol = candidate.symbol;
+    const tier = candidate.tier;
+
+    ensureTierBucket(summary, tier).total++;
+
     try {
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) {
         summary.skipped++;
+        ensureTierBucket(summary, tier).skipped++;
         continue;
       }
+
       summary.quotesLoaded++;
+      ensureTierBucket(summary, tier).quotesLoaded++;
 
       const providerSource = String(raw?.[0]?.source || "massive").toLowerCase();
+      ensureSourceBucket(summary, providerSource).total++;
+
       const normalized = normalizeMarketData(raw[0], providerSource, "us");
       if (!normalized) {
         summary.skipped++;
+        ensureTierBucket(summary, tier).skipped++;
         continue;
       }
+
       summary.normalizedOk++;
+      ensureTierBucket(summary, tier).normalizedOk++;
+      ensureSourceBucket(summary, providerSource).normalizedOk++;
 
       let trendData = null;
       let scenarios = null;
@@ -338,6 +545,7 @@ async function buildMarketSnapshot() {
 
         if (prices.length >= 30) {
           summary.historicalOk++;
+          ensureTierBucket(summary, tier).historicalOk++;
 
           trendData = buildTrendScore(prices);
 
@@ -367,12 +575,14 @@ async function buildMarketSnapshot() {
             symbol,
             points: prices.length,
             period: HIST_PERIOD,
+            tier,
           });
         }
       } catch (histErr) {
         logger.warn("Historical unavailable", {
           symbol,
           message: histErr.message,
+          tier,
         });
       }
 
@@ -386,10 +596,6 @@ async function buildMarketSnapshot() {
       if (hqs) {
         summary.hqsBuilt++;
       }
-
-      /* =============================
-         CORE AI LAYER
-      ============================= */
 
       const features = buildFeatures(normalized, {
         trend: trendData?.trend,
@@ -436,10 +642,6 @@ async function buildMarketSnapshot() {
         trendData
       );
 
-      /* =============================
-         NEW MACRO / FLOW / EVENT LAYER
-      ============================= */
-
       const macroContext = buildMacroContextFallback({
         trendData,
         normalized,
@@ -452,10 +654,6 @@ async function buildMarketSnapshot() {
       );
 
       const eventIntelligence = analyzeMacroEvents(macroContext);
-
-      /* =============================
-         MEMORY + META LEARNING
-      ============================= */
 
       const setupSignature = buildSetupSignature({
         regime,
@@ -504,10 +702,6 @@ async function buildMarketSnapshot() {
         persist: false,
       });
 
-      /* =============================
-         ORCHESTRATOR
-      ============================= */
-
       const orchestrator = orchestrateMarket({
         trendData,
         aiScore: brain?.aiScore,
@@ -526,10 +720,6 @@ async function buildMarketSnapshot() {
         marketMemory,
         metaLearning,
       });
-
-      /* =============================
-         FINAL INTEGRATION
-      ============================= */
 
       const finalView = buildIntegratedMarketView({
         symbol,
@@ -557,6 +747,8 @@ async function buildMarketSnapshot() {
 
       logger.info("AI Market View", {
         symbol,
+        tier,
+        priority: candidate.priority,
         source: normalized.source,
         finalConviction: finalView?.finalConviction,
         finalRating: finalView?.finalRating,
@@ -564,10 +756,6 @@ async function buildMarketSnapshot() {
         opportunityStrength: orchestrator?.opportunityStrength,
         orchestratorConfidence: orchestrator?.orchestratorConfidence,
       });
-
-      /* =============================
-         DATABASE STORAGE
-      ============================= */
 
       await pool.query(
         `
@@ -586,6 +774,8 @@ async function buildMarketSnapshot() {
         ]
       );
       summary.snapshotsSaved++;
+      ensureTierBucket(summary, tier).snapshotsSaved++;
+      ensureSourceBucket(summary, providerSource).snapshotsSaved++;
 
       await pool.query(
         `
@@ -605,10 +795,6 @@ async function buildMarketSnapshot() {
       );
       summary.hqsSaved++;
 
-      /* =============================
-         OUTCOME TRACKING
-      ============================= */
-
       const trackingEntry = await createOutcomeTrackingEntry({
         symbol: normalized.symbol,
         predictionType: "market_view",
@@ -627,6 +813,9 @@ async function buildMarketSnapshot() {
         entryPrice: normalized?.price,
         payload: {
           symbol: normalized.symbol,
+          priority: candidate.priority,
+          tier,
+          region: candidate.region,
           regime,
           hqs,
           features,
@@ -644,19 +833,31 @@ async function buildMarketSnapshot() {
 
       if (trackingEntry) {
         summary.outcomeTracked++;
+        ensureTierBucket(summary, tier).outcomeTracked++;
+        ensureSourceBucket(summary, providerSource).outcomeTracked++;
       }
 
       logger.info(`Snapshot saved for ${symbol}`);
     } catch (err) {
       summary.failed++;
+      ensureTierBucket(summary, tier).failed++;
 
       logger.error(`Snapshot error for ${symbol}`, {
         message: err.message,
+        tier,
+        priority: candidate.priority,
       });
     }
   }
 
-  logger.info("Snapshot complete", summary);
+  const health = buildSystemHealth(summary);
+  const recommendations = buildRunRecommendations(summary, health);
+
+  logger.info("Snapshot complete", {
+    summary,
+    health,
+    recommendations,
+  });
 }
 
 /* =========================================================
