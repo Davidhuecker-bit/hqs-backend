@@ -98,11 +98,13 @@ async function getSnapshotSymbols() {
     return [];
   }
 
-  const clean = [...new Set(
-    symbols
-      .map((s) => String(s || "").trim().toUpperCase())
-      .filter(Boolean)
-  )];
+  const clean = [
+    ...new Set(
+      symbols
+        .map((s) => String(s || "").trim().toUpperCase())
+        .filter(Boolean)
+    ),
+  ];
 
   logger.info("Snapshot symbols loaded from watchlist", {
     count: clean.length,
@@ -282,21 +284,44 @@ async function buildMarketSnapshot() {
 
   logger.info("Building market snapshot...");
 
+  const summary = {
+    symbolsTotal: 0,
+    quotesLoaded: 0,
+    normalizedOk: 0,
+    historicalOk: 0,
+    hqsBuilt: 0,
+    snapshotsSaved: 0,
+    hqsSaved: 0,
+    outcomeTracked: 0,
+    skipped: 0,
+    failed: 0,
+  };
+
   const symbols = await getSnapshotSymbols();
+  summary.symbolsTotal = symbols.length;
 
   if (!symbols.length) {
     logger.warn("No symbols available for snapshot run");
+    logger.info("Snapshot complete", summary);
     return;
   }
 
   for (const symbol of symbols) {
     try {
       const raw = await fetchQuote(symbol);
-      if (!raw || !raw.length) continue;
+      if (!raw || !raw.length) {
+        summary.skipped++;
+        continue;
+      }
+      summary.quotesLoaded++;
 
       const providerSource = String(raw?.[0]?.source || "massive").toLowerCase();
       const normalized = normalizeMarketData(raw[0], providerSource, "us");
-      if (!normalized) continue;
+      if (!normalized) {
+        summary.skipped++;
+        continue;
+      }
+      summary.normalizedOk++;
 
       let trendData = null;
       let scenarios = null;
@@ -312,6 +337,8 @@ async function buildMarketSnapshot() {
           .filter((n) => Number.isFinite(n) && n > 0);
 
         if (prices.length >= 30) {
+          summary.historicalOk++;
+
           trendData = buildTrendScore(prices);
 
           regime = detectMarketRegime(
@@ -355,6 +382,10 @@ async function buildMarketSnapshot() {
         adaptiveWeights,
         regime
       );
+
+      if (hqs) {
+        summary.hqsBuilt++;
+      }
 
       /* =============================
          CORE AI LAYER
@@ -554,6 +585,7 @@ async function buildMarketSnapshot() {
           normalized.source,
         ]
       );
+      summary.snapshotsSaved++;
 
       await pool.query(
         `
@@ -571,12 +603,13 @@ async function buildMarketSnapshot() {
           regime,
         ]
       );
+      summary.hqsSaved++;
 
       /* =============================
          OUTCOME TRACKING
       ============================= */
 
-      await createOutcomeTrackingEntry({
+      const trackingEntry = await createOutcomeTrackingEntry({
         symbol: normalized.symbol,
         predictionType: "market_view",
         regime,
@@ -609,15 +642,21 @@ async function buildMarketSnapshot() {
         },
       });
 
+      if (trackingEntry) {
+        summary.outcomeTracked++;
+      }
+
       logger.info(`Snapshot saved for ${symbol}`);
     } catch (err) {
+      summary.failed++;
+
       logger.error(`Snapshot error for ${symbol}`, {
         message: err.message,
       });
     }
   }
 
-  logger.info("Snapshot complete");
+  logger.info("Snapshot complete", summary);
 }
 
 /* =========================================================
