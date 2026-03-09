@@ -10,6 +10,7 @@
   - Step 3: Priority-aware Snapshot Loading
   - Step 4: Extended Diagnostics (source + tier)
   - Step 5: Run Recommendations / Quality Warnings
+  - Batch Snapshot Scanning mit persistentem Offset
 */
 
 const { fetchQuote } = require("./providerService");
@@ -76,13 +77,16 @@ const pool = new Pool({
 const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 const OUTCOME_HORIZON_DAYS = Number(process.env.OUTCOME_HORIZON_DAYS || 30);
+
 const SNAPSHOT_SYMBOL_LIMIT = Number(process.env.SNAPSHOT_SYMBOL_LIMIT || 250);
+const SNAPSHOT_BATCH_SIZE = Number(process.env.SNAPSHOT_BATCH_SIZE || 80);
 const SNAPSHOT_REGION = String(process.env.SNAPSHOT_REGION || "us").toLowerCase().trim();
 const SNAPSHOT_FAIL_FAST_THRESHOLD = Number(process.env.SNAPSHOT_FAIL_FAST_THRESHOLD || 35);
 
+const SNAPSHOT_STATE_KEY = "snapshot_watchlist_offset";
+
 /* =========================================================
    IN-MEMORY AI STORES
-   (später DB/Redis möglich)
 ========================================================= */
 
 let marketMemoryStore = {};
@@ -208,8 +212,12 @@ function buildSystemHealth(summary) {
 function buildRunRecommendations(summary, health) {
   const recommendations = [];
 
-  if (safeNum(summary.symbolsTotal, 0) < 100) {
+  if (safeNum(summary.totalActiveSymbols, 0) < 100) {
     recommendations.push("Watchlist ist noch zu klein für starkes Lernen.");
+  }
+
+  if (safeNum(summary.symbolsTotal, 0) < safeNum(summary.batchSize, 0)) {
+    recommendations.push("Batch kleiner als erwartet: Watchlist oder Filter prüfen.");
   }
 
   if (safeNum(health.successRate, 0) < 85) {
@@ -239,10 +247,100 @@ function buildRunRecommendations(summary, health) {
   return recommendations;
 }
 
-async function getSnapshotCandidates(limit = SNAPSHOT_SYMBOL_LIMIT) {
-  const lim = clamp(Number(limit) || SNAPSHOT_SYMBOL_LIMIT, 1, 2000);
+/* =========================================================
+   SNAPSHOT STATE TABLE
+========================================================= */
 
+async function initSnapshotStateTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS snapshot_scan_state (
+      key TEXT PRIMARY KEY,
+      offset_value INTEGER DEFAULT 0,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+}
+
+async function loadSnapshotOffset() {
+  try {
+    const res = await pool.query(
+      `
+      SELECT offset_value
+      FROM snapshot_scan_state
+      WHERE key = $1
+      LIMIT 1
+      `,
+      [SNAPSHOT_STATE_KEY]
+    );
+
+    if (!res.rows.length) return 0;
+
+    return clamp(safeNum(res.rows[0].offset_value, 0), 0, 1000000);
+  } catch (err) {
+    logger.error("loadSnapshotOffset error", { message: err.message });
+    return 0;
+  }
+}
+
+async function saveSnapshotOffset(offsetValue) {
+  const val = clamp(safeNum(offsetValue, 0), 0, 1000000);
+
+  await pool.query(
+    `
+    INSERT INTO snapshot_scan_state (key, offset_value, updated_at)
+    VALUES ($1, $2, NOW())
+    ON CONFLICT (key)
+    DO UPDATE SET
+      offset_value = EXCLUDED.offset_value,
+      updated_at = NOW()
+    `,
+    [SNAPSHOT_STATE_KEY, val]
+  );
+}
+
+async function countActiveSnapshotSymbols(region = SNAPSHOT_REGION) {
   const res = await pool.query(
+    `
+    SELECT COUNT(*)::int AS c
+    FROM watchlist_symbols
+    WHERE is_active = TRUE
+      AND LOWER(COALESCE(region, 'us')) = $1
+    `,
+    [String(region || "us").toLowerCase()]
+  );
+
+  return safeNum(res.rows?.[0]?.c, 0);
+}
+
+async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
+  const batchSize = clamp(Number(limit) || SNAPSHOT_BATCH_SIZE, 1, SNAPSHOT_SYMBOL_LIMIT);
+  const totalActive = await countActiveSnapshotSymbols(SNAPSHOT_REGION);
+
+  if (!totalActive) {
+    logger.warn("No snapshot candidates found in watchlist_symbols", {
+      region: SNAPSHOT_REGION,
+      limit: batchSize,
+    });
+
+    return {
+      totalActive: 0,
+      batchSize,
+      offsetUsed: 0,
+      nextOffset: 0,
+      wrapped: false,
+      candidates: [],
+    };
+  }
+
+  let offset = await loadSnapshotOffset();
+  if (offset >= totalActive) {
+    offset = 0;
+    await saveSnapshotOffset(0);
+  }
+
+  let wrapped = false;
+
+  let res = await pool.query(
     `
     SELECT
       symbol,
@@ -252,19 +350,35 @@ async function getSnapshotCandidates(limit = SNAPSHOT_SYMBOL_LIMIT) {
     WHERE is_active = TRUE
       AND LOWER(COALESCE(region, 'us')) = $1
     ORDER BY priority ASC, symbol ASC
-    LIMIT $2
+    OFFSET $2
+    LIMIT $3
     `,
-    [SNAPSHOT_REGION || "us", lim]
+    [SNAPSHOT_REGION, offset, batchSize]
   );
 
-  const rows = Array.isArray(res.rows) ? res.rows : [];
+  let rows = Array.isArray(res.rows) ? res.rows : [];
 
-  if (!rows.length) {
-    logger.warn("No snapshot candidates found in watchlist_symbols", {
-      region: SNAPSHOT_REGION,
-      limit: lim,
-    });
-    return [];
+  if (!rows.length && totalActive > 0) {
+    wrapped = true;
+    offset = 0;
+
+    res = await pool.query(
+      `
+      SELECT
+        symbol,
+        priority,
+        region
+      FROM watchlist_symbols
+      WHERE is_active = TRUE
+        AND LOWER(COALESCE(region, 'us')) = $1
+      ORDER BY priority ASC, symbol ASC
+      OFFSET 0
+      LIMIT $2
+      `,
+      [SNAPSHOT_REGION, batchSize]
+    );
+
+    rows = Array.isArray(res.rows) ? res.rows : [];
   }
 
   const candidates = rows
@@ -283,6 +397,11 @@ async function getSnapshotCandidates(limit = SNAPSHOT_SYMBOL_LIMIT) {
     })
     .filter((row) => row.symbol);
 
+  const nextOffset =
+    totalActive > 0
+      ? (offset + candidates.length) % totalActive
+      : 0;
+
   const tierMix = candidates.reduce((acc, item) => {
     acc[item.tier] = (acc[item.tier] || 0) + 1;
     return acc;
@@ -290,12 +409,23 @@ async function getSnapshotCandidates(limit = SNAPSHOT_SYMBOL_LIMIT) {
 
   logger.info("Snapshot candidates loaded", {
     count: candidates.length,
-    limit: lim,
+    batchSize,
+    totalActive,
+    offsetUsed: offset,
+    nextOffset,
+    wrapped,
     region: SNAPSHOT_REGION,
     tierMix,
   });
 
-  return candidates;
+  return {
+    totalActive,
+    batchSize,
+    offsetUsed: offset,
+    nextOffset,
+    wrapped,
+    candidates,
+  };
 }
 
 /* =========================================================
@@ -336,6 +466,7 @@ async function ensureTablesExist() {
   await initWatchlistTable();
   await seedDefaultWatchlist();
   await initOutcomeTrackingTable();
+  await initSnapshotStateTable();
 
   logger.info("Tables ensured");
 }
@@ -469,6 +600,11 @@ async function buildMarketSnapshot() {
   logger.info("Building market snapshot...");
 
   const summary = {
+    totalActiveSymbols: 0,
+    batchSize: SNAPSHOT_BATCH_SIZE,
+    batchOffsetStart: 0,
+    batchOffsetEnd: 0,
+    batchWrapped: false,
     symbolsTotal: 0,
     quotesLoaded: 0,
     normalizedOk: 0,
@@ -483,10 +619,16 @@ async function buildMarketSnapshot() {
     bySource: {},
   };
 
-  const candidates = await getSnapshotCandidates(SNAPSHOT_SYMBOL_LIMIT);
-  summary.symbolsTotal = candidates.length;
+  const batch = await getSnapshotCandidates(SNAPSHOT_BATCH_SIZE);
 
-  if (!candidates.length) {
+  summary.totalActiveSymbols = batch.totalActive;
+  summary.batchSize = batch.batchSize;
+  summary.batchOffsetStart = batch.offsetUsed;
+  summary.batchOffsetEnd = batch.nextOffset;
+  summary.batchWrapped = batch.wrapped;
+  summary.symbolsTotal = batch.candidates.length;
+
+  if (!batch.candidates.length) {
     const health = buildSystemHealth(summary);
     const recommendations = buildRunRecommendations(summary, health);
 
@@ -499,7 +641,7 @@ async function buildMarketSnapshot() {
     return;
   }
 
-  for (const candidate of candidates) {
+  for (const candidate of batch.candidates) {
     const symbol = candidate.symbol;
     const tier = candidate.tier;
 
@@ -849,6 +991,8 @@ async function buildMarketSnapshot() {
       });
     }
   }
+
+  await saveSnapshotOffset(batch.nextOffset);
 
   const health = buildSystemHealth(summary);
   const recommendations = buildRunRecommendations(summary, health);
