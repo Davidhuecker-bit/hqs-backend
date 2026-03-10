@@ -40,11 +40,13 @@ const { acquireLock, initJobLocksTable } = require("./services/jobLock.repositor
 const { refreshUniverse } = require("./services/universe.service");
 
 /* =========================================================
-   NEW ENGINES
+   ROUTES
 ========================================================= */
 
 const opportunitiesRoutes = require("./routes/opportunities.routes");
 const discoveryRoutes = require("./routes/discovery.routes");
+const notificationsRoutes = require("./routes/notifications.routes");
+const adminRoutes = require("./routes/admin.routes");
 
 /* =========================================================
    DISCOVERY (Learning DB)
@@ -55,8 +57,6 @@ const { initDiscoveryTable } = require("./services/discoveryLearning.repository"
 /* =========================================================
    NOTIFICATIONS
 ========================================================= */
-
-const notificationsRoutes = require("./routes/notifications.routes");
 
 const {
   initNotificationTables,
@@ -96,6 +96,7 @@ app.use(express.json());
 app.use("/api/notifications", notificationsRoutes);
 app.use("/api/opportunities", opportunitiesRoutes);
 app.use("/api/discovery", discoveryRoutes);
+app.use("/api/admin", adminRoutes);
 
 /* =========================================================
    RESPONSE FORMATTER
