@@ -5,11 +5,12 @@ const router = express.Router();
 
 const { normalizeSymbols } = require("../services/marketNews.service");
 const { loadLatestMarketNewsBySymbols } = require("../services/marketNews.repository");
+const logger = require("../utils/logger");
 
 function normalizeLimit(limitPerSymbol) {
   const limit = Number(limitPerSymbol);
   if (!Number.isFinite(limit)) return 5;
-  return Math.max(1, Math.min(Math.trunc(limit), 100));
+  return Math.max(1, Math.min(Math.trunc(limit), 25));
 }
 
 router.get("/", async (req, res) => {
@@ -29,13 +30,21 @@ router.get("/", async (req, res) => {
     return res.json({
       success: true,
       symbols,
-      count: Object.values(newsBySymbol).reduce((sum, items) => sum + items.length, 0),
+      count: Object.values(newsBySymbol || {}).reduce(
+        (sum, items) => sum + (Array.isArray(items) ? items.length : 0),
+        0
+      ),
       newsBySymbol,
     });
   } catch (error) {
+    logger.error("Market news route error", {
+      message: error.message,
+      stack: error.stack,
+    });
+
     return res.status(500).json({
       success: false,
-      error: error.message,
+      message: "An unexpected error occurred while fetching market news. Please try again later.",
     });
   }
 });
