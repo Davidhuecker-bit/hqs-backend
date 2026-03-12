@@ -20,6 +20,9 @@
     "job:universe-refresh": "node jobs/universeRefresh.job.js",
     "job:universe-refresh:check": "node --check jobs/universeRefresh.job.js",
 
+    "job:market-news-refresh": "node jobs/marketNewsRefresh.job.js",
+    "job:market-news-refresh:check": "node --check jobs/marketNewsRefresh.job.js",
+
     "job:snapshot-scan": "node jobs/snapshotScan.job.js",
     "job:snapshot-scan:check": "node --check jobs/snapshotScan.job.js"
   },
