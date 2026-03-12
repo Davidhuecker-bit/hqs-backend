@@ -11,6 +11,7 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+const LOCK_DURATION_SECONDS = 2 * 60 * 60;
 
 function cleanSymbol(value) {
   const symbol = String(value ?? "").trim().toUpperCase();
@@ -31,7 +32,7 @@ async function loadUniverseSymbols() {
 async function run() {
   await initJobLocksTable();
 
-  const won = await acquireLock("market_news_refresh_job", 2 * 60 * 60);
+  const won = await acquireLock("market_news_refresh_job", LOCK_DURATION_SECONDS);
   if (!won) {
     logger.warn("Market news refresh skipped (lock held)");
     return {
@@ -62,17 +63,22 @@ async function run() {
   return result;
 }
 
+async function closePool() {
+  await pool.end().catch(() => {});
+}
+
 if (require.main === module) {
-  run()
-    .then(async () => {
-      await pool.end().catch(() => {});
-      process.exit(0);
-    })
-    .catch(async (err) => {
+  (async () => {
+    try {
+      await run();
+      process.exitCode = 0;
+    } catch (err) {
       logger.error("Market news refresh job failed", { message: err.message });
-      await pool.end().catch(() => {});
-      process.exit(1);
-    });
+      process.exitCode = 1;
+    } finally {
+      await closePool();
+    }
+  })();
 }
 
 module.exports = {
