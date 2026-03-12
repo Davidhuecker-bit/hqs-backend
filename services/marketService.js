@@ -65,6 +65,7 @@ const {
 } = require("./outcomeTracking.repository");
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
+const { initMarketNewsTable } = require("./marketNews.repository");
 
 const logger = require("../utils/logger");
 const { Pool } = require("pg");
@@ -467,6 +468,7 @@ async function ensureTablesExist() {
   await seedDefaultWatchlist();
   await initOutcomeTrackingTable();
   await initSnapshotStateTable();
+  await initMarketNewsTable();
 
   logger.info("Tables ensured");
 }
