@@ -1005,6 +1005,51 @@ async function buildMarketSnapshot() {
 }
 
 /* =========================================================
+   LOAD LATEST SNAPSHOT (DB-first helper)
+========================================================= */
+
+async function loadLatestSnapshot(symbol) {
+  try {
+    const res = await pool.query(
+      `
+      SELECT
+        symbol,
+        price,
+        open,
+        high,
+        low,
+        volume,
+        source,
+        created_at AS timestamp
+      FROM market_snapshots
+      WHERE symbol = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+      `,
+      [String(symbol).trim().toUpperCase()]
+    );
+
+    if (!res.rows.length) return null;
+
+    const row = res.rows[0];
+
+    return {
+      symbol: row.symbol,
+      price: row.price !== null ? Number(row.price) : null,
+      open: row.open !== null ? Number(row.open) : null,
+      high: row.high !== null ? Number(row.high) : null,
+      low: row.low !== null ? Number(row.low) : null,
+      volume: row.volume !== null ? Number(row.volume) : null,
+      source: row.source ?? null,
+      timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
+    };
+  } catch (err) {
+    logger.error("loadLatestSnapshot error", { message: err.message });
+    return null;
+  }
+}
+
+/* =========================================================
    MARKET DATA (API / UI)
 ========================================================= */
 
@@ -1017,26 +1062,25 @@ async function getMarketData(symbol) {
     const results = [];
 
     for (const s of symbols) {
-      const raw = await fetchQuote(s);
-      if (!raw || !raw.length) continue;
+      const snapshot = await loadLatestSnapshot(s);
+      if (!snapshot) continue;
 
-      const providerSource = String(raw?.[0]?.source || "massive").toLowerCase();
-      const normalized = normalizeMarketData(raw[0], providerSource, "us");
-      if (!normalized) continue;
+      const entry = { ...snapshot };
 
-      const cached = await loadLatestHqsScore(s);
-      if (cached) Object.assign(normalized, cached);
+      const hqs = await loadLatestHqsScore(s);
+      if (hqs) Object.assign(entry, hqs);
 
       const adv = await loadAdvancedMetrics(s);
 
       if (adv) {
-        normalized.regime = normalized.regime ?? adv.regime ?? null;
-        normalized.trend = adv.trend ?? null;
-        normalized.volatility = adv.volatility ?? null;
-        normalized.scenarios = adv.scenarios ?? null;
+        entry.regime = entry.regime ?? adv.regime ?? null;
+        entry.trend = adv.trend ?? null;
+        entry.volatility = adv.volatility ?? null;
+        entry.scenarios = adv.scenarios ?? null;
+        entry.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
       }
 
-      results.push(normalized);
+      results.push(entry);
     }
 
     return results;
