@@ -20,7 +20,7 @@ router.get("/", async (req, res) => {
     if (!symbols.length) {
       return res.status(400).json({
         success: false,
-        message: "symbols query parameter is required",
+        message: 'The "symbols" query parameter is required',
       });
     }
 
