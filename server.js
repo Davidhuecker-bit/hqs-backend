@@ -30,6 +30,10 @@ const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
+const {
+  collectAndStoreMarketNews,
+  normalizeSymbols,
+} = require("./services/marketNews.service");
 
 const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
 
@@ -179,6 +183,33 @@ app.get("/api/market", async (req, res) => {
     });
   } catch (error) {
     logger.error("Market route error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/admin/collect-market-news", async (req, res) => {
+  try {
+    const symbols = normalizeSymbols((req.query.symbols || "").split(","));
+    const limit = Number(req.query.limit || 5);
+
+    if (!symbols.length) {
+      return res.status(400).json({
+        success: false,
+        message: "symbols query parameter is required",
+      });
+    }
+
+    const summary = await collectAndStoreMarketNews(symbols, limit);
+
+    return res.json({
+      success: true,
+      ...summary,
+    });
+  } catch (error) {
+    logger.error("Collect market news route error", { message: error.message });
     return res.status(500).json({
       success: false,
       error: error.message,
