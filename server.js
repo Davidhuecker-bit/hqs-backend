@@ -30,7 +30,10 @@ const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
-const { collectAndStoreMarketNews } = require("./services/marketNews.service");
+const {
+  collectAndStoreMarketNews,
+  normalizeSymbols,
+} = require("./services/marketNews.service");
 
 const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
 
@@ -145,15 +148,6 @@ function formatMarketItem(item) {
   };
 }
 
-function parseSymbolsQuery(value) {
-  return [...new Set(
-    String(value || "")
-      .split(",")
-      .map((symbol) => String(symbol || "").trim().toUpperCase())
-      .filter(Boolean)
-  )];
-}
-
 /* =========================================================
    HEALTH
 ========================================================= */
@@ -198,7 +192,7 @@ app.get("/api/market", async (req, res) => {
 
 app.get("/api/admin/collect-market-news", async (req, res) => {
   try {
-    const symbols = parseSymbolsQuery(req.query.symbols);
+    const symbols = normalizeSymbols((req.query.symbols || "").split(","));
     const limit = Number(req.query.limit || 5);
 
     if (!symbols.length) {

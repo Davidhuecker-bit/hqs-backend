@@ -55,7 +55,7 @@ function buildFmpNewsUrl(symbol, limitPerSymbol) {
 }
 
 function maskFmpUrl(url) {
-  return String(url || "").replace(/apikey=[^&]+/i, "apikey=***");
+  return String(url || "").replace(/apikey=[^&]*/i, "apikey=***");
 }
 
 function extractSentimentRaw(rawItem) {
@@ -196,9 +196,10 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
     requestedSymbols,
     limitPerSymbol
   );
+  const failedSymbolsSet = new Set(failedSymbols);
 
   summary.fetchedItems = items.length;
-  summary.failedSymbols = failedSymbols;
+  summary.failedSymbols = [...failedSymbolsSet];
 
   const normalizedItems = [];
   for (const entry of items) {
@@ -207,9 +208,8 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
       if (normalized) normalizedItems.push(normalized);
     } catch (error) {
       const failedSymbol = cleanSymbol(entry?.fallbackSymbol);
-      if (failedSymbol && !summary.failedSymbols.includes(failedSymbol)) {
-        summary.failedSymbols.push(failedSymbol);
-      }
+      if (failedSymbol) failedSymbolsSet.add(failedSymbol);
+      summary.failedSymbols = [...failedSymbolsSet];
       if (logger?.warn) {
         logger.warn("FMP market news item normalization failed", {
           symbol: failedSymbol,
@@ -228,9 +228,7 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
     const result = await marketNewsRepository.upsertMarketNews(normalizedItems);
     summary.storedItems = Number(result?.insertedOrUpdated ?? 0) || 0;
   } catch (error) {
-    summary.failedSymbols = requestedSymbols.filter(
-      (symbol) => !summary.failedSymbols.includes(symbol)
-    ).concat(summary.failedSymbols);
+    summary.failedSymbols = requestedSymbols.slice();
 
     if (logger?.error) {
       logger.error("collectAndStoreMarketNews store failed", {
@@ -247,4 +245,5 @@ module.exports = {
   fetchFmpMarketNewsForSymbols,
   normalizeFmpNewsItem,
   collectAndStoreMarketNews,
+  normalizeSymbols,
 };
