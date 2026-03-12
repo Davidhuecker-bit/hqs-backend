@@ -69,17 +69,6 @@ async function initMarketNewsTable() {
       );
     `);
 
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS symbol TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS title TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS source TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS url TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS summary_raw TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS sentiment_raw TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS category TEXT;`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`);
-    await pool.query(`ALTER TABLE market_news ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`);
-
     await pool.query(`
       DO $$
       BEGIN
