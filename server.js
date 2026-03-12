@@ -51,6 +51,7 @@ const opportunitiesRoutes = require("./routes/opportunities.routes");
 const discoveryRoutes = require("./routes/discovery.routes");
 const notificationsRoutes = require("./routes/notifications.routes");
 const adminRoutes = require("./routes/admin.routes");
+const marketNewsRoutes = require("./routes/marketNews.routes");
 
 /* =========================================================
    DISCOVERY (Learning DB)
@@ -101,6 +102,7 @@ app.use("/api/notifications", notificationsRoutes);
 app.use("/api/opportunities", opportunitiesRoutes);
 app.use("/api/discovery", discoveryRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/market-news", marketNewsRoutes);
 
 /* =========================================================
    RESPONSE FORMATTER
