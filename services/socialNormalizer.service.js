@@ -70,7 +70,7 @@ function extractSymbols(text = "") {
     matches.push(String(match[1] || "").toUpperCase());
   }
 
-  return uniqueStrings(matches).map((symbol) => symbol.toUpperCase());
+  return uniqueStrings(matches);
 }
 
 function extractMentions(text = "") {
@@ -100,7 +100,7 @@ function normalizeSocialPost(rawPost = {}) {
       [...rawSymbols, ...extractSymbols(text)].map((symbol) =>
         String(symbol || "").toUpperCase()
       )
-    ).map((symbol) => symbol.toUpperCase()),
+    ),
     mentions: uniqueStrings([...rawMentions, ...extractMentions(text)]),
     score: normalizeScore(rawPost?.score),
     createdAt: normalizeCreatedAt(rawPost?.createdAt),
