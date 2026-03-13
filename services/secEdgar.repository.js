@@ -60,7 +60,7 @@ async function initSecEdgarTables() {
     CREATE TABLE IF NOT EXISTS sec_edgar_companies (
       id SERIAL PRIMARY KEY,
       symbol TEXT NOT NULL UNIQUE,
-      cik TEXT NOT NULL UNIQUE,
+      cik TEXT NOT NULL,
       company_name TEXT,
       sic TEXT,
       sic_description TEXT,
@@ -80,7 +80,7 @@ async function initSecEdgarTables() {
       id SERIAL PRIMARY KEY,
       symbol TEXT NOT NULL,
       cik TEXT NOT NULL,
-      accession_number TEXT NOT NULL UNIQUE,
+      accession_number TEXT NOT NULL,
       form_type TEXT,
       filing_date DATE,
       report_date DATE,
@@ -120,8 +120,43 @@ async function initSecEdgarTables() {
   `);
 
   await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'sec_edgar_companies_cik_key'
+      ) THEN
+        ALTER TABLE sec_edgar_companies
+        DROP CONSTRAINT sec_edgar_companies_cik_key;
+      END IF;
+    END
+    $$;
+  `);
+
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'sec_edgar_filing_signals_accession_number_key'
+      ) THEN
+        ALTER TABLE sec_edgar_filing_signals
+        DROP CONSTRAINT sec_edgar_filing_signals_accession_number_key;
+      END IF;
+    END
+    $$;
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_sec_edgar_filing_signals_symbol_date
     ON sec_edgar_filing_signals (symbol, filing_date DESC);
+  `);
+
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sec_edgar_filing_signals_symbol_accession
+    ON sec_edgar_filing_signals (symbol, accession_number);
   `);
 
   await pool.query(`

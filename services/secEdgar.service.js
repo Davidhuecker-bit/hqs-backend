@@ -24,11 +24,13 @@ const SEC_COMPANY_FACTS_BASE_URL =
 const SEC_TICKER_MAP_URL =
   process.env.SEC_EDGAR_TICKER_MAP_URL || "https://www.sec.gov/files/company_tickers.json";
 const SEC_TIMEOUT_MS = Math.max(5000, Math.min(Number(process.env.SEC_EDGAR_TIMEOUT_MS || 15000), 60000));
-const SEC_USER_AGENT =
-  String(process.env.SEC_EDGAR_USER_AGENT || "HQS Backend support@hqs.local").trim();
+const SEC_USER_AGENT = String(process.env.SEC_EDGAR_USER_AGENT || "").trim();
 const DEFAULT_FILING_LIMIT = 12;
 const DEFAULT_FACT_LIMIT = 30;
 const DEFAULT_FACTS_PER_METRIC = 2;
+const MAX_FILING_LIMIT = 25;
+const MAX_FACT_LIMIT = 100;
+const MAX_FACTS_PER_METRIC = 5;
 
 const CORE_FACTS = [
   { taxonomy: "us-gaap", factNames: ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax"] },
@@ -67,6 +69,14 @@ function padCik(value) {
 }
 
 function buildSecHeaders() {
+  if (!SEC_USER_AGENT) {
+    const error = new Error(
+      "SEC_EDGAR_USER_AGENT must be configured with a valid contact email before calling SEC EDGAR"
+    );
+    error.statusCode = 500;
+    throw error;
+  }
+
   return {
     "User-Agent": SEC_USER_AGENT,
     Accept: "application/json",
@@ -242,7 +252,7 @@ function extractFilingSignals(symbol, cik, submissions, filingLimit = DEFAULT_FI
       const rightDate = right.filingDate ? new Date(right.filingDate).getTime() : 0;
       return rightDate - leftDate;
     })
-    .slice(0, Math.max(1, Math.min(Number(filingLimit) || DEFAULT_FILING_LIMIT, 25)));
+    .slice(0, Math.max(1, Math.min(Number(filingLimit) || DEFAULT_FILING_LIMIT, MAX_FILING_LIMIT)));
 }
 
 function scoreFactObservation(item) {
@@ -256,9 +266,9 @@ function scoreFactObservation(item) {
 function extractCompanyFacts(symbol, cik, companyFacts, options = {}) {
   const factsPerMetric = Math.max(
     1,
-    Math.min(Number(options?.factsPerMetric) || DEFAULT_FACTS_PER_METRIC, 5)
+    Math.min(Number(options?.factsPerMetric) || DEFAULT_FACTS_PER_METRIC, MAX_FACTS_PER_METRIC)
   );
-  const hardLimit = Math.max(1, Math.min(Number(options?.factLimit) || DEFAULT_FACT_LIMIT, 100));
+  const hardLimit = Math.max(1, Math.min(Number(options?.factLimit) || DEFAULT_FACT_LIMIT, MAX_FACT_LIMIT));
   const results = [];
 
   for (const descriptor of CORE_FACTS) {
