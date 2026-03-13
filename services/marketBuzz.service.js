@@ -1,5 +1,12 @@
 "use strict";
 
+const SENTIMENT_MIN = 0;
+const SENTIMENT_MAX = 100;
+const BUZZ_SCORE_MIN = 0;
+const BUZZ_SCORE_MAX = 100;
+const DEFAULT_SOCIAL_CONTRIBUTION = 1;
+const SOCIAL_MENTION_WEIGHT = 2;
+
 function normalizeSymbol(value) {
   const symbol = String(value || "").trim().toUpperCase();
   return symbol || null;
@@ -10,9 +17,52 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function roundNumber(value, digits = 0) {
   const factor = Math.pow(10, digits);
   return Math.round(value * factor) / factor;
+}
+
+function normalizeInputObject(input) {
+  return input && typeof input === "object" ? input : {};
+}
+
+function normalizeSentimentScore(value, fallback = null) {
+  const sentimentScore = safeNumber(value, fallback);
+  if (sentimentScore === null) return null;
+
+  return clamp(sentimentScore, SENTIMENT_MIN, SENTIMENT_MAX);
+}
+
+function normalizeMentionCount(value, fallback = 0) {
+  const mentionCount = safeNumber(value, fallback);
+  return Math.max(0, Math.trunc(mentionCount));
+}
+
+function normalizeSocialContribution(value) {
+  if (value === undefined || value === null) {
+    return DEFAULT_SOCIAL_CONTRIBUTION;
+  }
+
+  return normalizeMentionCount(value, 0);
+}
+
+function normalizeBuzzScore(value, maxScore = BUZZ_SCORE_MAX) {
+  const score = Math.max(0, safeNumber(value, 0));
+  if (score === 0) return BUZZ_SCORE_MIN;
+
+  if (maxScore < BUZZ_SCORE_MAX) {
+    return clamp(roundNumber(score), BUZZ_SCORE_MIN, BUZZ_SCORE_MAX);
+  }
+
+  return clamp(
+    roundNumber((score / maxScore) * BUZZ_SCORE_MAX),
+    BUZZ_SCORE_MIN,
+    BUZZ_SCORE_MAX
+  );
 }
 
 function normalizeSocialSymbols(symbols = []) {
@@ -49,7 +99,8 @@ function getBucket(collection, symbol) {
   return collection[symbol];
 }
 
-function aggregateBySymbol({ newsItems = [], socialPosts = [] } = {}) {
+function aggregateBySymbol(input = {}) {
+  const { newsItems = [], socialPosts = [] } = normalizeInputObject(input);
   const buckets = {};
 
   for (const newsItem of Array.isArray(newsItems) ? newsItems : []) {
@@ -59,7 +110,7 @@ function aggregateBySymbol({ newsItems = [], socialPosts = [] } = {}) {
     const bucket = getBucket(buckets, symbol);
     bucket.newsMentions += 1;
 
-    const sentimentScore = safeNumber(
+    const sentimentScore = normalizeSentimentScore(
       newsItem?.intelligence?.marketSentiment?.sentimentScore,
       null
     );
@@ -74,7 +125,7 @@ function aggregateBySymbol({ newsItems = [], socialPosts = [] } = {}) {
     const symbols = normalizeSocialSymbols(socialPost?.symbols);
     if (!symbols.length) continue;
 
-    const socialScore = Math.max(0, safeNumber(socialPost?.score, 0));
+    const socialScore = normalizeSocialContribution(socialPost?.score);
 
     for (const symbol of symbols) {
       const bucket = getBucket(buckets, symbol);
@@ -96,18 +147,36 @@ function aggregateBySymbol({ newsItems = [], socialPosts = [] } = {}) {
   });
 }
 
-function calculateBuzzScore({
-  socialMentions = 0,
-  newsMentions = 0,
-  avgSentiment = 0,
-} = {}) {
-  return roundNumber((safeNumber(socialMentions, 0) * 2) + safeNumber(newsMentions, 0) + safeNumber(avgSentiment, 0));
+function calculateBuzzScore(input = {}) {
+  const { socialMentions = 0, newsMentions = 0, avgSentiment = 0 } =
+    normalizeInputObject(input);
+
+  return roundNumber(
+    (normalizeMentionCount(socialMentions, 0) * SOCIAL_MENTION_WEIGHT) +
+      normalizeMentionCount(newsMentions, 0) +
+      normalizeSentimentScore(avgSentiment, 0)
+  );
 }
 
-function buildMarketBuzz({ newsItems = [], socialPosts = [] } = {}) {
-  return aggregateBySymbol({ newsItems, socialPosts }).map((entry) => ({
+function buildMarketBuzz(input = {}) {
+  const { newsItems = [], socialPosts = [] } = normalizeInputObject(input);
+  const aggregatedEntries = aggregateBySymbol({ newsItems, socialPosts });
+  const { entriesWithRawScores, maxRawBuzzScore } = aggregatedEntries.reduce(
+    (result, entry) => {
+      const rawBuzzScore = calculateBuzzScore(entry);
+      result.entriesWithRawScores.push({
+        ...entry,
+        rawBuzzScore,
+      });
+      result.maxRawBuzzScore = Math.max(result.maxRawBuzzScore, rawBuzzScore);
+      return result;
+    },
+    { entriesWithRawScores: [], maxRawBuzzScore: 0 }
+  );
+
+  return entriesWithRawScores.map(({ rawBuzzScore, ...entry }) => ({
     ...entry,
-    buzzScore: calculateBuzzScore(entry),
+    buzzScore: normalizeBuzzScore(rawBuzzScore, maxRawBuzzScore),
   }));
 }
 
