@@ -241,7 +241,17 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
   summary.fetchedItems = items.length;
   summary.failedSymbols = [...failedSymbolsSet];
 
-  const entityMapBySymbol = await loadEntityMapBySymbols(requestedSymbols);
+  let entityMapBySymbol = {};
+  try {
+    entityMapBySymbol = await loadEntityMapBySymbols(requestedSymbols);
+  } catch (error) {
+    if (logger?.warn) {
+      logger.warn("FMP market news entity map load failed; intelligence analysis will continue without entity map", {
+        message: error.message,
+        requestedSymbols,
+      });
+    }
+  }
 
   const normalizedItems = [];
   for (const entry of items) {
@@ -249,9 +259,11 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
       const normalized = normalizeFmpNewsItem(entry?.rawItem, entry?.fallbackSymbol);
       if (!normalized) continue;
 
-      normalized.intelligence =
-        analyzeNewsArticle(normalized, entityMapBySymbol) || {};
-      normalizedItems.push(normalized);
+      const intelligence = analyzeNewsArticle(normalized, entityMapBySymbol) || {};
+      normalizedItems.push({
+        ...normalized,
+        intelligence,
+      });
     } catch (error) {
       const failedSymbol = cleanSymbol(entry?.fallbackSymbol);
       if (failedSymbol) failedSymbolsSet.add(failedSymbol);
