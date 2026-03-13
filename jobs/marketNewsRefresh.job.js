@@ -19,6 +19,10 @@ const {
   loadEntityMapBySymbols,
 } = require("../services/entityMap.repository");
 
+const {
+  analyzeNewsArticle,
+} = require("../services/newsIntelligence.service");
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -91,6 +95,7 @@ async function ensureMarketNewsTable() {
       source_type TEXT,
       entity_hint JSONB DEFAULT '{}'::jsonb,
       raw_payload JSONB DEFAULT '{}'::jsonb,
+      intelligence JSONB DEFAULT '{}'::jsonb,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -108,6 +113,11 @@ async function ensureMarketNewsTable() {
   await pool.query(`
     ALTER TABLE market_news
     ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb;
+  `);
+
+  await pool.query(`
+    ALTER TABLE market_news
+    ADD COLUMN IF NOT EXISTS intelligence JSONB DEFAULT '{}'::jsonb;
   `);
 
   await pool.query(`
@@ -129,22 +139,117 @@ async function ensureMarketNewsTable() {
 }
 
 async function loadUniverseSymbols(limit = SYMBOL_LIMIT) {
-  const res = await pool.query(
-    `
-    SELECT symbol
-    FROM universe_symbols
-    ORDER BY symbol ASC
-    LIMIT $1
-    `,
-    [limit]
-  );
+  try {
+    const res = await pool.query(
+      `
+      SELECT symbol
+      FROM universe_symbols
+      ORDER BY symbol ASC
+      LIMIT $1
+      `,
+      [limit]
+    );
 
-  return (res.rows || [])
-    .map((row) => normalizeSymbol(row.symbol))
-    .filter(Boolean);
+    return (res.rows || [])
+      .map((row) => normalizeSymbol(row.symbol))
+      .filter(Boolean);
+  } catch (error) {
+    if (logger?.warn) {
+      logger.warn("Failed to load universe_symbols", {
+        message: error.message,
+      });
+    }
+    return [];
+  }
 }
 
-function normalizeCollectedNewsItem(rawItem, fallbackSymbol) {
+async function loadWatchlistSymbols(limit = SYMBOL_LIMIT) {
+  try {
+    const res = await pool.query(
+      `
+      SELECT symbol
+      FROM watchlist_symbols
+      WHERE is_active = TRUE
+      ORDER BY priority ASC, symbol ASC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return (res.rows || [])
+      .map((row) => normalizeSymbol(row.symbol))
+      .filter(Boolean);
+  } catch (error) {
+    if (logger?.warn) {
+      logger.warn("Failed to load watchlist_symbols", {
+        message: error.message,
+      });
+    }
+    return [];
+  }
+}
+
+async function loadEntityMapSymbols(limit = SYMBOL_LIMIT) {
+  try {
+    const res = await pool.query(
+      `
+      SELECT symbol
+      FROM entity_map
+      WHERE is_active = TRUE
+      ORDER BY symbol ASC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return (res.rows || [])
+      .map((row) => normalizeSymbol(row.symbol))
+      .filter(Boolean);
+  } catch (error) {
+    if (logger?.warn) {
+      logger.warn("Failed to load entity_map symbols", {
+        message: error.message,
+      });
+    }
+    return [];
+  }
+}
+
+async function loadTargetSymbols(limit = SYMBOL_LIMIT) {
+  const universeSymbols = await loadUniverseSymbols(limit);
+  if (universeSymbols.length) {
+    if (logger?.info) {
+      logger.info("Loaded symbols from universe_symbols", {
+        count: universeSymbols.length,
+      });
+    }
+    return universeSymbols;
+  }
+
+  const watchlistSymbols = await loadWatchlistSymbols(limit);
+  if (watchlistSymbols.length) {
+    if (logger?.info) {
+      logger.info("Universe empty - fallback to watchlist_symbols", {
+        count: watchlistSymbols.length,
+      });
+    }
+    return watchlistSymbols;
+  }
+
+  const entitySymbols = await loadEntityMapSymbols(limit);
+  if (entitySymbols.length) {
+    if (logger?.info) {
+      logger.info("Universe + watchlist empty - fallback to entity_map", {
+        count: entitySymbols.length,
+      });
+    }
+    return entitySymbols;
+  }
+
+  return [];
+}
+
+function normalizeCollectedNewsItem(rawItem, fallbackSymbol, intelligence = {}) {
   const symbol = normalizeSymbol(rawItem?.symbol || fallbackSymbol);
   const title = normalizeText(rawItem?.title, 1000);
   const url = normalizeUrl(rawItem?.url);
@@ -165,6 +270,7 @@ function normalizeCollectedNewsItem(rawItem, fallbackSymbol) {
     sourceType,
     entityHint: rawItem?.entityHint || {},
     rawPayload: rawItem?.rawPayload || {},
+    intelligence: intelligence || {},
   };
 }
 
@@ -181,9 +287,10 @@ async function insertNewsItem(item) {
       source_type,
       entity_hint,
       raw_payload,
+      intelligence,
       created_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, NOW())
     ON CONFLICT (url) DO NOTHING
     RETURNING id
     `,
@@ -197,6 +304,7 @@ async function insertNewsItem(item) {
       item.sourceType,
       JSON.stringify(item.entityHint || {}),
       JSON.stringify(item.rawPayload || {}),
+      JSON.stringify(item.intelligence || {}),
     ]
   );
 
@@ -209,6 +317,7 @@ async function run() {
     symbolsWithEntityMap: 0,
     rowsFetched: 0,
     rowsNormalized: 0,
+    intelligenceBuilt: 0,
     inserted: 0,
     duplicatesSkipped: 0,
     insertErrors: 0,
@@ -217,11 +326,13 @@ async function run() {
   try {
     await ensureMarketNewsTable();
 
-    const symbols = await loadUniverseSymbols(SYMBOL_LIMIT);
+    const symbols = await loadTargetSymbols(SYMBOL_LIMIT);
     summary.symbolsLoaded = symbols.length;
 
     if (!symbols.length) {
-      if (logger?.warn) logger.warn("No symbols found in universe_symbols");
+      if (logger?.warn) {
+        logger.warn("No symbols found in universe_symbols, watchlist_symbols or entity_map");
+      }
       return;
     }
 
@@ -249,7 +360,15 @@ async function run() {
 
     for (const rawItem of rows) {
       try {
-        const item = normalizeCollectedNewsItem(rawItem, rawItem?.symbol);
+        const intelligence = analyzeNewsArticle(rawItem, entityMapBySymbol);
+        summary.intelligenceBuilt += 1;
+
+        const item = normalizeCollectedNewsItem(
+          rawItem,
+          rawItem?.symbol,
+          intelligence
+        );
+
         if (!item) continue;
 
         summary.rowsNormalized += 1;
