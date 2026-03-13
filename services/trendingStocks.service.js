@@ -2,8 +2,14 @@
 
 const SCORE_MIN = 0;
 const SCORE_MAX = 100;
-const MOMENTUM_MIN = -100;
-const MOMENTUM_MAX = 100;
+const BUZZ_WEIGHT = 0.5;
+const MOMENTUM_WEIGHT = 0.3;
+const VOLUME_WEIGHT = 0.2;
+const EXPLODING_THRESHOLD = 85;
+const VERY_HOT_THRESHOLD = 70;
+const HOT_THRESHOLD = 50;
+const MOMENTUM_BASELINE = 50;
+const MOMENTUM_MULTIPLIER = 5;
 const VOLUME_BASELINE_LOG = 5;
 const VOLUME_WEIGHT_STEP = 25;
 
@@ -20,6 +26,17 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function toFiniteNumberOrNull(value) {
+  if (value === null || value === undefined) return null;
+
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isNil(value) {
+  return value === null || value === undefined;
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -34,12 +51,21 @@ function normalizeSymbol(value) {
   return symbol || null;
 }
 
-function normalizeBuzzScore(value) {
+function normalizeScore(value) {
   return roundNumber(clamp(safeNumber(value, 0), SCORE_MIN, SCORE_MAX));
 }
 
 function calculatePriceMomentum(value) {
-  return roundNumber(clamp(safeNumber(value, 0), MOMENTUM_MIN, MOMENTUM_MAX));
+  const changePercent = toFiniteNumberOrNull(value);
+  if (changePercent === null) return 0;
+
+  return roundNumber(
+    clamp(
+      changePercent * MOMENTUM_MULTIPLIER + MOMENTUM_BASELINE,
+      SCORE_MIN,
+      SCORE_MAX
+    )
+  );
 }
 
 function calculateVolumeSpike(value) {
@@ -51,19 +77,39 @@ function calculateVolumeSpike(value) {
   return roundNumber(clamp(spikeScore, SCORE_MIN, SCORE_MAX));
 }
 
+function buildTrendComponents(input = {}) {
+  const normalizedInput = normalizeInputObject(input);
+  if (!normalizedInput) {
+    return {
+      buzzScore: 0,
+      priceMomentum: 0,
+      volumeSpike: 0,
+    };
+  }
+
+  return {
+    buzzScore: normalizeScore(normalizedInput.buzzScore),
+    priceMomentum: isNil(normalizedInput.priceMomentum)
+      ? calculatePriceMomentum(normalizedInput.changePercent)
+      : normalizeScore(normalizedInput.priceMomentum),
+    volumeSpike: isNil(normalizedInput.volumeSpike)
+      ? calculateVolumeSpike(normalizedInput.volume)
+      : normalizeScore(normalizedInput.volumeSpike),
+  };
+}
+
 function calculateTrendScore(input = {}) {
   const normalizedInput = normalizeInputObject(input);
   if (!normalizedInput) return 0;
 
-  const buzzScore = normalizeBuzzScore(normalizedInput.buzzScore);
-  const priceMomentum = calculatePriceMomentum(normalizedInput.changePercent);
-  const volumeSpike = calculateVolumeSpike(normalizedInput.volume);
+  const { buzzScore, priceMomentum, volumeSpike } =
+    buildTrendComponents(normalizedInput);
 
   return roundNumber(
     clamp(
-      buzzScore * 0.5 +
-        priceMomentum * 0.3 +
-        volumeSpike * 0.2,
+      buzzScore * BUZZ_WEIGHT +
+        priceMomentum * MOMENTUM_WEIGHT +
+        volumeSpike * VOLUME_WEIGHT,
       SCORE_MIN,
       SCORE_MAX
     )
@@ -71,9 +117,11 @@ function calculateTrendScore(input = {}) {
 }
 
 function determineTrendLevel(trendScore) {
-  if (trendScore > 85) return "exploding";
-  if (trendScore > 70) return "very_hot";
-  if (trendScore > 50) return "hot";
+  const normalizedTrendScore = normalizeScore(trendScore);
+
+  if (normalizedTrendScore > EXPLODING_THRESHOLD) return "exploding";
+  if (normalizedTrendScore > VERY_HOT_THRESHOLD) return "very_hot";
+  if (normalizedTrendScore > HOT_THRESHOLD) return "hot";
   return "warm";
 }
 
@@ -84,13 +132,12 @@ function buildTrendingStock(input = {}) {
   const symbol = normalizeSymbol(normalizedInput.symbol);
   if (!symbol) return null;
 
-  const buzzScore = normalizeBuzzScore(normalizedInput.buzzScore);
-  const priceMomentum = calculatePriceMomentum(normalizedInput.changePercent);
-  const volumeSpike = calculateVolumeSpike(normalizedInput.volume);
+  const { buzzScore, priceMomentum, volumeSpike } =
+    buildTrendComponents(normalizedInput);
   const trendScore = calculateTrendScore({
     buzzScore,
-    changePercent: priceMomentum,
-    volume: normalizedInput.volume,
+    priceMomentum,
+    volumeSpike,
   });
 
   return {
