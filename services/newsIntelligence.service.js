@@ -81,6 +81,70 @@ function scorePhraseMatches(textBlobLower, phrases = [], weight = 1) {
   return { score, matches };
 }
 
+function scoreWeightedPhraseMatches(textBlobLower, weightedPhrases = []) {
+  let score = 0;
+  const matches = [];
+
+  for (const entry of weightedPhrases) {
+    const phrase =
+      typeof entry === "string"
+        ? entry
+        : String(entry?.phrase || "").trim();
+    const weight =
+      typeof entry === "string" ? 1 : safeNumber(entry?.weight, 1);
+    const normalized = phrase.toLowerCase();
+
+    if (!normalized || normalized.length < 2) continue;
+
+    if (textBlobLower.includes(normalized)) {
+      score += weight;
+      matches.push(phrase);
+    }
+  }
+
+  return { score, matches: uniqueStrings(matches, 20) };
+}
+
+function inferDirectionalBias(textBlobLower) {
+  const bullish = scoreWeightedPhraseMatches(textBlobLower, [
+    { phrase: "beats expectations", weight: 4 },
+    { phrase: "beat expectations", weight: 4 },
+    { phrase: "raises guidance", weight: 4 },
+    { phrase: "raises outlook", weight: 4 },
+    { phrase: "record revenue", weight: 4 },
+    { phrase: "strong demand", weight: 3 },
+    { phrase: "above estimates", weight: 3 },
+    { phrase: "tops estimates", weight: 3 },
+    { phrase: "profit rises", weight: 3 },
+    { phrase: "surge", weight: 2 },
+    { phrase: "jump", weight: 2 },
+    { phrase: "buyback", weight: 2 },
+    { phrase: "dividend increase", weight: 2 },
+    { phrase: "upgrade", weight: 2 },
+  ]).score;
+
+  const bearish = scoreWeightedPhraseMatches(textBlobLower, [
+    { phrase: "misses expectations", weight: 4 },
+    { phrase: "missed expectations", weight: 4 },
+    { phrase: "cuts guidance", weight: 4 },
+    { phrase: "cuts outlook", weight: 4 },
+    { phrase: "below estimates", weight: 3 },
+    { phrase: "weak demand", weight: 3 },
+    { phrase: "profit warning", weight: 3 },
+    { phrase: "downgrade", weight: 2 },
+    { phrase: "lawsuit", weight: 2 },
+    { phrase: "probe", weight: 2 },
+    { phrase: "investigation", weight: 2 },
+    { phrase: "decline", weight: 2 },
+    { phrase: "drop", weight: 2 },
+    { phrase: "fall", weight: 2 },
+  ]).score;
+
+  if (bullish >= bearish + 2) return "bullish";
+  if (bearish >= bullish + 2) return "bearish";
+  return "neutral";
+}
+
 function scoreEntityMatch(article = {}, entity = {}) {
   const symbol = normalizeSymbol(entity?.symbol);
   const companyName = normalizeText(entity?.companyName || entity?.company_name, 255);
@@ -184,6 +248,7 @@ function collectEntityMatches(article = {}, entityMapBySymbol = {}) {
 
 function classifyEvent(article = {}, matchedEntities = []) {
   const text = buildNewsTextBlob(article).toLowerCase();
+  const titleText = normalizeText(article?.title, 2000).toLowerCase();
 
   const rules = [
     {
@@ -198,8 +263,18 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "q2 results",
         "q3 results",
         "q4 results",
+        "results",
         "revenue",
         "eps",
+        "sales",
+        "profit",
+        "operating margin",
+        "beats expectations",
+        "beat expectations",
+        "misses expectations",
+        "missed expectations",
+        "above estimates",
+        "below estimates",
       ],
     },
     {
@@ -213,6 +288,11 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "forecast",
         "raises forecast",
         "cuts forecast",
+        "raises outlook",
+        "cuts outlook",
+        "reaffirms",
+        "expects",
+        "sees fy",
       ],
     },
     {
@@ -227,6 +307,10 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "buyout",
         "takeover",
         "deal to buy",
+        "take private",
+        "strategic alternatives",
+        "all-stock deal",
+        "cash deal",
       ],
     },
     {
@@ -241,6 +325,11 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "analyst",
         "buy rating",
         "sell rating",
+        "overweight",
+        "underweight",
+        "initiated",
+        "raised to buy",
+        "cut to sell",
       ],
     },
     {
@@ -255,6 +344,9 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "announces new",
         "rolls out",
         "unveils",
+        "debut",
+        "release",
+        "new platform",
       ],
     },
     {
@@ -271,6 +363,11 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "lawsuit",
         "fine",
         "ban",
+        "sec",
+        "fda",
+        "department of justice",
+        "doj",
+        "settlement",
       ],
     },
     {
@@ -286,6 +383,9 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "steps down",
         "appointed",
         "insider",
+        "chairman",
+        "board",
+        "director",
       ],
     },
     {
@@ -300,6 +400,11 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "rate hike",
         "central bank",
         "treasury yields",
+        "federal reserve",
+        "fomc",
+        "treasury yield",
+        "bond yields",
+        "10-year yield",
       ],
     },
     {
@@ -313,6 +418,9 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "ppi",
         "consumer prices",
         "producer prices",
+        "pce",
+        "core inflation",
+        "disinflation",
       ],
     },
     {
@@ -327,6 +435,9 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "factory",
         "plant",
         "shortage",
+        "logistics",
+        "backlog",
+        "capacity",
       ],
     },
     {
@@ -340,6 +451,8 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "cyclical",
         "defensive",
         "broad market",
+        "risk-on",
+        "risk off",
       ],
     },
     {
@@ -355,6 +468,9 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "china",
         "taiwan",
         "middle east",
+        "trade war",
+        "export restrictions",
+        "red sea",
       ],
     },
     {
@@ -367,6 +483,9 @@ function classifyEvent(article = {}, matchedEntities = []) {
         "buyback",
         "share repurchase",
         "capital return",
+        "dividend increase",
+        "special dividend",
+        "authorized repurchase",
       ],
     },
   ];
@@ -380,13 +499,18 @@ function classifyEvent(article = {}, matchedEntities = []) {
   };
 
   for (const rule of rules) {
-    const matchedPatterns = rule.patterns.filter((pattern) =>
-      text.includes(pattern.toLowerCase())
+    const matchedPatterns = uniqueStrings(
+      rule.patterns.filter((pattern) => text.includes(pattern.toLowerCase())),
+      12
     );
 
     if (!matchedPatterns.length) continue;
 
-    const score = rule.weight + matchedPatterns.length * 3;
+    const titleMatches = matchedPatterns.filter((pattern) =>
+      titleText.includes(pattern.toLowerCase())
+    );
+    const score =
+      rule.weight + matchedPatterns.length * 3 + titleMatches.length * 4;
     if (score > best.score) {
       best = {
         eventType: rule.eventType,
@@ -402,9 +526,12 @@ function classifyEvent(article = {}, matchedEntities = []) {
     best.score += 8;
   }
 
+  const inferredDirection =
+    best.direction === "neutral" ? inferDirectionalBias(text) : best.direction;
+
   return {
     eventType: best.eventType,
-    direction: normalizeDirection(best.direction),
+    direction: normalizeDirection(inferredDirection),
     horizon: best.horizon,
     eventStrength: clamp(best.score, 0, 100),
     matchedPatterns: uniqueStrings(best.matchedPatterns, 10),
@@ -414,49 +541,58 @@ function classifyEvent(article = {}, matchedEntities = []) {
 function detectSentiment(article = {}) {
   const text = buildNewsTextBlob(article).toLowerCase();
 
-  const bullishPatterns = [
-    "beats expectations",
-    "beat expectations",
-    "raises guidance",
-    "strong demand",
-    "record revenue",
-    "surge",
-    "jump",
-    "growth",
-    "profit rises",
-    "upgrade",
-    "buyback",
-  ];
+  const bullish = scoreWeightedPhraseMatches(text, [
+    { phrase: "beats expectations", weight: 5 },
+    { phrase: "beat expectations", weight: 5 },
+    { phrase: "raises guidance", weight: 5 },
+    { phrase: "raises outlook", weight: 5 },
+    { phrase: "record revenue", weight: 4 },
+    { phrase: "record profit", weight: 4 },
+    { phrase: "strong demand", weight: 3 },
+    { phrase: "above estimates", weight: 3 },
+    { phrase: "tops estimates", weight: 3 },
+    { phrase: "profit rises", weight: 3 },
+    { phrase: "surge", weight: 2 },
+    { phrase: "jump", weight: 2 },
+    { phrase: "growth", weight: 2 },
+    { phrase: "upgrade", weight: 2 },
+    { phrase: "buyback", weight: 2 },
+    { phrase: "dividend increase", weight: 2 },
+  ]).score;
 
-  const bearishPatterns = [
-    "misses expectations",
-    "missed expectations",
-    "cuts guidance",
-    "weak demand",
-    "decline",
-    "drop",
-    "fall",
-    "warning",
-    "downgrade",
-    "lawsuit",
-    "probe",
-    "investigation",
-  ];
+  const bearish = scoreWeightedPhraseMatches(text, [
+    { phrase: "misses expectations", weight: 5 },
+    { phrase: "missed expectations", weight: 5 },
+    { phrase: "cuts guidance", weight: 5 },
+    { phrase: "cuts outlook", weight: 5 },
+    { phrase: "weak demand", weight: 3 },
+    { phrase: "below estimates", weight: 3 },
+    { phrase: "profit warning", weight: 3 },
+    { phrase: "warning", weight: 2 },
+    { phrase: "downgrade", weight: 2 },
+    { phrase: "lawsuit", weight: 2 },
+    { phrase: "probe", weight: 2 },
+    { phrase: "investigation", weight: 2 },
+    { phrase: "decline", weight: 2 },
+    { phrase: "drop", weight: 2 },
+    { phrase: "fall", weight: 2 },
+    { phrase: "slump", weight: 2 },
+  ]).score;
 
-  const bullish = bullishPatterns.filter((pattern) => text.includes(pattern)).length;
-  const bearish = bearishPatterns.filter((pattern) => text.includes(pattern)).length;
+  const totalSignals = bullish + bearish;
+  const margin = Math.abs(bullish - bearish);
 
-  if (bullish > bearish) {
+  if (bullish > bearish && margin >= 2) {
     return {
       direction: "bullish",
-      sentimentStrength: clamp(50 + bullish * 10 - bearish * 4, 0, 100),
+      sentimentStrength: clamp(54 + margin * 6 + Math.min(totalSignals, 6) * 2, 0, 100),
     };
   }
 
-  if (bearish > bullish) {
+  if (bearish > bullish && margin >= 2) {
     return {
       direction: "bearish",
-      sentimentStrength: clamp(50 + bearish * 10 - bullish * 4, 0, 100),
+      sentimentStrength: clamp(54 + margin * 6 + Math.min(totalSignals, 6) * 2, 0, 100),
     };
   }
 
@@ -546,42 +682,86 @@ MACRO EVENT DETECTION
 
 function detectMacroSignals(article = {}) {
   const text = buildNewsTextBlob(article).toLowerCase();
+  const titleText = normalizeText(article?.title, 2000).toLowerCase();
 
   const macroSignals = [];
 
   const rules = [
     {
       type: "interest_rates",
-      patterns: ["fed", "interest rate", "rate hike", "rate cut", "central bank"],
+      patterns: [
+        "fed",
+        "federal reserve",
+        "interest rate",
+        "rate hike",
+        "rate cut",
+        "central bank",
+        "fomc",
+        "treasury yield",
+        "10-year yield",
+      ],
     },
     {
       type: "inflation",
-      patterns: ["inflation", "cpi", "ppi", "consumer price"],
+      patterns: [
+        "inflation",
+        "cpi",
+        "ppi",
+        "consumer price",
+        "pce",
+        "core inflation",
+        "price pressures",
+      ],
     },
     {
       type: "oil",
-      patterns: ["oil", "crude", "opec", "brent"],
+      patterns: ["oil", "crude", "opec", "brent", "wti", "barrel"],
     },
     {
       type: "ai",
-      patterns: ["artificial intelligence", "ai chips", "ai boom"],
+      patterns: [
+        "artificial intelligence",
+        "generative ai",
+        "ai chips",
+        "ai boom",
+        "llm",
+        "data center demand",
+      ],
     },
     {
       type: "semiconductors",
-      patterns: ["semiconductor", "chips", "tsmc", "nvidia"],
+      patterns: [
+        "semiconductor",
+        "chips",
+        "tsmc",
+        "nvidia",
+        "gpu",
+        "foundry",
+      ],
     },
     {
       type: "banking",
-      patterns: ["banking crisis", "bank collapse", "liquidity"],
+      patterns: [
+        "banking crisis",
+        "bank collapse",
+        "liquidity",
+        "regional bank",
+        "deposit flight",
+        "capital ratios",
+      ],
     },
   ];
 
   for (const rule of rules) {
-    const matches = rule.patterns.filter((pattern) => text.includes(pattern));
+    const matches = uniqueStrings(
+      rule.patterns.filter((pattern) => text.includes(pattern)),
+      12
+    );
     if (matches.length) {
+      const titleMatches = matches.filter((pattern) => titleText.includes(pattern));
       macroSignals.push({
         type: rule.type,
-        strength: clamp(matches.length * 10 + 40, 0, 100),
+        strength: clamp(35 + matches.length * 10 + titleMatches.length * 8, 0, 100),
         patterns: matches,
       });
     }
@@ -675,17 +855,21 @@ function computeMarketImpactScore({
 
 function buildRelevanceScore({
   topMatchScore = 0,
+  matchCount = 0,
   eventStrength = 0,
   sourceQuality = 50,
   freshnessScore = 40,
   sentimentStrength = 50,
+  macroSignals = [],
 }) {
   const score =
-    topMatchScore * 0.35 +
-    eventStrength * 0.25 +
-    sourceQuality * 0.15 +
-    freshnessScore * 0.15 +
-    sentimentStrength * 0.10;
+    topMatchScore * 0.38 +
+    eventStrength * 0.24 +
+    sourceQuality * 0.14 +
+    freshnessScore * 0.12 +
+    Math.max(0, sentimentStrength - 50) * 0.08 +
+    clamp(matchCount * 3, 0, 8) +
+    clamp(macroSignals.length * 2, 0, 6);
 
   return clamp(Math.round(score), 0, 100);
 }
@@ -695,15 +879,21 @@ function buildConfidence({
   topMatchScore = 0,
   matchedPatterns = [],
   sourceQuality = 50,
+  freshnessScore = 40,
   macroSignals = [],
 }) {
-  let confidence = 30;
+  let confidence = 18;
 
-  confidence += clamp(topMatchScore * 0.4, 0, 40);
-  confidence += clamp(matchCount * 5, 0, 15);
-  confidence += clamp(matchedPatterns.length * 4, 0, 12);
-  confidence += clamp((sourceQuality - 50) * 0.25, 0, 15);
-  confidence += clamp(macroSignals.length * 4, 0, 12);
+  confidence += clamp(topMatchScore * 0.38, 0, 38);
+  confidence += clamp(matchCount * 6, 0, 18);
+  confidence += clamp(matchedPatterns.length * 5, 0, 15);
+  confidence += clamp((sourceQuality - 50) * 0.3, 0, 12);
+  confidence += clamp((freshnessScore - 40) * 0.2, 0, 12);
+  confidence += clamp(macroSignals.length * 3, 0, 9);
+
+  if (!matchCount && !matchedPatterns.length) {
+    confidence -= 10;
+  }
 
   return clamp(Math.round(confidence), 0, 100);
 }
@@ -716,25 +906,27 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
   const sentimentInfo = detectSentiment(article);
   const freshnessScore = computeFreshnessScore(article);
   const sourceQuality = computeSourceQualityScore(article);
+  const macroSignals = detectMacroSignals(article);
+  const sectorImpact = estimateSectorImpact(macroSignals);
 
   const topMatchScore = filteredMatches.length ? filteredMatches[0].matchScore : 0;
 
   const relevanceScore = buildRelevanceScore({
     topMatchScore,
+    matchCount: filteredMatches.length,
     eventStrength: eventInfo.eventStrength,
     sourceQuality,
     freshnessScore,
     sentimentStrength: sentimentInfo.sentimentStrength,
+    macroSignals,
   });
-
-  const macroSignals = detectMacroSignals(article);
-  const sectorImpact = estimateSectorImpact(macroSignals);
 
   const confidence = buildConfidence({
     matchCount: filteredMatches.length,
     topMatchScore,
     matchedPatterns: eventInfo.matchedPatterns,
     sourceQuality,
+    freshnessScore,
     macroSignals,
   });
 
@@ -751,8 +943,18 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
 
   const reasons = uniqueStrings(
     [
+      filteredMatches[0]
+        ? `Top-Symbol ${filteredMatches[0].symbol} mit MatchScore ${filteredMatches[0].matchScore}`
+        : null,
       ...filteredMatches.flatMap((item) => item.matchReasons || []),
+      `Event klassifiziert als ${eventInfo.eventType} (Stärke ${eventInfo.eventStrength})`,
       ...eventInfo.matchedPatterns.map((pattern) => `Event-Muster: ${pattern}`),
+      sentimentInfo.direction !== "neutral"
+        ? `Sentiment ${sentimentInfo.direction} (Stärke ${sentimentInfo.sentimentStrength})`
+        : "Sentiment neutral",
+      ...macroSignals.map(
+        (signal) => `Makro-Signal ${signal.type} mit Stärke ${signal.strength}`
+      ),
       ...macroSignals.flatMap((signal) =>
         (signal.patterns || []).map((pattern) => `Makro-Signal ${signal.type}: ${pattern}`)
       ),
