@@ -249,7 +249,8 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
       const normalized = normalizeFmpNewsItem(entry?.rawItem, entry?.fallbackSymbol);
       if (!normalized) continue;
 
-      normalized.intelligence = analyzeNewsArticle(normalized, entityMapBySymbol);
+      normalized.intelligence =
+        analyzeNewsArticle(normalized, entityMapBySymbol) || {};
       normalizedItems.push(normalized);
     } catch (error) {
       const failedSymbol = cleanSymbol(entry?.fallbackSymbol);
