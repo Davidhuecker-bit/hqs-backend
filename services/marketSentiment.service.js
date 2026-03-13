@@ -4,6 +4,9 @@
   Public Market Sentiment Scaffold
 */
 
+const ROUND_FACTOR_2 = 100;
+const MIN_SOURCE_WEIGHT = 1;
+
 function safeNumber(value, fallback = null) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -14,7 +17,7 @@ function clamp(value, min, max) {
 }
 
 function roundNumber(value, digits = 2) {
-  const factor = 10 ** digits;
+  const factor = digits === 2 ? ROUND_FACTOR_2 : Math.pow(10, digits);
   return Math.round(value * factor) / factor;
 }
 
@@ -102,7 +105,7 @@ function computeMentionCount(input = {}, sourceBreakdown = {}) {
   }, 0);
 }
 
-function computeWeightedAverage(sourceBreakdown = {}, fieldName, fallback = 0) {
+function computeWeightedAverage(sourceBreakdown = {}, fieldName = "", fallback = 0) {
   let weightedTotal = 0;
   let weightSum = 0;
 
@@ -110,7 +113,10 @@ function computeWeightedAverage(sourceBreakdown = {}, fieldName, fallback = 0) {
     const value = safeNumber(entry?.[fieldName], null);
     if (value === null) continue;
 
-    const weight = Math.max(1, normalizeMentionCount(entry?.mentionCount, 0));
+    const weight = Math.max(
+      MIN_SOURCE_WEIGHT,
+      normalizeMentionCount(entry?.mentionCount, 0)
+    );
     weightedTotal += value * weight;
     weightSum += weight;
   }
