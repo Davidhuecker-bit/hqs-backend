@@ -2,6 +2,9 @@
 
 const { buildMarketSentiment } = require("./marketSentiment.service");
 
+const MARKET_SENTIMENT_FRESHNESS_WEIGHT = 0.6;
+const MARKET_SENTIMENT_SOURCE_QUALITY_WEIGHT = 0.4;
+
 function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase();
 }
@@ -671,7 +674,10 @@ function buildEmbeddedMarketSentiment({
         : 0;
   const mentionCount = Math.max(1, safeNumber(matchCount, 0));
   const buzzScore = clamp(
-    Math.round(freshnessScore * 0.6 + sourceQuality * 0.4),
+    Math.round(
+      freshnessScore * MARKET_SENTIMENT_FRESHNESS_WEIGHT +
+        sourceQuality * MARKET_SENTIMENT_SOURCE_QUALITY_WEIGHT
+    ),
     0,
     100
   );
