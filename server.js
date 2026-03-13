@@ -54,12 +54,14 @@ const discoveryRoutes = require("./routes/discovery.routes");
 const notificationsRoutes = require("./routes/notifications.routes");
 const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
+const secEdgarRoutes = require("./routes/secEdgar.routes");
 
 /* =========================================================
 DISCOVERY
 ========================================================= */
 
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
+const { initSecEdgarTables } = require("./services/secEdgar.repository");
 
 /* =========================================================
 NOTIFICATIONS
@@ -105,6 +107,7 @@ app.use("/api/opportunities", opportunitiesRoutes);
 app.use("/api/discovery", discoveryRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/market-news", marketNewsRoutes);
+app.use("/api/sec-edgar", secEdgarRoutes);
 
 /* =========================================================
 FORMATTER
@@ -456,6 +459,7 @@ app.listen(PORT, async () => {
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
+    await initSecEdgarTables();
 
     if (RUN_JOBS) {
       logger.info("RUN_JOBS=true -> starting background jobs inside API server");
