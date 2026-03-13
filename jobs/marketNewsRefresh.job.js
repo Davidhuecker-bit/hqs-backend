@@ -96,6 +96,21 @@ async function ensureMarketNewsTable() {
   `);
 
   await pool.query(`
+    ALTER TABLE market_news
+    ADD COLUMN IF NOT EXISTS source_type TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE market_news
+    ADD COLUMN IF NOT EXISTS entity_hint JSONB DEFAULT '{}'::jsonb;
+  `);
+
+  await pool.query(`
+    ALTER TABLE market_news
+    ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb;
+  `);
+
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ux_market_news_url
     ON market_news(url);
   `);
@@ -111,27 +126,6 @@ async function ensureMarketNewsTable() {
   `);
 
   if (logger?.info) logger.info("market_news table ready");
-}
-
-async function ensureOptionalColumns() {
-  const columns = [
-    {
-      name: "source_type",
-      sql: `ALTER TABLE market_news ADD COLUMN IF NOT EXISTS source_type TEXT`,
-    },
-    {
-      name: "entity_hint",
-      sql: `ALTER TABLE market_news ADD COLUMN IF NOT EXISTS entity_hint JSONB DEFAULT '{}'::jsonb`,
-    },
-    {
-      name: "raw_payload",
-      sql: `ALTER TABLE market_news ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb`,
-    },
-  ];
-
-  for (const column of columns) {
-    await pool.query(column.sql);
-  }
 }
 
 async function loadUniverseSymbols(limit = SYMBOL_LIMIT) {
@@ -222,7 +216,6 @@ async function run() {
 
   try {
     await ensureMarketNewsTable();
-    await ensureOptionalColumns();
 
     const symbols = await loadUniverseSymbols(SYMBOL_LIMIT);
     summary.symbolsLoaded = symbols.length;
