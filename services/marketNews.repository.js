@@ -32,6 +32,30 @@ function cleanPublishedAt(value) {
   return date.toISOString();
 }
 
+function safeJson(value, fallback = {}) {
+  if (value == null) return fallback;
+
+  if (typeof value === "object") {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object") return parsed;
+      return fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  return fallback;
+}
+
 function normalizeNewsItem(item) {
   const symbol = cleanSymbol(item?.symbol);
   const title = cleanText(item?.title);
@@ -45,9 +69,13 @@ function normalizeNewsItem(item) {
     source: cleanText(item?.source),
     url,
     publishedAt: cleanPublishedAt(item?.publishedAt ?? item?.published_at),
-    summaryRaw: cleanText(item?.summaryRaw ?? item?.summary_raw),
+    summaryRaw: cleanText(item?.summaryRaw ?? item?.summary_raw ?? item?.summary),
     sentimentRaw: cleanText(item?.sentimentRaw ?? item?.sentiment_raw),
     category: cleanText(item?.category),
+    sourceType: cleanText(item?.sourceType ?? item?.source_type),
+    entityHint: safeJson(item?.entityHint ?? item?.entity_hint, {}),
+    rawPayload: safeJson(item?.rawPayload ?? item?.raw_payload, {}),
+    intelligence: safeJson(item?.intelligence, {}),
   };
 }
 
@@ -64,9 +92,33 @@ async function initMarketNewsTable() {
         summary_raw TEXT,
         sentiment_raw TEXT,
         category TEXT,
+        source_type TEXT,
+        entity_hint JSONB DEFAULT '{}'::jsonb,
+        raw_payload JSONB DEFAULT '{}'::jsonb,
+        intelligence JSONB DEFAULT '{}'::jsonb,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
+    `);
+
+    await pool.query(`
+      ALTER TABLE market_news
+      ADD COLUMN IF NOT EXISTS source_type TEXT;
+    `);
+
+    await pool.query(`
+      ALTER TABLE market_news
+      ADD COLUMN IF NOT EXISTS entity_hint JSONB DEFAULT '{}'::jsonb;
+    `);
+
+    await pool.query(`
+      ALTER TABLE market_news
+      ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb;
+    `);
+
+    await pool.query(`
+      ALTER TABLE market_news
+      ADD COLUMN IF NOT EXISTS intelligence JSONB DEFAULT '{}'::jsonb;
     `);
 
     await pool.query(`
@@ -87,6 +139,11 @@ async function initMarketNewsTable() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_market_news_symbol_published_at
       ON market_news (symbol, published_at DESC);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_market_news_source_type
+      ON market_news (source_type);
     `);
 
     if (logger?.info) logger.info("market_news ready");
@@ -118,8 +175,9 @@ async function upsertMarketNews(items) {
 
     for (const item of values) {
       placeholders.push(
-        `($${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, NOW(), NOW())`
+        `($${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}, $${index++}::jsonb, $${index++}::jsonb, $${index++}::jsonb, NOW(), NOW())`
       );
+
       params.push(
         item.symbol,
         item.title,
@@ -128,7 +186,11 @@ async function upsertMarketNews(items) {
         item.publishedAt,
         item.summaryRaw,
         item.sentimentRaw,
-        item.category
+        item.category,
+        item.sourceType,
+        JSON.stringify(item.entityHint || {}),
+        JSON.stringify(item.rawPayload || {}),
+        JSON.stringify(item.intelligence || {})
       );
     }
 
@@ -143,6 +205,10 @@ async function upsertMarketNews(items) {
         summary_raw,
         sentiment_raw,
         category,
+        source_type,
+        entity_hint,
+        raw_payload,
+        intelligence,
         created_at,
         updated_at
       )
@@ -155,6 +221,10 @@ async function upsertMarketNews(items) {
         summary_raw = EXCLUDED.summary_raw,
         sentiment_raw = EXCLUDED.sentiment_raw,
         category = EXCLUDED.category,
+        source_type = EXCLUDED.source_type,
+        entity_hint = EXCLUDED.entity_hint,
+        raw_payload = EXCLUDED.raw_payload,
+        intelligence = EXCLUDED.intelligence,
         updated_at = NOW()
       `,
       params
@@ -190,7 +260,11 @@ async function loadLatestMarketNewsBySymbols(symbols, limitPerSymbol = 5) {
         published_at,
         summary_raw,
         sentiment_raw,
-        category
+        category,
+        source_type,
+        entity_hint,
+        raw_payload,
+        intelligence
       FROM (
         SELECT
           symbol,
@@ -201,6 +275,10 @@ async function loadLatestMarketNewsBySymbols(symbols, limitPerSymbol = 5) {
           summary_raw,
           sentiment_raw,
           category,
+          source_type,
+          entity_hint,
+          raw_payload,
+          intelligence,
           ROW_NUMBER() OVER (
             PARTITION BY symbol
             ORDER BY published_at DESC NULLS LAST, updated_at DESC, id DESC
@@ -229,6 +307,10 @@ async function loadLatestMarketNewsBySymbols(symbols, limitPerSymbol = 5) {
         summaryRaw: row.summary_raw ?? null,
         sentimentRaw: row.sentiment_raw ?? null,
         category: row.category ?? null,
+        sourceType: row.source_type ?? null,
+        entityHint: safeJson(row.entity_hint, {}),
+        rawPayload: safeJson(row.raw_payload, {}),
+        intelligence: safeJson(row.intelligence, {}),
       });
     }
 
