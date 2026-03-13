@@ -5,12 +5,13 @@ const cors = require("cors");
 require("dotenv").config();
 
 /* =========================================================
-   LOGGER
+LOGGER
 ========================================================= */
+
 const logger = require("./utils/logger");
 
 /* =========================================================
-   CORE SERVICES
+CORE SERVICES
 ========================================================= */
 
 const {
@@ -30,6 +31,7 @@ const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
+
 const {
   collectAndStoreMarketNews,
   normalizeSymbols,
@@ -38,13 +40,13 @@ const {
 const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
 
 /* =========================================================
-   UNIVERSE (Symbol-Liste)
+UNIVERSE
 ========================================================= */
 
 const { refreshUniverse } = require("./services/universe.service");
 
 /* =========================================================
-   ROUTES
+ROUTES
 ========================================================= */
 
 const opportunitiesRoutes = require("./routes/opportunities.routes");
@@ -54,13 +56,13 @@ const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
 
 /* =========================================================
-   DISCOVERY (Learning DB)
+DISCOVERY
 ========================================================= */
 
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
 
 /* =========================================================
-   NOTIFICATIONS
+NOTIFICATIONS
 ========================================================= */
 
 const {
@@ -69,14 +71,14 @@ const {
 } = require("./services/notifications.repository");
 
 /* =========================================================
-   APP INIT
+APP INIT
 ========================================================= */
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// ✅ MAIN-SWITCH: Jobs im API-Server nur wenn RUN_JOBS=true
-const RUN_JOBS = String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
+const RUN_JOBS =
+  String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
 
 app.use(
   cors({
@@ -95,7 +97,7 @@ app.use(
 app.use(express.json());
 
 /* =========================================================
-   ROUTES
+ROUTES
 ========================================================= */
 
 app.use("/api/notifications", notificationsRoutes);
@@ -105,7 +107,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/market-news", marketNewsRoutes);
 
 /* =========================================================
-   RESPONSE FORMATTER
+FORMATTER
 ========================================================= */
 
 function formatMarketItem(item) {
@@ -151,7 +153,7 @@ function formatMarketItem(item) {
 }
 
 /* =========================================================
-   HEALTH
+HEALTH
 ========================================================= */
 
 app.get("/", (req, res) => {
@@ -163,7 +165,7 @@ app.get("/", (req, res) => {
 });
 
 /* =========================================================
-   MARKET ROUTE
+MARKET ROUTE
 ========================================================= */
 
 app.get("/api/market", async (req, res) => {
@@ -191,6 +193,10 @@ app.get("/api/market", async (req, res) => {
     });
   }
 });
+
+/* =========================================================
+ADMIN NEWS COLLECTOR
+========================================================= */
 
 app.get("/api/admin/collect-market-news", async (req, res) => {
   try {
@@ -220,7 +226,7 @@ app.get("/api/admin/collect-market-news", async (req, res) => {
 });
 
 /* =========================================================
-   HQS ROUTE
+HQS ROUTE
 ========================================================= */
 
 app.get("/api/hqs", async (req, res) => {
@@ -282,6 +288,7 @@ app.get("/api/hqs", async (req, res) => {
     });
   } catch (error) {
     logger.error("HQS route error", { message: error.message });
+
     return res.status(500).json({
       success: false,
       message: "HQS Berechnung fehlgeschlagen",
@@ -291,7 +298,7 @@ app.get("/api/hqs", async (req, res) => {
 });
 
 /* =========================================================
-   SEGMENT ROUTE
+SEGMENT ROUTE
 ========================================================= */
 
 app.get("/api/segment", async (req, res) => {
@@ -320,7 +327,7 @@ app.get("/api/segment", async (req, res) => {
 });
 
 /* =========================================================
-   GUARDIAN ROUTE
+GUARDIAN ROUTE
 ========================================================= */
 
 app.get("/api/guardian/analyze/:ticker", async (req, res) => {
@@ -370,7 +377,7 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 });
 
 /* =========================================================
-   PORTFOLIO ROUTE
+PORTFOLIO ROUTE
 ========================================================= */
 
 app.post("/api/portfolio", async (req, res) => {
@@ -401,7 +408,7 @@ app.post("/api/portfolio", async (req, res) => {
 });
 
 /* =========================================================
-   SAFE FORWARD LEARNING RUNNER
+SAFE FORWARD LEARNING
 ========================================================= */
 
 async function runForwardLearningLocked() {
@@ -413,16 +420,16 @@ async function runForwardLearningLocked() {
   }
 
   await runForwardLearning();
-
   logger.info("Forward learning executed");
 }
 
 /* =========================================================
-   UNIVERSE REFRESH RUNNER (optional)
+UNIVERSE REFRESH
 ========================================================= */
 
 async function runUniverseRefreshLocked() {
   const won = await acquireLock("universe_refresh_job", 2 * 60 * 60);
+
   if (!won) {
     logger.warn("Universe refresh skipped (lock held)");
     return;
@@ -433,7 +440,7 @@ async function runUniverseRefreshLocked() {
 }
 
 /* =========================================================
-   SERVER START
+SERVER START
 ========================================================= */
 
 app.listen(PORT, async () => {
@@ -450,11 +457,9 @@ app.listen(PORT, async () => {
     await initNotificationTables();
     await seedDemoUserIfEmpty();
 
-    // ✅ Jobs im API-Server nur wenn RUN_JOBS=true
     if (RUN_JOBS) {
       logger.info("RUN_JOBS=true -> starting background jobs inside API server");
 
-      // optional: universe refresh on startup
       try {
         if (process.env.FMP_API_KEY) {
           await runUniverseRefreshLocked();
@@ -462,7 +467,7 @@ app.listen(PORT, async () => {
           logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
         }
       } catch (uErr) {
-        logger.warn("Universe refresh failed on startup (continuing)", {
+        logger.warn("Universe refresh failed on startup", {
           message: uErr.message,
         });
       }
@@ -470,7 +475,6 @@ app.listen(PORT, async () => {
       await buildMarketSnapshot();
       await runForwardLearningLocked();
 
-      // warmup interval only when RUN_JOBS=true
       setInterval(async () => {
         try {
           await buildMarketSnapshot();
@@ -481,10 +485,7 @@ app.listen(PORT, async () => {
         }
       }, 15 * 60 * 1000);
 
-      // daily universe scheduler only when RUN_JOBS=true
       scheduleDailyUniverseRefresh();
-    } else {
-      logger.info("RUN_JOBS=false -> API server will NOT run background jobs (Cron services will do it)");
     }
 
     logger.info("Startup completed successfully");
@@ -494,8 +495,7 @@ app.listen(PORT, async () => {
 });
 
 /* =========================================================
-   DAILY UNIVERSE REFRESH (default 02:10)
-   - only activated when scheduleDailyUniverseRefresh() is called
+DAILY UNIVERSE REFRESH
 ========================================================= */
 
 function msUntilNextLocalTime(targetHour, targetMinute) {
@@ -511,6 +511,7 @@ async function scheduleDailyUniverseRefresh() {
   const minute = Number(process.env.UNIVERSE_REFRESH_MINUTE || 10);
 
   const delay = msUntilNextLocalTime(hour, minute);
+
   setTimeout(async () => {
     try {
       if (process.env.FMP_API_KEY) {
