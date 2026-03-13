@@ -24,13 +24,17 @@ function normalizeDirections(value) {
   )];
 }
 
-function extractRelevanceScore(item) {
-  const score = Number(item?.intelligence?.relevanceScore ?? 0);
+function extractRelevanceScore(intelligence) {
+  const safeIntelligence =
+    intelligence && typeof intelligence === "object" ? intelligence : {};
+  const score = Number(safeIntelligence.relevanceScore ?? 0);
   return Number.isFinite(score) ? score : 0;
 }
 
 function extractPublishedTimestamp(item) {
-  const timestamp = item?.publishedAt ? new Date(item.publishedAt).getTime() : 0;
+  if (!item?.publishedAt) return 0;
+
+  const timestamp = Date.parse(item.publishedAt);
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
@@ -109,15 +113,33 @@ router.get("/", async (req, res) => {
 
     for (const symbol of symbols) {
       const bucket = structured?.[symbol] || { items: [], summary: {} };
-      const items = Array.isArray(bucket.items)
-        ? bucket.items
-            .map(formatNewsItem)
-            .sort((a, b) => {
-              const relevanceDiff = extractRelevanceScore(b) - extractRelevanceScore(a);
-              if (relevanceDiff !== 0) return relevanceDiff;
-              return extractPublishedTimestamp(b) - extractPublishedTimestamp(a);
-            })
-        : [];
+      const items = [];
+
+      if (Array.isArray(bucket.items)) {
+        const sortableItems = [];
+
+        for (const item of bucket.items) {
+          const formattedItem = formatNewsItem(item);
+
+          sortableItems.push({
+            formattedItem,
+            relevanceScore: extractRelevanceScore(formattedItem.intelligence),
+            publishedTimestamp: extractPublishedTimestamp(formattedItem),
+          });
+        }
+
+        sortableItems.sort((a, b) => {
+          if (b.relevanceScore > a.relevanceScore) return 1;
+          if (b.relevanceScore < a.relevanceScore) return -1;
+          if (b.publishedTimestamp > a.publishedTimestamp) return 1;
+          if (b.publishedTimestamp < a.publishedTimestamp) return -1;
+          return 0;
+        });
+
+        for (const entry of sortableItems) {
+          items.push(entry.formattedItem);
+        }
+      }
       const summary = formatSummary(bucket.summary);
 
       newsBySymbol[symbol] = {
