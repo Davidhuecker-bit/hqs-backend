@@ -2,7 +2,7 @@
 
 // services/universe.service.js
 // Lädt 1x täglich eine Symbol-Liste (Universe) und speichert sie in DB.
-// Standard: FMP stock/list (US Universe). Später erweiterbar auf Global.
+// Standard: FMP stock list (US Universe). Später erweiterbar auf Global.
 
 const axios = require("axios");
 const logger = require("../utils/logger");
@@ -16,29 +16,28 @@ const {
 const FMP_API_KEY = process.env.FMP_API_KEY;
 
 function normalizeFmpRow(r) {
-  // FMP /api/v3/stock/list typical fields:
-  // symbol, name, price, exchange, exchangeShortName, type
   const symbol = String(r?.symbol ?? "").trim().toUpperCase();
   if (!symbol) return null;
 
   const type = String(r?.type ?? "").trim();
   const exchange = String(r?.exchangeShortName ?? r?.exchange ?? "").trim();
   const name = String(r?.name ?? "").trim();
+  const country = String(r?.country ?? "").trim();
+  const currency = String(r?.currency ?? "").trim();
 
   return {
     symbol,
     name: name || null,
     exchange: exchange || null,
     type: type || null,
-    country: null,
-    currency: null,
+    country: country || null,
+    currency: currency || null,
     is_active: true,
     priority: 1,
   };
 }
 
 function buildExchangeAllowList() {
-  // Default US: NASDAQ/NYSE/AMEX
   const env = String(process.env.UNIVERSE_EXCHANGES || "").trim();
   if (!env) return new Set(["NASDAQ", "NYSE", "AMEX"]);
   return new Set(
@@ -50,7 +49,6 @@ function buildExchangeAllowList() {
 }
 
 function buildTypeAllowList() {
-  // Default: stock
   const env = String(process.env.UNIVERSE_TYPES || "").trim();
   if (!env) return new Set(["STOCK"]);
   return new Set(
@@ -71,15 +69,49 @@ function shouldKeepSymbol(symbol) {
 async function fetchFmpStockList() {
   if (!FMP_API_KEY) throw new Error("Missing FMP_API_KEY");
 
-  const url = `https://financialmodelingprep.com/api/v3/stock/list?apikey=${encodeURIComponent(
+  const url = `https://financialmodelingprep.com/stable/stock-list?apikey=${encodeURIComponent(
     FMP_API_KEY
   )}`;
 
-  const res = await axios.get(url, { timeout: 30000 });
+  logger.info("Fetching FMP universe list", {
+    endpoint: "stable/stock-list",
+  });
+
+  const res = await axios.get(url, {
+    timeout: 30000,
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "HQS-Quant-System/8.1.0",
+    },
+    validateStatus: () => true,
+  });
+
+  if (res.status === 401 || res.status === 403) {
+    const preview =
+      typeof res.data === "string"
+        ? res.data.slice(0, 300)
+        : JSON.stringify(res.data || {}).slice(0, 300);
+
+    throw new Error(
+      `FMP stable/stock-list access denied (${res.status}) preview=${preview}`
+    );
+  }
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`FMP stable/stock-list failed with status ${res.status}`);
+  }
+
   const data = res?.data;
 
   if (!Array.isArray(data)) {
-    throw new Error("FMP stock/list returned non-array response");
+    const preview =
+      typeof data === "string"
+        ? data.slice(0, 300)
+        : JSON.stringify(data || {}).slice(0, 300);
+
+    throw new Error(
+      `FMP stable/stock-list returned non-array response preview=${preview}`
+    );
   }
 
   return data;
