@@ -10,6 +10,8 @@ try {
 }
 
 const marketNewsRepository = require("./marketNews.repository");
+const { loadEntityMapBySymbols } = require("./entityMap.repository");
+const { analyzeNewsArticle } = require("./newsIntelligence.service");
 
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const FMP_NEWS_URL = "https://financialmodelingprep.com/api/v3/stock_news";
@@ -239,11 +241,16 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
   summary.fetchedItems = items.length;
   summary.failedSymbols = [...failedSymbolsSet];
 
+  const entityMapBySymbol = await loadEntityMapBySymbols(requestedSymbols);
+
   const normalizedItems = [];
   for (const entry of items) {
     try {
       const normalized = normalizeFmpNewsItem(entry?.rawItem, entry?.fallbackSymbol);
-      if (normalized) normalizedItems.push(normalized);
+      if (!normalized) continue;
+
+      normalized.intelligence = analyzeNewsArticle(normalized, entityMapBySymbol);
+      normalizedItems.push(normalized);
     } catch (error) {
       const failedSymbol = cleanSymbol(entry?.fallbackSymbol);
       if (failedSymbol) failedSymbolsSet.add(failedSymbol);
