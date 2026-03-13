@@ -39,6 +39,10 @@ function formatNewsItem(item) {
     item?.intelligence && typeof item.intelligence === "object"
       ? item.intelligence
       : {};
+  const marketSentiment =
+    intelligence?.marketSentiment && typeof intelligence.marketSentiment === "object"
+      ? intelligence.marketSentiment
+      : null;
 
   return {
     symbol: item?.symbol ?? null,
@@ -57,6 +61,7 @@ function formatNewsItem(item) {
       freshnessScore: intelligence?.freshnessScore ?? null,
       sourceQuality: intelligence?.sourceQuality ?? null,
       sentimentStrength: intelligence?.sentimentStrength ?? null,
+      marketSentiment,
       symbols: Array.isArray(intelligence?.symbols) ? intelligence.symbols : [],
       sectors: Array.isArray(intelligence?.sectors) ? intelligence.sectors : [],
       industries: Array.isArray(intelligence?.industries) ? intelligence.industries : [],
