@@ -3,20 +3,25 @@
 const express = require("express");
 const router = express.Router();
 
-const { normalizeSymbols } = require("../services/marketNews.service");
-const { loadLatestMarketNewsBySymbols } = require("../services/marketNews.repository");
+const {
+  normalizeSymbols,
+  normalizeLimit,
+  normalizeMinRelevance,
+  getStructuredMarketNewsBySymbols,
+} = require("../services/marketNews.service");
+
 const logger = require("../utils/logger");
 
-function normalizeLimit(limitPerSymbol) {
-  const limit = Number(limitPerSymbol);
-  if (!Number.isFinite(limit)) return 5;
-  return Math.max(1, Math.min(Math.trunc(limit), 25));
-}
+function normalizeDirections(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return [];
 
-function normalizeMinRelevance(value) {
-  const score = Number(value);
-  if (!Number.isFinite(score)) return 0;
-  return Math.max(0, Math.min(Math.trunc(score), 100));
+  return [...new Set(
+    raw
+      .split(",")
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter((item) => ["bullish", "bearish", "neutral"].includes(item))
+  )];
 }
 
 function formatNewsItem(item) {
@@ -63,11 +68,28 @@ function formatNewsItem(item) {
   };
 }
 
+function formatSummary(summary) {
+  const safe = summary && typeof summary === "object" ? summary : {};
+
+  return {
+    count: Number(safe?.count ?? 0) || 0,
+    avgRelevance: Number(safe?.avgRelevance ?? 0) || 0,
+    avgConfidence: Number(safe?.avgConfidence ?? 0) || 0,
+    bullishCount: Number(safe?.bullishCount ?? 0) || 0,
+    bearishCount: Number(safe?.bearishCount ?? 0) || 0,
+    neutralCount: Number(safe?.neutralCount ?? 0) || 0,
+    dominantEventType: safe?.dominantEventType ?? null,
+    topHeadline: safe?.topHeadline ?? null,
+    topRelevanceScore: Number(safe?.topRelevanceScore ?? 0) || 0,
+  };
+}
+
 router.get("/", async (req, res) => {
   try {
     const symbols = normalizeSymbols(String(req.query.symbols || "").split(","));
     const limit = normalizeLimit(req.query.limit);
     const minRelevance = normalizeMinRelevance(req.query.minRelevance);
+    const directions = normalizeDirections(req.query.direction);
 
     if (!symbols.length) {
       return res.status(400).json({
@@ -76,43 +98,35 @@ router.get("/", async (req, res) => {
       });
     }
 
-    const newsBySymbol = await loadLatestMarketNewsBySymbols(symbols, limit);
+    const structured = await getStructuredMarketNewsBySymbols(symbols, limit, {
+      minRelevance,
+      directions,
+    });
 
-    const formattedBySymbol = {};
+    const newsBySymbol = {};
+    let count = 0;
 
     for (const symbol of symbols) {
-      const rawItems = Array.isArray(newsBySymbol?.[symbol]) ? newsBySymbol[symbol] : [];
-      const formattedItems = rawItems
-        .map(formatNewsItem)
-        .filter((item) => {
-          const score = Number(item?.intelligence?.relevanceScore ?? 0);
-          return score >= minRelevance;
-        })
-        .sort((a, b) => {
-          const aScore = Number(a?.intelligence?.relevanceScore ?? 0);
-          const bScore = Number(b?.intelligence?.relevanceScore ?? 0);
-          if (bScore !== aScore) return bScore - aScore;
+      const bucket = structured?.[symbol] || { items: [], summary: {} };
+      const items = Array.isArray(bucket.items) ? bucket.items.map(formatNewsItem) : [];
+      const summary = formatSummary(bucket.summary);
 
-          const aDate = a?.publishedAt ? new Date(a.publishedAt).getTime() : 0;
-          const bDate = b?.publishedAt ? new Date(b.publishedAt).getTime() : 0;
-          return bDate - aDate;
-        });
+      newsBySymbol[symbol] = {
+        summary,
+        items,
+      };
 
-      formattedBySymbol[symbol] = formattedItems;
+      count += items.length;
     }
-
-    const count = Object.values(formattedBySymbol).reduce(
-      (sum, items) => sum + (Array.isArray(items) ? items.length : 0),
-      0
-    );
 
     return res.json({
       success: true,
       symbols,
       limit,
       minRelevance,
+      directions,
       count,
-      newsBySymbol: formattedBySymbol,
+      newsBySymbol,
     });
   } catch (error) {
     logger.error("Market news route error", {
