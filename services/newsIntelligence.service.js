@@ -94,7 +94,10 @@ function scoreEntityMatch(article = {}, entity = {}) {
   const reasons = [];
 
   const titleLower = normalizeText(article?.title, 2000).toLowerCase();
-  const summaryLower = normalizeText(article?.summaryRaw || article?.summary, 4000).toLowerCase();
+  const summaryLower = normalizeText(
+    article?.summaryRaw || article?.summary,
+    4000
+  ).toLowerCase();
 
   if (symbol && titleLower.includes(symbol.toLowerCase())) {
     score += 18;
@@ -117,13 +120,17 @@ function scoreEntityMatch(article = {}, entity = {}) {
   const aliasScore = scorePhraseMatches(textBlobLower, aliases, 8);
   if (aliasScore.score > 0) {
     score += aliasScore.score;
-    reasons.push(`Alias-Treffer: ${aliasScore.matches.slice(0, 3).join(", ")}`);
+    reasons.push(
+      `Alias-Treffer: ${aliasScore.matches.slice(0, 3).join(", ")}`
+    );
   }
 
   const themeScore = scorePhraseMatches(textBlobLower, themes, 3);
   if (themeScore.score > 0) {
     score += Math.min(themeScore.score, 12);
-    reasons.push(`Themen-Treffer: ${themeScore.matches.slice(0, 3).join(", ")}`);
+    reasons.push(
+      `Themen-Treffer: ${themeScore.matches.slice(0, 3).join(", ")}`
+    );
   }
 
   if (
@@ -131,7 +138,11 @@ function scoreEntityMatch(article = {}, entity = {}) {
     normalizeSymbol(article.entityHint.symbol) === symbol &&
     safeNumber(article.entityHint.matchScore, 0) > 0
   ) {
-    const hintScore = clamp(safeNumber(article.entityHint.matchScore, 0) * 2, 0, 25);
+    const hintScore = clamp(
+      safeNumber(article.entityHint.matchScore, 0) * 2,
+      0,
+      25
+    );
     score += hintScore;
     reasons.push(`Entity-Hint MatchScore ${article.entityHint.matchScore}`);
   }
@@ -529,6 +540,139 @@ function aggregateIndustries(matches = []) {
   );
 }
 
+/* =========================================================
+MACRO EVENT DETECTION
+========================================================= */
+
+function detectMacroSignals(article = {}) {
+  const text = buildNewsTextBlob(article).toLowerCase();
+
+  const macroSignals = [];
+
+  const rules = [
+    {
+      type: "interest_rates",
+      patterns: ["fed", "interest rate", "rate hike", "rate cut", "central bank"],
+    },
+    {
+      type: "inflation",
+      patterns: ["inflation", "cpi", "ppi", "consumer price"],
+    },
+    {
+      type: "oil",
+      patterns: ["oil", "crude", "opec", "brent"],
+    },
+    {
+      type: "ai",
+      patterns: ["artificial intelligence", "ai chips", "ai boom"],
+    },
+    {
+      type: "semiconductors",
+      patterns: ["semiconductor", "chips", "tsmc", "nvidia"],
+    },
+    {
+      type: "banking",
+      patterns: ["banking crisis", "bank collapse", "liquidity"],
+    },
+  ];
+
+  for (const rule of rules) {
+    const matches = rule.patterns.filter((pattern) => text.includes(pattern));
+    if (matches.length) {
+      macroSignals.push({
+        type: rule.type,
+        strength: clamp(matches.length * 10 + 40, 0, 100),
+        patterns: matches,
+      });
+    }
+  }
+
+  return macroSignals;
+}
+
+/* =========================================================
+SECTOR IMPACT MODEL
+========================================================= */
+
+function estimateSectorImpact(macroSignals = []) {
+  const sectorImpact = {};
+
+  for (const signal of macroSignals) {
+    if (signal.type === "oil") {
+      sectorImpact.energy = 80;
+      sectorImpact.airlines = -40;
+      sectorImpact.transportation = -25;
+    }
+
+    if (signal.type === "interest_rates") {
+      sectorImpact.banks = 60;
+      sectorImpact.technology = -35;
+      sectorImpact.real_estate = -45;
+    }
+
+    if (signal.type === "ai") {
+      sectorImpact.semiconductors = 70;
+      sectorImpact.software = 60;
+      sectorImpact.cloud = 55;
+    }
+
+    if (signal.type === "semiconductors") {
+      sectorImpact.semiconductors = 85;
+      sectorImpact.hardware = 60;
+    }
+
+    if (signal.type === "banking") {
+      sectorImpact.banks = 75;
+      sectorImpact.financials = 55;
+    }
+
+    if (signal.type === "inflation") {
+      sectorImpact.consumer = -25;
+      sectorImpact.bonds = -35;
+      sectorImpact.energy = 20;
+    }
+  }
+
+  return sectorImpact;
+}
+
+/* =========================================================
+THEME EXPANSION
+========================================================= */
+
+function expandThemes(themes = [], macroSignals = []) {
+  const expanded = [...themes];
+
+  for (const signal of macroSignals) {
+    if (signal.type === "ai") expanded.push("artificial intelligence");
+    if (signal.type === "oil") expanded.push("energy");
+    if (signal.type === "interest_rates") expanded.push("monetary policy");
+    if (signal.type === "inflation") expanded.push("macro inflation");
+    if (signal.type === "semiconductors") expanded.push("chips");
+    if (signal.type === "banking") expanded.push("financial stability");
+  }
+
+  return uniqueStrings(expanded, 50);
+}
+
+/* =========================================================
+MARKET IMPACT SCORE
+========================================================= */
+
+function computeMarketImpactScore({
+  relevanceScore = 0,
+  eventStrength = 0,
+  macroSignals = [],
+  sectorImpact = {},
+}) {
+  let score = relevanceScore * 0.6 + eventStrength * 0.4;
+
+  if (macroSignals.length) score += 15;
+  if (Object.keys(sectorImpact).length) score += 10;
+
+  return clamp(Math.round(score), 0, 100);
+}
+
 function buildRelevanceScore({
   topMatchScore = 0,
   eventStrength = 0,
@@ -551,6 +695,7 @@ function buildConfidence({
   topMatchScore = 0,
   matchedPatterns = [],
   sourceQuality = 50,
+  macroSignals = [],
 }) {
   let confidence = 30;
 
@@ -558,6 +703,7 @@ function buildConfidence({
   confidence += clamp(matchCount * 5, 0, 15);
   confidence += clamp(matchedPatterns.length * 4, 0, 12);
   confidence += clamp((sourceQuality - 50) * 0.25, 0, 15);
+  confidence += clamp(macroSignals.length * 4, 0, 12);
 
   return clamp(Math.round(confidence), 0, 100);
 }
@@ -581,11 +727,15 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
     sentimentStrength: sentimentInfo.sentimentStrength,
   });
 
+  const macroSignals = detectMacroSignals(article);
+  const sectorImpact = estimateSectorImpact(macroSignals);
+
   const confidence = buildConfidence({
     matchCount: filteredMatches.length,
     topMatchScore,
     matchedPatterns: eventInfo.matchedPatterns,
     sourceQuality,
+    macroSignals,
   });
 
   const direction =
@@ -595,16 +745,21 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
 
   const sectors = aggregateSectors(filteredMatches);
   const industries = aggregateIndustries(filteredMatches);
-  const themes = aggregateThemes(filteredMatches);
+
+  const baseThemes = aggregateThemes(filteredMatches);
+  const themes = expandThemes(baseThemes, macroSignals);
 
   const reasons = uniqueStrings(
     [
       ...filteredMatches.flatMap((item) => item.matchReasons || []),
       ...eventInfo.matchedPatterns.map((pattern) => `Event-Muster: ${pattern}`),
+      ...macroSignals.flatMap((signal) =>
+        (signal.patterns || []).map((pattern) => `Makro-Signal ${signal.type}: ${pattern}`)
+      ),
       `FreshnessScore ${freshnessScore}`,
       `SourceQuality ${sourceQuality}`,
     ],
-    20
+    30
   );
 
   return {
@@ -628,6 +783,15 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
     freshnessScore,
     sourceQuality,
     sentimentStrength: sentimentInfo.sentimentStrength,
+
+    macroSignals,
+    sectorImpact,
+    marketImpactScore: computeMarketImpactScore({
+      relevanceScore,
+      eventStrength: eventInfo.eventStrength,
+      macroSignals,
+      sectorImpact,
+    }),
 
     entityMatches: filteredMatches.map((item) => ({
       symbol: item.symbol,
