@@ -24,6 +24,16 @@ function normalizeDirections(value) {
   )];
 }
 
+function extractRelevanceScore(item) {
+  const score = Number(item?.intelligence?.relevanceScore ?? 0);
+  return Number.isFinite(score) ? score : 0;
+}
+
+function extractPublishedTimestamp(item) {
+  const timestamp = item?.publishedAt ? new Date(item.publishedAt).getTime() : 0;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 function formatNewsItem(item) {
   const intelligence =
     item?.intelligence && typeof item.intelligence === "object"
@@ -37,8 +47,6 @@ function formatNewsItem(item) {
     source: item?.source ?? null,
     publishedAt: item?.publishedAt ?? item?.published_at ?? null,
     summary: item?.summaryRaw ?? item?.summary ?? null,
-    sourceType: item?.sourceType ?? item?.source_type ?? null,
-
     intelligence: {
       eventType: intelligence?.eventType ?? null,
       direction: intelligence?.direction ?? null,
@@ -58,13 +66,6 @@ function formatNewsItem(item) {
         ? intelligence.entityMatches
         : [],
     },
-
-    entityHint:
-      item?.entityHint && typeof item.entityHint === "object"
-        ? item.entityHint
-        : item?.entity_hint && typeof item.entity_hint === "object"
-          ? item.entity_hint
-          : {},
   };
 }
 
@@ -108,7 +109,15 @@ router.get("/", async (req, res) => {
 
     for (const symbol of symbols) {
       const bucket = structured?.[symbol] || { items: [], summary: {} };
-      const items = Array.isArray(bucket.items) ? bucket.items.map(formatNewsItem) : [];
+      const items = Array.isArray(bucket.items)
+        ? bucket.items
+            .map(formatNewsItem)
+            .sort((a, b) => {
+              const relevanceDiff = extractRelevanceScore(b) - extractRelevanceScore(a);
+              if (relevanceDiff !== 0) return relevanceDiff;
+              return extractPublishedTimestamp(b) - extractPublishedTimestamp(a);
+            })
+        : [];
       const summary = formatSummary(bucket.summary);
 
       newsBySymbol[symbol] = {
