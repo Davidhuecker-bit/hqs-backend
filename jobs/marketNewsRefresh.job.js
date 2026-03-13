@@ -2,7 +2,6 @@
 
 require("dotenv").config();
 
-const axios = require("axios");
 const { Pool } = require("pg");
 
 let logger = null;
@@ -12,39 +11,53 @@ try {
   logger = console;
 }
 
+const {
+  collectFreeNewsForSymbols,
+} = require("../services/freeNewsCollector.service");
+
+const {
+  loadEntityMapBySymbols,
+} = require("../services/entityMap.repository");
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
-const FMP_API_KEY = String(process.env.FMP_API_KEY || "").trim();
 const NEWS_LIMIT_PER_SYMBOL = Math.max(
   1,
-  Math.min(Number(process.env.MARKET_NEWS_LIMIT_PER_SYMBOL || 5), 10)
+  Math.min(Number(process.env.MARKET_NEWS_LIMIT_PER_SYMBOL || 5), 20)
 );
+
 const SYMBOL_LIMIT = Math.max(
   1,
   Math.min(Number(process.env.MARKET_NEWS_SYMBOL_LIMIT || 100), 500)
 );
-const REQUEST_DELAY_MS = Math.max(
-  0,
-  Math.min(Number(process.env.MARKET_NEWS_REQUEST_DELAY_MS || 250), 5000)
-);
+
 const REQUEST_TIMEOUT_MS = Math.max(
   3000,
-  Math.min(Number(process.env.MARKET_NEWS_REQUEST_TIMEOUT_MS || 12000), 30000)
+  Math.min(Number(process.env.MARKET_NEWS_REQUEST_TIMEOUT_MS || 20000), 60000)
 );
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const MAX_FEEDS_PER_SYMBOL = Math.max(
+  1,
+  Math.min(Number(process.env.MARKET_NEWS_MAX_FEEDS_PER_SYMBOL || 3), 10)
+);
+
+const MIN_MATCH_SCORE = Math.max(
+  0,
+  Math.min(Number(process.env.MARKET_NEWS_MIN_MATCH_SCORE || 2), 20)
+);
 
 function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase();
 }
 
 function normalizeText(value, maxLength = 5000) {
-  const text = String(value || "").trim();
+  const text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
   if (!text) return null;
   return text.slice(0, maxLength);
 }
@@ -75,6 +88,9 @@ async function ensureMarketNewsTable() {
       source TEXT,
       published_at TIMESTAMP NULL,
       summary TEXT,
+      source_type TEXT,
+      entity_hint JSONB DEFAULT '{}'::jsonb,
+      raw_payload JSONB DEFAULT '{}'::jsonb,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -89,7 +105,33 @@ async function ensureMarketNewsTable() {
     ON market_news(symbol, published_at DESC, created_at DESC);
   `);
 
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_market_news_source_type
+    ON market_news(source_type);
+  `);
+
   if (logger?.info) logger.info("market_news table ready");
+}
+
+async function ensureOptionalColumns() {
+  const columns = [
+    {
+      name: "source_type",
+      sql: `ALTER TABLE market_news ADD COLUMN IF NOT EXISTS source_type TEXT`,
+    },
+    {
+      name: "entity_hint",
+      sql: `ALTER TABLE market_news ADD COLUMN IF NOT EXISTS entity_hint JSONB DEFAULT '{}'::jsonb`,
+    },
+    {
+      name: "raw_payload",
+      sql: `ALTER TABLE market_news ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb`,
+    },
+  ];
+
+  for (const column of columns) {
+    await pool.query(column.sql);
+  }
 }
 
 async function loadUniverseSymbols(limit = SYMBOL_LIMIT) {
@@ -108,37 +150,14 @@ async function loadUniverseSymbols(limit = SYMBOL_LIMIT) {
     .filter(Boolean);
 }
 
-async function fetchFmpNewsForSymbol(symbol, limit = NEWS_LIMIT_PER_SYMBOL) {
-  if (!FMP_API_KEY) {
-    throw new Error("FMP_API_KEY fehlt");
-  }
-
-  const url = "https://financialmodelingprep.com/api/v3/stock_news";
-
-  const response = await axios.get(url, {
-    params: {
-      tickers: symbol,
-      limit,
-      apikey: FMP_API_KEY,
-    },
-    timeout: REQUEST_TIMEOUT_MS,
-  });
-
-  return Array.isArray(response.data) ? response.data : [];
-}
-
-function normalizeNewsItem(rawItem, fallbackSymbol) {
-  const symbol = normalizeSymbol(
-    rawItem?.symbol || rawItem?.ticker || rawItem?.tickers || fallbackSymbol
-  );
-
+function normalizeCollectedNewsItem(rawItem, fallbackSymbol) {
+  const symbol = normalizeSymbol(rawItem?.symbol || fallbackSymbol);
   const title = normalizeText(rawItem?.title, 1000);
-  const url = normalizeUrl(rawItem?.url || rawItem?.link);
-  const source = normalizeText(rawItem?.site || rawItem?.source || "FMP", 255);
-  const publishedAt = parsePublishedAt(
-    rawItem?.publishedDate || rawItem?.published_at || rawItem?.date
-  );
-  const summary = normalizeText(rawItem?.text || rawItem?.summary, 5000);
+  const url = normalizeUrl(rawItem?.url);
+  const source = normalizeText(rawItem?.source || "Free News Collector", 255);
+  const publishedAt = parsePublishedAt(rawItem?.publishedAt);
+  const summary = normalizeText(rawItem?.summaryRaw || rawItem?.summary, 5000);
+  const sourceType = normalizeText(rawItem?.sourceType || "rss", 120);
 
   if (!symbol || !title || !url) return null;
 
@@ -149,6 +168,9 @@ function normalizeNewsItem(rawItem, fallbackSymbol) {
     source,
     publishedAt,
     summary,
+    sourceType,
+    entityHint: rawItem?.entityHint || {},
+    rawPayload: rawItem?.rawPayload || {},
   };
 }
 
@@ -162,9 +184,12 @@ async function insertNewsItem(item) {
       source,
       published_at,
       summary,
+      source_type,
+      entity_hint,
+      raw_payload,
       created_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, NOW())
     ON CONFLICT (url) DO NOTHING
     RETURNING id
     `,
@@ -175,6 +200,9 @@ async function insertNewsItem(item) {
       item.source,
       item.publishedAt,
       item.summary,
+      item.sourceType,
+      JSON.stringify(item.entityHint || {}),
+      JSON.stringify(item.rawPayload || {}),
     ]
   );
 
@@ -184,16 +212,17 @@ async function insertNewsItem(item) {
 async function run() {
   const summary = {
     symbolsLoaded: 0,
-    symbolsProcessed: 0,
-    fetchErrors: 0,
+    symbolsWithEntityMap: 0,
     rowsFetched: 0,
     rowsNormalized: 0,
     inserted: 0,
     duplicatesSkipped: 0,
+    insertErrors: 0,
   };
 
   try {
     await ensureMarketNewsTable();
+    await ensureOptionalColumns();
 
     const symbols = await loadUniverseSymbols(SYMBOL_LIMIT);
     summary.symbolsLoaded = symbols.length;
@@ -203,39 +232,45 @@ async function run() {
       return;
     }
 
+    const entityMapBySymbol = await loadEntityMapBySymbols(symbols);
+    summary.symbolsWithEntityMap = Object.keys(entityMapBySymbol || {}).length;
+
     if (logger?.info) {
       logger.info("Market news refresh started", {
-        symbolsLoaded: symbols.length,
+        symbolsLoaded: summary.symbolsLoaded,
+        symbolsWithEntityMap: summary.symbolsWithEntityMap,
         perSymbolLimit: NEWS_LIMIT_PER_SYMBOL,
+        maxFeedsPerSymbol: MAX_FEEDS_PER_SYMBOL,
+        minMatchScore: MIN_MATCH_SCORE,
       });
     }
 
-    for (const symbol of symbols) {
+    const rows = await collectFreeNewsForSymbols(symbols, entityMapBySymbol, {
+      maxFeedsPerSymbol: MAX_FEEDS_PER_SYMBOL,
+      maxItemsPerSymbol: NEWS_LIMIT_PER_SYMBOL,
+      minMatchScore: MIN_MATCH_SCORE,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    });
+
+    summary.rowsFetched = rows.length;
+
+    for (const rawItem of rows) {
       try {
-        const rows = await fetchFmpNewsForSymbol(symbol, NEWS_LIMIT_PER_SYMBOL);
-        summary.symbolsProcessed += 1;
-        summary.rowsFetched += rows.length;
+        const item = normalizeCollectedNewsItem(rawItem, rawItem?.symbol);
+        if (!item) continue;
 
-        for (const rawItem of rows) {
-          const item = normalizeNewsItem(rawItem, symbol);
-          if (!item) continue;
+        summary.rowsNormalized += 1;
 
-          summary.rowsNormalized += 1;
-
-          const inserted = await insertNewsItem(item);
-          if (inserted) summary.inserted += 1;
-          else summary.duplicatesSkipped += 1;
-        }
-
-        if (REQUEST_DELAY_MS > 0) {
-          await sleep(REQUEST_DELAY_MS);
-        }
+        const inserted = await insertNewsItem(item);
+        if (inserted) summary.inserted += 1;
+        else summary.duplicatesSkipped += 1;
       } catch (error) {
-        summary.fetchErrors += 1;
+        summary.insertErrors += 1;
 
         if (logger?.warn) {
-          logger.warn("Market news fetch failed", {
-            symbol,
+          logger.warn("Market news insert failed", {
+            symbol: rawItem?.symbol || null,
+            url: rawItem?.url || null,
             message: error.message,
           });
         }
