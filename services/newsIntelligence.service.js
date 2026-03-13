@@ -1,5 +1,7 @@
 "use strict";
 
+const { buildMarketSentiment } = require("./marketSentiment.service");
+
 function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase();
 }
@@ -648,6 +650,64 @@ function computeSourceQualityScore(article = {}) {
   return 58;
 }
 
+function buildEmbeddedMarketSentiment({
+  article = {},
+  sentimentInfo = {},
+  freshnessScore = 40,
+  sourceQuality = 50,
+  matchCount = 0,
+}) {
+  const direction = normalizeDirection(sentimentInfo?.direction);
+  const sentimentStrength = clamp(
+    safeNumber(sentimentInfo?.sentimentStrength, direction === "neutral" ? 0 : 50),
+    0,
+    100
+  );
+  const sentimentScore =
+    direction === "bullish"
+      ? sentimentStrength
+      : direction === "bearish"
+        ? -sentimentStrength
+        : 0;
+  const mentionCount = Math.max(1, safeNumber(matchCount, 0));
+  const buzzScore = clamp(
+    Math.round(freshnessScore * 0.6 + sourceQuality * 0.4),
+    0,
+    100
+  );
+  const reasons = uniqueStrings(
+    [
+      direction === "neutral"
+        ? "News-Sentiment neutral aus Artikelinhalt abgeleitet"
+        : `News-Sentiment ${direction} aus Artikelinhalt abgeleitet`,
+      `Buzz-Score aus Freshness ${freshnessScore} und SourceQuality ${sourceQuality}`,
+      article?.title ? `Titel berücksichtigt: ${normalizeText(article.title, 160)}` : null,
+    ],
+    6
+  );
+
+  const input = {
+    sentimentScore,
+    buzzScore,
+    mentionCount,
+    reasons,
+  };
+
+  if (article?.source) {
+    input.sources = [
+      {
+        sourceName: article.source,
+        sentimentScore,
+        buzzScore,
+        mentionCount,
+        reasons,
+      },
+    ];
+  }
+
+  return buildMarketSentiment(input);
+}
+
 function aggregateSectors(matches = []) {
   return uniqueStrings(
     matches
@@ -908,6 +968,13 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
   const sourceQuality = computeSourceQualityScore(article);
   const macroSignals = detectMacroSignals(article);
   const sectorImpact = estimateSectorImpact(macroSignals);
+  const marketSentiment = buildEmbeddedMarketSentiment({
+    article,
+    sentimentInfo,
+    freshnessScore,
+    sourceQuality,
+    matchCount: filteredMatches.length,
+  });
 
   const topMatchScore = filteredMatches.length ? filteredMatches[0].matchScore : 0;
 
@@ -985,6 +1052,7 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
     freshnessScore,
     sourceQuality,
     sentimentStrength: sentimentInfo.sentimentStrength,
+    marketSentiment,
 
     macroSignals,
     sectorImpact,
