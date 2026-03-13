@@ -24,7 +24,10 @@
     "job:snapshot-scan:check": "node --check jobs/snapshotScan.job.js",
 
     "job:market-news-refresh": "node jobs/marketNewsRefresh.job.js",
-    "job:market-news-refresh:check": "node --check jobs/marketNewsRefresh.job.js"
+    "job:market-news-refresh:check": "node --check jobs/marketNewsRefresh.job.js",
+
+    "job:build-entity-map": "node jobs/buildEntityMap.job.js",
+    "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js"
   },
   "engines": {
     "node": ">=18 <23"
