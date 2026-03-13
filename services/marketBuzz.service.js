@@ -4,6 +4,8 @@ const SENTIMENT_MIN = 0;
 const SENTIMENT_MAX = 100;
 const BUZZ_SCORE_MIN = 0;
 const BUZZ_SCORE_MAX = 100;
+const DEFAULT_SOCIAL_CONTRIBUTION = 1;
+const SOCIAL_MENTION_WEIGHT = 2;
 
 function normalizeSymbol(value) {
   const symbol = String(value || "").trim().toUpperCase();
@@ -24,6 +26,10 @@ function roundNumber(value, digits = 0) {
   return Math.round(value * factor) / factor;
 }
 
+function normalizeInputObject(input) {
+  return input && typeof input === "object" ? input : {};
+}
+
 function normalizeSentimentScore(value, fallback = null) {
   const sentimentScore = safeNumber(value, fallback);
   if (sentimentScore === null) return null;
@@ -37,8 +43,8 @@ function normalizeMentionCount(value, fallback = 0) {
 }
 
 function normalizeSocialContribution(value) {
-  if (value === undefined || value === null || value === "") {
-    return 1;
+  if (value === undefined || value === null) {
+    return DEFAULT_SOCIAL_CONTRIBUTION;
   }
 
   return normalizeMentionCount(value, 0);
@@ -46,9 +52,9 @@ function normalizeSocialContribution(value) {
 
 function normalizeBuzzScore(value, maxScore = BUZZ_SCORE_MAX) {
   const score = Math.max(0, safeNumber(value, 0));
-  if (!score) return BUZZ_SCORE_MIN;
+  if (score === 0) return BUZZ_SCORE_MIN;
 
-  if (maxScore <= BUZZ_SCORE_MAX) {
+  if (maxScore < BUZZ_SCORE_MAX) {
     return clamp(roundNumber(score), BUZZ_SCORE_MIN, BUZZ_SCORE_MAX);
   }
 
@@ -94,8 +100,7 @@ function getBucket(collection, symbol) {
 }
 
 function aggregateBySymbol(input = {}) {
-  const { newsItems = [], socialPosts = [] } =
-    input && typeof input === "object" ? input : {};
+  const { newsItems = [], socialPosts = [] } = normalizeInputObject(input);
   const buckets = {};
 
   for (const newsItem of Array.isArray(newsItems) ? newsItems : []) {
@@ -144,28 +149,32 @@ function aggregateBySymbol(input = {}) {
 
 function calculateBuzzScore(input = {}) {
   const { socialMentions = 0, newsMentions = 0, avgSentiment = 0 } =
-    input && typeof input === "object" ? input : {};
+    normalizeInputObject(input);
 
   return roundNumber(
-    (normalizeMentionCount(socialMentions, 0) * 2) +
+    (normalizeMentionCount(socialMentions, 0) * SOCIAL_MENTION_WEIGHT) +
       normalizeMentionCount(newsMentions, 0) +
       normalizeSentimentScore(avgSentiment, 0)
   );
 }
 
 function buildMarketBuzz(input = {}) {
-  const { newsItems = [], socialPosts = [] } =
-    input && typeof input === "object" ? input : {};
+  const { newsItems = [], socialPosts = [] } = normalizeInputObject(input);
   const aggregatedEntries = aggregateBySymbol({ newsItems, socialPosts });
-  const scoredEntries = aggregatedEntries.map((entry) => ({
-    ...entry,
-    rawBuzzScore: calculateBuzzScore(entry),
-  }));
-  const maxRawBuzzScore = scoredEntries.reduce((maxScore, entry) => {
-    return Math.max(maxScore, safeNumber(entry?.rawBuzzScore, 0));
-  }, 0);
+  const { entriesWithRawScores, maxRawBuzzScore } = aggregatedEntries.reduce(
+    (result, entry) => {
+      const rawBuzzScore = calculateBuzzScore(entry);
+      result.entriesWithRawScores.push({
+        ...entry,
+        rawBuzzScore,
+      });
+      result.maxRawBuzzScore = Math.max(result.maxRawBuzzScore, rawBuzzScore);
+      return result;
+    },
+    { entriesWithRawScores: [], maxRawBuzzScore: 0 }
+  );
 
-  return scoredEntries.map(({ rawBuzzScore, ...entry }) => ({
+  return entriesWithRawScores.map(({ rawBuzzScore, ...entry }) => ({
     ...entry,
     buzzScore: normalizeBuzzScore(rawBuzzScore, maxRawBuzzScore),
   }));
