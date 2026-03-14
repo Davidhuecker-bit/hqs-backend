@@ -96,7 +96,10 @@ APP INIT
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const SUPPORTED_SEGMENTS = ["us", "usa", "europe", "china", "japan", "india"];
+const SUPPORTED_SEGMENTS = ["usa", "europe", "china", "japan", "india"];
+const SEGMENT_ALIASES = {
+  us: "usa",
+};
 
 const RUN_JOBS =
   String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
@@ -172,6 +175,11 @@ function formatMarketItem(item) {
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
   };
+}
+
+function normalizeSegmentInput(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return SEGMENT_ALIASES[normalized] || normalized;
 }
 
 /* =========================================================
@@ -339,7 +347,7 @@ SEGMENT ROUTE
 
 app.get("/api/segment", async (req, res) => {
   try {
-    const segmentResult = parseEnum(req.query.segment, SUPPORTED_SEGMENTS, {
+    const segmentResult = parseEnum(normalizeSegmentInput(req.query.segment), SUPPORTED_SEGMENTS, {
       required: true,
       label: "segment",
     });
@@ -384,7 +392,7 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
       return badRequest(res, tickerResult.error);
     }
 
-    const segmentResult = parseEnum(req.query.segment, SUPPORTED_SEGMENTS, {
+    const segmentResult = parseEnum(normalizeSegmentInput(req.query.segment), SUPPORTED_SEGMENTS, {
       defaultValue: "usa",
       label: "segment",
     });

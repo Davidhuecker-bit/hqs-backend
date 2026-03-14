@@ -567,13 +567,19 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
     regime: row?.regime ?? tracked?.regime ?? finalView?.regime ?? null,
     type: classifyOpportunity(row),
 
-    hqsScore: safeNum(row?.hqs_score, finalView?.hqsScore),
+    hqsScore: safeNum(row?.hqs_score, safeNum(finalView?.hqsScore, 0)),
     opportunityScore,
     confidence: calculateConfidence(row, opportunityScore),
 
-    aiScore: safeNum(finalView?.aiScore, brain?.aiScore),
-    finalConviction: safeNum(finalView?.finalConviction, tracked?.finalConviction),
-    finalConfidence: safeNum(finalView?.finalConfidence, tracked?.finalConfidence),
+    aiScore: safeNum(finalView?.aiScore, safeNum(brain?.aiScore, 0)),
+    finalConviction: safeNum(
+      finalView?.finalConviction,
+      safeNum(tracked?.finalConviction, 0)
+    ),
+    finalConfidence: safeNum(
+      finalView?.finalConfidence,
+      safeNum(tracked?.finalConfidence, 0)
+    ),
     finalRating: finalView?.finalRating || null,
     finalDecision: finalView?.finalDecision || null,
 
@@ -585,15 +591,18 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
 
     trend: row?.trend ?? null,
     volatility: row?.volatility ?? null,
-    resilienceScore: safeNum(payload?.resilienceScore, finalView?.resilienceScore),
+    resilienceScore: safeNum(
+      payload?.resilienceScore,
+      safeNum(finalView?.resilienceScore, 0)
+    ),
 
     opportunityStrength: safeNum(
       orchestrator?.opportunityStrength,
-      tracked?.opportunityStrength
+      safeNum(tracked?.opportunityStrength, 0)
     ),
     orchestratorConfidence: safeNum(
       orchestrator?.orchestratorConfidence,
-      tracked?.orchestratorConfidence
+      safeNum(tracked?.orchestratorConfidence, 0)
     ),
 
     whyInteresting: Array.isArray(finalView?.whyInteresting)
@@ -620,6 +629,10 @@ function buildFallbackOpportunity(row, tracked = null) {
   const globalContext = safeObject(finalView?.globalContext, {});
   const brain = safeObject(payload?.brain, {});
   const strategy = safeObject(payload?.strategy, safeObject(finalView?.strategy, {}));
+  const orchestrator = safeObject(
+    payload?.orchestrator,
+    safeObject(globalContext?.orchestrator, {})
+  );
   const newsContextCandidate = finalView?.newsContext ?? globalContext?.newsContext ?? null;
   const signalContextCandidate =
     finalView?.signalContext ?? globalContext?.signalContext ?? null;
@@ -653,13 +666,19 @@ function buildFallbackOpportunity(row, tracked = null) {
     regime: row?.regime ?? tracked?.regime ?? finalView?.regime ?? null,
     type: classifyOpportunity(row),
 
-    hqsScore: safeNum(row?.hqs_score, finalView?.hqsScore),
+    hqsScore: safeNum(row?.hqs_score, safeNum(finalView?.hqsScore, 0)),
     opportunityScore,
     confidence: calculateConfidence(row, opportunityScore),
 
-    aiScore: safeNum(finalView?.aiScore, brain?.aiScore),
-    finalConviction: safeNum(finalView?.finalConviction, tracked?.finalConviction),
-    finalConfidence: safeNum(finalView?.finalConfidence, tracked?.finalConfidence),
+    aiScore: safeNum(finalView?.aiScore, safeNum(brain?.aiScore, 0)),
+    finalConviction: safeNum(
+      finalView?.finalConviction,
+      safeNum(tracked?.finalConviction, 0)
+    ),
+    finalConfidence: safeNum(
+      finalView?.finalConfidence,
+      safeNum(tracked?.finalConfidence, 0)
+    ),
     finalRating: finalView?.finalRating || null,
     finalDecision: finalView?.finalDecision || null,
 
@@ -671,15 +690,18 @@ function buildFallbackOpportunity(row, tracked = null) {
 
     trend: row?.trend ?? null,
     volatility: row?.volatility ?? null,
-    resilienceScore: safeNum(payload?.resilienceScore, finalView?.resilienceScore),
+    resilienceScore: safeNum(
+      payload?.resilienceScore,
+      safeNum(finalView?.resilienceScore, 0)
+    ),
 
     opportunityStrength: safeNum(
-      payload?.orchestrator?.opportunityStrength,
-      tracked?.opportunityStrength
+      orchestrator?.opportunityStrength,
+      safeNum(tracked?.opportunityStrength, 0)
     ),
     orchestratorConfidence: safeNum(
-      payload?.orchestrator?.orchestratorConfidence,
-      tracked?.orchestratorConfidence
+      orchestrator?.orchestratorConfidence,
+      safeNum(tracked?.orchestratorConfidence, 0)
     ),
 
     whyInteresting: Array.isArray(finalView?.whyInteresting)
@@ -821,7 +843,7 @@ async function getTopOpportunities(arg = 10) {
 
   const persistedCount = rows.filter((row) => {
     const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
-    return hasPersistedBatchResult(persistedOutcomeBySymbol?.[normalizedSymbol] || null);
+    return hasPersistedBatchResult(persistedOutcomeBySymbol?.[normalizedSymbol]);
   }).length;
   const fallbackCount = Math.max(0, opportunities.length - persistedCount);
 
