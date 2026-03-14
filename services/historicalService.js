@@ -17,10 +17,11 @@ const HISTORICAL_CACHE_TTL_SECONDS = Number(
 
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || "";
+const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
 
-if (!MASSIVE_API_KEY && !TWELVE_DATA_API_KEY) {
+if (!MASSIVE_API_KEY && !TWELVE_DATA_API_KEY && !FINNHUB_API_KEY) {
   const msg =
-    "No historical data provider is configured. Set MASSIVE_API_KEY or TWELVE_DATA_API_KEY.";
+    "No historical data provider is configured. Set MASSIVE_API_KEY, TWELVE_DATA_API_KEY, or FINNHUB_API_KEY.";
   if (logger?.warn) logger.warn(msg);
   else console.warn("⚠️ " + msg);
 }
@@ -256,6 +257,41 @@ async function fetchHistoricalFromTwelveData(sym, per) {
 }
 
 /* =========================================================
+   FINNHUB HISTORICAL (candle endpoint)
+========================================================= */
+
+async function fetchHistoricalFromFinnhub(sym, per) {
+  if (!FINNHUB_API_KEY) throw new Error("Missing FINNHUB_API_KEY");
+
+  const days = periodToDays(per);
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - days * 24 * 60 * 60;
+
+  const url =
+    `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}` +
+    `&resolution=D&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
+
+  const res = await http.get(url);
+  const data = res?.data;
+
+  if (!data || data.s !== "ok" || !Array.isArray(data.t) || !data.t.length) {
+    return [];
+  }
+
+  return data.t
+    .map((t, i) => {
+      const close = Number(data.c?.[i]);
+      if (!Number.isFinite(close) || close <= 0) return null;
+      return {
+        date: new Date(t * 1000).toISOString().slice(0, 10),
+        close,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+/* =========================================================
    MAIN HISTORICAL API
 ========================================================= */
 
@@ -279,6 +315,12 @@ async function getHistoricalPrices(symbol, period = "1y") {
     providers.push({
       name: "TWELVE_DATA",
       fetcher: fetchHistoricalFromTwelveData,
+    });
+  }
+  if (FINNHUB_API_KEY) {
+    providers.push({
+      name: "FINNHUB",
+      fetcher: fetchHistoricalFromFinnhub,
     });
   }
 

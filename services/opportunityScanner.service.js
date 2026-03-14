@@ -214,7 +214,7 @@ function buildSignalReasons({
   return uniqueTexts(reasons, SIGNAL_REASON_LIMIT);
 }
 
-function buildSignalContext(row = {}, newsContext = null, newsItems = []) {
+function buildSignalContext(row = {}, newsContext = null, newsItems = [], socialPosts = []) {
   const symbol = String(row?.symbol || "").trim().toUpperCase();
   if (!symbol) return null;
 
@@ -240,6 +240,7 @@ function buildSignalContext(row = {}, newsContext = null, newsItems = []) {
   const marketBuzz =
     buildMarketBuzz({
       newsItems: Array.isArray(newsItems) ? newsItems : [],
+      socialPosts: Array.isArray(socialPosts) ? socialPosts : [],
     }).find((entry) => String(entry?.symbol || "").toUpperCase() === symbol) || null;
 
   const momentumScore = Math.round(norm0to1(row?.momentum) * 100);

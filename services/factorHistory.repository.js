@@ -255,10 +255,48 @@ async function loadFactorHistory(limit = 500) {
   }
 }
 
+/* =========================================================
+   BACKTEST HISTORY (hqs_score + price by symbol)
+========================================================= */
+
+async function getBacktestHistory(symbol, limit = 200) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  if (!sym) return [];
+
+  try {
+    const res = await pool.query(
+      `
+      SELECT fh.hqs_score AS "hqsScore", ms.price
+      FROM factor_history fh
+      JOIN market_snapshots ms
+        ON fh.symbol = ms.symbol
+       AND ms.created_at BETWEEN fh.created_at - INTERVAL '30 minutes'
+                              AND fh.created_at + INTERVAL '30 minutes'
+      WHERE fh.symbol = $1
+        AND ms.price IS NOT NULL
+        AND fh.hqs_score IS NOT NULL
+      ORDER BY fh.created_at ASC
+      LIMIT $2
+      `,
+      [sym, limit]
+    );
+
+    return res.rows.map((row) => ({
+      hqsScore: Number(row.hqsScore),
+      price: Number(row.price),
+    }));
+  } catch (err) {
+    if (logger?.error) logger.error("getBacktestHistory error", { message: err.message });
+    else console.error("❌ getBacktestHistory error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initFactorTable,
   saveScoreSnapshot,
   saveFactorSnapshot,
   loadFactorHistory,
   updateForwardReturns,
+  getBacktestHistory,
 };

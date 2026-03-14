@@ -82,6 +82,7 @@ const {
   loadOpportunityNewsContextBySymbols,
   calculateRobustnessScore,
 } = require("./opportunityScanner.service");
+const { collectSocialSignals } = require("./socialScanner.service");
 
 const logger = require("../utils/logger");
 const { Pool } = require("pg");
@@ -782,6 +783,13 @@ async function buildMarketSnapshot() {
     });
   }
 
+  let socialPosts = [];
+  try {
+    socialPosts = await collectSocialSignals();
+  } catch (error) {
+    logger.warn("Social signals load failed", { message: error.message });
+  }
+
   for (const candidate of batch.candidates) {
     const symbol = candidate.symbol;
     const tier = candidate.tier;
@@ -877,6 +885,9 @@ async function buildMarketSnapshot() {
       );
 
       const newsContext = newsContextBySymbol?.[symbol] || null;
+      const symbolSocialPosts = socialPosts.filter(
+        (post) => Array.isArray(post?.symbols) && post.symbols.includes(symbol)
+      );
       const signalContext = buildSignalContext(
         {
           symbol,
@@ -884,7 +895,8 @@ async function buildMarketSnapshot() {
           trend: trendData?.trend,
         },
         newsContext,
-        scoringActiveNewsBySymbol?.[symbol] || []
+        scoringActiveNewsBySymbol?.[symbol] || [],
+        symbolSocialPosts
       );
 
       if (hqs) {
