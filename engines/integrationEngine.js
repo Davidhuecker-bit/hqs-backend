@@ -28,6 +28,8 @@ const NEWS_SIGNAL_ACTIVITY_WEIGHT = 0.08;
 const NEWS_PERSISTENCE_MAX = 160;
 const NEWS_ACTIVITY_CAP = 4;
 const NEWS_REASON_STRENGTH_THRESHOLD = 0.45;
+const SIGNAL_CONVICTION_MAX_ABS = 6;
+const SIGNAL_REASON_STRENGTH_THRESHOLD = 55;
 
 function resolveNewsContext(newsContext = null, globalContext = {}) {
   if (newsContext && typeof newsContext === "object" && !Array.isArray(newsContext)) {
@@ -35,6 +37,19 @@ function resolveNewsContext(newsContext = null, globalContext = {}) {
   }
 
   const nested = globalContext?.newsContext;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return nested;
+  }
+
+  return null;
+}
+
+function resolveSignalContext(signalContext = null, globalContext = {}) {
+  if (signalContext && typeof signalContext === "object" && !Array.isArray(signalContext)) {
+    return signalContext;
+  }
+
+  const nested = globalContext?.signalContext;
   if (nested && typeof nested === "object" && !Array.isArray(nested)) {
     return nested;
   }
@@ -94,6 +109,53 @@ function calculateNewsAdjustment(newsContext = null, globalContext = {}) {
     Math.round(newsStrength * directionScore * NEWS_CONVICTION_MAX_ABS),
     -NEWS_CONVICTION_MAX_ABS,
     NEWS_CONVICTION_MAX_ABS
+  );
+}
+
+function calculateSignalDirectionScore(signalContext = null, globalContext = {}) {
+  const signal = resolveSignalContext(signalContext, globalContext);
+  if (!signal) return 0;
+
+  const explicitDirectionScore = Number(signal?.signalDirectionScore);
+  if (Number.isFinite(explicitDirectionScore)) {
+    return clamp(explicitDirectionScore, -1, 1);
+  }
+
+  const sentimentScore = safe(signal?.sentimentScore, 0);
+  if (sentimentScore !== 0) {
+    return clamp(sentimentScore / 100, -1, 1);
+  }
+
+  const direction = String(signal?.signalDirection || "").toLowerCase();
+  if (direction === "bullish") return 0.35;
+  if (direction === "bearish") return -0.35;
+  return 0;
+}
+
+function calculateSignalStrength(signalContext = null, globalContext = {}) {
+  const signal = resolveSignalContext(signalContext, globalContext);
+  if (!signal) return 0;
+
+  const strength = clamp(
+    safe(signal?.signalStrength, signal?.trendScore),
+    0,
+    100
+  ) / 100;
+  const confidence = clamp(safe(signal?.signalConfidence, 0), 0, 100) / 100;
+
+  return clamp(strength * 0.7 + confidence * 0.3, 0, 1);
+}
+
+function calculateSignalAdjustment(signalContext = null, globalContext = {}) {
+  const signalStrength = calculateSignalStrength(signalContext, globalContext);
+  if (signalStrength <= 0) return 0;
+
+  const directionScore = calculateSignalDirectionScore(signalContext, globalContext);
+
+  return clamp(
+    Math.round(signalStrength * directionScore * SIGNAL_CONVICTION_MAX_ABS),
+    -SIGNAL_CONVICTION_MAX_ABS,
+    SIGNAL_CONVICTION_MAX_ABS
   );
 }
 
@@ -204,6 +266,7 @@ function calculateFinalConviction({
   researchSignals,
   globalContext,
   newsContext,
+  signalContext,
 }) {
   const hqs = safe(hqsScore);
   const ai = safe(aiScore);
@@ -227,6 +290,7 @@ function calculateFinalConviction({
   const metaBoost = calculateMetaBoost(globalContext);
   const eventPenalty = calculateEventPenalty(globalContext);
   const newsAdjustment = calculateNewsAdjustment(newsContext, globalContext);
+  const signalAdjustment = calculateSignalAdjustment(signalContext, globalContext);
 
   let conviction =
     hqs * 0.22 +
@@ -240,7 +304,8 @@ function calculateFinalConviction({
     memoryBoost +
     metaBoost -
     eventPenalty +
-    newsAdjustment;
+    newsAdjustment +
+    signalAdjustment;
 
   return clamp(Math.round(conviction), 0, 100);
 }
@@ -308,6 +373,7 @@ function buildWhyItIsInteresting({
   strategy = {},
   features = {},
   newsContext = null,
+  signalContext = null,
 }) {
   const reasons = [];
 
@@ -318,6 +384,32 @@ function buildWhyItIsInteresting({
   if (trendStrength > 1) reasons.push("starker Trend");
   if (relativeVolume > 1.2) reasons.push("überdurchschnittliches Volumen");
   if (liquidityScore >= 70) reasons.push("hohe Liquidität");
+
+  const signal = resolveSignalContext(signalContext, globalContext);
+  const signalStrength = Math.round(
+    calculateSignalStrength(signal, globalContext) * 100
+  );
+
+  if (signalStrength >= SIGNAL_REASON_STRENGTH_THRESHOLD) {
+    if (signal?.earlySignalType === "potential_breakout") {
+      reasons.push("frühes Breakout-Signal");
+    } else if (signal?.earlySignalType === "early_interest") {
+      reasons.push("frühes Marktinteresse");
+    } else if (signal?.signalDirection === "bullish") {
+      reasons.push("bullisches Signal-Setup");
+    } else if (signal?.signalDirection === "bearish") {
+      reasons.push("bearisches Signal-Setup");
+    }
+  }
+
+  if (signal?.trendLevel === "exploding" || signal?.trendLevel === "very_hot") {
+    reasons.push(`Trend ${signal.trendLevel}`);
+  } else if (
+    signal?.trendLevel === "hot" &&
+    signalStrength >= SIGNAL_REASON_STRENGTH_THRESHOLD
+  ) {
+    reasons.push("heißes Signal-Setup");
+  }
 
   const news = resolveNewsContext(newsContext, globalContext);
   const newsStrength = calculateNewsStrength(news, globalContext);
@@ -374,10 +466,12 @@ function buildIntegratedMarketView({
   research,
   globalContext,
   newsContext = null,
+  signalContext = null,
 }) {
   const mergedGlobalContext = {
     ...(globalContext ?? {}),
     newsContext: resolveNewsContext(newsContext, globalContext),
+    signalContext: resolveSignalContext(signalContext, globalContext),
   };
 
   const finalConviction = calculateFinalConviction({
@@ -390,6 +484,7 @@ function buildIntegratedMarketView({
     researchSignals: research?.researchSignals,
     globalContext: mergedGlobalContext,
     newsContext,
+    signalContext,
   });
 
   const finalConfidence = buildFinalConfidence({
@@ -409,11 +504,19 @@ function buildIntegratedMarketView({
     strategy,
     features,
     newsContext,
+    signalContext,
   });
 
   const newsAdjustment = calculateNewsAdjustment(newsContext, mergedGlobalContext);
   const newsStrength = Math.round(
     calculateNewsStrength(newsContext, mergedGlobalContext) * 100
+  );
+  const signalAdjustment = calculateSignalAdjustment(
+    signalContext,
+    mergedGlobalContext
+  );
+  const signalStrength = Math.round(
+    calculateSignalStrength(signalContext, mergedGlobalContext) * 100
   );
 
   return {
@@ -439,6 +542,7 @@ function buildIntegratedMarketView({
     research: research ?? {},
     globalContext: mergedGlobalContext,
     newsContext: mergedGlobalContext.newsContext ?? null,
+    signalContext: mergedGlobalContext.signalContext ?? null,
 
     whyInteresting,
 
@@ -458,6 +562,8 @@ function buildIntegratedMarketView({
       ),
       newsStrength,
       newsAdjustment,
+      signalStrength,
+      signalAdjustment,
     },
 
     timestamp: new Date().toISOString(),
