@@ -86,6 +86,8 @@ const { initDiscoveryTable } = require("./services/discoveryLearning.repository"
 const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
 const { initAutonomyAuditTable, initNearMissTable } = require("./services/autonomyAudit.repository");
+const { initAgentForecastTable } = require("./services/agentForecast.repository");
+const { runForecastVerificationJob } = require("./jobs/forecastVerification.job");
 
 /* =========================================================
 NOTIFICATIONS
@@ -702,6 +704,7 @@ app.listen(PORT, async () => {
     await initAdminSnapshotsTable();
     await initAutonomyAuditTable();
     await initNearMissTable();
+    await initAgentForecastTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
@@ -736,6 +739,7 @@ app.listen(PORT, async () => {
       }, 15 * 60 * 1000);
 
       scheduleDailyUniverseRefresh();
+      scheduleDailyForecastVerification();
     }
 
     startupState.ready = true;
@@ -778,6 +782,28 @@ async function scheduleDailyUniverseRefresh() {
       logger.error("Daily universe refresh failed", { message: err.message });
     } finally {
       scheduleDailyUniverseRefresh();
+    }
+  }, delay);
+}
+
+/* =========================================================
+DAILY FORECAST VERIFICATION  (Prediction-Self-Audit)
+========================================================= */
+
+async function scheduleDailyForecastVerification() {
+  // Default: run at 03:00 (after markets close and 24h has passed for overnight forecasts)
+  const hour = Number(process.env.FORECAST_VERIFY_HOUR || 3);
+  const minute = Number(process.env.FORECAST_VERIFY_MINUTE || 0);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+
+  setTimeout(async () => {
+    try {
+      await runForecastVerificationJob();
+    } catch (err) {
+      logger.error("Daily forecast verification failed", { message: err.message });
+    } finally {
+      scheduleDailyForecastVerification();
     }
   }, delay);
 }

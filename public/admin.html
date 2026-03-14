@@ -534,6 +534,69 @@
       font-size: 11px;
       text-align: center;
     }
+
+    /* ─────────────────────────── Swarm Wisdom Panel ─────────────────────────── */
+    .wisdom-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      margin-bottom: 32px;
+    }
+    .wisdom-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .wisdom-title {
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .wisdom-consensus {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .wisdom-consensus.active {
+      background: rgba(16,185,129,0.15);
+      color: var(--green);
+      border: 1px solid rgba(16,185,129,0.3);
+    }
+    .wisdom-consensus.inactive {
+      background: rgba(245,158,11,0.12);
+      color: var(--yellow);
+      border: 1px solid rgba(245,158,11,0.25);
+    }
+    .wisdom-agents {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+    }
+    .wisdom-agent-card {
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .wisdom-agent-icon { font-size: 20px; flex-shrink: 0; }
+    .wisdom-agent-info { flex: 1; min-width: 0; }
+    .wisdom-agent-name { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
+    .wisdom-agent-label { font-size: 12px; font-weight: 700; color: var(--text); margin-top: 1px; }
+    .wisdom-agent-acc {
+      font-size: 18px;
+      font-weight: 900;
+      flex-shrink: 0;
+    }
+    .wisdom-agent-sub { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
   </style>
 </head>
 <body>
@@ -581,6 +644,19 @@
     <div class="stat-card">
       <div class="stat-label">Guardian geschützt</div>
       <div class="stat-value cyan" id="statGuardian">–</div>
+    </div>
+  </div>
+
+  <!-- Swarm Wisdom Panel -->
+  <div class="wisdom-panel" id="wisdomPanel">
+    <div class="wisdom-header">
+      <div class="wisdom-title">🤖 Swarm Wisdom · Vorhersage-Genauigkeit der Agenten</div>
+      <span class="wisdom-consensus inactive" id="wisdomConsensus">Wird geladen…</span>
+    </div>
+    <div class="wisdom-agents" id="wisdomAgents">
+      <div class="wisdom-agent-card"><div class="wisdom-agent-icon">📈</div><div class="wisdom-agent-info"><div class="wisdom-agent-name">Optimist</div><div class="wisdom-agent-label">GROWTH_BIAS</div><div class="wisdom-agent-sub">Lädt…</div></div><div class="wisdom-agent-acc" style="color:var(--text-muted)">–</div></div>
+      <div class="wisdom-agent-card"><div class="wisdom-agent-icon">🛡</div><div class="wisdom-agent-info"><div class="wisdom-agent-name">Skeptiker</div><div class="wisdom-agent-label">RISK_SKEPTIC</div><div class="wisdom-agent-sub">Lädt…</div></div><div class="wisdom-agent-acc" style="color:var(--text-muted)">–</div></div>
+      <div class="wisdom-agent-card"><div class="wisdom-agent-icon">⚖️</div><div class="wisdom-agent-info"><div class="wisdom-agent-name">Richter</div><div class="wisdom-agent-label">MACRO_JUDGE</div><div class="wisdom-agent-sub">Lädt…</div></div><div class="wisdom-agent-acc" style="color:var(--text-muted)">–</div></div>
     </div>
   </div>
 
@@ -1101,10 +1177,73 @@ function escJson(str) {
   return esc(str);
 }
 
+/* ═══════════════════ SWARM WISDOM ═══════════════════ */
+const AGENT_META = {
+  GROWTH_BIAS:  { icon: '📈', label: 'Optimist',  name: 'GROWTH_BIAS'  },
+  RISK_SKEPTIC: { icon: '🛡',  label: 'Skeptiker', name: 'RISK_SKEPTIC' },
+  MACRO_JUDGE:  { icon: '⚖️', label: 'Richter',   name: 'MACRO_JUDGE'  },
+};
+
+function wisdomAccColor(acc) {
+  if (acc === null) return 'var(--text-muted)';
+  if (acc >= 70) return 'var(--green)';
+  if (acc >= 50) return 'var(--accent)';
+  return 'var(--yellow)';
+}
+
+async function loadAgentWisdom() {
+  try {
+    const res  = await fetch(`${API_BASE}/agent-wisdom`);
+    const data = await res.json();
+    if (!data.success) return;
+
+    const consensusEl = document.getElementById('wisdomConsensus');
+    if (consensusEl) {
+      if (data.consensus) {
+        consensusEl.className = 'wisdom-consensus active';
+        const best = data.bestAgent ? ` · ${AGENT_META[data.bestAgent]?.label || data.bestAgent} vorne` : '';
+        consensusEl.textContent = `Konsens erreicht${best}`;
+      } else {
+        consensusEl.className = 'wisdom-consensus inactive';
+        consensusEl.textContent = 'Kein Konsens';
+      }
+    }
+
+    const container = document.getElementById('wisdomAgents');
+    if (!container) return;
+
+    const scores = data.scores || [];
+    container.innerHTML = scores.map(s => {
+      const meta  = AGENT_META[s.agentName] || { icon: '🤖', label: s.agentName, name: s.agentName };
+      const acc   = s.accuracy;
+      const color = wisdomAccColor(acc);
+      const accTxt = acc !== null ? `${acc}%` : '–';
+      const sub   = s.total > 0
+        ? `${s.correct}/${s.total} Prognosen korrekt`
+        : 'Noch keine verifizierten Prognosen';
+      return `
+<div class="wisdom-agent-card">
+  <div class="wisdom-agent-icon">${meta.icon}</div>
+  <div class="wisdom-agent-info">
+    <div class="wisdom-agent-name">${meta.label}</div>
+    <div class="wisdom-agent-label">${esc(meta.name)}</div>
+    <div class="wisdom-agent-sub">${esc(sub)}</div>
+  </div>
+  <div class="wisdom-agent-acc" style="color:${color}">${accTxt}</div>
+</div>`;
+    }).join('');
+  } catch (err) {
+    // Non-critical – swarm wisdom panel stays in loading state
+  }
+}
+
 /* ═══════════════════ INIT ═══════════════════ */
 loadPortfolio();
+loadAgentWisdom();
 // Auto-refresh audit feed every 60 seconds
 setInterval(loadAuditFeed, 60000);
+// Refresh wisdom scores every 5 minutes
+setInterval(loadAgentWisdom, 5 * 60 * 1000);
 </script>
 </body>
 </html>

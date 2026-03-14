@@ -23,6 +23,7 @@ const { classifyMarketRegime } = require("./regimeDetection.service");
 const { recordAutonomyDecision, logNearMiss } = require("./autonomyAudit.repository");
 const { runAgenticDebate } = require("./agenticDebate.service");
 const { getInterMarketCorrelation } = require("./interMarketCorrelation.service");
+const { logAgentForecasts } = require("./agentForecast.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1209,6 +1210,20 @@ async function getTopOpportunities(arg = 10) {
       regime: opp.regime,
       capturedAt: new Date().toISOString(),
     };
+
+    // Fire-and-forget: log per-agent 24h forecasts for Prediction-Self-Audit
+    logAgentForecasts({
+      symbol: opp.symbol,
+      marketCluster,
+      debateApproved: debateResult.approved,
+      entryPrice: opp.entryPrice || null,
+      votes: debateResult.votes,
+    }).catch((fErr) => {
+      logger.warn("getTopOpportunities: agent forecast log failed", {
+        symbol: opp.symbol,
+        message: fErr.message,
+      });
+    });
 
     recordAutonomyDecision({
       symbol: opp.symbol,

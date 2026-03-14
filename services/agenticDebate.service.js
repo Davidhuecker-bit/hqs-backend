@@ -94,6 +94,7 @@ function runGrowthBias(opportunity, signalContext) {
     return {
       agent,
       vote: "approve",
+      forecastDirection: "bullish",
       reason: `Wachstums-Bias: Momentum ${(momentum * 100).toFixed(0)}%, Trend positiv, Signal ${sigDirection}`,
     };
   }
@@ -101,6 +102,7 @@ function runGrowthBias(opportunity, signalContext) {
   return {
     agent,
     vote: "reject",
+    forecastDirection: "bearish",
     reason: `Wachstums-Bias stimmte gegen Kauf wegen ${problems.join("; ")}`,
   };
 }
@@ -138,6 +140,7 @@ function runRiskSkeptic(opportunity, signalContext) {
     return {
       agent,
       vote: "approve",
+      forecastDirection: "neutral",
       reason: `Risiko-Skeptiker: Kennzahlen akzeptabel (Robustheit ${(robustness * 100).toFixed(0)}%, Vol ${(volatility * 100).toFixed(0)}%)`,
     };
   }
@@ -145,6 +148,7 @@ function runRiskSkeptic(opportunity, signalContext) {
   return {
     agent,
     vote: "reject",
+    forecastDirection: "bearish",
     reason: `Risiko-Skeptiker stimmte gegen Kauf wegen ${problems.join("; ")}`,
   };
 }
@@ -177,12 +181,14 @@ function runMacroJudge(opportunity, marketCluster, interMarketData) {
       return {
         agent,
         vote: "approve",
+        forecastDirection: "bullish",
         reason: `Makro-Richter: BTC/Gold zeigen Risikoabbau, aber hohe Überzeugung (${conviction.toFixed(0)}) rechtfertigt Freigabe`,
       };
     }
     return {
       agent,
       vote: "reject",
+      forecastDirection: "bearish",
       reason: `Makro-Richter gab Recht: BTC ${btcSignal}, Gold ${goldSignal} – Frühwarnsignal aktiv; Überzeugung (${conviction.toFixed(0)}) zu gering`,
     };
   }
@@ -192,12 +198,14 @@ function runMacroJudge(opportunity, marketCluster, interMarketData) {
       return {
         agent,
         vote: "approve",
+        forecastDirection: "bullish",
         reason: `Makro-Richter: Gefahrenmarkt, starke Überzeugung (${conviction.toFixed(0)}) erlaubt Freigabe`,
       };
     }
     return {
       agent,
       vote: "reject",
+      forecastDirection: "bearish",
       reason: `Makro-Richter gab Recht: Marktumfeld kritisch (${marketCluster}), Überzeugung (${conviction.toFixed(0)}) unzureichend – Entscheidung: Schutzmodus`,
     };
   }
@@ -207,12 +215,14 @@ function runMacroJudge(opportunity, marketCluster, interMarketData) {
       return {
         agent,
         vote: "approve",
+        forecastDirection: "bullish",
         reason: `Makro-Richter: Volatiler Markt, gute Basis (HQS ${hqsScore.toFixed(0)}, Überzeugung ${conviction.toFixed(0)})`,
       };
     }
     return {
       agent,
       vote: "reject",
+      forecastDirection: "bearish",
       reason: `Makro-Richter: Volatiles Umfeld zu riskant (HQS ${hqsScore.toFixed(0)}, Überzeugung ${conviction.toFixed(0)})`,
     };
   }
@@ -222,6 +232,7 @@ function runMacroJudge(opportunity, marketCluster, interMarketData) {
     return {
       agent,
       vote: "approve",
+      forecastDirection: "bullish",
       reason: `Makro-Richter: Konstruktives Umfeld, HQS-Score (${hqsScore.toFixed(0)}) ausreichend`,
     };
   }
@@ -229,6 +240,7 @@ function runMacroJudge(opportunity, marketCluster, interMarketData) {
   return {
     agent,
     vote: "reject",
+    forecastDirection: "bearish",
     reason: `Makro-Richter: Trotz sicherem Markt unzureichende Qualität (HQS ${hqsScore.toFixed(0)})`,
   };
 }
