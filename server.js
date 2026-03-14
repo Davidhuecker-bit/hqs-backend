@@ -87,7 +87,9 @@ const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
 const { initAutonomyAuditTable, initNearMissTable } = require("./services/autonomyAudit.repository");
 const { initAgentForecastTable } = require("./services/agentForecast.repository");
+const { initDynamicWeightsTable } = require("./services/causalMemory.repository");
 const { runForecastVerificationJob } = require("./jobs/forecastVerification.job");
+const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
 
 /* =========================================================
 NOTIFICATIONS
@@ -705,6 +707,7 @@ app.listen(PORT, async () => {
     await initAutonomyAuditTable();
     await initNearMissTable();
     await initAgentForecastTable();
+    await initDynamicWeightsTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
@@ -740,6 +743,7 @@ app.listen(PORT, async () => {
 
       scheduleDailyUniverseRefresh();
       scheduleDailyForecastVerification();
+      scheduleCausalMemoryRecalibration();
     }
 
     startupState.ready = true;
@@ -804,6 +808,28 @@ async function scheduleDailyForecastVerification() {
       logger.error("Daily forecast verification failed", { message: err.message });
     } finally {
       scheduleDailyForecastVerification();
+    }
+  }, delay);
+}
+
+/* =========================================================
+   CAUSAL MEMORY RECALIBRATION  (Recursive Meta-Learning)
+========================================================= */
+
+async function scheduleCausalMemoryRecalibration() {
+  // Default: run at 04:00 (after forecast verification at 03:00)
+  const hour   = Number(process.env.CAUSAL_MEMORY_HOUR   || 4);
+  const minute = Number(process.env.CAUSAL_MEMORY_MINUTE || 0);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+
+  setTimeout(async () => {
+    try {
+      await runCausalMemoryJob();
+    } catch (err) {
+      logger.error("Causal memory recalibration failed", { message: err.message });
+    } finally {
+      scheduleCausalMemoryRecalibration();
     }
   }, delay);
 }
