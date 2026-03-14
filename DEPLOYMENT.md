@@ -4,7 +4,7 @@
 
 1. Provision a PostgreSQL service and set `DATABASE_URL`.
 2. Set `PG_SSL_REJECT_UNAUTHORIZED=false` unless you provide your own trusted certificate chain.
-3. Add every frontend domain that should call this API to `CORS_ORIGINS` as a comma-separated list.
+3. Add every frontend domain that should call this API to `CORS_ORIGINS` as a comma-separated list of literal origins, for example `https://app.up.railway.app,https://mydomain.com`.
 4. Add the external provider secrets you want to use:
    - `OPENAI_API_KEY` (required for AI routes, but the API can now boot without it)
    - `FMP_API_KEY`
