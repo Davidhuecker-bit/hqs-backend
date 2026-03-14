@@ -4,6 +4,88 @@ const { buildMarketSentiment } = require("./marketSentiment.service");
 
 const MARKET_SENTIMENT_FRESHNESS_WEIGHT = 0.6;
 const MARKET_SENTIMENT_SOURCE_QUALITY_WEIGHT = 0.4;
+// Keep these lifecycle weights aligned to 1.0 for comparable persistence scoring.
+const LIFECYCLE_RELEVANCE_WEIGHT = 0.44;
+const LIFECYCLE_CONFIDENCE_WEIGHT = 0.24;
+const LIFECYCLE_SOURCE_QUALITY_WEIGHT = 0.14;
+const LIFECYCLE_FRESHNESS_WEIGHT = 0.06;
+const LIFECYCLE_MARKET_IMPACT_WEIGHT = 0.12;
+const EXTENDED_COOLING_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const STANDARD_COOLING_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+const SHORT_COOLING_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const EXTENDED_RETENTION_EVENT_TYPES = [
+  "earnings",
+  "guidance",
+  "merger_acquisition",
+  "regulation",
+  "dividend_buyback",
+];
+
+const EXTENDED_MACRO_RETENTION_EVENT_TYPES = [
+  "macro_rate",
+  "macro_inflation",
+  "geopolitical",
+  "supply_chain",
+];
+
+const STANDARD_RETENTION_EVENT_TYPES = [
+  "earnings",
+  "guidance",
+  "regulation",
+  "product_launch",
+  "sector_rotation",
+  "analyst_action",
+];
+
+const STANDARD_RETENTION_DURATION_EVENT_TYPES = [
+  // Analyst actions classify into the standard retention bucket, but keep their
+  // shorter base duration through the dedicated analyst_action branch below.
+  "earnings",
+  "guidance",
+  "regulation",
+  "product_launch",
+  "sector_rotation",
+];
+
+const LOW_SIGNAL_HINT_PHRASES = [
+  "rumor",
+  "rumour",
+  "speculation",
+  "speculative",
+  "unconfirmed",
+  "market chatter",
+  "brief update",
+];
+
+const NEWS_LIFECYCLE_EVENT_WEIGHTS = {
+  earnings: 40,
+  guidance: 36,
+  merger_acquisition: 42,
+  regulation: 34,
+  dividend_buyback: 36,
+  macro_rate: 30,
+  macro_inflation: 30,
+  geopolitical: 30,
+  supply_chain: 24,
+  product_launch: 24,
+  sector_rotation: 22,
+  insider_management: 20,
+  analyst_action: 16,
+  general_news: 8,
+};
+
+const DURABLE_NEWS_EVENT_TYPES = new Set([
+  "earnings",
+  "guidance",
+  "merger_acquisition",
+  "regulation",
+  "dividend_buyback",
+  "macro_rate",
+  "macro_inflation",
+  "geopolitical",
+  "supply_chain",
+]);
 
 function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase();
@@ -685,15 +767,7 @@ function textHasLowSignalHint(article = {}) {
 
   if (!text) return false;
 
-  return [
-    "rumor",
-    "rumour",
-    "speculation",
-    "speculative",
-    "unconfirmed",
-    "market chatter",
-    "brief update",
-  ].some((phrase) => text.includes(phrase));
+  return LOW_SIGNAL_HINT_PHRASES.some((phrase) => text.includes(phrase));
 }
 
 function computeLifecyclePersistenceScore(article = {}, intelligence = {}) {
@@ -705,48 +779,22 @@ function computeLifecyclePersistenceScore(article = {}, intelligence = {}) {
   const marketImpactScore = clamp(safeNumber(intelligence?.marketImpactScore, 0), 0, 100);
   const direction = normalizeDirection(intelligence?.direction);
 
-  const eventWeights = {
-    earnings: 40,
-    guidance: 36,
-    merger_acquisition: 42,
-    regulation: 34,
-    dividend_buyback: 36,
-    macro_rate: 30,
-    macro_inflation: 30,
-    geopolitical: 30,
-    supply_chain: 24,
-    product_launch: 24,
-    sector_rotation: 22,
-    insider_management: 20,
-    analyst_action: 16,
-    general_news: 8,
-  };
-
-  const durableEvents = new Set([
-    "earnings",
-    "guidance",
-    "merger_acquisition",
-    "regulation",
-    "dividend_buyback",
-    "macro_rate",
-    "macro_inflation",
-    "geopolitical",
-    "supply_chain",
-  ]);
-
   let score =
-    safeNumber(eventWeights[eventType], eventWeights.general_news) +
-    relevanceScore * 0.46 +
-    confidence * 0.24 +
-    sourceQuality * 0.14 +
-    freshnessScore * 0.06 +
-    marketImpactScore * 0.12;
+    safeNumber(
+      NEWS_LIFECYCLE_EVENT_WEIGHTS[eventType],
+      NEWS_LIFECYCLE_EVENT_WEIGHTS.general_news
+    ) +
+    relevanceScore * LIFECYCLE_RELEVANCE_WEIGHT +
+    confidence * LIFECYCLE_CONFIDENCE_WEIGHT +
+    sourceQuality * LIFECYCLE_SOURCE_QUALITY_WEIGHT +
+    freshnessScore * LIFECYCLE_FRESHNESS_WEIGHT +
+    marketImpactScore * LIFECYCLE_MARKET_IMPACT_WEIGHT;
 
   if (direction !== "neutral") {
     score += 4;
   }
 
-  if (durableEvents.has(eventType) && (relevanceScore >= 70 || marketImpactScore >= 70)) {
+  if (DURABLE_NEWS_EVENT_TYPES.has(eventType) && (relevanceScore >= 70 || marketImpactScore >= 70)) {
     score += 10;
   }
 
@@ -782,12 +830,12 @@ function classifyNewsRetention(article = {}, intelligence = {}) {
   if (
     persistenceScore >= 108 ||
     (
-      ["earnings", "guidance", "merger_acquisition", "regulation", "dividend_buyback"].includes(eventType) &&
+      EXTENDED_RETENTION_EVENT_TYPES.includes(eventType) &&
       relevanceScore >= 68 &&
       confidence >= 55
     ) ||
     (
-      ["macro_rate", "macro_inflation", "geopolitical", "supply_chain"].includes(eventType) &&
+      EXTENDED_MACRO_RETENTION_EVENT_TYPES.includes(eventType) &&
       relevanceScore >= 74
     )
   ) {
@@ -797,7 +845,7 @@ function classifyNewsRetention(article = {}, intelligence = {}) {
   if (
     persistenceScore >= 64 ||
     (
-      ["earnings", "guidance", "regulation", "product_launch", "sector_rotation", "analyst_action"].includes(eventType) &&
+      STANDARD_RETENTION_EVENT_TYPES.includes(eventType) &&
       relevanceScore >= 45
     )
   ) {
@@ -820,7 +868,7 @@ function buildRetentionDurationDays(retentionClass, article = {}, intelligence =
     if (relevanceScore >= 82) days += 7;
     if (confidence >= 76) days += 4;
     if (marketImpactScore >= 76) days += 5;
-    if (["earnings", "guidance", "merger_acquisition", "regulation", "dividend_buyback"].includes(eventType)) {
+    if (EXTENDED_RETENTION_EVENT_TYPES.includes(eventType)) {
       days += 5;
     }
     return clamp(days, 24, 45);
@@ -831,7 +879,7 @@ function buildRetentionDurationDays(retentionClass, article = {}, intelligence =
     if (relevanceScore >= 70) days += 4;
     if (confidence >= 65) days += 2;
     if (marketImpactScore >= 68) days += 3;
-    if (["earnings", "guidance", "regulation", "product_launch", "sector_rotation"].includes(eventType)) {
+    if (STANDARD_RETENTION_DURATION_EVENT_TYPES.includes(eventType)) {
       days += 2;
     }
     if (persistenceScore >= 92) days += 2;
@@ -850,14 +898,14 @@ function getCoolingWindowMs(retentionClass) {
   const normalizedRetentionClass = normalizeRetentionClass(retentionClass);
 
   if (normalizedRetentionClass === "extended") {
-    return 7 * 24 * 60 * 60 * 1000;
+    return EXTENDED_COOLING_WINDOW_MS;
   }
 
   if (normalizedRetentionClass === "standard") {
-    return 3 * 24 * 60 * 60 * 1000;
+    return STANDARD_COOLING_WINDOW_MS;
   }
 
-  return 24 * 60 * 60 * 1000;
+  return SHORT_COOLING_WINDOW_MS;
 }
 
 function buildNewsLifecycle(article = {}, intelligence = {}) {

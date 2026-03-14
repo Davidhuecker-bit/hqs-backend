@@ -13,6 +13,14 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+const MARKET_NEWS_SYMBOL_URL_CONSTRAINT = "market_news_symbol_url_key";
+const SQL_INTERVAL_COOLING_EXTENDED = "7 days";
+const SQL_INTERVAL_COOLING_STANDARD = "3 days";
+const SQL_INTERVAL_COOLING_SHORT = "1 day";
+const SQL_INTERVAL_DELETE_EXTENDED = "45 days";
+const SQL_INTERVAL_DELETE_STANDARD = "21 days";
+const SQL_INTERVAL_DELETE_SHORT = "7 days";
+
 function cleanText(value) {
   const text = String(value ?? "").trim();
   return text.length ? text : null;
@@ -77,6 +85,19 @@ function safeJson(value, fallback = {}) {
   }
 
   return fallback;
+}
+
+function buildRetentionIntervalCaseSql({
+  columnName = "retention_class",
+  extendedInterval,
+  standardInterval,
+  shortInterval,
+}) {
+  return `CASE
+    WHEN COALESCE(${columnName}, 'standard') = 'extended' THEN INTERVAL '${extendedInterval}'
+    WHEN COALESCE(${columnName}, 'standard') = 'short' THEN INTERVAL '${shortInterval}'
+    ELSE INTERVAL '${standardInterval}'
+  END`;
 }
 
 function normalizeNewsItem(item) {
@@ -191,6 +212,8 @@ async function initMarketNewsTable() {
       ADD COLUMN IF NOT EXISTS lifecycle_state TEXT DEFAULT 'active';
     `);
 
+    // Legacy refresh jobs used `summary`; current repository logic stores raw text in `summary_raw`.
+    // The old column is intentionally left in place for backwards compatibility with older deployments.
     await pool.query(`
       DO $$
       BEGIN
@@ -217,6 +240,9 @@ async function initMarketNewsTable() {
       WHERE updated_at IS NULL;
     `);
 
+    // Legacy jobs also enforced URL-only uniqueness. We now keep uniqueness scoped to (symbol, url)
+    // and recreate that guarantee below via market_news_symbol_url_key so the repository can safely
+    // store the same article for multiple mapped symbols without breaking existing rows.
     await pool.query(`
       DO $$
       BEGIN
@@ -238,10 +264,10 @@ async function initMarketNewsTable() {
         IF NOT EXISTS (
           SELECT 1
           FROM pg_constraint
-          WHERE conname = 'market_news_symbol_url_key'
+          WHERE conname = '${MARKET_NEWS_SYMBOL_URL_CONSTRAINT}'
         ) THEN
           ALTER TABLE market_news
-          ADD CONSTRAINT market_news_symbol_url_key UNIQUE (symbol, url);
+          ADD CONSTRAINT ${MARKET_NEWS_SYMBOL_URL_CONSTRAINT} UNIQUE (symbol, url);
         END IF;
       END
       $$;
@@ -383,17 +409,19 @@ async function loadLatestMarketNewsBySymbols(symbols, limitPerSymbol = 5, option
 
     const limit = Math.max(1, Math.min(Number(limitPerSymbol) || 5, 100));
     const onlyScoringActive = options?.onlyScoringActive === true;
+    const coolingIntervalCaseSql = buildRetentionIntervalCaseSql({
+      columnName: "retention_class",
+      extendedInterval: SQL_INTERVAL_COOLING_EXTENDED,
+      standardInterval: SQL_INTERVAL_COOLING_STANDARD,
+      shortInterval: SQL_INTERVAL_COOLING_SHORT,
+    });
     const whereActiveClause = onlyScoringActive
       ? `
           AND COALESCE(is_active_for_scoring, TRUE) = TRUE
           AND COALESCE(lifecycle_state, 'active') = 'active'
           AND (
             expires_at IS NULL
-            OR expires_at > NOW() + CASE
-              WHEN COALESCE(retention_class, 'standard') = 'extended' THEN INTERVAL '7 days'
-              WHEN COALESCE(retention_class, 'standard') = 'short' THEN INTERVAL '1 day'
-              ELSE INTERVAL '3 days'
-            END
+            OR expires_at > NOW() + ${coolingIntervalCaseSql}
           )
         `
       : "";
@@ -512,6 +540,12 @@ async function loadScoringActiveMarketNewsBySymbols(symbols, limitPerSymbol = 5)
 async function syncMarketNewsLifecycleStates() {
   try {
     await initMarketNewsTable();
+    const coolingIntervalCaseSql = buildRetentionIntervalCaseSql({
+      columnName: "retention_class",
+      extendedInterval: SQL_INTERVAL_COOLING_EXTENDED,
+      standardInterval: SQL_INTERVAL_COOLING_STANDARD,
+      shortInterval: SQL_INTERVAL_COOLING_SHORT,
+    });
 
     const coolingResult = await pool.query(`
       UPDATE market_news
@@ -521,11 +555,7 @@ async function syncMarketNewsLifecycleStates() {
         updated_at = NOW()
       WHERE expires_at IS NOT NULL
         AND expires_at > NOW()
-        AND expires_at <= NOW() + CASE
-          WHEN COALESCE(retention_class, 'standard') = 'extended' THEN INTERVAL '7 days'
-          WHEN COALESCE(retention_class, 'standard') = 'short' THEN INTERVAL '1 day'
-          ELSE INTERVAL '3 days'
-        END
+        AND expires_at <= NOW() + ${coolingIntervalCaseSql}
         AND COALESCE(lifecycle_state, 'active') <> 'expired'
         AND (
           COALESCE(lifecycle_state, 'active') <> 'cooling'
@@ -560,17 +590,19 @@ async function syncMarketNewsLifecycleStates() {
 async function cleanupExpiredMarketNews() {
   try {
     await initMarketNewsTable();
+    const deleteIntervalCaseSql = buildRetentionIntervalCaseSql({
+      columnName: "retention_class",
+      extendedInterval: SQL_INTERVAL_DELETE_EXTENDED,
+      standardInterval: SQL_INTERVAL_DELETE_STANDARD,
+      shortInterval: SQL_INTERVAL_DELETE_SHORT,
+    });
 
     const result = await pool.query(`
       DELETE FROM market_news
       WHERE COALESCE(lifecycle_state, 'active') = 'expired'
         AND COALESCE(is_active_for_scoring, TRUE) = FALSE
         AND expires_at IS NOT NULL
-        AND expires_at <= NOW() - CASE
-          WHEN COALESCE(retention_class, 'standard') = 'extended' THEN INTERVAL '45 days'
-          WHEN COALESCE(retention_class, 'standard') = 'short' THEN INTERVAL '7 days'
-          ELSE INTERVAL '21 days'
-        END;
+        AND expires_at <= NOW() - ${deleteIntervalCaseSql};
     `);
 
     return {
