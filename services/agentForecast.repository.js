@@ -64,6 +64,22 @@ async function initAgentForecastTable() {
   if (logger?.info) logger.info("agent_forecasts table ready");
 }
 
+async function initAgentsTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS agents (
+      id         SERIAL PRIMARY KEY,
+      name       TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(
+    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS wisdom_score FLOAT DEFAULT 0.0;`
+  );
+
+  if (logger?.info) logger.info("agents table ready");
+}
+
 /* =========================================================
    LOG AGENT FORECASTS  (called after each debate run)
 ========================================================= */
@@ -341,6 +357,7 @@ async function getAgentWisdomScores({ windowDays = 30 } = {}) {
 
 module.exports = {
   initAgentForecastTable,
+  initAgentsTable,
   logAgentForecasts,
   verifyAgentForecasts,
   getAgentWisdomScores,
