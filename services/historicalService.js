@@ -1,7 +1,7 @@
 "use strict";
 
 const axios = require("axios");
-const NodeCache = require("node-cache");
+const cache = require("../config/cache");
 
 // optional logger
 let logger = null;
@@ -11,8 +11,9 @@ try {
   logger = null;
 }
 
-// 6h Cache
-const cache = new NodeCache({ stdTTL: 6 * 60 * 60, checkperiod: 10 * 60 });
+const HISTORICAL_CACHE_TTL_SECONDS = Number(
+  process.env.HISTORICAL_CACHE_TTL_SECONDS || 6 * 60 * 60
+);
 
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || "";
@@ -258,26 +259,26 @@ async function getHistoricalPrices(symbol, period = "1y") {
   const per = String(period || "1y").toLowerCase().trim();
   const cacheKey = `historical_${sym}_${per}`;
 
-  const cached = cache.get(cacheKey);
-  if (cached) return cached;
+  const cached = await cache.get(cacheKey);
+  if (cached !== undefined) return cached;
 
   try {
     const massiveData = await fetchHistoricalFromMassive(sym, per);
 
     if (massiveData.length) {
-      cache.set(cacheKey, massiveData);
+      await cache.set(cacheKey, massiveData, HISTORICAL_CACHE_TTL_SECONDS);
       return massiveData;
     }
 
     if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
       if (logger?.warn) logger.warn("Historical fallback to 1y after empty Massive result", { sym, from: per });
       const fallbackData = await getHistoricalPrices(sym, "1y");
-      cache.set(cacheKey, fallbackData);
+      await cache.set(cacheKey, fallbackData, HISTORICAL_CACHE_TTL_SECONDS);
       return fallbackData;
     }
 
     if (!TWELVE_DATA_API_KEY) {
-      cache.set(cacheKey, []);
+      await cache.set(cacheKey, [], HISTORICAL_CACHE_TTL_SECONDS);
       return [];
     }
   } catch (err) {
@@ -287,7 +288,7 @@ async function getHistoricalPrices(symbol, period = "1y") {
   }
 
   if (!TWELVE_DATA_API_KEY) {
-    cache.set(cacheKey, []);
+    await cache.set(cacheKey, [], HISTORICAL_CACHE_TTL_SECONDS);
     return [];
   }
 
@@ -295,7 +296,7 @@ async function getHistoricalPrices(symbol, period = "1y") {
     const twelveData = await fetchHistoricalFromTwelveData(sym, per);
 
     if (twelveData.length) {
-      cache.set(cacheKey, twelveData);
+      await cache.set(cacheKey, twelveData, HISTORICAL_CACHE_TTL_SECONDS);
 
       if (logger?.info) {
         logger.info("Historical fallback success", {
@@ -311,11 +312,11 @@ async function getHistoricalPrices(symbol, period = "1y") {
     if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
       if (logger?.warn) logger.warn("Historical fallback to 1y after empty Twelve Data result", { sym, from: per });
       const fallbackData = await getHistoricalPrices(sym, "1y");
-      cache.set(cacheKey, fallbackData);
+      await cache.set(cacheKey, fallbackData, HISTORICAL_CACHE_TTL_SECONDS);
       return fallbackData;
     }
 
-    cache.set(cacheKey, []);
+    await cache.set(cacheKey, [], HISTORICAL_CACHE_TTL_SECONDS);
     return [];
   } catch (err) {
     const msg = `All historical providers failed for ${sym}: ${err.message}`;
@@ -326,11 +327,11 @@ async function getHistoricalPrices(symbol, period = "1y") {
     if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
       if (logger?.warn) logger.warn("Historical fallback to 1y after provider errors", { sym, from: per });
       const fallbackData = await getHistoricalPrices(sym, "1y");
-      cache.set(cacheKey, fallbackData);
+      await cache.set(cacheKey, fallbackData, HISTORICAL_CACHE_TTL_SECONDS);
       return fallbackData;
     }
 
-    cache.set(cacheKey, []);
+    await cache.set(cacheKey, [], HISTORICAL_CACHE_TTL_SECONDS);
     return [];
   }
 }
