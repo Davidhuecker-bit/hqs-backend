@@ -940,16 +940,16 @@ function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
   if (guardianResult.suppressed) {
     const blockedByDebate = guardianResult.debateApproved === false;
     recommendation = blockedByDebate
-      ? "Kein Einstieg empfohlen – Schwarmintelligenz-Konsens verweigert"
-      : "Kein Einstieg empfohlen – Wealth Protection aktiv";
+      ? "Kein Analytisches Signal – Schwarmintelligenz-Konsens verweigert"
+      : "Kein Analytisches Signal – Wealth Protection aktiv";
   } else if (conviction >= 80) {
-    recommendation = "Starke Einstiegschance – aktiv beobachten";
+    recommendation = "Starke Technische Übereinstimmung – aktiv beobachten";
   } else if (conviction >= 65) {
-    recommendation = "Solide Gelegenheit – weitere Prüfung empfohlen";
+    recommendation = "Technische Übereinstimmung – weitere Prüfung empfohlen";
   } else if (conviction >= 50) {
-    recommendation = "Auf Watchlist setzen – kein sofortiger Handlungsbedarf";
+    recommendation = "Analytisches Signal – Watchlist, kein sofortiger Handlungsbedarf";
   } else {
-    recommendation = "Aktuell nicht attraktiv – kein Handlungsbedarf";
+    recommendation = "Kein klares Analytisches Signal – kein Handlungsbedarf";
   }
 
   // Title label: distinguish Debate-blocked from robustness-blocked signals
@@ -1264,7 +1264,7 @@ async function getTopOpportunities(arg = 10) {
       guardianApplied: true,
       suppressed,
       suppressionReason: suppressed
-        ? (debateBlocked ? "Debate Consensus Failed" : guardianResult.reason)
+        ? (debateBlocked ? "Debate Consensus Failed" : "Kapitalschutz-Aktion")
         : null,
       rawInputSnapshot: {
         ...auditSnapshot,
@@ -1314,7 +1314,7 @@ async function getTopOpportunities(arg = 10) {
       ...opp,
       suppressed,
       suppressionReason: suppressed
-        ? (debateBlocked ? "Debate Consensus Failed" : guardianResult.reason)
+        ? (debateBlocked ? "Debate Consensus Failed" : "Kapitalschutz-Aktion")
         : null,
       debateResult: {
         approved: debateResult.approved,

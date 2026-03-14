@@ -285,15 +285,205 @@ const BLACK_SWAN_SCENARIOS = [
       };
     },
   },
+
+  /* ── 6 – GEOPOLITICAL_SHOCK ─────────────────────────────── */
+  {
+    id:          "GEOPOLITICAL_SHOCK",
+    label:       "Geopolitischer Schock (Krieg/Sanktionen -18% Kurs)",
+    description: "Regionale Eskalation führt zu Kapitalflucht und Rohstoffschocks.",
+    apply(snapshot) {
+      const f = snapshot.features || {};
+      const sig = snapshot.signalContext || {};
+      const orc = snapshot.orchestrator || {};
+      return {
+        hqsScore: safeNum(snapshot.hqsScore, 0) * 0.80,
+        features: {
+          momentum:       Math.max(0, safeNum(f.momentum, 0)       * 0.58),
+          quality:        safeNum(f.quality, 0)                     * 0.80,
+          stability:      safeNum(f.stability, 0)                   * 0.65,
+          relative:       Math.max(0, safeNum(f.relative, 0)       * 0.65),
+          volatility:     Math.min(1, safeNum(f.volatility, 0)     * 1.70),
+          trendStrength:  Math.max(0, safeNum(f.trendStrength, 0)  * 0.55),
+          relativeVolume: Math.max(0, safeNum(f.relativeVolume, 0) * 0.85),
+          liquidityScore: Math.max(0, safeNum(f.liquidityScore, 0) * 0.75),
+        },
+        signalContext: {
+          signalStrength:       Math.max(0, safeNum(sig.signalStrength, 0)       * 0.65),
+          trendScore:           Math.max(0, safeNum(sig.trendScore, 0)           * 0.60),
+          signalDirectionScore: safeNum(sig.signalDirectionScore, 0),
+          signalConfidence:     safeNum(sig.signalConfidence, 0)                 * 0.65,
+          buzzScore:            Math.max(0, safeNum(sig.buzzScore, 0)            * 0.70),
+          sentimentScore:       safeNum(sig.sentimentScore, 0),
+        },
+        orchestrator: {
+          opportunityStrength:    Math.max(0, safeNum(orc.opportunityStrength, 0)    * 0.68),
+          orchestratorConfidence: Math.max(0, safeNum(orc.orchestratorConfidence, 0) * 0.68),
+        },
+        entryPrice: Math.max(0, safeNum(snapshot.entryPrice, 0) * 0.82),
+      };
+    },
+  },
+
+  /* ── 7 – REGULATORY_CRACKDOWN ───────────────────────────── */
+  {
+    id:          "REGULATORY_CRACKDOWN",
+    label:       "Regulatorischer Eingriff (BaFin/SEC Handelsunterbrechung)",
+    description: "Behördliche Maßnahmen stoppen den freien Handel vorübergehend.",
+    apply(snapshot) {
+      const f = snapshot.features || {};
+      const sig = snapshot.signalContext || {};
+      const orc = snapshot.orchestrator || {};
+      return {
+        hqsScore: safeNum(snapshot.hqsScore, 0) * 0.72,
+        features: {
+          momentum:       Math.max(0, safeNum(f.momentum, 0)       * 0.45),
+          quality:        safeNum(f.quality, 0)                     * 0.70,
+          stability:      safeNum(f.stability, 0)                   * 0.55,
+          relative:       Math.max(0, safeNum(f.relative, 0)       * 0.50),
+          volatility:     Math.min(1, safeNum(f.volatility, 0)     * 2.20),
+          trendStrength:  Math.max(0, safeNum(f.trendStrength, 0)  * 0.40),
+          relativeVolume: Math.max(0, safeNum(f.relativeVolume, 0) * 0.25),
+          liquidityScore: Math.max(0, safeNum(f.liquidityScore, 0) * 0.25),
+        },
+        signalContext: {
+          signalStrength:       Math.max(0, safeNum(sig.signalStrength, 0)       * 0.50),
+          trendScore:           Math.max(0, safeNum(sig.trendScore, 0)           * 0.50),
+          signalDirectionScore: safeNum(sig.signalDirectionScore, 0),
+          signalConfidence:     safeNum(sig.signalConfidence, 0)                 * 0.50,
+          buzzScore:            Math.max(0, safeNum(sig.buzzScore, 0)            * 0.35),
+          sentimentScore:       safeNum(sig.sentimentScore, 0),
+        },
+        orchestrator: {
+          opportunityStrength:    Math.max(0, safeNum(orc.opportunityStrength, 0)    * 0.45),
+          orchestratorConfidence: Math.max(0, safeNum(orc.orchestratorConfidence, 0) * 0.45),
+        },
+        entryPrice: Math.max(0, safeNum(snapshot.entryPrice, 0) * 0.78),
+      };
+    },
+  },
+
+  /* ── 8 – INFLATION_SPIRAL ───────────────────────────────── */
+  {
+    id:          "INFLATION_SPIRAL",
+    label:       "Inflationsspirale (Kaufkraftsverlust, Margeneinbruch)",
+    description: "Anhaltend hohe Inflation erodiert Unternehmensmargen und Reallöhne.",
+    apply(snapshot) {
+      const f = snapshot.features || {};
+      const sig = snapshot.signalContext || {};
+      const orc = snapshot.orchestrator || {};
+      return {
+        hqsScore: safeNum(snapshot.hqsScore, 0) * 0.83,
+        features: {
+          momentum:       Math.max(0, safeNum(f.momentum, 0)       * 0.62),
+          quality:        safeNum(f.quality, 0)                     * 0.72,
+          stability:      safeNum(f.stability, 0)                   * 0.68,
+          relative:       Math.max(0, safeNum(f.relative, 0)       * 0.72),
+          volatility:     Math.min(1, safeNum(f.volatility, 0)     * 1.45),
+          trendStrength:  Math.max(0, safeNum(f.trendStrength, 0)  * 0.65),
+          relativeVolume: Math.max(0, safeNum(f.relativeVolume, 0) * 0.88),
+          liquidityScore: Math.max(0, safeNum(f.liquidityScore, 0) * 0.82),
+        },
+        signalContext: {
+          signalStrength:       Math.max(0, safeNum(sig.signalStrength, 0)       * 0.72),
+          trendScore:           Math.max(0, safeNum(sig.trendScore, 0)           * 0.68),
+          signalDirectionScore: safeNum(sig.signalDirectionScore, 0),
+          signalConfidence:     safeNum(sig.signalConfidence, 0)                 * 0.72,
+          buzzScore:            Math.max(0, safeNum(sig.buzzScore, 0)            * 0.78),
+          sentimentScore:       safeNum(sig.sentimentScore, 0),
+        },
+        orchestrator: {
+          opportunityStrength:    Math.max(0, safeNum(orc.opportunityStrength, 0)    * 0.75),
+          orchestratorConfidence: Math.max(0, safeNum(orc.orchestratorConfidence, 0) * 0.75),
+        },
+        entryPrice: Math.max(0, safeNum(snapshot.entryPrice, 0) * 0.86),
+      };
+    },
+  },
+
+  /* ── 9 – CREDIT_DEFAULT ─────────────────────────────────── */
+  {
+    id:          "CREDIT_DEFAULT",
+    label:       "Kreditausfall (Großbank-Insolvenz, Systemrisiko)",
+    description: "Insolvenz eines systemrelevanten Instituts löst Kettenreaktion aus.",
+    apply(snapshot) {
+      const f = snapshot.features || {};
+      const sig = snapshot.signalContext || {};
+      const orc = snapshot.orchestrator || {};
+      return {
+        hqsScore: safeNum(snapshot.hqsScore, 0) * 0.65,
+        features: {
+          momentum:       Math.max(0, safeNum(f.momentum, 0)       * 0.40),
+          quality:        safeNum(f.quality, 0)                     * 0.65,
+          stability:      safeNum(f.stability, 0)                   * 0.50,
+          relative:       Math.max(0, safeNum(f.relative, 0)       * 0.45),
+          volatility:     Math.min(1, safeNum(f.volatility, 0)     * 2.30),
+          trendStrength:  Math.max(0, safeNum(f.trendStrength, 0)  * 0.35),
+          relativeVolume: Math.max(0, safeNum(f.relativeVolume, 0) * 0.50),
+          liquidityScore: Math.max(0, safeNum(f.liquidityScore, 0) * 0.35),
+        },
+        signalContext: {
+          signalStrength:       Math.max(0, safeNum(sig.signalStrength, 0)       * 0.45),
+          trendScore:           Math.max(0, safeNum(sig.trendScore, 0)           * 0.42),
+          signalDirectionScore: safeNum(sig.signalDirectionScore, 0),
+          signalConfidence:     safeNum(sig.signalConfidence, 0)                 * 0.45,
+          buzzScore:            Math.max(0, safeNum(sig.buzzScore, 0)            * 0.40),
+          sentimentScore:       safeNum(sig.sentimentScore, 0),
+        },
+        orchestrator: {
+          opportunityStrength:    Math.max(0, safeNum(orc.opportunityStrength, 0)    * 0.42),
+          orchestratorConfidence: Math.max(0, safeNum(orc.orchestratorConfidence, 0) * 0.42),
+        },
+        entryPrice: Math.max(0, safeNum(snapshot.entryPrice, 0) * 0.70),
+      };
+    },
+  },
+
+  /* ── 10 – TECH_DISRUPTION ───────────────────────────────── */
+  {
+    id:          "TECH_DISRUPTION",
+    label:       "Tech-Disruption (KI-Substitution, Geschäftsmodell obsolet)",
+    description: "Neues Technologieparadigma macht bestehende Marktführer unrentabel.",
+    apply(snapshot) {
+      const f = snapshot.features || {};
+      const sig = snapshot.signalContext || {};
+      const orc = snapshot.orchestrator || {};
+      return {
+        hqsScore: safeNum(snapshot.hqsScore, 0) * 0.75,
+        features: {
+          momentum:       Math.max(0, safeNum(f.momentum, 0)       * 0.50),
+          quality:        safeNum(f.quality, 0)                     * 0.68,
+          stability:      safeNum(f.stability, 0)                   * 0.58,
+          relative:       Math.max(0, safeNum(f.relative, 0)       * 0.55),
+          volatility:     Math.min(1, safeNum(f.volatility, 0)     * 1.80),
+          trendStrength:  Math.max(0, safeNum(f.trendStrength, 0)  * 0.48),
+          relativeVolume: Math.max(0, safeNum(f.relativeVolume, 0) * 0.65),
+          liquidityScore: Math.max(0, safeNum(f.liquidityScore, 0) * 0.70),
+        },
+        signalContext: {
+          signalStrength:       Math.max(0, safeNum(sig.signalStrength, 0)       * 0.58),
+          trendScore:           Math.max(0, safeNum(sig.trendScore, 0)           * 0.55),
+          signalDirectionScore: safeNum(sig.signalDirectionScore, 0),
+          signalConfidence:     safeNum(sig.signalConfidence, 0)                 * 0.58,
+          buzzScore:            Math.max(0, safeNum(sig.buzzScore, 0)            * 0.60),
+          sentimentScore:       safeNum(sig.sentimentScore, 0),
+        },
+        orchestrator: {
+          opportunityStrength:    Math.max(0, safeNum(orc.opportunityStrength, 0)    * 0.55),
+          orchestratorConfidence: Math.max(0, safeNum(orc.orchestratorConfidence, 0) * 0.55),
+        },
+        entryPrice: Math.max(0, safeNum(snapshot.entryPrice, 0) * 0.80),
+      };
+    },
+  },
 ];
 
 /* =========================================================
    ANTIFRAGILITY THRESHOLD
    A stock is "antifragile" when it survives at least this fraction
-   of the phantom scenarios.
+   of the phantom scenarios (7 of 10 = 0.70).
 ========================================================= */
 
-const ANTIFRAGILE_THRESHOLD = 0.6; // survives 3 of 5 scenarios
+const ANTIFRAGILE_THRESHOLD = 0.70; // survives at least 7 of 10 scenarios (Robustness-Matrix)
 
 /* =========================================================
    CORE ENGINE
