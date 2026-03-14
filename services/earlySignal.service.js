@@ -1,6 +1,25 @@
 "use strict";
 
-function normalizeInput(input) {
+const {
+  calculateTrendScore,
+  determineTrendLevel,
+} = require("./trendingStocks.service");
+
+const SCORE_MIN = 0;
+const SCORE_MAX = 100;
+const EARLY_INTEREST_BUZZ_THRESHOLD = 70;
+const EARLY_INTEREST_MOMENTUM_THRESHOLD = 10;
+const POTENTIAL_BREAKOUT_BUZZ_THRESHOLD = 85;
+const POTENTIAL_BREAKOUT_MOMENTUM_THRESHOLD = 5;
+const BREAKOUT_STRENGTH_BONUS = 5;
+
+function normalizeItems(items) {
+  if (Array.isArray(items)) return items;
+  if (items && typeof items === "object") return [items];
+  return [];
+}
+
+function normalizeInputItem(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return null;
   }
@@ -18,33 +37,103 @@ function safeNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-function buildEarlySignals(input = {}) {
-  const normalizedInput = normalizeInput(input);
-  if (!normalizedInput) return [];
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function roundNumber(value, digits = 2) {
+  const factor = Math.pow(10, digits);
+  return Math.round(value * factor) / factor;
+}
+
+function normalizeScore(value, fallback = 0) {
+  return roundNumber(clamp(safeNumber(value, fallback), SCORE_MIN, SCORE_MAX));
+}
+
+function normalizeTrendLevel(value) {
+  const trendLevel = String(value || "").trim().toLowerCase();
+  return trendLevel || null;
+}
+
+function buildNormalizedItem(input = {}) {
+  const normalizedInput = normalizeInputItem(input);
+  if (!normalizedInput) return null;
 
   const symbol = normalizeSymbol(normalizedInput.symbol);
-  if (!symbol) return [];
+  if (!symbol) return null;
 
-  const buzzScore = safeNumber(normalizedInput.buzzScore, 0);
-  const priceMomentum = safeNumber(normalizedInput.priceMomentum, 0);
-  const signals = [];
+  const buzzScore = normalizeScore(normalizedInput.buzzScore, 0);
+  const priceMomentum = normalizeScore(normalizedInput.priceMomentum, 0);
+  const volumeSpike = normalizeScore(normalizedInput.volumeSpike, 0);
+  const fallbackTrendScore = calculateTrendScore({
+    buzzScore,
+    priceMomentum,
+    volumeSpike,
+  });
+  const trendScore = normalizeScore(normalizedInput.trendScore, fallbackTrendScore);
+  const trendLevel =
+    normalizeTrendLevel(normalizedInput.trendLevel) ||
+    determineTrendLevel(trendScore);
 
-  if (buzzScore > 70 && priceMomentum < 10) {
-    signals.push({
-      symbol,
-      signal: "early_interest",
-      strength: buzzScore,
-    });
+  return {
+    symbol,
+    buzzScore,
+    priceMomentum,
+    trendScore,
+    trendLevel,
+  };
+}
+
+function determineSignalType(input = {}) {
+  const buzzScore = normalizeScore(input.buzzScore, 0);
+  const priceMomentum = normalizeScore(input.priceMomentum, 0);
+
+  if (
+    buzzScore > POTENTIAL_BREAKOUT_BUZZ_THRESHOLD &&
+    priceMomentum < POTENTIAL_BREAKOUT_MOMENTUM_THRESHOLD
+  ) {
+    return "potential_breakout";
   }
 
-  if (buzzScore > 85 && priceMomentum < 5) {
-    signals.push({
-      symbol,
-      signal: "potential_breakout",
-    });
+  if (
+    buzzScore > EARLY_INTEREST_BUZZ_THRESHOLD &&
+    priceMomentum < EARLY_INTEREST_MOMENTUM_THRESHOLD
+  ) {
+    return "early_interest";
   }
 
-  return signals;
+  return null;
+}
+
+function calculateStrength(signal, input = {}) {
+  const baseStrength = normalizeScore(input.buzzScore, 0);
+  if (signal === "potential_breakout") {
+    return normalizeScore(baseStrength + BREAKOUT_STRENGTH_BONUS, baseStrength);
+  }
+
+  return baseStrength;
+}
+
+function buildEarlySignals(items = []) {
+  return normalizeItems(items).reduce((signals, item) => {
+    const normalizedItem = buildNormalizedItem(item);
+    if (!normalizedItem) return signals;
+
+    const signal = determineSignalType(normalizedItem);
+    if (!signal) return signals;
+
+    signals.push({
+      symbol: normalizedItem.symbol,
+      signal,
+      strength: calculateStrength(signal, normalizedItem),
+      buzzScore: normalizedItem.buzzScore,
+      priceMomentum: normalizedItem.priceMomentum,
+      trendScore: normalizedItem.trendScore,
+      trendLevel: normalizedItem.trendLevel,
+    });
+
+    return signals;
+  }, []);
 }
 
 module.exports = {
