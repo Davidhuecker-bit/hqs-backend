@@ -20,6 +20,9 @@ const { analyzeMacroEvents } = require("../engines/eventIntelligenceEngine");
 const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
 const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
 const { orchestrateMarket } = require("../engines/marketOrchestrator");
+const {
+  getScoringActiveNewsContextBySymbols,
+} = require("./marketNews.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -32,6 +35,10 @@ const pool = new Pool({
 
 let marketMemoryStore = {};
 let metaLearningStore = {};
+const OPPORTUNITY_NEWS_LIMIT = Math.max(
+  1,
+  Math.min(Number(process.env.OPPORTUNITY_NEWS_LIMIT || 5), 10)
+);
 
 /* =========================================================
    UTIL
@@ -167,7 +174,7 @@ function classifyOpportunity(row) {
    REASON GENERATOR
 ========================================================= */
 
-function generateReason(row) {
+function generateReason(row, newsContext = null) {
   const reasons = [];
 
   const quality = norm0to1(row.quality);
@@ -188,11 +195,23 @@ function generateReason(row) {
     reasons.push("hohe Schwankung");
   }
 
+  if (safeNum(newsContext?.activeCount, 0) > 0) {
+    if (newsContext?.direction === "bullish") {
+      reasons.push("positive News-Lage");
+    } else if (newsContext?.direction === "bearish") {
+      reasons.push("negative News-Lage");
+    }
+
+    if (newsContext?.dominantEventType) {
+      reasons.push(`News-Fokus ${newsContext.dominantEventType}`);
+    }
+  }
+
   if (!reasons.length) {
     reasons.push("solide Werte");
   }
 
-  return reasons.slice(0, 3).join(" + ");
+  return Array.from(new Set(reasons)).slice(0, 4).join(" + ");
 }
 
 /* =========================================================
@@ -275,7 +294,22 @@ async function getTopOpportunities(arg = 10) {
     );
   }
 
+  let newsContextBySymbol = {};
+  if (rows.length) {
+    try {
+      newsContextBySymbol = await getScoringActiveNewsContextBySymbols(
+        rows.map((row) => row.symbol),
+        OPPORTUNITY_NEWS_LIMIT
+      );
+    } catch (error) {
+      logger.warn("Opportunity news context load failed", {
+        message: error.message,
+      });
+    }
+  }
+
   const opportunities = rows.map((row) => {
+    const newsContext = newsContextBySymbol?.[row.symbol] || null;
     const opportunityScore = calculateOpportunityScore(row);
 
     const features = buildFeatures(row, {
@@ -358,6 +392,8 @@ async function getTopOpportunities(arg = 10) {
         eventCount: eventIntelligence?.events?.length || 0,
         memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
         narrativeCount: narratives?.length || 0,
+        newsActiveCount: safeNum(newsContext?.activeCount, 0),
+        newsStrength: safeNum(newsContext?.strengthScore, 0),
         strategyScore: safeNum(strategy?.strategyAdjustedScore, 0),
         crossAssetCount: crossAsset?.signals?.length || 0,
       },
@@ -386,6 +422,7 @@ async function getTopOpportunities(arg = 10) {
       eventIntelligence,
       marketMemory,
       metaLearning,
+      newsContext,
     });
 
     /* =============================
@@ -409,6 +446,7 @@ async function getTopOpportunities(arg = 10) {
       simulations,
       resilienceScore,
       research: null,
+      newsContext,
       globalContext: {
         crossAsset,
         capitalFlows,
@@ -416,6 +454,7 @@ async function getTopOpportunities(arg = 10) {
         orchestrator,
         marketMemory: marketMemory?.memoryStats || null,
         metaLearning: metaLearning?.trustProfile || null,
+        newsContext,
       },
     });
 
@@ -455,7 +494,22 @@ async function getTopOpportunities(arg = 10) {
       ),
 
       whyInteresting: finalView?.whyInteresting || [],
-      reason: generateReason(row),
+      reason: generateReason(row, newsContext),
+      newsContext:
+        newsContext && safeNum(newsContext?.activeCount, 0) > 0
+          ? {
+              activeCount: safeNum(newsContext?.activeCount, 0),
+              direction: newsContext?.direction || "neutral",
+              directionScore: safeNum(newsContext?.directionScore, 0),
+              strengthScore: safeNum(newsContext?.strengthScore, 0),
+              dominantEventType: newsContext?.dominantEventType || null,
+              weightedRelevance: safeNum(newsContext?.weightedRelevance, 0),
+              weightedConfidence: safeNum(newsContext?.weightedConfidence, 0),
+              weightedMarketImpact: safeNum(newsContext?.weightedMarketImpact, 0),
+              summary: newsContext?.summary || null,
+            }
+          : null,
+      newsAdjustment: safeNum(finalView?.components?.newsAdjustment, 0),
 
       marketMemory: marketMemory?.memoryStats || null,
       metaLearning: metaLearning?.trustProfile || null,

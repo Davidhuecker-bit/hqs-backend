@@ -11,6 +11,7 @@ try {
 
 const marketNewsRepository = require("./marketNews.repository");
 const { loadEntityMapBySymbols } = require("./entityMap.repository");
+const { buildMarketSentiment } = require("./marketSentiment.service");
 const {
   analyzeNewsArticle,
   buildNewsLifecycle,
@@ -19,6 +20,18 @@ const {
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const FMP_NEWS_URL = "https://financialmodelingprep.com/api/v3/stock_news";
 const FMP_NEWS_TIMEOUT_MS = Number(process.env.FMP_NEWS_TIMEOUT_MS || 20000);
+const NEWS_CONTEXT_MIN_WEIGHT = 0.2;
+const NEWS_CONTEXT_MAX_WEIGHT = 1.4;
+const NEWS_CONTEXT_RELEVANCE_WEIGHT = 0.32;
+const NEWS_CONTEXT_CONFIDENCE_WEIGHT = 0.18;
+const NEWS_CONTEXT_MARKET_IMPACT_WEIGHT = 0.22;
+const NEWS_CONTEXT_FRESHNESS_WEIGHT = 0.12;
+const NEWS_CONTEXT_PERSISTENCE_WEIGHT = 0.16;
+const NEWS_CONTEXT_MAX_PERSISTENCE_SCORE = 160;
+const NEWS_CONTEXT_EVENT_LIMIT = 3;
+const NEWS_CONTEXT_HEADLINE_LIMIT = 2;
+const NEWS_CONTEXT_REASON_LIMIT = 3;
+const NEWS_CONTEXT_DIRECTION_THRESHOLD = 12;
 
 function cleanText(value) {
   const text = String(value ?? "")
@@ -85,6 +98,27 @@ function normalizeMinRelevance(value) {
   const score = Number(value);
   if (!Number.isFinite(score)) return 0;
   return Math.max(0, Math.min(Math.trunc(score), 100));
+}
+
+function safeNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function roundNumber(value, digits = 2) {
+  const factor = Math.pow(10, digits);
+  return Math.round(value * factor) / factor;
+}
+
+function normalizeDirection(value) {
+  const direction = String(value || "").trim().toLowerCase();
+  if (direction === "bullish") return "bullish";
+  if (direction === "bearish") return "bearish";
+  return "neutral";
 }
 
 function buildFmpNewsUrl(symbol, limitPerSymbol) {
@@ -327,6 +361,120 @@ function extractPublishedTimestamp(item) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function extractFreshnessScore(item) {
+  return safeNumber(item?.intelligence?.freshnessScore, 0);
+}
+
+function extractMarketImpactScore(item) {
+  return safeNumber(item?.intelligence?.marketImpactScore, 0);
+}
+
+function extractSentimentScore(item) {
+  const embeddedScore = item?.intelligence?.marketSentiment?.sentimentScore;
+  if (Number.isFinite(Number(embeddedScore))) {
+    return clamp(Number(embeddedScore), -100, 100);
+  }
+
+  const direction = normalizeDirection(item?.intelligence?.direction);
+  const sentimentStrength = clamp(
+    safeNumber(item?.intelligence?.sentimentStrength, direction === "neutral" ? 0 : 50),
+    0,
+    100
+  );
+
+  if (direction === "bullish") return sentimentStrength;
+  if (direction === "bearish") return -sentimentStrength;
+  return 0;
+}
+
+function extractBuzzScore(item) {
+  return clamp(
+    safeNumber(item?.intelligence?.marketSentiment?.buzzScore, 0),
+    0,
+    100
+  );
+}
+
+function extractEventType(item) {
+  return cleanText(item?.intelligence?.eventType)?.toLowerCase() || null;
+}
+
+function createEmptyNewsContext() {
+  return {
+    activeCount: 0,
+    weightedRelevance: 0,
+    weightedConfidence: 0,
+    weightedFreshness: 0,
+    weightedMarketImpact: 0,
+    weightedPersistence: 0,
+    strengthScore: 0,
+    direction: "neutral",
+    directionScore: 0,
+    bullishCount: 0,
+    bearishCount: 0,
+    neutralCount: 0,
+    dominantEventType: null,
+    topEventTypes: [],
+    topHeadline: null,
+    topHeadlines: [],
+    summary: null,
+    reasons: [],
+    marketSentiment: buildMarketSentiment({}),
+  };
+}
+
+function buildNewsItemWeight(item = {}) {
+  const relevance = clamp(extractRelevance(item), 0, 100) / 100;
+  const confidence = clamp(extractConfidence(item), 0, 100) / 100;
+  const freshness = clamp(extractFreshnessScore(item), 0, 100) / 100;
+  const marketImpact = clamp(extractMarketImpactScore(item), 0, 100) / 100;
+  const persistence = clamp(
+    safeNumber(item?.persistenceScore, 0) / NEWS_CONTEXT_MAX_PERSISTENCE_SCORE,
+    0,
+    1
+  );
+
+  const weight =
+    NEWS_CONTEXT_MIN_WEIGHT +
+    relevance * NEWS_CONTEXT_RELEVANCE_WEIGHT +
+    confidence * NEWS_CONTEXT_CONFIDENCE_WEIGHT +
+    marketImpact * NEWS_CONTEXT_MARKET_IMPACT_WEIGHT +
+    freshness * NEWS_CONTEXT_FRESHNESS_WEIGHT +
+    persistence * NEWS_CONTEXT_PERSISTENCE_WEIGHT;
+
+  return clamp(roundNumber(weight, 4), NEWS_CONTEXT_MIN_WEIGHT, NEWS_CONTEXT_MAX_WEIGHT);
+}
+
+function buildNewsSummary({
+  activeCount = 0,
+  direction = "neutral",
+  dominantEventType = null,
+  weightedRelevance = 0,
+  weightedMarketImpact = 0,
+}) {
+  if (!activeCount) return null;
+
+  const parts = [`${activeCount} aktive News`];
+
+  if (direction === "bullish") {
+    parts.push("bullische Tendenz");
+  } else if (direction === "bearish") {
+    parts.push("bearische Tendenz");
+  } else {
+    parts.push("neutrale Tendenz");
+  }
+
+  if (dominantEventType) {
+    parts.push(`Fokus ${dominantEventType}`);
+  }
+
+  if (weightedRelevance >= 70 || weightedMarketImpact >= 70) {
+    parts.push("hohe News-Relevanz");
+  }
+
+  return parts.join(" · ");
+}
+
 function normalizeLoadedNewsItem(item) {
   const intelligence = safeJson(item?.intelligence, {});
   const lifecycle = buildNewsLifecycle(item, intelligence);
@@ -364,6 +512,147 @@ function normalizeLoadedNewsItem(item) {
         ? "expired"
         : lifecycle.lifecycleState,
   };
+}
+
+function buildScoringNewsContext(items = []) {
+  const normalized = items
+    .map(normalizeLoadedNewsItem)
+    .filter((item) => item?.symbol && item?.title && item?.url)
+    .filter((item) => item?.isActiveForScoring === true);
+
+  if (!normalized.length) {
+    return createEmptyNewsContext();
+  }
+
+  const weightedEventCounts = {};
+  const headlineCandidates = [];
+  const reasonCandidates = [];
+
+  let totalWeight = 0;
+  let weightedRelevance = 0;
+  let weightedConfidence = 0;
+  let weightedFreshness = 0;
+  let weightedMarketImpact = 0;
+  let weightedPersistence = 0;
+  let weightedSentimentScore = 0;
+  let weightedBuzzScore = 0;
+  let bullishCount = 0;
+  let bearishCount = 0;
+  let neutralCount = 0;
+
+  for (const item of normalized) {
+    const lifecycle = buildNewsLifecycle(item, item.intelligence || {});
+    const decoratedItem = {
+      ...item,
+      persistenceScore: safeNumber(lifecycle?.persistenceScore, 0),
+    };
+    const weight = buildNewsItemWeight(decoratedItem);
+    const direction = normalizeDirection(decoratedItem?.intelligence?.direction);
+    const eventType = extractEventType(decoratedItem);
+    const articleReasons = Array.isArray(decoratedItem?.intelligence?.reasons)
+      ? decoratedItem.intelligence.reasons
+      : [];
+
+    totalWeight += weight;
+    weightedRelevance += extractRelevance(decoratedItem) * weight;
+    weightedConfidence += extractConfidence(decoratedItem) * weight;
+    weightedFreshness += extractFreshnessScore(decoratedItem) * weight;
+    weightedMarketImpact += extractMarketImpactScore(decoratedItem) * weight;
+    weightedPersistence += decoratedItem.persistenceScore * weight;
+    weightedSentimentScore += extractSentimentScore(decoratedItem) * weight;
+    weightedBuzzScore += extractBuzzScore(decoratedItem) * weight;
+
+    if (direction === "bullish") bullishCount += 1;
+    else if (direction === "bearish") bearishCount += 1;
+    else neutralCount += 1;
+
+    if (eventType) {
+      weightedEventCounts[eventType] = safeNumber(weightedEventCounts[eventType], 0) + weight;
+    }
+
+    headlineCandidates.push({
+      title: decoratedItem.title,
+      weight,
+      relevance: extractRelevance(decoratedItem),
+      publishedAt: extractPublishedTimestamp(decoratedItem),
+    });
+
+    reasonCandidates.push(...articleReasons);
+  }
+
+  const safeWeight = totalWeight > 0 ? totalWeight : 1;
+  const averageSentiment = roundNumber(weightedSentimentScore / safeWeight);
+  const averageBuzz = roundNumber(weightedBuzzScore / safeWeight);
+  const directionScore = clamp(roundNumber(averageSentiment / 100, 2), -1, 1);
+  const direction =
+    averageSentiment >= NEWS_CONTEXT_DIRECTION_THRESHOLD
+      ? "bullish"
+      : averageSentiment <= -NEWS_CONTEXT_DIRECTION_THRESHOLD
+        ? "bearish"
+        : "neutral";
+
+  const rankedEventTypes = Object.entries(weightedEventCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, NEWS_CONTEXT_EVENT_LIMIT)
+    .map(([eventType]) => eventType);
+
+  const topHeadlines = headlineCandidates
+    .sort((a, b) => {
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      if (b.relevance !== a.relevance) return b.relevance - a.relevance;
+      return b.publishedAt - a.publishedAt;
+    })
+    .slice(0, NEWS_CONTEXT_HEADLINE_LIMIT)
+    .map((item) => item.title);
+
+  const context = {
+    activeCount: normalized.length,
+    weightedRelevance: roundNumber(weightedRelevance / safeWeight),
+    weightedConfidence: roundNumber(weightedConfidence / safeWeight),
+    weightedFreshness: roundNumber(weightedFreshness / safeWeight),
+    weightedMarketImpact: roundNumber(weightedMarketImpact / safeWeight),
+    weightedPersistence: roundNumber(weightedPersistence / safeWeight),
+    strengthScore: roundNumber(
+      clamp(
+        weightedRelevance / safeWeight * 0.32 +
+          weightedConfidence / safeWeight * 0.18 +
+          weightedMarketImpact / safeWeight * 0.24 +
+          weightedFreshness / safeWeight * 0.1 +
+          clamp(weightedPersistence / safeWeight, 0, NEWS_CONTEXT_MAX_PERSISTENCE_SCORE) / 1.6 *
+            0.16,
+        0,
+        100
+      )
+    ),
+    direction,
+    directionScore,
+    bullishCount,
+    bearishCount,
+    neutralCount,
+    dominantEventType: rankedEventTypes[0] || null,
+    topEventTypes: rankedEventTypes,
+    topHeadline: topHeadlines[0] || null,
+    topHeadlines,
+    summary: null,
+    reasons: [],
+    marketSentiment: buildMarketSentiment({
+      sentimentScore: averageSentiment,
+      buzzScore: averageBuzz,
+      mentionCount: normalized.length,
+      reasons: reasonCandidates,
+    }),
+  };
+
+  context.summary = buildNewsSummary(context);
+  context.reasons = [
+    context.summary,
+    context.topHeadline ? `Top-Headline: ${context.topHeadline}` : null,
+    ...context.marketSentiment.reasons,
+  ]
+    .filter(Boolean)
+    .slice(0, NEWS_CONTEXT_REASON_LIMIT);
+
+  return context;
 }
 
 function buildTopNewsSummary(items = []) {
@@ -513,6 +802,28 @@ async function getScoringActiveMarketNewsBySymbols(symbols, limitPerSymbol = 5, 
   return result;
 }
 
+async function getScoringActiveNewsContextBySymbols(
+  symbols,
+  limitPerSymbol = 5,
+  options = {}
+) {
+  const normalizedSymbols = normalizeSymbols(symbols);
+  if (!normalizedSymbols.length) return {};
+
+  const grouped = await getScoringActiveMarketNewsBySymbols(
+    normalizedSymbols,
+    limitPerSymbol,
+    options
+  );
+
+  const result = {};
+  for (const symbol of normalizedSymbols) {
+    result[symbol] = buildScoringNewsContext(grouped?.[symbol] || []);
+  }
+
+  return result;
+}
+
 module.exports = {
   fetchFmpMarketNewsForSymbols,
   normalizeFmpNewsItem,
@@ -521,7 +832,9 @@ module.exports = {
   normalizeLimit,
   normalizeMinRelevance,
   buildTopNewsSummary,
+  buildScoringNewsContext,
   filterAndSortNewsItems,
   getStructuredMarketNewsBySymbols,
   getScoringActiveMarketNewsBySymbols,
+  getScoringActiveNewsContextBySymbols,
 };
