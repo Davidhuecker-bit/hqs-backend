@@ -24,6 +24,14 @@ const {
   buildScoringNewsContext,
   getScoringActiveMarketNewsBySymbols,
 } = require("./marketNews.service");
+const {
+  loadLatestOutcomeTrackingBySymbols,
+} = require("./outcomeTracking.repository");
+const {
+  loadRuntimeState,
+  RUNTIME_STATE_MARKET_MEMORY_KEY,
+  RUNTIME_STATE_META_LEARNING_KEY,
+} = require("./discoveryLearning.repository");
 const { buildMarketSentiment } = require("./marketSentiment.service");
 const { buildMarketBuzz } = require("./marketBuzz.service");
 const { buildTrendingStock } = require("./trendingStocks.service");
@@ -40,6 +48,7 @@ const pool = new Pool({
 
 let marketMemoryStore = {};
 let metaLearningStore = {};
+let runtimePreviewStoresLoaded = false;
 const OPPORTUNITY_NEWS_LIMIT = Math.max(
   1,
   Math.min(Number(process.env.OPPORTUNITY_NEWS_LIMIT || 5), 10)
@@ -61,6 +70,31 @@ function clamp(n, min, max) {
 function safeNum(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function safeObject(value, fallback = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function ensureRuntimePreviewStoresLoaded() {
+  if (runtimePreviewStoresLoaded) return;
+
+  const [persistedMarketMemory, persistedMetaLearning] = await Promise.all([
+    loadRuntimeState(RUNTIME_STATE_MARKET_MEMORY_KEY),
+    loadRuntimeState(RUNTIME_STATE_META_LEARNING_KEY),
+  ]);
+
+  marketMemoryStore = safeObject(persistedMarketMemory, {});
+  metaLearningStore = safeObject(persistedMetaLearning, {});
+  runtimePreviewStoresLoaded = true;
 }
 
 function norm0to1(x) {
@@ -495,6 +529,145 @@ function generateReason(row, newsContext = null) {
   return Array.from(new Set(reasons)).slice(0, OPPORTUNITY_REASON_LIMIT).join(" + ");
 }
 
+function formatOpportunityNewsContext(newsContext = null) {
+  if (!newsContext || safeNum(newsContext?.activeCount, 0) <= 0) return null;
+
+  return {
+    activeCount: safeNum(newsContext?.activeCount, 0),
+    direction: newsContext?.direction || "neutral",
+    directionScore: safeNum(newsContext?.directionScore, 0),
+    strengthScore: safeNum(newsContext?.strengthScore, 0),
+    dominantEventType: newsContext?.dominantEventType || null,
+    weightedRelevance: safeNum(newsContext?.weightedRelevance, 0),
+    weightedConfidence: safeNum(newsContext?.weightedConfidence, 0),
+    weightedMarketImpact: safeNum(newsContext?.weightedMarketImpact, 0),
+    summary: newsContext?.summary || null,
+  };
+}
+
+function formatOpportunitySignalContext(signalContext = null) {
+  if (!signalContext || safeNum(signalContext?.signalStrength, 0) <= 0) return null;
+
+  return {
+    sentimentScore: safeNum(signalContext?.sentimentScore, 0),
+    buzzScore: safeNum(signalContext?.buzzScore, 0),
+    trendScore: safeNum(signalContext?.trendScore, 0),
+    trendLevel: signalContext?.trendLevel || null,
+    earlySignalType: signalContext?.earlySignalType || null,
+    earlySignalStrength: safeNum(signalContext?.earlySignalStrength, 0),
+    signalStrength: safeNum(signalContext?.signalStrength, 0),
+    signalDirection: signalContext?.signalDirection || "neutral",
+    signalDirectionScore: safeNum(signalContext?.signalDirectionScore, 0),
+    signalConfidence: safeNum(signalContext?.signalConfidence, 0),
+    summary: signalContext?.summary || null,
+    reasons: Array.isArray(signalContext?.reasons)
+      ? signalContext.reasons.slice(0, SIGNAL_REASON_LIMIT)
+      : [],
+  };
+}
+
+function hasPersistedBatchResult(tracked = null) {
+  const payload = safeObject(tracked?.payload, {});
+  const finalView = safeObject(payload?.finalView, {});
+  return Boolean(
+    Object.keys(finalView).length ||
+      Object.keys(safeObject(payload?.orchestrator, {})).length
+  );
+}
+
+function buildOpportunityFromBatchResult(row, tracked = null) {
+  if (!hasPersistedBatchResult(tracked)) return null;
+
+  const payload = safeObject(tracked?.payload, {});
+  const finalView = safeObject(payload?.finalView, {});
+  const globalContext = safeObject(finalView?.globalContext, {});
+  const brain = safeObject(payload?.brain, {});
+  const strategy = safeObject(payload?.strategy, safeObject(finalView?.strategy, {}));
+  const features = safeObject(payload?.features, safeObject(finalView?.features, {}));
+  const orchestrator = safeObject(
+    payload?.orchestrator,
+    safeObject(globalContext?.orchestrator, {})
+  );
+  const newsContextCandidate = finalView?.newsContext ?? globalContext?.newsContext ?? null;
+  const signalContextCandidate =
+    finalView?.signalContext ?? globalContext?.signalContext ?? null;
+  const newsContext =
+    newsContextCandidate &&
+    typeof newsContextCandidate === "object" &&
+    !Array.isArray(newsContextCandidate)
+      ? newsContextCandidate
+      : null;
+  const signalContext =
+    signalContextCandidate &&
+    typeof signalContextCandidate === "object" &&
+    !Array.isArray(signalContextCandidate)
+      ? signalContextCandidate
+      : null;
+  const discoveries = Array.isArray(payload?.discoveries)
+    ? payload.discoveries
+    : Array.isArray(finalView?.discoveries)
+      ? finalView.discoveries
+      : [];
+  const narratives = Array.isArray(payload?.narratives)
+    ? payload.narratives
+    : Array.isArray(finalView?.narratives)
+      ? finalView.narratives
+      : [];
+  const opportunityScore = calculateOpportunityScore(row);
+
+  return {
+    symbol: String(row?.symbol || "").trim().toUpperCase(),
+
+    regime: row?.regime ?? tracked?.regime ?? finalView?.regime ?? null,
+    type: classifyOpportunity(row),
+
+    hqsScore: safeNum(row?.hqs_score, finalView?.hqsScore),
+    opportunityScore,
+    confidence: calculateConfidence(row, opportunityScore),
+
+    aiScore: safeNum(finalView?.aiScore, brain?.aiScore),
+    finalConviction: safeNum(finalView?.finalConviction, tracked?.finalConviction),
+    finalConfidence: safeNum(finalView?.finalConfidence, tracked?.finalConfidence),
+    finalRating: finalView?.finalRating || null,
+    finalDecision: finalView?.finalDecision || null,
+
+    strategy: strategy?.strategy || null,
+    strategyLabel: strategy?.strategyLabel || null,
+
+    narratives,
+    discoveries,
+
+    trend: row?.trend ?? null,
+    volatility: row?.volatility ?? null,
+    resilienceScore: safeNum(payload?.resilienceScore, finalView?.resilienceScore),
+
+    opportunityStrength: safeNum(
+      orchestrator?.opportunityStrength,
+      tracked?.opportunityStrength
+    ),
+    orchestratorConfidence: safeNum(
+      orchestrator?.orchestratorConfidence,
+      tracked?.orchestratorConfidence
+    ),
+
+    whyInteresting: Array.isArray(finalView?.whyInteresting)
+      ? finalView.whyInteresting
+      : [],
+    reason: generateReason(row, newsContext),
+    newsContext: formatOpportunityNewsContext(newsContext),
+    newsAdjustment: safeNum(finalView?.components?.newsAdjustment, 0),
+    signalAdjustment: safeNum(finalView?.components?.signalAdjustment, 0),
+    signalContext: formatOpportunitySignalContext(signalContext),
+
+    marketMemory: safeObject(globalContext?.marketMemory, null),
+    metaLearning: safeObject(globalContext?.metaLearning, null),
+
+    advancedUpdatedAt: row?.advanced_updated_at
+      ? new Date(row.advanced_updated_at).toISOString()
+      : null,
+  };
+}
+
 /* =========================================================
    MAIN SERVICE
 ========================================================= */
@@ -575,20 +748,40 @@ async function getTopOpportunities(arg = 10) {
     );
   }
 
+  let persistedOutcomeBySymbol = {};
+  if (rows.length) {
+    try {
+      persistedOutcomeBySymbol = await loadLatestOutcomeTrackingBySymbols(
+        rows.map((row) => row.symbol)
+      );
+    } catch (error) {
+      logger.warn("Opportunity batch result load failed", {
+        message: error.message,
+      });
+    }
+  }
+
+  const fallbackRows = rows.filter((row) => {
+    const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
+    return !hasPersistedBatchResult(persistedOutcomeBySymbol?.[normalizedSymbol]);
+  });
+
   let scoringActiveNewsBySymbol = {};
   let newsContextBySymbol = {};
   let signalContextBySymbol = {};
-  if (rows.length) {
+  if (fallbackRows.length) {
+    await ensureRuntimePreviewStoresLoaded();
+
     try {
       ({
         scoringActiveNewsBySymbol,
         newsContextBySymbol,
       } = await loadOpportunityNewsContextBySymbols(
-        rows.map((row) => row.symbol),
+        fallbackRows.map((row) => row.symbol),
         OPPORTUNITY_NEWS_LIMIT
       ));
 
-      signalContextBySymbol = rows.reduce((result, row) => {
+      signalContextBySymbol = fallbackRows.reduce((result, row) => {
         const symbol = String(row?.symbol || "").trim().toUpperCase();
         if (!symbol) return result;
 
@@ -609,6 +802,15 @@ async function getTopOpportunities(arg = 10) {
 
   const opportunities = rows.map((row) => {
     const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
+    const persistedOpportunity = buildOpportunityFromBatchResult(
+      row,
+      persistedOutcomeBySymbol?.[normalizedSymbol] || null
+    );
+
+    if (persistedOpportunity) {
+      return persistedOpportunity;
+    }
+
     const newsContext = newsContextBySymbol?.[normalizedSymbol] || null;
     const signalContext = signalContextBySymbol?.[normalizedSymbol] || null;
     const opportunityScore = calculateOpportunityScore(row);
@@ -799,41 +1001,10 @@ async function getTopOpportunities(arg = 10) {
 
       whyInteresting: finalView?.whyInteresting || [],
       reason: generateReason(row, newsContext),
-      newsContext:
-        newsContext && safeNum(newsContext?.activeCount, 0) > 0
-          ? {
-              activeCount: safeNum(newsContext?.activeCount, 0),
-              direction: newsContext?.direction || "neutral",
-              directionScore: safeNum(newsContext?.directionScore, 0),
-              strengthScore: safeNum(newsContext?.strengthScore, 0),
-              dominantEventType: newsContext?.dominantEventType || null,
-              weightedRelevance: safeNum(newsContext?.weightedRelevance, 0),
-              weightedConfidence: safeNum(newsContext?.weightedConfidence, 0),
-              weightedMarketImpact: safeNum(newsContext?.weightedMarketImpact, 0),
-              summary: newsContext?.summary || null,
-            }
-          : null,
+      newsContext: formatOpportunityNewsContext(newsContext),
       newsAdjustment: safeNum(finalView?.components?.newsAdjustment, 0),
       signalAdjustment: safeNum(finalView?.components?.signalAdjustment, 0),
-      signalContext:
-        signalContext && safeNum(signalContext?.signalStrength, 0) > 0
-          ? {
-              sentimentScore: safeNum(signalContext?.sentimentScore, 0),
-              buzzScore: safeNum(signalContext?.buzzScore, 0),
-              trendScore: safeNum(signalContext?.trendScore, 0),
-              trendLevel: signalContext?.trendLevel || null,
-              earlySignalType: signalContext?.earlySignalType || null,
-              earlySignalStrength: safeNum(signalContext?.earlySignalStrength, 0),
-              signalStrength: safeNum(signalContext?.signalStrength, 0),
-              signalDirection: signalContext?.signalDirection || "neutral",
-              signalDirectionScore: safeNum(signalContext?.signalDirectionScore, 0),
-              signalConfidence: safeNum(signalContext?.signalConfidence, 0),
-              summary: signalContext?.summary || null,
-              reasons: Array.isArray(signalContext?.reasons)
-                ? signalContext.reasons.slice(0, SIGNAL_REASON_LIMIT)
-                : [],
-            }
-          : null,
+      signalContext: formatOpportunitySignalContext(signalContext),
 
       marketMemory: marketMemory?.memoryStats || null,
       metaLearning: metaLearning?.trustProfile || null,

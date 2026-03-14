@@ -1,6 +1,7 @@
 "use strict";
 
-/*
+/**
+ * @deprecated
   Legacy/parallel opportunity utility path.
   The productive live integration stays on
   opportunityScanner -> marketOrchestrator -> integrationEngine

@@ -19,6 +19,9 @@ const {
   loadEntityMapBySymbols,
 } = require("../services/entityMap.repository");
 const {
+  listActiveUniverseSymbols,
+} = require("../services/universe.repository");
+const {
   initJobLocksTable,
   acquireLock,
 } = require("../services/jobLock.repository");
@@ -89,31 +92,6 @@ function parsePublishedAt(value) {
   return date.toISOString();
 }
 
-async function loadUniverseSymbols(limit = SYMBOL_LIMIT) {
-  try {
-    const res = await pool.query(
-      `
-      SELECT symbol
-      FROM universe_symbols
-      ORDER BY symbol ASC
-      LIMIT $1
-      `,
-      [limit]
-    );
-
-    return (res.rows || [])
-      .map((row) => normalizeSymbol(row.symbol))
-      .filter(Boolean);
-  } catch (error) {
-    if (logger?.warn) {
-      logger.warn("Failed to load universe_symbols", {
-        message: error.message,
-      });
-    }
-    return [];
-  }
-}
-
 async function loadWatchlistSymbols(limit = SYMBOL_LIMIT) {
   try {
     const res = await pool.query(
@@ -167,10 +145,10 @@ async function loadEntityMapSymbols(limit = SYMBOL_LIMIT) {
 }
 
 async function loadTargetSymbols(limit = SYMBOL_LIMIT) {
-  const universeSymbols = await loadUniverseSymbols(limit);
+  const universeSymbols = await listActiveUniverseSymbols(limit);
   if (universeSymbols.length) {
     if (logger?.info) {
-      logger.info("Loaded symbols from universe_symbols", {
+      logger.info("Loaded symbols from universe.repository", {
         count: universeSymbols.length,
       });
     }
