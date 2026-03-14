@@ -21,7 +21,10 @@ const {
 
 const {
   analyzeNewsArticle,
+  buildNewsLifecycle,
 } = require("../services/newsIntelligence.service");
+
+const marketNewsRepository = require("../services/marketNews.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -80,62 +83,6 @@ function parsePublishedAt(value) {
   if (Number.isNaN(date.getTime())) return null;
 
   return date.toISOString();
-}
-
-async function ensureMarketNewsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS market_news (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      title TEXT NOT NULL,
-      url TEXT NOT NULL,
-      source TEXT,
-      published_at TIMESTAMP NULL,
-      summary TEXT,
-      source_type TEXT,
-      entity_hint JSONB DEFAULT '{}'::jsonb,
-      raw_payload JSONB DEFAULT '{}'::jsonb,
-      intelligence JSONB DEFAULT '{}'::jsonb,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    ALTER TABLE market_news
-    ADD COLUMN IF NOT EXISTS source_type TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE market_news
-    ADD COLUMN IF NOT EXISTS entity_hint JSONB DEFAULT '{}'::jsonb;
-  `);
-
-  await pool.query(`
-    ALTER TABLE market_news
-    ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb;
-  `);
-
-  await pool.query(`
-    ALTER TABLE market_news
-    ADD COLUMN IF NOT EXISTS intelligence JSONB DEFAULT '{}'::jsonb;
-  `);
-
-  await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ux_market_news_url
-    ON market_news(url);
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS ix_market_news_symbol_published
-    ON market_news(symbol, published_at DESC, created_at DESC);
-  `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS ix_market_news_source_type
-    ON market_news(source_type);
-  `);
-
-  if (logger?.info) logger.info("market_news table ready");
 }
 
 async function loadUniverseSymbols(limit = SYMBOL_LIMIT) {
@@ -266,49 +213,12 @@ function normalizeCollectedNewsItem(rawItem, fallbackSymbol, intelligence = {}) 
     url,
     source,
     publishedAt,
-    summary,
+    summaryRaw: summary,
     sourceType,
     entityHint: rawItem?.entityHint || {},
     rawPayload: rawItem?.rawPayload || {},
     intelligence: intelligence || {},
   };
-}
-
-async function insertNewsItem(item) {
-  const result = await pool.query(
-    `
-    INSERT INTO market_news (
-      symbol,
-      title,
-      url,
-      source,
-      published_at,
-      summary,
-      source_type,
-      entity_hint,
-      raw_payload,
-      intelligence,
-      created_at
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, NOW())
-    ON CONFLICT (url) DO NOTHING
-    RETURNING id
-    `,
-    [
-      item.symbol,
-      item.title,
-      item.url,
-      item.source,
-      item.publishedAt,
-      item.summary,
-      item.sourceType,
-      JSON.stringify(item.entityHint || {}),
-      JSON.stringify(item.rawPayload || {}),
-      JSON.stringify(item.intelligence || {}),
-    ]
-  );
-
-  return result.rowCount > 0;
 }
 
 async function run() {
@@ -321,10 +231,12 @@ async function run() {
     inserted: 0,
     duplicatesSkipped: 0,
     insertErrors: 0,
+    cooled: 0,
+    expired: 0,
   };
 
   try {
-    await ensureMarketNewsTable();
+    await marketNewsRepository.initMarketNewsTable();
 
     const symbols = await loadTargetSymbols(SYMBOL_LIMIT);
     summary.symbolsLoaded = symbols.length;
@@ -358,6 +270,8 @@ async function run() {
 
     summary.rowsFetched = rows.length;
 
+    const normalizedItems = [];
+
     for (const rawItem of rows) {
       try {
         const intelligence = analyzeNewsArticle(rawItem, entityMapBySymbol);
@@ -372,10 +286,15 @@ async function run() {
         if (!item) continue;
 
         summary.rowsNormalized += 1;
+        const lifecycle = buildNewsLifecycle(item, intelligence);
 
-        const inserted = await insertNewsItem(item);
-        if (inserted) summary.inserted += 1;
-        else summary.duplicatesSkipped += 1;
+        normalizedItems.push({
+          ...item,
+          retentionClass: lifecycle.retentionClass,
+          expiresAt: lifecycle.expiresAt,
+          isActiveForScoring: lifecycle.isActiveForScoring,
+          lifecycleState: lifecycle.lifecycleState,
+        });
       } catch (error) {
         summary.insertErrors += 1;
 
@@ -387,6 +306,18 @@ async function run() {
           });
         }
       }
+    }
+
+    if (normalizedItems.length) {
+      const result = await marketNewsRepository.upsertMarketNews(normalizedItems);
+      summary.inserted = Number(result?.insertedOrUpdated ?? 0) || 0;
+      summary.duplicatesSkipped = Math.max(
+        0,
+        summary.rowsNormalized - summary.inserted
+      );
+      const lifecycleSummary = await marketNewsRepository.syncMarketNewsLifecycleStates();
+      summary.cooled = Number(lifecycleSummary?.cooled ?? 0) || 0;
+      summary.expired = Number(lifecycleSummary?.expired ?? 0) || 0;
     }
 
     if (logger?.info) {

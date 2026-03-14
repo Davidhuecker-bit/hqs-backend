@@ -653,6 +653,291 @@ function computeSourceQualityScore(article = {}) {
   return 58;
 }
 
+function normalizeRetentionClass(value) {
+  const retentionClass = String(value || "").trim().toLowerCase();
+  if (["short", "standard", "extended"].includes(retentionClass)) {
+    return retentionClass;
+  }
+  return "standard";
+}
+
+function normalizeLifecycleState(value) {
+  const lifecycleState = String(value || "").trim().toLowerCase();
+  if (["active", "cooling", "expired"].includes(lifecycleState)) {
+    return lifecycleState;
+  }
+  return "active";
+}
+
+function textHasLowSignalHint(article = {}) {
+  const text = normalizeText(
+    [
+      article?.title,
+      article?.summaryRaw,
+      article?.summary,
+      article?.category,
+      article?.sentimentRaw,
+    ]
+      .filter(Boolean)
+      .join(" "),
+    4000
+  ).toLowerCase();
+
+  if (!text) return false;
+
+  return [
+    "rumor",
+    "rumour",
+    "speculation",
+    "speculative",
+    "unconfirmed",
+    "market chatter",
+    "brief update",
+  ].some((phrase) => text.includes(phrase));
+}
+
+function computeLifecyclePersistenceScore(article = {}, intelligence = {}) {
+  const eventType = String(intelligence?.eventType || "general_news").trim().toLowerCase();
+  const relevanceScore = clamp(safeNumber(intelligence?.relevanceScore, 0), 0, 100);
+  const confidence = clamp(safeNumber(intelligence?.confidence, 0), 0, 100);
+  const sourceQuality = clamp(safeNumber(intelligence?.sourceQuality, 50), 0, 100);
+  const freshnessScore = clamp(safeNumber(intelligence?.freshnessScore, 40), 0, 100);
+  const marketImpactScore = clamp(safeNumber(intelligence?.marketImpactScore, 0), 0, 100);
+  const direction = normalizeDirection(intelligence?.direction);
+
+  const eventWeights = {
+    earnings: 40,
+    guidance: 36,
+    merger_acquisition: 42,
+    regulation: 34,
+    dividend_buyback: 36,
+    macro_rate: 30,
+    macro_inflation: 30,
+    geopolitical: 30,
+    supply_chain: 24,
+    product_launch: 24,
+    sector_rotation: 22,
+    insider_management: 20,
+    analyst_action: 16,
+    general_news: 8,
+  };
+
+  const durableEvents = new Set([
+    "earnings",
+    "guidance",
+    "merger_acquisition",
+    "regulation",
+    "dividend_buyback",
+    "macro_rate",
+    "macro_inflation",
+    "geopolitical",
+    "supply_chain",
+  ]);
+
+  let score =
+    safeNumber(eventWeights[eventType], eventWeights.general_news) +
+    relevanceScore * 0.46 +
+    confidence * 0.24 +
+    sourceQuality * 0.14 +
+    freshnessScore * 0.06 +
+    marketImpactScore * 0.12;
+
+  if (direction !== "neutral") {
+    score += 4;
+  }
+
+  if (durableEvents.has(eventType) && (relevanceScore >= 70 || marketImpactScore >= 70)) {
+    score += 10;
+  }
+
+  if (relevanceScore < 35) {
+    score -= 12;
+  }
+
+  if (confidence < 35) {
+    score -= 12;
+  }
+
+  if (sourceQuality < 55) {
+    score -= 6;
+  }
+
+  if (textHasLowSignalHint(article)) {
+    score -= 12;
+  }
+
+  if (eventType === "general_news" && confidence < 55) {
+    score -= 8;
+  }
+
+  return clamp(Math.round(score), 0, 160);
+}
+
+function classifyNewsRetention(article = {}, intelligence = {}) {
+  const eventType = String(intelligence?.eventType || "general_news").trim().toLowerCase();
+  const relevanceScore = clamp(safeNumber(intelligence?.relevanceScore, 0), 0, 100);
+  const confidence = clamp(safeNumber(intelligence?.confidence, 0), 0, 100);
+  const persistenceScore = computeLifecyclePersistenceScore(article, intelligence);
+
+  if (
+    persistenceScore >= 108 ||
+    (
+      ["earnings", "guidance", "merger_acquisition", "regulation", "dividend_buyback"].includes(eventType) &&
+      relevanceScore >= 68 &&
+      confidence >= 55
+    ) ||
+    (
+      ["macro_rate", "macro_inflation", "geopolitical", "supply_chain"].includes(eventType) &&
+      relevanceScore >= 74
+    )
+  ) {
+    return "extended";
+  }
+
+  if (
+    persistenceScore >= 64 ||
+    (
+      ["earnings", "guidance", "regulation", "product_launch", "sector_rotation", "analyst_action"].includes(eventType) &&
+      relevanceScore >= 45
+    )
+  ) {
+    return "standard";
+  }
+
+  return "short";
+}
+
+function buildRetentionDurationDays(retentionClass, article = {}, intelligence = {}) {
+  const normalizedRetentionClass = normalizeRetentionClass(retentionClass);
+  const eventType = String(intelligence?.eventType || "general_news").trim().toLowerCase();
+  const relevanceScore = clamp(safeNumber(intelligence?.relevanceScore, 0), 0, 100);
+  const confidence = clamp(safeNumber(intelligence?.confidence, 0), 0, 100);
+  const marketImpactScore = clamp(safeNumber(intelligence?.marketImpactScore, 0), 0, 100);
+  const persistenceScore = computeLifecyclePersistenceScore(article, intelligence);
+
+  if (normalizedRetentionClass === "extended") {
+    let days = 24;
+    if (relevanceScore >= 82) days += 7;
+    if (confidence >= 76) days += 4;
+    if (marketImpactScore >= 76) days += 5;
+    if (["earnings", "guidance", "merger_acquisition", "regulation", "dividend_buyback"].includes(eventType)) {
+      days += 5;
+    }
+    return clamp(days, 24, 45);
+  }
+
+  if (normalizedRetentionClass === "standard") {
+    let days = 10;
+    if (relevanceScore >= 70) days += 4;
+    if (confidence >= 65) days += 2;
+    if (marketImpactScore >= 68) days += 3;
+    if (["earnings", "guidance", "regulation", "product_launch", "sector_rotation"].includes(eventType)) {
+      days += 2;
+    }
+    if (persistenceScore >= 92) days += 2;
+    return clamp(days, 10, 21);
+  }
+
+  let days = 3;
+  if (relevanceScore >= 50) days += 1;
+  if (confidence >= 50) days += 1;
+  if (marketImpactScore >= 55) days += 1;
+  if (eventType === "analyst_action") days += 1;
+  return clamp(days, 2, 7);
+}
+
+function getCoolingWindowMs(retentionClass) {
+  const normalizedRetentionClass = normalizeRetentionClass(retentionClass);
+
+  if (normalizedRetentionClass === "extended") {
+    return 7 * 24 * 60 * 60 * 1000;
+  }
+
+  if (normalizedRetentionClass === "standard") {
+    return 3 * 24 * 60 * 60 * 1000;
+  }
+
+  return 24 * 60 * 60 * 1000;
+}
+
+function buildNewsLifecycle(article = {}, intelligence = {}) {
+  const retentionClass = normalizeRetentionClass(
+    article?.retentionClass ?? article?.retention_class
+  );
+  const publishedAtRaw = article?.publishedAt ?? article?.published_at ?? new Date().toISOString();
+  const publishedAt = new Date(publishedAtRaw);
+  const effectivePublishedAt = Number.isNaN(publishedAt.getTime()) ? new Date() : publishedAt;
+
+  const computedRetentionClass =
+    retentionClass === "standard" && !(article?.retentionClass ?? article?.retention_class)
+      ? classifyNewsRetention(article, intelligence)
+      : retentionClass;
+
+  const daysToRetain = buildRetentionDurationDays(
+    computedRetentionClass,
+    article,
+    intelligence
+  );
+
+  const expiresAt = article?.expiresAt ?? article?.expires_at
+    ? new Date(article?.expiresAt ?? article?.expires_at)
+    : new Date(effectivePublishedAt.getTime() + daysToRetain * 24 * 60 * 60 * 1000);
+
+  const effectiveExpiresAt = Number.isNaN(expiresAt.getTime())
+    ? new Date(effectivePublishedAt.getTime() + daysToRetain * 24 * 60 * 60 * 1000)
+    : expiresAt;
+
+  const now = Date.now();
+  const expiresMs = effectiveExpiresAt.getTime();
+  const timeUntilExpiry = expiresMs - now;
+  const coolingWindowMs = getCoolingWindowMs(computedRetentionClass);
+
+  let lifecycleState = "active";
+  let isActiveForScoring = true;
+
+  if (expiresMs <= now) {
+    lifecycleState = "expired";
+    isActiveForScoring = false;
+  } else if (timeUntilExpiry <= coolingWindowMs) {
+    lifecycleState = "cooling";
+    isActiveForScoring = false;
+  }
+
+  const explicitLifecycleState = normalizeLifecycleState(
+    article?.lifecycleState ?? article?.lifecycle_state
+  );
+  const explicitActiveForScoring =
+    typeof article?.isActiveForScoring === "boolean"
+      ? article.isActiveForScoring
+      : typeof article?.is_active_for_scoring === "boolean"
+        ? article.is_active_for_scoring
+        : null;
+
+  if (explicitLifecycleState === "expired") {
+    lifecycleState = "expired";
+    isActiveForScoring = false;
+  } else if (explicitLifecycleState === "cooling" && lifecycleState !== "expired") {
+    lifecycleState = "cooling";
+    isActiveForScoring = false;
+  }
+
+  if (explicitActiveForScoring === false) {
+    isActiveForScoring = false;
+    if (lifecycleState === "active" && timeUntilExpiry <= coolingWindowMs) {
+      lifecycleState = "cooling";
+    }
+  }
+
+  return {
+    retentionClass: computedRetentionClass,
+    expiresAt: effectiveExpiresAt.toISOString(),
+    isActiveForScoring,
+    lifecycleState,
+    daysToRetain,
+    persistenceScore: computeLifecyclePersistenceScore(article, intelligence),
+  };
+}
+
 function buildEmbeddedMarketSentiment({
   article = {},
   sentimentInfo = {},
@@ -1084,4 +1369,5 @@ function analyzeNewsArticle(article = {}, entityMapBySymbol = {}) {
 
 module.exports = {
   analyzeNewsArticle,
+  buildNewsLifecycle,
 };

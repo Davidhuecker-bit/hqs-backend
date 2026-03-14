@@ -26,6 +26,9 @@
     "job:market-news-refresh": "node jobs/marketNewsRefresh.job.js",
     "job:market-news-refresh:check": "node --check jobs/marketNewsRefresh.job.js",
 
+    "job:news-lifecycle-cleanup": "node jobs/newsLifecycleCleanup.job.js",
+    "job:news-lifecycle-cleanup:check": "node --check jobs/newsLifecycleCleanup.job.js",
+
     "job:build-entity-map": "node jobs/buildEntityMap.job.js",
     "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js"
   },
