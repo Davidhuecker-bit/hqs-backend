@@ -21,8 +21,13 @@ const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
 const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
 const { orchestrateMarket } = require("../engines/marketOrchestrator");
 const {
-  getScoringActiveNewsContextBySymbols,
+  buildScoringNewsContext,
+  getScoringActiveMarketNewsBySymbols,
 } = require("./marketNews.service");
+const { buildMarketSentiment } = require("./marketSentiment.service");
+const { buildMarketBuzz } = require("./marketBuzz.service");
+const { buildTrendingStock } = require("./trendingStocks.service");
+const { buildEarlySignals } = require("./earlySignal.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -40,6 +45,8 @@ const OPPORTUNITY_NEWS_LIMIT = Math.max(
   Math.min(Number(process.env.OPPORTUNITY_NEWS_LIMIT || 5), 10)
 );
 const OPPORTUNITY_REASON_LIMIT = 4;
+const SIGNAL_REASON_LIMIT = 4;
+const SIGNAL_DIRECTION_THRESHOLD = 0.12;
 
 /* =========================================================
    UTIL
@@ -60,6 +67,242 @@ function norm0to1(x) {
   const n = safeNum(x, 0);
   if (n > 1.5) return clamp(n / 100, 0, 1);
   return clamp(n, 0, 1);
+}
+
+function uniqueTexts(values = [], maxItems = SIGNAL_REASON_LIMIT) {
+  const seen = new Set();
+  const result = [];
+
+  for (const value of Array.isArray(values) ? values : []) {
+    const text = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!text) continue;
+
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    result.push(text);
+
+    if (result.length >= maxItems) break;
+  }
+
+  return result;
+}
+
+function normalizeSignalDirection(directionScore) {
+  const score = clamp(safeNum(directionScore, 0), -1, 1);
+
+  if (score >= SIGNAL_DIRECTION_THRESHOLD) return "bullish";
+  if (score <= -SIGNAL_DIRECTION_THRESHOLD) return "bearish";
+  return "neutral";
+}
+
+function buildSignalSummary(signalContext = {}) {
+  if (!signalContext || typeof signalContext !== "object") return null;
+
+  const parts = [];
+  const direction = signalContext.signalDirection || "neutral";
+  const earlySignalType = signalContext.earlySignalType || null;
+  const trendLevel = signalContext.trendLevel || null;
+  const buzzScore = clamp(safeNum(signalContext.buzzScore, 0), 0, 100);
+  const signalStrength = clamp(safeNum(signalContext.signalStrength, 0), 0, 100);
+
+  if (direction === "bullish") {
+    parts.push("bullisches Signal");
+  } else if (direction === "bearish") {
+    parts.push("bearisches Signal");
+  } else if (signalStrength > 0) {
+    parts.push("neutrales Signal");
+  }
+
+  if (trendLevel) {
+    parts.push(`Trend ${trendLevel}`);
+  }
+
+  if (earlySignalType === "potential_breakout") {
+    parts.push("frühes Breakout");
+  } else if (earlySignalType === "early_interest") {
+    parts.push("frühes Interesse");
+  }
+
+  if (buzzScore >= 60) {
+    parts.push(`Buzz ${Math.round(buzzScore)}`);
+  }
+
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function buildSignalReasons({
+  sentimentScore,
+  buzzScore,
+  trendLevel,
+  earlySignalType,
+  newsContext,
+}) {
+  const reasons = [];
+
+  if (earlySignalType === "potential_breakout") {
+    reasons.push("frühes Breakout-Signal");
+  } else if (earlySignalType === "early_interest") {
+    reasons.push("frühes Marktinteresse");
+  }
+
+  if (trendLevel === "exploding" || trendLevel === "very_hot") {
+    reasons.push(`Trend ${trendLevel}`);
+  } else if (trendLevel === "hot") {
+    reasons.push("Trend hot");
+  }
+
+  if (buzzScore >= 70) {
+    reasons.push("hoher Markt-Buzz");
+  } else if (buzzScore >= 50) {
+    reasons.push("solider Markt-Buzz");
+  }
+
+  if (sentimentScore >= 20) {
+    reasons.push("positives Sentiment");
+  } else if (sentimentScore <= -20) {
+    reasons.push("negatives Sentiment");
+  }
+
+  if (!reasons.length) {
+    reasons.push(...uniqueTexts(newsContext?.reasons, SIGNAL_REASON_LIMIT));
+  }
+
+  return uniqueTexts(reasons, SIGNAL_REASON_LIMIT);
+}
+
+function buildSignalContext(row = {}, newsContext = null, newsItems = []) {
+  const symbol = String(row?.symbol || "").trim().toUpperCase();
+  if (!symbol) return null;
+
+  const marketSentiment = buildMarketSentiment({
+    sentimentScore:
+      newsContext?.marketSentiment?.sentimentScore ??
+      safeNum(newsContext?.directionScore, 0) * 100,
+    buzzScore:
+      newsContext?.marketSentiment?.buzzScore ??
+      newsContext?.strengthScore ??
+      0,
+    mentionCount:
+      newsContext?.marketSentiment?.mentionCount ??
+      newsContext?.activeCount ??
+      0,
+    reasons:
+      newsContext?.marketSentiment?.reasons?.length
+        ? newsContext.marketSentiment.reasons
+        : newsContext?.reasons,
+    sourceBreakdown: newsContext?.marketSentiment?.sourceBreakdown,
+  });
+
+  const marketBuzz =
+    buildMarketBuzz({
+      newsItems: Array.isArray(newsItems) ? newsItems : [],
+    }).find((entry) => String(entry?.symbol || "").toUpperCase() === symbol) || null;
+
+  const momentumScore = Math.round(norm0to1(row?.momentum) * 100);
+  const trendSignal = buildTrendingStock({
+    symbol,
+    buzzScore:
+      marketBuzz?.buzzScore ??
+      safeNum(marketSentiment?.buzzScore, 0),
+    priceMomentum: momentumScore,
+  });
+
+  const earlySignal = buildEarlySignals([
+    {
+      symbol,
+      buzzScore:
+        trendSignal?.buzzScore ??
+        marketBuzz?.buzzScore ??
+        0,
+      priceMomentum: trendSignal?.priceMomentum ?? momentumScore,
+      trendScore: trendSignal?.trendScore,
+      trendLevel: trendSignal?.trendLevel,
+    },
+  ])[0] || null;
+
+  const sentimentScore = clamp(
+    safeNum(marketSentiment?.sentimentScore, 0),
+    -100,
+    100
+  );
+  const buzzScore = clamp(
+    safeNum(marketBuzz?.buzzScore, marketSentiment?.buzzScore),
+    0,
+    100
+  );
+  const trendScore = clamp(safeNum(trendSignal?.trendScore, 0), 0, 100);
+  const earlySignalStrength = clamp(safeNum(earlySignal?.strength, 0), 0, 100);
+  const trendBias = clamp(safeNum(row?.trend, 0), -1, 1);
+  const momentumBias = clamp((momentumScore - 50) / 50, -1, 1);
+  const normalizedSentimentDirection = (sentimentScore / 100) * 0.5;
+  const normalizedSentimentStrength = Math.abs(sentimentScore) * 0.2;
+
+  let signalDirectionScore = clamp(
+    normalizedSentimentDirection + momentumBias * 0.35 + trendBias * 0.15,
+    -1,
+    1
+  );
+
+  if (earlySignal?.signal && signalDirectionScore >= 0) {
+    signalDirectionScore = clamp(signalDirectionScore + 0.08, -1, 1);
+  }
+
+  const signalStrength = clamp(
+    Math.round(
+      trendScore * 0.55 +
+        normalizedSentimentStrength +
+        buzzScore * 0.1 +
+        earlySignalStrength * 0.15
+    ),
+    0,
+    100
+  );
+
+  const directionAligned =
+    (signalDirectionScore >= SIGNAL_DIRECTION_THRESHOLD && trendBias >= 0) ||
+    (signalDirectionScore <= -SIGNAL_DIRECTION_THRESHOLD && trendBias < 0);
+
+  const signalConfidence = clamp(
+    Math.round(
+      signalStrength * 0.45 +
+        clamp(safeNum(newsContext?.weightedConfidence, 0), 0, 100) * 0.25 +
+        clamp(safeNum(newsContext?.activeCount, 0), 0, 4) * 5 +
+        (directionAligned ? 10 : 0)
+    ),
+    0,
+    100
+  );
+
+  const signalContext = {
+    sentimentScore,
+    buzzScore,
+    trendScore,
+    trendLevel: trendSignal?.trendLevel || null,
+    earlySignalType: earlySignal?.signal || null,
+    earlySignalStrength,
+    signalStrength,
+    signalDirection: normalizeSignalDirection(signalDirectionScore),
+    signalDirectionScore: Number(signalDirectionScore.toFixed(2)),
+    signalConfidence,
+    summary: null,
+    reasons: [],
+  };
+
+  signalContext.summary = buildSignalSummary(signalContext);
+  signalContext.reasons = buildSignalReasons({
+    sentimentScore,
+    buzzScore,
+    trendLevel: signalContext.trendLevel,
+    earlySignalType: signalContext.earlySignalType,
+    newsContext,
+  });
+
+  return signalContext;
 }
 
 /* =========================================================
@@ -295,13 +538,35 @@ async function getTopOpportunities(arg = 10) {
     );
   }
 
+  let scoringActiveNewsBySymbol = {};
   let newsContextBySymbol = {};
+  let signalContextBySymbol = {};
   if (rows.length) {
     try {
-      newsContextBySymbol = await getScoringActiveNewsContextBySymbols(
+      scoringActiveNewsBySymbol = await getScoringActiveMarketNewsBySymbols(
         rows.map((row) => row.symbol),
         OPPORTUNITY_NEWS_LIMIT
       );
+
+      newsContextBySymbol = rows.reduce((result, row) => {
+        const symbol = String(row?.symbol || "").trim().toUpperCase();
+        if (!symbol) return result;
+        result[symbol] = buildScoringNewsContext(scoringActiveNewsBySymbol?.[symbol] || []);
+        return result;
+      }, {});
+
+      signalContextBySymbol = rows.reduce((result, row) => {
+        const symbol = String(row?.symbol || "").trim().toUpperCase();
+        if (!symbol) return result;
+
+        result[symbol] = buildSignalContext(
+          row,
+          newsContextBySymbol?.[symbol] || null,
+          scoringActiveNewsBySymbol?.[symbol] || []
+        );
+
+        return result;
+      }, {});
     } catch (error) {
       logger.warn("Opportunity news context load failed", {
         message: error.message,
@@ -310,7 +575,9 @@ async function getTopOpportunities(arg = 10) {
   }
 
   const opportunities = rows.map((row) => {
-    const newsContext = newsContextBySymbol?.[row.symbol] || null;
+    const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
+    const newsContext = newsContextBySymbol?.[normalizedSymbol] || null;
+    const signalContext = signalContextBySymbol?.[normalizedSymbol] || null;
     const opportunityScore = calculateOpportunityScore(row);
 
     const features = buildFeatures(row, {
@@ -424,6 +691,7 @@ async function getTopOpportunities(arg = 10) {
       marketMemory,
       metaLearning,
       newsContext,
+      signalContext,
     });
 
     /* =============================
@@ -448,6 +716,7 @@ async function getTopOpportunities(arg = 10) {
       resilienceScore,
       research: null,
       newsContext,
+      signalContext,
       globalContext: {
         crossAsset,
         capitalFlows,
@@ -456,6 +725,7 @@ async function getTopOpportunities(arg = 10) {
         marketMemory: marketMemory?.memoryStats || null,
         metaLearning: metaLearning?.trustProfile || null,
         newsContext,
+        signalContext,
       },
     });
 
@@ -511,6 +781,26 @@ async function getTopOpportunities(arg = 10) {
             }
           : null,
       newsAdjustment: safeNum(finalView?.components?.newsAdjustment, 0),
+      signalAdjustment: safeNum(finalView?.components?.signalAdjustment, 0),
+      signalContext:
+        signalContext && safeNum(signalContext?.signalStrength, 0) > 0
+          ? {
+              sentimentScore: safeNum(signalContext?.sentimentScore, 0),
+              buzzScore: safeNum(signalContext?.buzzScore, 0),
+              trendScore: safeNum(signalContext?.trendScore, 0),
+              trendLevel: signalContext?.trendLevel || null,
+              earlySignalType: signalContext?.earlySignalType || null,
+              earlySignalStrength: safeNum(signalContext?.earlySignalStrength, 0),
+              signalStrength: safeNum(signalContext?.signalStrength, 0),
+              signalDirection: signalContext?.signalDirection || "neutral",
+              signalDirectionScore: safeNum(signalContext?.signalDirectionScore, 0),
+              signalConfidence: safeNum(signalContext?.signalConfidence, 0),
+              summary: signalContext?.summary || null,
+              reasons: Array.isArray(signalContext?.reasons)
+                ? signalContext.reasons.slice(0, SIGNAL_REASON_LIMIT)
+                : [],
+            }
+          : null,
 
       marketMemory: marketMemory?.memoryStats || null,
       metaLearning: metaLearning?.trustProfile || null,

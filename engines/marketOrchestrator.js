@@ -29,6 +29,9 @@ const NEWS_STRENGTH_PERSISTENCE_WEIGHT = 0.16;
 const NEWS_PERSISTENCE_MAX = 160;
 const NEWS_OPPORTUNITY_SIGNAL_WEIGHT = 12;
 const NEWS_CONFIDENCE_WEIGHT = 8;
+const SIGNAL_DIRECTION_THRESHOLD = 0.12;
+const SIGNAL_OPPORTUNITY_WEIGHT = 10;
+const SIGNAL_CONFIDENCE_WEIGHT = 6;
 
 function normalizeNewsContext(newsContext = {}) {
   if (!newsContext || typeof newsContext !== "object" || Array.isArray(newsContext)) {
@@ -36,6 +39,14 @@ function normalizeNewsContext(newsContext = {}) {
   }
 
   return newsContext;
+}
+
+function normalizeSignalContext(signalContext = {}) {
+  if (!signalContext || typeof signalContext !== "object" || Array.isArray(signalContext)) {
+    return null;
+  }
+
+  return signalContext;
 }
 
 function calculateNewsDirectionScore(newsContext = {}) {
@@ -107,6 +118,55 @@ function buildNewsPulse(newsContext = {}) {
     strength: Number((strength * 100).toFixed(2)),
     confidence: clamp(safe(normalized?.weightedConfidence, 0), 0, 100),
     dominantEventType: normalized?.dominantEventType || null,
+  };
+}
+
+function buildSignalPulse(signalContext = {}) {
+  const normalized = normalizeSignalContext(signalContext);
+  if (!normalized) {
+    return {
+      direction: "neutral",
+      directionScore: 0,
+      strength: 0,
+      confidence: 0,
+      trendLevel: null,
+      earlySignalType: null,
+    };
+  }
+
+  const explicitDirectionScore = Number(normalized?.signalDirectionScore);
+  const directionScore = Number.isFinite(explicitDirectionScore)
+    ? clamp(explicitDirectionScore, -1, 1)
+    : clamp(safe(normalized?.sentimentScore, 0) / 100, -1, 1);
+
+  const strength = clamp(
+    safe(normalized?.signalStrength, normalized?.trendScore),
+    0,
+    100
+  );
+
+  const confidence = clamp(
+    safe(normalized?.signalConfidence, strength),
+    0,
+    100
+  );
+
+  const explicitDirection = String(normalized?.signalDirection || "").toLowerCase();
+
+  return {
+    direction:
+      explicitDirection === "bullish" || explicitDirection === "bearish"
+        ? explicitDirection
+        : directionScore >= SIGNAL_DIRECTION_THRESHOLD
+          ? "bullish"
+          : directionScore <= -SIGNAL_DIRECTION_THRESHOLD
+            ? "bearish"
+            : "neutral",
+    directionScore: Number(directionScore.toFixed(2)),
+    strength: Number(strength.toFixed(2)),
+    confidence: Number(confidence.toFixed(2)),
+    trendLevel: normalized?.trendLevel || null,
+    earlySignalType: normalized?.earlySignalType || null,
   };
 }
 
@@ -223,6 +283,8 @@ function calculateSignalConsistency({
   metaTrust,
   newsStrength,
   newsDirectionScore,
+  signalStrength,
+  signalDirectionScore,
 }) {
   let score = 0;
   let total = 0;
@@ -250,6 +312,16 @@ function calculateSignalConsistency({
     if (
       (safe(newsDirectionScore) >= 0 && safe(aiScore) >= 55) ||
       (safe(newsDirectionScore) < 0 && safe(aiScore) <= 55)
+    ) {
+      score += 1;
+    }
+  }
+
+  if (safe(signalStrength) > 0) {
+    total++;
+    if (
+      (safe(signalDirectionScore) >= 0 && safe(trend) >= 0) ||
+      (safe(signalDirectionScore) < 0 && safe(trend) < 0)
     ) {
       score += 1;
     }
@@ -345,15 +417,27 @@ function calculateOrchestratorConfidence({
   metaTrust,
   eventStress,
   newsStrength,
+  signalStrength,
+  signalConfidence,
 }) {
   const consistencyPart = safe(signalConsistency) * 45;
   const memoryPart = clamp(safe(memoryScore) / 100, 0, 1) * 30;
   const metaPart = clamp(safe(metaTrust) / 2, 0, 1) * 20;
   const newsPart = clamp(safe(newsStrength), 0, 1) * NEWS_CONFIDENCE_WEIGHT;
+  const signalPart =
+    clamp(safe(signalStrength), 0, 1) * 3 +
+    clamp(safe(signalConfidence) / 100, 0, 1) * SIGNAL_CONFIDENCE_WEIGHT;
   const stressPenalty = safe(eventStress) * 15;
 
   return clamp(
-    Math.round(consistencyPart + memoryPart + metaPart + newsPart - stressPenalty),
+    Math.round(
+      consistencyPart +
+        memoryPart +
+        metaPart +
+        newsPart +
+        signalPart -
+        stressPenalty
+    ),
     0,
     100
   );
@@ -374,6 +458,8 @@ function calculateOpportunityStrength({
   metaTrust,
   newsStrength,
   newsDirectionScore,
+  signalStrength,
+  signalDirectionScore,
 }) {
   const a = safe(aiScore);
   const c = safe(conviction);
@@ -386,6 +472,10 @@ function calculateOpportunityStrength({
     clamp(safe(newsStrength), 0, 1) *
     clamp(safe(newsDirectionScore), -1, 1) *
     NEWS_OPPORTUNITY_SIGNAL_WEIGHT;
+  const signalContribution =
+    clamp(safe(signalStrength), 0, 1) *
+    clamp(safe(signalDirectionScore), -1, 1) *
+    SIGNAL_OPPORTUNITY_WEIGHT;
 
   let base =
     a * 0.28 +
@@ -394,7 +484,8 @@ function calculateOpportunityStrength({
     m * 0.14 +
     x * 0.08 +
     f * 0.10 +
-    newsContribution -
+    newsContribution +
+    signalContribution -
     ePenalty;
 
   base *= clamp(mt, 0.8, 1.2);
@@ -458,6 +549,7 @@ function orchestrateMarket({
   marketMemory = {},
   metaLearning = {},
   newsContext = null,
+  signalContext = null,
 }) {
   const riskMode = detectRiskMode(macroContext);
 
@@ -479,6 +571,7 @@ function orchestrateMarket({
   const capitalFlowStrength = calculateCapitalFlowStrength(capitalFlows);
   const eventStress = calculateEventStress(eventIntelligence?.events || []);
   const newsPulse = buildNewsPulse(newsContext);
+  const signalPulse = buildSignalPulse(signalContext);
 
   const signalConsistency = calculateSignalConsistency({
     trend: trendData?.trend,
@@ -489,6 +582,8 @@ function orchestrateMarket({
     metaTrust,
     newsStrength: safe(newsPulse?.strength, 0) / 100,
     newsDirectionScore: newsPulse?.directionScore,
+    signalStrength: safe(signalPulse?.strength, 0) / 100,
+    signalDirectionScore: signalPulse?.directionScore,
   });
 
   const opportunityStrength = calculateOpportunityStrength({
@@ -502,6 +597,8 @@ function orchestrateMarket({
     metaTrust,
     newsStrength: safe(newsPulse?.strength, 0) / 100,
     newsDirectionScore: newsPulse?.directionScore,
+    signalStrength: safe(signalPulse?.strength, 0) / 100,
+    signalDirectionScore: signalPulse?.directionScore,
   });
 
   const orchestratorConfidence = calculateOrchestratorConfidence({
@@ -510,6 +607,8 @@ function orchestrateMarket({
     metaTrust,
     eventStress,
     newsStrength: safe(newsPulse?.strength, 0) / 100,
+    signalStrength: safe(signalPulse?.strength, 0) / 100,
+    signalConfidence: signalPulse?.confidence,
   });
 
   const trustLayer = buildTrustLayer({
@@ -528,6 +627,7 @@ function orchestrateMarket({
     capitalFlowStrength,
     eventStress,
     newsPulse,
+    signalPulse,
     orchestratorConfidence,
     opportunityStrength,
     trustLayer,
@@ -536,6 +636,7 @@ function orchestrateMarket({
       narrative: dominantNarrative?.narrative || "none",
       sectors: sectorBias.sectors || [],
       newsDirection: newsPulse?.direction || "neutral",
+      signalDirection: signalPulse?.direction || "neutral",
       opportunityStrength,
       confidence: orchestratorConfidence,
     },
