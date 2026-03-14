@@ -5,6 +5,11 @@ const logger = require("../utils/logger");
 
 const { getAdminInsights } = require("../services/adminInsights.service");
 const {
+  getMockPortfolio,
+  getSnapshotById,
+  getAuditFeed,
+} = require("../services/mockPortfolio.service");
+const {
   saveAdminSnapshot,
   loadAdminSnapshotBefore,
 } = require("../services/adminSnapshots.repository");
@@ -368,6 +373,57 @@ router.get("/action-plan", async (req, res) => {
       success: false,
       error: error.message,
     });
+  }
+});
+
+/* =========================================================
+   PORTFOLIO ROUTES (MockPortfolioEngine)
+========================================================= */
+
+router.get("/portfolio", async (req, res) => {
+  try {
+    const portfolio = await getMockPortfolio();
+    return res.json({ success: true, portfolio });
+  } catch (error) {
+    logger.error("Admin portfolio route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/audit-feed", async (req, res) => {
+  try {
+    const limitRaw = req.query.limit;
+    const limit = limitRaw ? Math.min(100, Math.max(1, parseInt(limitRaw, 10) || 25)) : 25;
+    const feed = await getAuditFeed({ limit });
+    return res.json({ success: true, feed });
+  } catch (error) {
+    logger.error("Admin audit-feed route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/snapshot/:source/:id", async (req, res) => {
+  try {
+    const { source, id } = req.params;
+    const allowedSources = ["outcome_tracking", "autonomy_audit", "static_seed"];
+    if (!allowedSources.includes(source)) {
+      return res.status(400).json({ success: false, error: "Invalid source" });
+    }
+    if (source === "static_seed") {
+      return res.json({ success: true, snapshot: null, note: "Kein Snapshot für Seed-Daten verfügbar." });
+    }
+    const idNum = parseInt(id, 10);
+    if (!Number.isFinite(idNum) || idNum <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid id" });
+    }
+    const snapshot = await getSnapshotById({ id: idNum, source });
+    if (!snapshot) {
+      return res.status(404).json({ success: false, error: "Snapshot not found" });
+    }
+    return res.json({ success: true, snapshot });
+  } catch (error) {
+    logger.error("Admin snapshot route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

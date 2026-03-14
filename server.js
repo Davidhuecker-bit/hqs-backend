@@ -1,5 +1,6 @@
 "use strict";
 
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -146,6 +147,7 @@ app.use(
 );
 
 app.use(express.json());
+app.use(express.static(path.join(__dirname, "public")));
 
 /* =========================================================
 ROUTES
