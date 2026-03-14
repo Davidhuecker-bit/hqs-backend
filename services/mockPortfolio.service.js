@@ -80,6 +80,7 @@ function generateBuergerRationale(item) {
   const suppressed = Boolean(item.suppressed);
   const guardian   = Boolean(item.guardian_applied);
   const scenarios  = Math.round(score * 10);
+  const debateSummary = String(item.debate_summary || "").trim();
 
   const parts = [];
 
@@ -110,6 +111,11 @@ function generateBuergerRationale(item) {
     parts.push("🛡️ Guardian Protocol: Dieses Signal wurde zum Schutz Ihres Kapitals blockiert.");
   } else if (guardian) {
     parts.push("🛡️ Guardian Protocol: Das System hat dieses Signal aktiv geprüft und freigegeben.");
+  }
+
+  // Agentic Debate summary (Invisible Rationale)
+  if (debateSummary) {
+    parts.push(`🤖 Interne Debatte: ${debateSummary}`);
   }
 
   return parts.join(" ");

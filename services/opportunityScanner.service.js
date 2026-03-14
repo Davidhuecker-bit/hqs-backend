@@ -20,7 +20,9 @@ const { buildMarketBuzz } = require("./marketBuzz.service");
 const { buildTrendingStock } = require("./trendingStocks.service");
 const { buildEarlySignals } = require("./earlySignal.service");
 const { classifyMarketRegime } = require("./regimeDetection.service");
-const { recordAutonomyDecision } = require("./autonomyAudit.repository");
+const { recordAutonomyDecision, logNearMiss } = require("./autonomyAudit.repository");
+const { runAgenticDebate } = require("./agenticDebate.service");
+const { getInterMarketCorrelation } = require("./interMarketCorrelation.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -928,9 +930,14 @@ function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
   }
 
   // Human recommendation (German: system targets German-speaking users throughout)
+  // Note: debateApproved is explicitly checked for `false` (not falsy) to distinguish
+  // "debate voted reject" from "no debate result available" (null/undefined).
   let recommendation;
   if (guardianResult.suppressed) {
-    recommendation = "Kein Einstieg empfohlen – Wealth Protection aktiv";
+    const blockedByDebate = guardianResult.debateApproved === false;
+    recommendation = blockedByDebate
+      ? "Kein Einstieg empfohlen – Schwarmintelligenz-Konsens verweigert"
+      : "Kein Einstieg empfohlen – Wealth Protection aktiv";
   } else if (conviction >= 80) {
     recommendation = "Starke Einstiegschance – aktiv beobachten";
   } else if (conviction >= 65) {
@@ -941,6 +948,14 @@ function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
     recommendation = "Aktuell nicht attraktiv – kein Handlungsbedarf";
   }
 
+  // Title label: distinguish Debate-blocked from robustness-blocked signals
+  // debateApproved === false means the 3-agent consensus rejected; all other
+  // suppressed cases are robustness / Wealth-Protection blocks.
+  const suppressionLabel =
+    guardianResult.suppressed && guardianResult.debateApproved === false
+      ? "Schutzmodus"
+      : "Wealth Protection";
+
   // Stability narrative
   const stabilityNote = antifragile
     ? "Das Signal hat alle Stressszenarien bestanden und gilt als antifragil."
@@ -948,23 +963,49 @@ function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
     ? "Das Signal zeigt gute Stabilität unter Marktdruck."
     : "Das Signal reagiert empfindlich auf Marktschwankungen.";
 
-  // Summary
+  // Summary — include debate summary when available (Invisible Rationale)
   const existingReason = String(opportunity?.reason || "").trim();
-  const summary = existingReason
+  const debateSummary = String(guardianResult?.debateSummary || "").trim();
+  let summary = existingReason
     ? `${symbol}: ${existingReason}. ${stabilityNote}`
     : `${symbol}: ${stabilityNote}`;
 
+  if (debateSummary) {
+    summary = `${summary} 🤖 Interne Debatte: ${debateSummary}`;
+  }
+
+  // Inter-market warning note
+  if (guardianResult.interMarketWarning) {
+    summary += " ⚠️ Frühwarnung: BTC und Gold zeigen gleichzeitig Risikoabbau.";
+  }
+
   return {
     title: guardianResult.suppressed
-      ? `${symbol} – Gesperrt (Wealth Protection)`
+      ? `${symbol} – Gesperrt (${suppressionLabel})`
       : `${symbol} – ${opportunity?.finalRating || "Signal erkannt"}`,
     summary,
     recommendation,
     riskLevel,
     marketClimate: marketCluster,
     protectionStatus: guardianResult.suppressed
-      ? { active: true, reason: guardianResult.reason, detail: guardianResult.detail }
+      ? {
+          active: true,
+          reason: guardianResult.reason,
+          detail: guardianResult.detail,
+          debateApproved: guardianResult.debateApproved ?? null,
+          debateSummary: debateSummary || null,
+        }
       : { active: false },
+    debate: guardianResult.debateVotes
+      ? {
+          approved: guardianResult.debateApproved,
+          approvalCount: Object.values(guardianResult.debateVotes).filter(
+            (v) => v?.vote === "approve"
+          ).length,
+          summary: debateSummary || null,
+        }
+      : null,
+    interMarketWarning: Boolean(guardianResult.interMarketWarning),
     robustnessScore: Number(robustness.toFixed(2)),
     antifragile,
     conviction: Number(conviction.toFixed(1)),
@@ -1111,37 +1152,90 @@ async function getTopOpportunities(arg = 10) {
 
   const marketCluster = marketRegime.cluster;
 
-  // ── Guardian Protocol + Insight building ────────────────────────────────
+  // ── Inter-Market Correlation (BTC/Gold early-warning) ───────────────────
+  let interMarketData = null;
+  try {
+    interMarketData = await getInterMarketCorrelation();
+  } catch (imErr) {
+    logger.warn("getTopOpportunities: inter-market fetch failed, continuing without", {
+      message: imErr.message,
+    });
+  }
+
+  // ── Agentic Debate + Guardian Protocol + Insight building ───────────────
   let suppressedCount = 0;
+  let debateBlockedCount = 0;
   const withInsights = opportunities.map((opp) => {
+    // 1. Run the three-agent debate (GROWTH_BIAS, RISK_SKEPTIC, MACRO_JUDGE)
+    const debateResult = runAgenticDebate(
+      opp,
+      marketCluster,
+      opp.signalContext || null,
+      interMarketData
+    );
+
+    // 2. Guardian Protocol robustness check
     const guardianResult = executeSafetyFirst(opp, marketCluster);
 
-    if (guardianResult.suppressed) {
+    // Signal is suppressed if EITHER debate or Guardian blocks it
+    const debateBlocked = !debateResult.approved;
+    const suppressed = debateBlocked || guardianResult.suppressed;
+
+    if (suppressed) {
       suppressedCount++;
+      if (debateBlocked && !guardianResult.suppressed) debateBlockedCount++;
     }
 
-    const insight = buildOpportunityInsight(opp, guardianResult, marketCluster);
+    // Augment guardianResult with debate context for insight and rationale
+    const enrichedGuardian = {
+      ...guardianResult,
+      suppressed,
+      debateApproved: debateResult.approved,
+      debateSummary: debateResult.debateSummary,
+      debateVotes: debateResult.votes,
+      interMarketWarning: Boolean(interMarketData?.earlyWarning),
+    };
 
-    // Fire-and-forget audit log (errors are swallowed inside recordAutonomyDecision)
+    const insight = buildOpportunityInsight(opp, enrichedGuardian, marketCluster);
+
+    // Fire-and-forget audit log
     const tracked = persistedOutcomeBySymbol?.[opp.symbol] || null;
     const rawSnap = tracked?.raw_input_snapshot || null;
+    const auditSnapshot = rawSnap || {
+      hqsScore: opp.hqsScore,
+      robustnessScore: opp.robustnessScore,
+      finalConviction: opp.finalConviction,
+      regime: opp.regime,
+      capturedAt: new Date().toISOString(),
+    };
+
     recordAutonomyDecision({
       symbol: opp.symbol,
       decisionType: "opportunity_signal",
-      decisionValue: guardianResult.suppressed
+      decisionValue: suppressed
         ? "SUPPRESSED"
         : opp.finalDecision || "EVALUATED",
       marketCluster,
       robustnessScore: safeNum(opp.robustnessScore, 0),
       guardianApplied: true,
-      suppressed: guardianResult.suppressed,
-      suppressionReason: guardianResult.suppressed ? guardianResult.reason : null,
-      rawInputSnapshot: rawSnap || {
-        hqsScore: opp.hqsScore,
-        robustnessScore: opp.robustnessScore,
-        finalConviction: opp.finalConviction,
-        regime: opp.regime,
-        capturedAt: new Date().toISOString(),
+      suppressed,
+      suppressionReason: suppressed
+        ? (debateBlocked ? "Debate Consensus Failed" : guardianResult.reason)
+        : null,
+      rawInputSnapshot: {
+        ...auditSnapshot,
+        debate: {
+          approved: debateResult.approved,
+          approvalCount: debateResult.approvalCount,
+          summary: debateResult.debateSummary,
+        },
+        interMarket: interMarketData
+          ? {
+              earlyWarning: interMarketData.earlyWarning,
+              btcSignal: interMarketData.btc?.signal || null,
+              goldSignal: interMarketData.gold?.signal || null,
+            }
+          : null,
       },
     }).catch((auditErr) => {
       logger.warn("getTopOpportunities: audit log failed", {
@@ -1150,10 +1244,39 @@ async function getTopOpportunities(arg = 10) {
       });
     });
 
+    // Virtual Capital Protector: log near-miss for blocked signals
+    if (suppressed) {
+      logNearMiss({
+        symbol: opp.symbol,
+        marketCluster,
+        robustnessScore: safeNum(opp.robustnessScore, 0),
+        entryPriceRef: null,
+        debateApproved: debateResult.approved,
+        debateSummary: debateResult.debateSummary,
+        debateResult: {
+          approved: debateResult.approved,
+          approvalCount: debateResult.approvalCount,
+          votes: debateResult.votes,
+        },
+      }).catch((nmErr) => {
+        logger.warn("getTopOpportunities: near-miss log failed", {
+          symbol: opp.symbol,
+          message: nmErr.message,
+        });
+      });
+    }
+
     return {
       ...opp,
-      suppressed: guardianResult.suppressed,
-      suppressionReason: guardianResult.suppressed ? guardianResult.reason : null,
+      suppressed,
+      suppressionReason: suppressed
+        ? (debateBlocked ? "Debate Consensus Failed" : guardianResult.reason)
+        : null,
+      debateResult: {
+        approved: debateResult.approved,
+        approvalCount: debateResult.approvalCount,
+        debateSummary: debateResult.debateSummary,
+      },
       insight,
     };
   });
@@ -1171,6 +1294,8 @@ async function getTopOpportunities(arg = 10) {
     persistedCount,
     fallbackCount,
     suppressedCount,
+    debateBlockedCount,
+    interMarketWarning: Boolean(interMarketData?.earlyWarning),
     returned: out.length,
   });
 
