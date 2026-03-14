@@ -274,13 +274,16 @@ async function fetchQuote(symbol) {
     );
   }
 
-  let previousError = null;
+  let lastError = null;
+  const providerErrors = [];
 
-  for (const provider of providers) {
+  for (let index = 0; index < providers.length; index++) {
+    const provider = providers[index];
+
     try {
       const data = await provider.fetcher(sym);
 
-      if (previousError && logger?.info) {
+      if (lastError && logger?.info) {
         logger.info("Provider fallback success", {
           symbol: sym,
           provider: provider.name,
@@ -289,18 +292,17 @@ async function fetchQuote(symbol) {
 
       return data;
     } catch (providerError) {
-      previousError = providerError;
+      lastError = providerError;
+      providerErrors.push(`${provider.name}=${providerError.message}`);
       const providerMsg = `${provider.name} failed for ${sym}: ${providerError.message}`;
 
       if (logger?.warn) logger.warn(providerMsg);
       else console.warn("⚠️ " + providerMsg);
 
-      if (provider === providers[providers.length - 1]) {
+      if (index === providers.length - 1) {
         const finalMsg =
           providers.length > 1
-            ? `All providers failed for ${sym}: ${providers
-              .map((entry) => entry.name)
-              .join(", ")}`
+            ? `All providers failed for ${sym}: ${providerErrors.join("; ")}`
             : providerMsg;
 
         if (logger?.error) logger.error(finalMsg);
@@ -309,7 +311,7 @@ async function fetchQuote(symbol) {
     }
   }
 
-  throw previousError || new Error(`Unable to fetch quote for ${sym}`);
+  throw lastError || new Error(`Unable to fetch quote for ${sym}`);
 }
 
 /* =========================================================

@@ -264,6 +264,8 @@ async function getHistoricalPrices(symbol, period = "1y") {
   if (!sym) throw new Error("Symbol is required");
 
   const per = String(period || "1y").toLowerCase().trim();
+  const isLongRangePeriod =
+    per === "max" || per === "5y" || per === "5years";
   const cacheKey = `historical_${sym}_${per}`;
 
   const cached = await cache.get(cacheKey);
@@ -305,7 +307,7 @@ async function getHistoricalPrices(symbol, period = "1y") {
         return data;
       }
 
-      if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
+      if (isLongRangePeriod && per !== "1y") {
         if (logger?.warn) {
           logger.warn(
             `Historical fallback to 1y after empty ${provider.name} result`,
@@ -320,12 +322,10 @@ async function getHistoricalPrices(symbol, period = "1y") {
       const msg = `${provider.name} historical failed for ${sym}: ${err.message}`;
       if (logger?.warn) logger.warn(msg);
       else console.warn("⚠️ " + msg);
-
-      continue;
     }
   }
 
-  if ((per === "max" || per === "5y" || per === "5years") && per !== "1y") {
+  if (isLongRangePeriod && per !== "1y") {
     if (logger?.warn) logger.warn("Historical fallback to 1y after provider errors", { sym, from: per });
     const fallbackData = await getHistoricalPrices(sym, "1y");
     await cache.set(cacheKey, fallbackData, HISTORICAL_CACHE_TTL_SECONDS);
