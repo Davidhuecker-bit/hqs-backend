@@ -470,6 +470,70 @@
       .audit-entry { grid-template-columns: 70px 1fr; }
       .audit-time  { display: none; }
     }
+
+    /* ─────────────────────────── Market Weather ─────────────────────────── */
+    .weather-icon {
+      font-size: 20px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    /* ─────────────────────────── Stress-Test Bar ─────────────────────────── */
+    .stress-scenarios {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* ─────────────────────────── Entscheidungs-Historie Accordion ─────────────────────────── */
+    .history-toggle {
+      width: 100%;
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      transition: border-color 0.15s, color 0.15s;
+      margin-top: 4px;
+    }
+    .history-toggle:hover { border-color: var(--accent3); color: var(--accent3); }
+    .history-toggle .toggle-arrow { transition: transform 0.2s; display: inline-block; }
+    .history-toggle.open .toggle-arrow { transform: rotate(180deg); }
+
+    .history-body {
+      display: none;
+      margin-top: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+    }
+    .history-body.open { display: block; }
+
+    .history-entry {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .history-entry:last-child { border-bottom: none; }
+    .history-entry.blocked { border-left: 3px solid var(--red); }
+    .history-entry.passed  { border-left: 3px solid var(--green); }
+    .history-entry.neutral { border-left: 3px solid var(--yellow); }
+    .history-entry-text { color: var(--text-dim); }
+    .history-entry-text strong { color: var(--text); }
+    .history-empty {
+      padding: 10px 12px;
+      color: var(--text-muted);
+      font-size: 11px;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -609,6 +673,10 @@ let auditFeedData   = [];
 let activeFilter    = 'all';
 const API_BASE      = '/api/admin';
 
+// Cache per-symbol audit history so we don't re-fetch on every toggle
+const historyCache  = {};
+const HISTORY_LIMIT = 3;
+
 /* ═══════════════════ SHIELD HELPERS ═══════════════════ */
 function shieldEmoji(score) {
   if (score >= 0.85) return '🛡️';
@@ -647,6 +715,34 @@ function auditScoreStyle(score) {
   if (s >= 0.6) return 'background:rgba(59,130,246,0.12);color:var(--accent);border:1px solid rgba(59,130,246,0.25)';
   if (s >= 0.4) return 'background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.25)';
   return 'background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.2)';
+}
+
+function marketWeatherIcon(weather) {
+  if (weather === 'sun')   return '☀️';
+  if (weather === 'storm') return '⛈️';
+  return '⛅';
+}
+
+function marketWeatherTitle(weather) {
+  if (weather === 'sun')   return 'Marktwetter: Stabil – gute Voraussetzungen';
+  if (weather === 'storm') return 'Marktwetter: Gefährlich – Guardian aktiv';
+  return 'Marktwetter: Unruhig – System überwacht';
+}
+
+function formatAuditEntryText(entry) {
+  const ts = entry.decided_at ? new Date(entry.decided_at) : null;
+  const dateStr = ts ? ts.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }) : '–';
+  const timeStr = ts ? ts.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+  const score   = Math.round((Number(entry.robustness_score) || 0) * 100);
+
+  if (entry.suppressed) {
+    const reason = entry.suppression_reason || 'Risikoprüfung nicht bestanden';
+    return { cls: 'blocked', text: `<strong>⛔ Signal blockiert</strong> am ${dateStr} um ${timeStr} Uhr · <em>${esc(reason)}</em>` };
+  }
+  if (entry.guardian_applied) {
+    return { cls: 'passed', text: `<strong>✅ Guardian-Prüfung bestanden</strong> am ${dateStr} um ${timeStr} Uhr · Robustheit: ${score}%` };
+  }
+  return { cls: 'neutral', text: `<strong>${esc(entry.decision_value || '–')}</strong> am ${dateStr} um ${timeStr} Uhr · ${esc(entry.decision_type || '–')}` };
 }
 
 function relativeTime(ts) {
@@ -703,28 +799,37 @@ function renderPortfolio() {
   }
 
   grid.innerHTML = data.map(p => {
-    const regime  = regimeLabel(p.market_regime);
-    const bCls    = regimeBadgeClass(p.market_regime);
-    const score   = Number(p.robustness_score) || 0;
-    const pct     = Math.round(score * 100);
-    const sColor  = shieldColor(score);
-    const sEmoji  = shieldEmoji(score);
-    const hasSnap = Boolean(p.has_snapshot);
-    const hasRat  = Boolean(p.analysis_rationale);
-    const hqs     = p.hqs_score != null ? Math.round(p.hqs_score) : null;
-    const conv    = p.final_conviction != null ? Math.round(p.final_conviction) : null;
+    const regime   = regimeLabel(p.market_regime);
+    const bCls     = regimeBadgeClass(p.market_regime);
+    const score    = Number(p.robustness_score) || 0;
+    const pct      = Math.round(score * 100);
+    const sColor   = shieldColor(score);
+    const sEmoji   = shieldEmoji(score);
+    const hasSnap  = Boolean(p.has_snapshot);
+    const hasRat   = Boolean(p.analysis_rationale);
+    const hqs      = p.hqs_score != null ? Math.round(p.hqs_score) : null;
+    const conv     = p.final_conviction != null ? Math.round(p.final_conviction) : null;
+    const weather  = p.market_weather || 'cloud';
+    const wIcon    = marketWeatherIcon(weather);
+    const wTitle   = marketWeatherTitle(weather);
+    const scenarios = Math.round(score * 10);
+    const sym      = esc(p.symbol);
+    const symRaw   = p.symbol;
 
     return `
 <div class="portfolio-card">
   <div class="card-top">
     <div>
-      <div class="card-symbol">${esc(p.symbol)}</div>
+      <div class="card-symbol">${sym}</div>
       <div class="card-sector">${esc(p.sector)}</div>
       ${p.strategy ? `<div class="card-strategy">${esc(p.strategy)}</div>` : ''}
     </div>
-    <div class="regime-badge ${bCls}">
-      <div class="regime-dot"></div>
-      ${regime.icon} ${regime.label}
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
+      <div class="regime-badge ${bCls}">
+        <div class="regime-dot"></div>
+        ${regime.icon} ${regime.label}
+      </div>
+      <span class="weather-icon" title="${wTitle}">${wIcon}</span>
     </div>
   </div>
 
@@ -732,12 +837,13 @@ function renderPortfolio() {
     <div class="shield-icon">${sEmoji}</div>
     <div class="shield-bar-wrap">
       <div class="shield-label">
-        <span>Robustness Score</span>
+        <span>Stress-Test-Robustheit</span>
         <span style="color:${sColor};font-weight:700">${pct}%</span>
       </div>
       <div class="shield-bar">
         <div class="shield-fill" style="width:${pct}%;background:${sColor}"></div>
       </div>
+      <div class="stress-scenarios">${scenarios} von 10 Krisenszenarien bestanden</div>
     </div>
   </div>
 
@@ -749,7 +855,7 @@ function renderPortfolio() {
 
   <div class="card-actions">
     ${hasRat
-      ? `<button class="btn btn-insight" onclick="openInsight(${JSON.stringify(p.symbol)}, ${JSON.stringify(p.analysis_rationale)}, ${JSON.stringify(p.sector)})">
+      ? `<button class="btn btn-insight" onclick="openInsight(${JSON.stringify(p.symbol)}, ${JSON.stringify(p.analysis_rationale)}, ${JSON.stringify(p.sector)}, ${JSON.stringify(weather)})">
            🔍 Insight
          </button>`
       : `<button class="btn btn-insight" style="opacity:0.4;cursor:not-allowed" disabled>🔍 Insight</button>`
@@ -760,21 +866,87 @@ function renderPortfolio() {
       📋 Snapshot
     </button>
   </div>
+
+  <button class="history-toggle" id="htoggle-${sym}" onclick="toggleHistory(${JSON.stringify(symRaw)})">
+    <span>📜 Entscheidungs-Historie</span>
+    <span class="toggle-arrow">▼</span>
+  </button>
+  <div class="history-body" id="hbody-${sym}">
+    <div class="history-empty">Wird geladen…</div>
+  </div>
 </div>`;
   }).join('');
 }
 
 /* ═══════════════════ INSIGHT MODAL ═══════════════════ */
-function openInsight(symbol, rationale, sector) {
+function openInsight(symbol, rationale, sector, weather) {
+  const wIcon  = marketWeatherIcon(weather || 'cloud');
+  const wTitle = marketWeatherTitle(weather || 'cloud');
   document.getElementById('insightModalTitle').textContent = `🔍 Analyse · ${symbol}`;
-  document.getElementById('insightModalSub').textContent   = `Sektor: ${sector}`;
+  document.getElementById('insightModalSub').textContent   = `Sektor: ${sector} · ${wIcon} ${wTitle}`;
   document.getElementById('insightModalBody').innerHTML    = `
-<p>${esc(rationale)}</p>
+<p style="font-size:15px;line-height:1.8;color:var(--text)">${esc(rationale)}</p>
+<div class="modal-section">
+  <div class="modal-section-title">Markt-Wetter</div>
+  <p style="font-size:20px">${wIcon} <span style="font-size:13px;color:var(--text-dim)">${wTitle}</span></p>
+</div>
 <div class="modal-section">
   <div class="modal-section-title">Hinweis</div>
   <p>Diese Analyse basiert auf dem letzten verarbeiteten Markt-Snapshot und der integrierten Regime-Erkennung des HQS-Systems. Sie dient ausschliesslich als Demonstration der System-Intelligenz.</p>
 </div>`;
   openModal('insightModal');
+}
+
+/* ═══════════════════ ENTSCHEIDUNGS-HISTORIE ═══════════════════ */
+async function toggleHistory(symbol) {
+  const sym    = esc(symbol);
+  const btn    = document.getElementById(`htoggle-${sym}`);
+  const body   = document.getElementById(`hbody-${sym}`);
+  if (!btn || !body) return;
+
+  const isOpen = body.classList.contains('open');
+
+  if (isOpen) {
+    body.classList.remove('open');
+    btn.classList.remove('open');
+    return;
+  }
+
+  body.classList.add('open');
+  btn.classList.add('open');
+
+  // Use cache if available
+  if (historyCache[symbol]) {
+    renderAuditHistory(sym, historyCache[symbol]);
+    return;
+  }
+
+  body.innerHTML = `<div class="history-empty">Wird geladen…</div>`;
+
+  try {
+    const res  = await fetch(`${API_BASE}/portfolio/${encodeURIComponent(symbol)}/audit-history?limit=${HISTORY_LIMIT}`);
+    const data = await res.json();
+    const entries = (data.history || []);
+    historyCache[symbol] = entries;
+    renderAuditHistory(sym, entries);
+  } catch (err) {
+    body.innerHTML = `<div class="history-empty" style="color:var(--red)">Fehler beim Laden</div>`;
+  }
+}
+
+function renderAuditHistory(sym, entries) {
+  const body = document.getElementById(`hbody-${sym}`);
+  if (!body) return;
+
+  if (!entries || !entries.length) {
+    body.innerHTML = `<div class="history-empty">Noch keine Entscheidungen in der Datenbank.</div>`;
+    return;
+  }
+
+  body.innerHTML = entries.map(e => {
+    const { cls, text } = formatAuditEntryText(e);
+    return `<div class="history-entry ${cls}"><div class="history-entry-text">${text}</div></div>`;
+  }).join('');
 }
 
 /* ═══════════════════ SNAPSHOT MODAL ═══════════════════ */

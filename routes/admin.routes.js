@@ -8,6 +8,7 @@ const {
   getMockPortfolio,
   getSnapshotById,
   getAuditFeed,
+  getPortfolioAuditHistory,
 } = require("../services/mockPortfolio.service");
 const {
   saveAdminSnapshot,
@@ -423,6 +424,19 @@ router.get("/snapshot/:source/:id", async (req, res) => {
     return res.json({ success: true, snapshot });
   } catch (error) {
     logger.error("Admin snapshot route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/portfolio/:symbol/audit-history", async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const limitRaw = req.query.limit;
+    const limit = limitRaw ? Math.min(10, Math.max(1, parseInt(limitRaw, 10) || 3)) : 3;
+    const history = await getPortfolioAuditHistory(symbol, limit);
+    return res.json({ success: true, history });
+  } catch (error) {
+    logger.error("Admin portfolio audit-history route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });

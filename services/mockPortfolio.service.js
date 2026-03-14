@@ -52,10 +52,67 @@ const SECTOR_MAP = {
   // Materials / Commodities
   FCX: "Rohstoffe", NEM: "Rohstoffe", BHP: "Rohstoffe",
   RIO: "Rohstoffe", VALE: "Rohstoffe", ALB: "Rohstoffe",
+  GLD: "Rohstoffe", SLV: "Rohstoffe", GDX: "Rohstoffe",
 };
 
 function assignSector(symbol) {
   return SECTOR_MAP[String(symbol || "").toUpperCase()] || "Sonstige";
+}
+
+/* =========================================================
+   MARKET WEATHER  (regime → icon key)
+========================================================= */
+
+function marketWeatherFromRegime(regime) {
+  const key = String(regime || "").toLowerCase();
+  if (["safe", "risk_on"].includes(key))           return "sun";
+  if (["danger", "risk_off", "crash"].includes(key)) return "storm";
+  return "cloud";
+}
+
+/* =========================================================
+   BÜRGER-SPRACHE RATIONALE GENERATOR
+========================================================= */
+
+function generateBuergerRationale(item) {
+  const score      = Number(item.robustness_score) || 0.5;
+  const regime     = String(item.market_regime || "neutral").toLowerCase();
+  const suppressed = Boolean(item.suppressed);
+  const guardian   = Boolean(item.guardian_applied);
+  const scenarios  = Math.round(score * 10);
+
+  const parts = [];
+
+  // Stress-test result (citizen-friendly)
+  if (score >= 0.85) {
+    parts.push(`✅ Stresstest: ${scenarios} von 10 simulierten Marktkrisen problemlos überstanden. Diese Aktie zeigt außergewöhnliche Stabilität.`);
+  } else if (score >= 0.65) {
+    parts.push(`🔰 Stresstest: ${scenarios} von 10 Krisenszenarien bestanden. Solide Robustheit – System bewertet die Position positiv.`);
+  } else if (score >= 0.45) {
+    parts.push(`⚠️ Stresstest: Nur ${scenarios} von 10 Szenarien bestanden. Erhöhte Vorsicht – System überwacht diese Position aktiv.`);
+  } else {
+    parts.push(`🚨 Stresstest: Nur ${scenarios} von 10 Szenarien bestanden. Hohes Risiko – Guardian Protocol aktiv.`);
+  }
+
+  // Market regime (plain German)
+  if (["risk_on", "safe"].includes(regime)) {
+    parts.push("Das Marktumfeld ist konstruktiv – gute Voraussetzungen für stabiles Wachstum.");
+  } else if (["risk_off", "danger", "crash"].includes(regime)) {
+    parts.push("Das Marktumfeld ist defensiv – das System schützt aktiv vor Verlusten.");
+  } else if (regime === "volatile") {
+    parts.push("Das Marktumfeld ist unruhig – das System wertet laufend neue Signale aus.");
+  } else {
+    parts.push("Das Marktumfeld ist neutral – das System hält die Balance zwischen Chance und Schutz.");
+  }
+
+  // Guardian / Suppression
+  if (suppressed) {
+    parts.push("🛡️ Guardian Protocol: Dieses Signal wurde zum Schutz Ihres Kapitals blockiert.");
+  } else if (guardian) {
+    parts.push("🛡️ Guardian Protocol: Das System hat dieses Signal aktiv geprüft und freigegeben.");
+  }
+
+  return parts.join(" ");
 }
 
 /* =========================================================
@@ -78,7 +135,7 @@ function normaliseOutcomeRow(row) {
     row.regime ??
     "neutral";
 
-  return {
+  const item = {
     id: row.id,
     symbol: String(row.symbol || "").toUpperCase(),
     sector: assignSector(row.symbol),
@@ -91,7 +148,16 @@ function normaliseOutcomeRow(row) {
     predicted_at: row.predicted_at || null,
     has_snapshot: Boolean(row.raw_input_snapshot),
     source: "outcome_tracking",
+    guardian_applied: Boolean(snap.guardian_applied),
+    suppressed: false,
+    market_weather: marketWeatherFromRegime(marketRegime),
   };
+
+  if (!item.analysis_rationale) {
+    item.analysis_rationale = generateBuergerRationale(item);
+  }
+
+  return item;
 }
 
 /* =========================================================
@@ -99,7 +165,7 @@ function normaliseOutcomeRow(row) {
 ========================================================= */
 
 function normaliseAuditRow(row) {
-  return {
+  const item = {
     id: row.id,
     symbol: String(row.symbol || "").toUpperCase(),
     sector: assignSector(row.symbol),
@@ -114,7 +180,15 @@ function normaliseAuditRow(row) {
     predicted_at: row.decided_at || null,
     has_snapshot: Boolean(row.raw_input_snapshot),
     source: "autonomy_audit",
+    guardian_applied: Boolean(row.guardian_applied),
+    suppressed: Boolean(row.suppressed),
+    market_weather: marketWeatherFromRegime(row.market_cluster),
   };
+
+  // Overwrite with citizen-friendly German rationale
+  item.analysis_rationale = generateBuergerRationale(item);
+
+  return item;
 }
 
 /* =========================================================
@@ -265,68 +339,97 @@ function fisherYatesShuffle(arr) {
 /** Static seed used only when both DB tables are empty */
 function buildStaticSeed() {
   const seed = [
-    { symbol: "AAPL", regime: "risk_on", robustness: 0.92, conviction: 88, strategy: "momentum" },
-    { symbol: "MSFT", regime: "risk_on", robustness: 0.88, conviction: 85, strategy: "quality" },
-    { symbol: "NVDA", regime: "risk_on", robustness: 0.95, conviction: 91, strategy: "momentum" },
-    { symbol: "JPM",  regime: "neutral", robustness: 0.76, conviction: 72, strategy: "balanced" },
-    { symbol: "XOM",  regime: "neutral", robustness: 0.71, conviction: 68, strategy: "value" },
-    { symbol: "JNJ",  regime: "risk_off", robustness: 0.83, conviction: 79, strategy: "quality" },
-    { symbol: "BAC",  regime: "neutral", robustness: 0.74, conviction: 70, strategy: "balanced" },
-    { symbol: "GOOGL", regime: "risk_on", robustness: 0.87, conviction: 83, strategy: "momentum" },
-    { symbol: "META", regime: "risk_on", robustness: 0.84, conviction: 80, strategy: "momentum" },
-    { symbol: "WMT",  regime: "risk_off", robustness: 0.79, conviction: 75, strategy: "quality" },
-    { symbol: "CVX",  regime: "neutral", robustness: 0.69, conviction: 65, strategy: "value" },
-    { symbol: "PFE",  regime: "risk_off", robustness: 0.72, conviction: 68, strategy: "quality" },
-    { symbol: "GS",   regime: "neutral", robustness: 0.77, conviction: 73, strategy: "balanced" },
-    { symbol: "TSLA", regime: "risk_on", robustness: 0.81, conviction: 77, strategy: "momentum" },
-    { symbol: "NEE",  regime: "neutral", robustness: 0.73, conviction: 69, strategy: "value" },
-    { symbol: "CAT",  regime: "neutral", robustness: 0.70, conviction: 66, strategy: "balanced" },
-    { symbol: "AMD",  regime: "risk_on", robustness: 0.89, conviction: 85, strategy: "momentum" },
-    { symbol: "V",    regime: "neutral", robustness: 0.82, conviction: 78, strategy: "quality" },
-    { symbol: "MA",   regime: "neutral", robustness: 0.83, conviction: 79, strategy: "quality" },
-    { symbol: "AMZN", regime: "risk_on", robustness: 0.90, conviction: 86, strategy: "momentum" },
-    { symbol: "UNH",  regime: "risk_off", robustness: 0.85, conviction: 81, strategy: "quality" },
-    { symbol: "ABBV", regime: "risk_off", robustness: 0.78, conviction: 74, strategy: "quality" },
-    { symbol: "LLY",  regime: "risk_off", robustness: 0.86, conviction: 82, strategy: "quality" },
-    { symbol: "COP",  regime: "neutral", robustness: 0.67, conviction: 63, strategy: "value" },
-    { symbol: "HON",  regime: "neutral", robustness: 0.72, conviction: 68, strategy: "balanced" },
-    { symbol: "BA",   regime: "risk_off", robustness: 0.61, conviction: 57, strategy: "value" },
-    { symbol: "KO",   regime: "risk_off", robustness: 0.80, conviction: 76, strategy: "quality" },
-    { symbol: "PEP",  regime: "risk_off", robustness: 0.81, conviction: 77, strategy: "quality" },
-    { symbol: "NKE",  regime: "neutral", robustness: 0.74, conviction: 70, strategy: "balanced" },
-    { symbol: "CRM",  regime: "risk_on", robustness: 0.83, conviction: 79, strategy: "momentum" },
-    { symbol: "ORCL", regime: "risk_on", robustness: 0.79, conviction: 75, strategy: "momentum" },
-    { symbol: "COST", regime: "risk_off", robustness: 0.85, conviction: 81, strategy: "quality" },
-    { symbol: "FCX",  regime: "neutral", robustness: 0.65, conviction: 61, strategy: "value" },
-    { symbol: "MRK",  regime: "risk_off", robustness: 0.77, conviction: 73, strategy: "quality" },
-    { symbol: "WFC",  regime: "neutral", robustness: 0.73, conviction: 69, strategy: "balanced" },
-    { symbol: "AVGO", regime: "risk_on", robustness: 0.88, conviction: 84, strategy: "momentum" },
-    { symbol: "INTC", regime: "neutral", robustness: 0.63, conviction: 59, strategy: "value" },
-    { symbol: "MCD",  regime: "risk_off", robustness: 0.82, conviction: 78, strategy: "quality" },
-    { symbol: "SLB",  regime: "neutral", robustness: 0.68, conviction: 64, strategy: "value" },
-    { symbol: "HD",   regime: "neutral", robustness: 0.76, conviction: 72, strategy: "balanced" },
+    { symbol: "AAPL", regime: "risk_on",  robustness: 0.92, conviction: 88, strategy: "momentum" },
+    { symbol: "MSFT", regime: "risk_on",  robustness: 0.88, conviction: 85, strategy: "quality"  },
+    { symbol: "NVDA", regime: "risk_on",  robustness: 0.95, conviction: 91, strategy: "momentum" },
+    { symbol: "JPM",  regime: "neutral",  robustness: 0.76, conviction: 72, strategy: "balanced" },
+    { symbol: "XOM",  regime: "neutral",  robustness: 0.71, conviction: 68, strategy: "value"    },
+    { symbol: "JNJ",  regime: "risk_off", robustness: 0.83, conviction: 79, strategy: "quality"  },
+    { symbol: "BAC",  regime: "neutral",  robustness: 0.74, conviction: 70, strategy: "balanced" },
+    { symbol: "GOOGL",regime: "risk_on",  robustness: 0.87, conviction: 83, strategy: "momentum" },
+    { symbol: "META", regime: "risk_on",  robustness: 0.84, conviction: 80, strategy: "momentum" },
+    { symbol: "WMT",  regime: "risk_off", robustness: 0.79, conviction: 75, strategy: "quality"  },
+    { symbol: "CVX",  regime: "neutral",  robustness: 0.69, conviction: 65, strategy: "value"    },
+    { symbol: "PFE",  regime: "risk_off", robustness: 0.72, conviction: 68, strategy: "quality"  },
+    { symbol: "GS",   regime: "neutral",  robustness: 0.77, conviction: 73, strategy: "balanced" },
+    { symbol: "TSLA", regime: "risk_on",  robustness: 0.81, conviction: 77, strategy: "momentum" },
+    { symbol: "NEE",  regime: "neutral",  robustness: 0.73, conviction: 69, strategy: "value"    },
+    { symbol: "CAT",  regime: "neutral",  robustness: 0.70, conviction: 66, strategy: "balanced" },
+    { symbol: "AMD",  regime: "risk_on",  robustness: 0.89, conviction: 85, strategy: "momentum" },
+    { symbol: "V",    regime: "neutral",  robustness: 0.82, conviction: 78, strategy: "quality"  },
+    { symbol: "MA",   regime: "neutral",  robustness: 0.83, conviction: 79, strategy: "quality"  },
+    { symbol: "AMZN", regime: "risk_on",  robustness: 0.90, conviction: 86, strategy: "momentum" },
+    { symbol: "UNH",  regime: "risk_off", robustness: 0.85, conviction: 81, strategy: "quality"  },
+    { symbol: "ABBV", regime: "risk_off", robustness: 0.78, conviction: 74, strategy: "quality"  },
+    { symbol: "LLY",  regime: "risk_off", robustness: 0.86, conviction: 82, strategy: "quality"  },
+    { symbol: "COP",  regime: "neutral",  robustness: 0.67, conviction: 63, strategy: "value"    },
+    { symbol: "HON",  regime: "neutral",  robustness: 0.72, conviction: 68, strategy: "balanced" },
+    { symbol: "BA",   regime: "risk_off", robustness: 0.61, conviction: 57, strategy: "value"    },
+    { symbol: "KO",   regime: "risk_off", robustness: 0.80, conviction: 76, strategy: "quality"  },
+    { symbol: "PEP",  regime: "risk_off", robustness: 0.81, conviction: 77, strategy: "quality"  },
+    { symbol: "PG",   regime: "risk_off", robustness: 0.84, conviction: 80, strategy: "quality"  },
+    { symbol: "NKE",  regime: "neutral",  robustness: 0.74, conviction: 70, strategy: "balanced" },
+    { symbol: "CRM",  regime: "risk_on",  robustness: 0.83, conviction: 79, strategy: "momentum" },
+    { symbol: "ORCL", regime: "risk_on",  robustness: 0.79, conviction: 75, strategy: "momentum" },
+    { symbol: "COST", regime: "risk_off", robustness: 0.85, conviction: 81, strategy: "quality"  },
+    { symbol: "FCX",  regime: "neutral",  robustness: 0.65, conviction: 61, strategy: "value"    },
+    { symbol: "MRK",  regime: "risk_off", robustness: 0.77, conviction: 73, strategy: "quality"  },
+    { symbol: "WFC",  regime: "neutral",  robustness: 0.73, conviction: 69, strategy: "balanced" },
+    { symbol: "AVGO", regime: "risk_on",  robustness: 0.88, conviction: 84, strategy: "momentum" },
+    { symbol: "GLD",  regime: "neutral",  robustness: 0.75, conviction: 71, strategy: "value"    },
+    { symbol: "MCD",  regime: "risk_off", robustness: 0.82, conviction: 78, strategy: "quality"  },
+    { symbol: "HD",   regime: "neutral",  robustness: 0.76, conviction: 72, strategy: "balanced" },
   ];
 
-  const regimeRationale = {
-    risk_on: "Marktregime zeigt konstruktives Momentum. System bewertet Einstiegschancen positiv auf Basis robuster Liquiditäts- und Trendindikatoren.",
-    risk_off: "Defensives Regime erkannt. System priorisiert Kapitalschutz und qualitativ hochwertige Titel mit geringer Volatilität.",
-    neutral: "Neutrales Marktregime. System hält ausgewogene Positionierung zwischen Wachstum und Schutz.",
-  };
+  return seed.map((s, i) => {
+    const item = {
+      id: i + 1,
+      symbol: s.symbol,
+      sector: assignSector(s.symbol),
+      robustness_score: s.robustness,
+      market_regime: s.regime,
+      analysis_rationale: null,
+      hqs_score: Math.round(s.conviction * 1.1),
+      final_conviction: s.conviction,
+      strategy: s.strategy,
+      predicted_at: new Date(Date.now() - Math.random() * 86400000 * 3).toISOString(),
+      has_snapshot: false,
+      source: "static_seed",
+      // Guardian Protocol is active for all seed items (simulated permanent scan)
+      guardian_applied: true,
+      suppressed: s.robustness < 0.40,
+      market_weather: marketWeatherFromRegime(s.regime),
+    };
+    item.analysis_rationale = generateBuergerRationale(item);
+    return item;
+  });
+}
 
-  return seed.map((s, i) => ({
-    id: i + 1,
-    symbol: s.symbol,
-    sector: assignSector(s.symbol),
-    robustness_score: s.robustness,
-    market_regime: s.regime,
-    analysis_rationale: regimeRationale[s.regime] || null,
-    hqs_score: Math.round(s.conviction * 1.1),
-    final_conviction: s.conviction,
-    strategy: s.strategy,
-    predicted_at: new Date(Date.now() - Math.random() * 86400000 * 3).toISOString(),
-    has_snapshot: false,
-    source: "static_seed",
-  }));
+/* =========================================================
+   FETCH AUDIT HISTORY FOR A SINGLE SYMBOL (last N entries)
+========================================================= */
+
+async function getPortfolioAuditHistory(symbol, limit = 3) {
+  const safeSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9.^]/g, "");
+  if (!safeSymbol) return [];
+  const safeLimit = Math.min(10, Math.max(1, Number(limit) || 3));
+  try {
+    const res = await pool.query(
+      `SELECT id, symbol, decision_type, decision_value,
+              market_cluster, robustness_score,
+              guardian_applied, suppressed, suppression_reason,
+              decided_at
+       FROM autonomy_audit
+       WHERE symbol = $1
+       ORDER BY decided_at DESC
+       LIMIT $2`,
+      [safeSymbol, safeLimit]
+    );
+    return res.rows;
+  } catch (err) {
+    logger.warn("mockPortfolio: audit-history query failed", { message: err.message, symbol: safeSymbol });
+    return [];
+  }
 }
 
 /* =========================================================
@@ -337,4 +440,5 @@ module.exports = {
   getMockPortfolio,
   getSnapshotById,
   getAuditFeed,
+  getPortfolioAuditHistory,
 };
