@@ -80,6 +80,7 @@ DISCOVERY
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
 const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
+const { initAutonomyAuditTable } = require("./services/autonomyAudit.repository");
 
 /* =========================================================
 NOTIFICATIONS
@@ -604,6 +605,7 @@ app.listen(PORT, async () => {
     await initJobLocksTable();
     await initDiscoveryTable();
     await initAdminSnapshotsTable();
+    await initAutonomyAuditTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();

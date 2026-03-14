@@ -19,6 +19,8 @@ const { buildMarketSentiment } = require("./marketSentiment.service");
 const { buildMarketBuzz } = require("./marketBuzz.service");
 const { buildTrendingStock } = require("./trendingStocks.service");
 const { buildEarlySignals } = require("./earlySignal.service");
+const { classifyMarketRegime } = require("./regimeDetection.service");
+const { recordAutonomyDecision } = require("./autonomyAudit.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -39,6 +41,21 @@ const OPPORTUNITY_NEWS_LIMIT = Math.max(
 const OPPORTUNITY_REASON_LIMIT = 4;
 const SIGNAL_REASON_LIMIT = 4;
 const SIGNAL_DIRECTION_THRESHOLD = 0.12;
+
+/* =========================================================
+   GUARDIAN PROTOCOL CONSTANTS
+========================================================= */
+
+// Base robustness thresholds per market cluster (executeSafetyFirst)
+const GUARDIAN_THRESHOLD_SAFE = Number(
+  process.env.GUARDIAN_THRESHOLD_SAFE || 0.35
+);
+const GUARDIAN_THRESHOLD_VOLATILE = Number(
+  process.env.GUARDIAN_THRESHOLD_VOLATILE || 0.50
+);
+const GUARDIAN_THRESHOLD_DANGER = Number(
+  process.env.GUARDIAN_THRESHOLD_DANGER || 0.65
+);
 
 /* =========================================================
    UTIL
@@ -838,6 +855,123 @@ async function hydrateOpportunityRuntimeState() {
 }
 
 /* =========================================================
+   GUARDIAN PROTOCOL
+========================================================= */
+
+/**
+ * Evaluates whether a signal should be suppressed for wealth protection.
+ *
+ * The robustness threshold is adjusted upward in unfavourable market clusters:
+ *   Safe     → GUARDIAN_THRESHOLD_SAFE
+ *   Volatile → GUARDIAN_THRESHOLD_VOLATILE
+ *   Danger   → GUARDIAN_THRESHOLD_DANGER
+ *
+ * @param {object} opportunity  - built opportunity object
+ * @param {string} marketCluster - 'Safe' | 'Volatile' | 'Danger'
+ * @returns {{ suppressed: boolean, reason: string|null, threshold: number }}
+ */
+function executeSafetyFirst(opportunity, marketCluster = "Safe") {
+  const robustness = safeNum(opportunity?.robustnessScore, 0);
+
+  let threshold;
+  switch (String(marketCluster)) {
+    case "Danger":
+      threshold = GUARDIAN_THRESHOLD_DANGER;
+      break;
+    case "Volatile":
+      threshold = GUARDIAN_THRESHOLD_VOLATILE;
+      break;
+    default:
+      threshold = GUARDIAN_THRESHOLD_SAFE;
+  }
+
+  if (robustness < threshold) {
+    return {
+      suppressed: true,
+      reason: "Wealth Protection",
+      detail: `Signal suppressed: robustness_score ${robustness.toFixed(2)} below threshold ${threshold.toFixed(2)} in ${marketCluster} market`,
+      threshold,
+    };
+  }
+
+  return { suppressed: false, reason: null, detail: null, threshold };
+}
+
+/* =========================================================
+   HUMAN-CENTRIC INSIGHT BUILDER
+========================================================= */
+
+/**
+ * Converts a raw opportunity object into a human-readable Insight.
+ * The backend performs all interpretation – callers receive finished,
+ * actionable conclusions rather than technical raw data.
+ *
+ * @param {object} opportunity
+ * @param {object} guardianResult  - result of executeSafetyFirst()
+ * @param {string} marketCluster   - 'Safe' | 'Volatile' | 'Danger'
+ * @returns {object} insight
+ */
+function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
+  const symbol = String(opportunity?.symbol || "").trim().toUpperCase();
+  const conviction = safeNum(opportunity?.finalConviction, 0);
+  const robustness = safeNum(opportunity?.robustnessScore, 0);
+  const antifragile = Boolean(opportunity?.antifragile);
+
+  // Risk level
+  let riskLevel;
+  if (marketCluster === "Danger" || robustness < 0.3) {
+    riskLevel = "HIGH";
+  } else if (marketCluster === "Volatile" || robustness < 0.55) {
+    riskLevel = "MEDIUM";
+  } else {
+    riskLevel = "LOW";
+  }
+
+  // Human recommendation (German: system targets German-speaking users throughout)
+  let recommendation;
+  if (guardianResult.suppressed) {
+    recommendation = "Kein Einstieg empfohlen – Wealth Protection aktiv";
+  } else if (conviction >= 80) {
+    recommendation = "Starke Einstiegschance – aktiv beobachten";
+  } else if (conviction >= 65) {
+    recommendation = "Solide Gelegenheit – weitere Prüfung empfohlen";
+  } else if (conviction >= 50) {
+    recommendation = "Auf Watchlist setzen – kein sofortiger Handlungsbedarf";
+  } else {
+    recommendation = "Aktuell nicht attraktiv – kein Handlungsbedarf";
+  }
+
+  // Stability narrative
+  const stabilityNote = antifragile
+    ? "Das Signal hat alle Stressszenarien bestanden und gilt als antifragil."
+    : robustness >= 0.55
+    ? "Das Signal zeigt gute Stabilität unter Marktdruck."
+    : "Das Signal reagiert empfindlich auf Marktschwankungen.";
+
+  // Summary
+  const existingReason = String(opportunity?.reason || "").trim();
+  const summary = existingReason
+    ? `${symbol}: ${existingReason}. ${stabilityNote}`
+    : `${symbol}: ${stabilityNote}`;
+
+  return {
+    title: guardianResult.suppressed
+      ? `${symbol} – Gesperrt (Wealth Protection)`
+      : `${symbol} – ${opportunity?.finalRating || "Signal erkannt"}`,
+    summary,
+    recommendation,
+    riskLevel,
+    marketClimate: marketCluster,
+    protectionStatus: guardianResult.suppressed
+      ? { active: true, reason: guardianResult.reason, detail: guardianResult.detail }
+      : { active: false },
+    robustnessScore: Number(robustness.toFixed(2)),
+    antifragile,
+    conviction: Number(conviction.toFixed(1)),
+  };
+}
+
+/* =========================================================
    MAIN SERVICE
 ========================================================= */
 
@@ -965,14 +1099,78 @@ async function getTopOpportunities(arg = 10) {
     return b.opportunityScore - a.opportunityScore;
   });
 
-  const out = opportunities.slice(0, limit);
+  // ── Regime Detection: classify market-wide cluster ──────────────────────
+  let marketRegime = { cluster: "Safe", capturedAt: new Date().toISOString() };
+  try {
+    marketRegime = await classifyMarketRegime();
+  } catch (regimeErr) {
+    logger.warn("getTopOpportunities: regime detection failed, defaulting to Safe", {
+      message: regimeErr.message,
+    });
+  }
+
+  const marketCluster = marketRegime.cluster;
+
+  // ── Guardian Protocol + Insight building ────────────────────────────────
+  let suppressedCount = 0;
+  const withInsights = opportunities.map((opp) => {
+    const guardianResult = executeSafetyFirst(opp, marketCluster);
+
+    if (guardianResult.suppressed) {
+      suppressedCount++;
+    }
+
+    const insight = buildOpportunityInsight(opp, guardianResult, marketCluster);
+
+    // Fire-and-forget audit log (errors are swallowed inside recordAutonomyDecision)
+    const tracked = persistedOutcomeBySymbol?.[opp.symbol] || null;
+    const rawSnap = tracked?.raw_input_snapshot || null;
+    recordAutonomyDecision({
+      symbol: opp.symbol,
+      decisionType: "opportunity_signal",
+      decisionValue: guardianResult.suppressed
+        ? "SUPPRESSED"
+        : opp.finalDecision || "EVALUATED",
+      marketCluster,
+      robustnessScore: safeNum(opp.robustnessScore, 0),
+      guardianApplied: true,
+      suppressed: guardianResult.suppressed,
+      suppressionReason: guardianResult.suppressed ? guardianResult.reason : null,
+      rawInputSnapshot: rawSnap || {
+        hqsScore: opp.hqsScore,
+        robustnessScore: opp.robustnessScore,
+        finalConviction: opp.finalConviction,
+        regime: opp.regime,
+        capturedAt: new Date().toISOString(),
+      },
+    }).catch((auditErr) => {
+      logger.warn("getTopOpportunities: audit log failed", {
+        symbol: opp.symbol,
+        message: auditErr.message,
+      });
+    });
+
+    return {
+      ...opp,
+      suppressed: guardianResult.suppressed,
+      suppressionReason: guardianResult.suppressed ? guardianResult.reason : null,
+      insight,
+    };
+  });
+
+  // Keep only non-suppressed signals in the final output (guardian enforcement)
+  const out = withInsights
+    .filter((opp) => !opp.suppressed)
+    .slice(0, limit);
 
   logger.info("getTopOpportunities", {
     limit,
     minHqs,
     regime,
+    marketCluster,
     persistedCount,
     fallbackCount,
+    suppressedCount,
     returned: out.length,
   });
 
@@ -986,4 +1184,6 @@ module.exports = {
   getTopOpportunities,
   simulateMarketStress,
   calculateRobustnessScore,
+  executeSafetyFirst,
+  buildOpportunityInsight,
 };
