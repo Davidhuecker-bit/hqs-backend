@@ -57,6 +57,7 @@ const MAX_FEEDS_PER_SYMBOL = Math.max(
   1,
   Math.min(Number(process.env.MARKET_NEWS_MAX_FEEDS_PER_SYMBOL || 3), 10)
 );
+const TARGET_REGION = String(process.env.SNAPSHOT_REGION || "us").trim().toUpperCase();
 
 const MIN_MATCH_SCORE = Math.max(
   0,
@@ -92,17 +93,19 @@ function parsePublishedAt(value) {
   return date.toISOString();
 }
 
-async function loadWatchlistSymbols(limit = SYMBOL_LIMIT) {
+async function loadWatchlistSymbols(limit = SYMBOL_LIMIT, region = TARGET_REGION) {
   try {
+    const normalizedRegion = String(region || TARGET_REGION).trim().toLowerCase();
     const res = await pool.query(
       `
       SELECT symbol
       FROM watchlist_symbols
       WHERE is_active = TRUE
+        AND LOWER(COALESCE(region, 'us')) = $2
       ORDER BY priority ASC, symbol ASC
       LIMIT $1
       `,
-      [limit]
+      [limit, normalizedRegion]
     );
 
     return (res.rows || [])
@@ -145,21 +148,25 @@ async function loadEntityMapSymbols(limit = SYMBOL_LIMIT) {
 }
 
 async function loadTargetSymbols(limit = SYMBOL_LIMIT) {
-  const universeSymbols = await listActiveUniverseSymbols(limit);
+  const universeSymbols = await listActiveUniverseSymbols(limit, {
+    country: TARGET_REGION,
+  });
   if (universeSymbols.length) {
     if (logger?.info) {
       logger.info("Loaded symbols from universe.repository", {
         count: universeSymbols.length,
+        region: TARGET_REGION,
       });
     }
     return universeSymbols;
   }
 
-  const watchlistSymbols = await loadWatchlistSymbols(limit);
+  const watchlistSymbols = await loadWatchlistSymbols(limit, TARGET_REGION);
   if (watchlistSymbols.length) {
     if (logger?.info) {
       logger.info("Universe empty - fallback to watchlist_symbols", {
         count: watchlistSymbols.length,
+        region: TARGET_REGION,
       });
     }
     return watchlistSymbols;

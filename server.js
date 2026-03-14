@@ -24,6 +24,7 @@ CORE SERVICES
 const {
   getMarketData,
   buildMarketSnapshot,
+  hydrateMarketRuntimeState,
   ensureTablesExist,
 } = require("./services/marketService");
 
@@ -51,6 +52,9 @@ const {
 const {
   runNewsLifecycleCleanupJob,
 } = require("./jobs/newsLifecycleCleanup.job");
+const {
+  hydrateOpportunityRuntimeState,
+} = require("./services/opportunityScanner.service");
 
 /* =========================================================
 UNIVERSE
@@ -557,6 +561,8 @@ app.listen(PORT, async () => {
     await initNotificationTables();
     await seedDemoUserIfEmpty();
     await initSecEdgarTables();
+    await hydrateMarketRuntimeState();
+    await hydrateOpportunityRuntimeState();
 
     if (RUN_JOBS) {
       logger.info("RUN_JOBS=true -> starting background jobs inside API server");

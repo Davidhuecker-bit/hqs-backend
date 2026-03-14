@@ -3,23 +3,6 @@
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
-const { buildAIScore } = require("../engines/marketBrain");
-const { applyStrategy } = require("../engines/strategyEngine");
-const { detectNarrative } = require("../engines/narrativeEngine");
-const { discoverOpportunities } = require("../engines/discoveryEngine");
-const {
-  runMarketSimulations,
-  calculateResilience,
-} = require("../engines/marketSimulationEngine");
-const { buildFeatures } = require("../engines/featureEngine");
-const { buildIntegratedMarketView } = require("../engines/integrationEngine");
-
-const { analyzeCrossAssetEnvironment } = require("../engines/crossAssetEngine");
-const { analyzeCapitalFlows } = require("../engines/capitalFlowEngine");
-const { analyzeMacroEvents } = require("../engines/eventIntelligenceEngine");
-const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
-const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
-const { orchestrateMarket } = require("../engines/marketOrchestrator");
 const {
   buildScoringNewsContext,
   getScoringActiveMarketNewsBySymbols,
@@ -380,46 +363,6 @@ async function loadOpportunityNewsContextBySymbols(
 }
 
 /* =========================================================
-   FALLBACK CONTEXT HELPERS
-========================================================= */
-
-function buildMacroContextFallback(row = {}) {
-  return {
-    vixTrend: safeNum(row?.volatility, 0) - 0.2,
-    marketBreadth: safeNum(row?.trend, 0) > 0 ? 0.62 : 0.42,
-    dollarTrend: 0,
-    marketTrend: safeNum(row?.trend, 0),
-    oilTrend: 0,
-    goldTrend: 0,
-    bondTrend: 0,
-    techTrend: safeNum(row?.trend, 0),
-  };
-}
-
-function buildCapitalFlowFallback(row = {}) {
-  const volume = safeNum(row?.volume, 0);
-  const avgVolume = safeNum(row?.avg_volume, volume || 1);
-
-  return {
-    sectorData: row?.sector
-      ? [
-          {
-            sector: String(row.sector).toLowerCase(),
-            performance: safeNum(row?.trend, 0),
-          },
-        ]
-      : [],
-    etfFlows: [],
-    advancers: safeNum(row?.trend, 0) >= 0 ? 3200 : 1800,
-    decliners: safeNum(row?.trend, 0) >= 0 ? 1800 : 3200,
-    volumeData: {
-      volume,
-      avgVolume,
-    },
-  };
-}
-
-/* =========================================================
    OPPORTUNITY SCORE
 ========================================================= */
 
@@ -671,6 +614,101 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
   };
 }
 
+function buildFallbackOpportunity(row, tracked = null) {
+  const payload = safeObject(tracked?.payload, {});
+  const finalView = safeObject(payload?.finalView, {});
+  const globalContext = safeObject(finalView?.globalContext, {});
+  const brain = safeObject(payload?.brain, {});
+  const strategy = safeObject(payload?.strategy, safeObject(finalView?.strategy, {}));
+  const newsContextCandidate = finalView?.newsContext ?? globalContext?.newsContext ?? null;
+  const signalContextCandidate =
+    finalView?.signalContext ?? globalContext?.signalContext ?? null;
+  const newsContext =
+    newsContextCandidate &&
+    typeof newsContextCandidate === "object" &&
+    !Array.isArray(newsContextCandidate)
+      ? newsContextCandidate
+      : null;
+  const signalContext =
+    signalContextCandidate &&
+    typeof signalContextCandidate === "object" &&
+    !Array.isArray(signalContextCandidate)
+      ? signalContextCandidate
+      : null;
+  const discoveries = Array.isArray(payload?.discoveries)
+    ? payload.discoveries
+    : Array.isArray(finalView?.discoveries)
+      ? finalView.discoveries
+      : [];
+  const narratives = Array.isArray(payload?.narratives)
+    ? payload.narratives
+    : Array.isArray(finalView?.narratives)
+      ? finalView.narratives
+      : [];
+  const opportunityScore = calculateOpportunityScore(row);
+
+  return {
+    symbol: String(row?.symbol || "").trim().toUpperCase(),
+
+    regime: row?.regime ?? tracked?.regime ?? finalView?.regime ?? null,
+    type: classifyOpportunity(row),
+
+    hqsScore: safeNum(row?.hqs_score, finalView?.hqsScore),
+    opportunityScore,
+    confidence: calculateConfidence(row, opportunityScore),
+
+    aiScore: safeNum(finalView?.aiScore, brain?.aiScore),
+    finalConviction: safeNum(finalView?.finalConviction, tracked?.finalConviction),
+    finalConfidence: safeNum(finalView?.finalConfidence, tracked?.finalConfidence),
+    finalRating: finalView?.finalRating || null,
+    finalDecision: finalView?.finalDecision || null,
+
+    strategy: strategy?.strategy || null,
+    strategyLabel: strategy?.strategyLabel || null,
+
+    narratives,
+    discoveries,
+
+    trend: row?.trend ?? null,
+    volatility: row?.volatility ?? null,
+    resilienceScore: safeNum(payload?.resilienceScore, finalView?.resilienceScore),
+
+    opportunityStrength: safeNum(
+      payload?.orchestrator?.opportunityStrength,
+      tracked?.opportunityStrength
+    ),
+    orchestratorConfidence: safeNum(
+      payload?.orchestrator?.orchestratorConfidence,
+      tracked?.orchestratorConfidence
+    ),
+
+    whyInteresting: Array.isArray(finalView?.whyInteresting)
+      ? finalView.whyInteresting
+      : [],
+    reason: generateReason(row, newsContext),
+    newsContext: formatOpportunityNewsContext(newsContext),
+    newsAdjustment: safeNum(finalView?.components?.newsAdjustment, 0),
+    signalAdjustment: safeNum(finalView?.components?.signalAdjustment, 0),
+    signalContext: formatOpportunitySignalContext(signalContext),
+
+    marketMemory: safeObject(globalContext?.marketMemory, null),
+    metaLearning: safeObject(globalContext?.metaLearning, null),
+
+    advancedUpdatedAt: row?.advanced_updated_at
+      ? new Date(row.advanced_updated_at).toISOString()
+      : null,
+  };
+}
+
+async function hydrateOpportunityRuntimeState() {
+  await ensureRuntimePreviewStoresLoaded();
+
+  return {
+    marketMemoryKeys: Object.keys(safeObject(marketMemoryStore, {})).length,
+    metaLearningKeys: Object.keys(safeObject(metaLearningStore, {})).length,
+  };
+}
+
 /* =========================================================
    MAIN SERVICE
 ========================================================= */
@@ -764,45 +802,6 @@ async function getTopOpportunities(arg = 10) {
     }
   }
 
-  const fallbackRows = rows.filter((row) => {
-    const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
-    return !hasPersistedBatchResult(persistedOutcomeBySymbol?.[normalizedSymbol]);
-  });
-
-  let scoringActiveNewsBySymbol = {};
-  let newsContextBySymbol = {};
-  let signalContextBySymbol = {};
-  if (fallbackRows.length) {
-    await ensureRuntimePreviewStoresLoaded();
-
-    try {
-      ({
-        scoringActiveNewsBySymbol,
-        newsContextBySymbol,
-      } = await loadOpportunityNewsContextBySymbols(
-        fallbackRows.map((row) => row.symbol),
-        OPPORTUNITY_NEWS_LIMIT
-      ));
-
-      signalContextBySymbol = fallbackRows.reduce((result, row) => {
-        const symbol = String(row?.symbol || "").trim().toUpperCase();
-        if (!symbol) return result;
-
-        result[symbol] = buildSignalContext(
-          row,
-          newsContextBySymbol?.[symbol] || null,
-          scoringActiveNewsBySymbol?.[symbol] || []
-        );
-
-        return result;
-      }, {});
-    } catch (error) {
-      logger.warn("Opportunity news context load failed", {
-        message: error.message,
-      });
-    }
-  }
-
   const opportunities = rows.map((row) => {
     const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
     const persistedOpportunity = buildOpportunityFromBatchResult(
@@ -814,209 +813,17 @@ async function getTopOpportunities(arg = 10) {
       return persistedOpportunity;
     }
 
-    const newsContext = newsContextBySymbol?.[normalizedSymbol] || null;
-    const signalContext = signalContextBySymbol?.[normalizedSymbol] || null;
-    const opportunityScore = calculateOpportunityScore(row);
-
-    const features = buildFeatures(row, {
-      trend: row.trend,
-      volatilityAnnual: row.volatility,
-      avgVolume: row.avg_volume,
-    });
-
-    const discoveries = discoverOpportunities(
-      row.symbol,
+    return buildFallbackOpportunity(
       row,
-      features,
-      row
+      persistedOutcomeBySymbol?.[normalizedSymbol] || null
     );
-
-    const narratives = detectNarrative({
-      sector: row.sector,
-      trend: row.trend,
-      relative: row.relative,
-    });
-
-    const simulations = runMarketSimulations(features, row);
-    const resilienceScore = calculateResilience(simulations);
-
-    const brain = buildAIScore({
-      symbol: row.symbol,
-      hqsScore: row.hqs_score,
-      features,
-      advanced: row,
-      discoveries,
-    });
-
-    const strategy = applyStrategy(
-      row.symbol,
-      brain.aiScore,
-      features,
-      row
-    );
-
-    /* =============================
-       NEW MACRO / FLOW / EVENT LAYER
-    ============================= */
-
-    const macroContext = buildMacroContextFallback(row);
-    const crossAsset = analyzeCrossAssetEnvironment(macroContext);
-    const capitalFlows = analyzeCapitalFlows(buildCapitalFlowFallback(row));
-    const eventIntelligence = analyzeMacroEvents(macroContext);
-
-    /* =============================
-       MEMORY + META LEARNING PREVIEW
-    ============================= */
-
-    const marketMemory = evaluateMarketMemory({
-      memoryStore: marketMemoryStore,
-      symbol: row.symbol,
-      regime: row.regime || "neutral",
-      strategy: strategy?.strategy || "balanced",
-      discoveries,
-      narratives,
-      features,
-      crossSignals: crossAsset?.signals || [],
-      prediction: safeNum(brain?.aiScore, 0) / 100,
-      actualReturn: 0,
-      confidence: 0.5,
-      persist: false,
-    });
-
-    const metaLearning = evaluateMetaLearning({
-      metaStore: metaLearningStore,
-      context: {
-        regime: row.regime || "neutral",
-        riskMode: "neutral",
-        strategy: strategy?.strategy || "balanced",
-        dominantNarrative: narratives?.[0]?.type || "none",
-      },
-      signalMetrics: {
-        trendScore: safeNum(row?.trend, 0),
-        discoveryCount: discoveries?.length || 0,
-        capitalFlowStrength: capitalFlows?.marketBreadth || 0,
-        eventCount: eventIntelligence?.events?.length || 0,
-        memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
-        narrativeCount: narratives?.length || 0,
-        newsActiveCount: safeNum(newsContext?.activeCount, 0),
-        newsStrength: safeNum(newsContext?.strengthScore, 0),
-        strategyScore: safeNum(strategy?.strategyAdjustedScore, 0),
-        crossAssetCount: crossAsset?.signals?.length || 0,
-      },
-      actualReturn: 0,
-      symbol: row.symbol,
-      persist: false,
-    });
-
-    /* =============================
-       ORCHESTRATOR
-    ============================= */
-
-    const orchestrator = orchestrateMarket({
-      trendData: row,
-      aiScore: brain?.aiScore,
-      conviction: brain?.aiScore,
-      resilienceScore,
-      narratives,
-      discoveries,
-      crossAssetSignals: crossAsset?.signals || [],
-      capitalFlows,
-      macroContext: {
-        ...macroContext,
-        marketBreadth: capitalFlows?.marketBreadth ?? macroContext.marketBreadth,
-      },
-      eventIntelligence,
-      marketMemory,
-      metaLearning,
-      newsContext,
-      signalContext,
-    });
-
-    /* =============================
-       FINAL INTEGRATION
-    ============================= */
-
-    const finalView = buildIntegratedMarketView({
-      symbol: row.symbol,
-      hqs: {
-        hqsScore: row.hqs_score,
-        regime: row.regime,
-      },
-      features,
-      discoveries,
-      learning: {
-        confidence: 0.5,
-      },
-      brain,
-      strategy,
-      narratives,
-      simulations,
-      resilienceScore,
-      research: null,
-      newsContext,
-      signalContext,
-      globalContext: {
-        crossAsset,
-        capitalFlows,
-        eventIntelligence,
-        orchestrator,
-        marketMemory: marketMemory?.memoryStats || null,
-        metaLearning: metaLearning?.trustProfile || null,
-        newsContext,
-        signalContext,
-      },
-    });
-
-    return {
-      symbol: String(row.symbol || "").toUpperCase(),
-
-      regime: row.regime ?? null,
-      type: classifyOpportunity(row),
-
-      hqsScore: safeNum(row.hqs_score, 0),
-      opportunityScore,
-      confidence: calculateConfidence(row, opportunityScore),
-
-      aiScore: safeNum(brain?.aiScore, 0),
-      finalConviction: safeNum(finalView?.finalConviction, 0),
-      finalConfidence: safeNum(finalView?.finalConfidence, 0),
-      finalRating: finalView?.finalRating || null,
-      finalDecision: finalView?.finalDecision || null,
-
-      strategy: strategy?.strategy || null,
-      strategyLabel: strategy?.strategyLabel || null,
-
-      narratives,
-      discoveries,
-
-      trend: row.trend ?? null,
-      volatility: row.volatility ?? null,
-      resilienceScore,
-
-      opportunityStrength: safeNum(
-        orchestrator?.opportunityStrength,
-        0
-      ),
-      orchestratorConfidence: safeNum(
-        orchestrator?.orchestratorConfidence,
-        0
-      ),
-
-      whyInteresting: finalView?.whyInteresting || [],
-      reason: generateReason(row, newsContext),
-      newsContext: formatOpportunityNewsContext(newsContext),
-      newsAdjustment: safeNum(finalView?.components?.newsAdjustment, 0),
-      signalAdjustment: safeNum(finalView?.components?.signalAdjustment, 0),
-      signalContext: formatOpportunitySignalContext(signalContext),
-
-      marketMemory: marketMemory?.memoryStats || null,
-      metaLearning: metaLearning?.trustProfile || null,
-
-      advancedUpdatedAt: row.advanced_updated_at
-        ? new Date(row.advanced_updated_at).toISOString()
-        : null,
-    };
   });
+
+  const persistedCount = rows.filter((row) => {
+    const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
+    return hasPersistedBatchResult(persistedOutcomeBySymbol?.[normalizedSymbol] || null);
+  }).length;
+  const fallbackCount = Math.max(0, opportunities.length - persistedCount);
 
   opportunities.sort((a, b) => {
     if (b.finalConviction !== a.finalConviction) {
@@ -1036,6 +843,8 @@ async function getTopOpportunities(arg = 10) {
     limit,
     minHqs,
     regime,
+    persistedCount,
+    fallbackCount,
     returned: out.length,
   });
 
@@ -1044,6 +853,7 @@ async function getTopOpportunities(arg = 10) {
 
 module.exports = {
   buildSignalContext,
+  hydrateOpportunityRuntimeState,
   loadOpportunityNewsContextBySymbols,
   getTopOpportunities,
 };

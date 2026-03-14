@@ -66,6 +66,7 @@ const {
 const {
   initUniverseTables,
   getUniverseBatch,
+  listActiveUniverseSymbols,
 } = require("./universe.repository");
 const {
   loadRuntimeState,
@@ -143,6 +144,33 @@ async function ensureRuntimePreviewStoresLoaded() {
       : {};
 
   runtimePreviewStoresLoaded = true;
+}
+
+async function hydrateMarketRuntimeState() {
+  await ensureRuntimePreviewStoresLoaded();
+
+  return {
+    marketMemoryKeys: Object.keys(marketMemoryStore || {}).length,
+    metaLearningKeys: Object.keys(metaLearningStore || {}).length,
+  };
+}
+
+async function loadPrimaryMarketSymbols(limit = 250) {
+  const safeLimit = clamp(Number(limit) || 250, 1, 2000);
+  const universeSymbols = await listActiveUniverseSymbols(safeLimit, {
+    country: SNAPSHOT_REGION,
+  });
+
+  if (universeSymbols.length) {
+    return universeSymbols;
+  }
+
+  logger.warn("Universe empty for market data list; falling back to watchlist_symbols", {
+    limit: safeLimit,
+    region: SNAPSHOT_REGION,
+  });
+
+  return getActiveWatchlistSymbols(safeLimit);
 }
 
 function pct(part, total) {
@@ -253,11 +281,11 @@ function buildRunRecommendations(summary, health) {
   const recommendations = [];
 
   if (safeNum(summary.totalActiveSymbols, 0) < 100) {
-    recommendations.push("Watchlist ist noch zu klein für starkes Lernen.");
+    recommendations.push("Aktive Symbolbasis ist noch zu klein für starkes Lernen.");
   }
 
   if (safeNum(summary.symbolsTotal, 0) < safeNum(summary.batchSize, 0)) {
-    recommendations.push("Batch kleiner als erwartet: Watchlist oder Filter prüfen.");
+    recommendations.push("Batch kleiner als erwartet: Universe oder Filter prüfen.");
   }
 
   if (safeNum(health.successRate, 0) < 85) {
@@ -1185,7 +1213,7 @@ async function getMarketData(symbol) {
   try {
     const symbols = symbol
       ? [String(symbol).trim().toUpperCase()]
-      : await getActiveWatchlistSymbols(250);
+      : await loadPrimaryMarketSymbols(250);
 
     const results = [];
 
@@ -1224,5 +1252,6 @@ async function getMarketData(symbol) {
 module.exports = {
   getMarketData,
   buildMarketSnapshot,
+  hydrateMarketRuntimeState,
   ensureTablesExist,
 };
