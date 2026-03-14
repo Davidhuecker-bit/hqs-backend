@@ -9,8 +9,7 @@
    - `OPENAI_API_KEY` (required for AI routes, but the API can now boot without it)
    - `FMP_API_KEY`
    - `FINNHUB_API_KEY`
-   - `MASSIVE_API_KEY`
-   - `TWELVE_DATA_API_KEY`
+   - `MASSIVE_API_KEY` and/or `TWELVE_DATA_API_KEY` for quotes/historical data (configure at least one)
 5. Point Railway health checks to `GET /health`.
 6. Keep `RUN_JOBS=false` for a pure API service. If you want background jobs in Railway too, run a separate worker service or enable the flag intentionally.
 
