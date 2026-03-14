@@ -11,7 +11,10 @@ try {
 
 const marketNewsRepository = require("./marketNews.repository");
 const { loadEntityMapBySymbols } = require("./entityMap.repository");
-const { analyzeNewsArticle } = require("./newsIntelligence.service");
+const {
+  analyzeNewsArticle,
+  buildNewsLifecycle,
+} = require("./newsIntelligence.service");
 
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const FMP_NEWS_URL = "https://financialmodelingprep.com/api/v3/stock_news";
@@ -225,6 +228,8 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
     requestedSymbols,
     fetchedItems: 0,
     storedItems: 0,
+    cooledItems: 0,
+    expiredItems: 0,
     failedSymbols: [],
   };
 
@@ -260,9 +265,14 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
       if (!normalized) continue;
 
       const intelligence = analyzeNewsArticle(normalized, entityMapBySymbol) || {};
+      const lifecycle = buildNewsLifecycle(normalized, intelligence);
       normalizedItems.push({
         ...normalized,
         intelligence,
+        retentionClass: lifecycle.retentionClass,
+        expiresAt: lifecycle.expiresAt,
+        isActiveForScoring: lifecycle.isActiveForScoring,
+        lifecycleState: lifecycle.lifecycleState,
       });
     } catch (error) {
       const failedSymbol = cleanSymbol(entry?.fallbackSymbol);
@@ -285,6 +295,9 @@ async function collectAndStoreMarketNews(symbols, limitPerSymbol = 5) {
     await marketNewsRepository.initMarketNewsTable();
     const result = await marketNewsRepository.upsertMarketNews(normalizedItems);
     summary.storedItems = Number(result?.insertedOrUpdated ?? 0) || 0;
+    const lifecycleSummary = await marketNewsRepository.syncMarketNewsLifecycleStates();
+    summary.cooledItems = Number(lifecycleSummary?.cooled ?? 0) || 0;
+    summary.expiredItems = Number(lifecycleSummary?.expired ?? 0) || 0;
   } catch (error) {
     summary.failedSymbols = requestedSymbols.slice();
 
@@ -315,6 +328,18 @@ function extractPublishedTimestamp(item) {
 }
 
 function normalizeLoadedNewsItem(item) {
+  const intelligence = safeJson(item?.intelligence, {});
+  const lifecycle = buildNewsLifecycle(item, intelligence);
+  const explicitActiveForScoring =
+    typeof item?.isActiveForScoring === "boolean"
+      ? item.isActiveForScoring
+      : typeof item?.is_active_for_scoring === "boolean"
+        ? item.is_active_for_scoring
+        : null;
+  const explicitLifecycleState = cleanText(
+    item?.lifecycleState ?? item?.lifecycle_state
+  )?.toLowerCase();
+
   return {
     symbol: cleanSymbol(item?.symbol),
     title: cleanText(item?.title),
@@ -327,7 +352,17 @@ function normalizeLoadedNewsItem(item) {
     sourceType: cleanText(item?.sourceType ?? item?.source_type),
     entityHint: safeJson(item?.entityHint ?? item?.entity_hint, {}),
     rawPayload: safeJson(item?.rawPayload ?? item?.raw_payload, {}),
-    intelligence: safeJson(item?.intelligence, {}),
+    intelligence,
+    retentionClass:
+      cleanText(item?.retentionClass ?? item?.retention_class)?.toLowerCase() ||
+      lifecycle.retentionClass,
+    expiresAt: cleanPublishedAt(item?.expiresAt ?? item?.expires_at ?? lifecycle.expiresAt),
+    isActiveForScoring:
+      explicitActiveForScoring === false ? false : lifecycle.isActiveForScoring,
+    lifecycleState:
+      explicitLifecycleState === "expired"
+        ? "expired"
+        : lifecycle.lifecycleState,
   };
 }
 
@@ -405,6 +440,7 @@ function buildTopNewsSummary(items = []) {
 
 function filterAndSortNewsItems(items = [], options = {}) {
   const minRelevance = normalizeMinRelevance(options?.minRelevance);
+  const activeForScoring = options?.activeForScoring === true;
   const allowedDirections = Array.isArray(options?.directions)
     ? options.directions.map((item) => String(item || "").trim().toLowerCase()).filter(Boolean)
     : [];
@@ -413,6 +449,7 @@ function filterAndSortNewsItems(items = [], options = {}) {
     .map(normalizeLoadedNewsItem)
     .filter((item) => item?.symbol && item?.title && item?.url)
     .filter((item) => extractRelevance(item) >= minRelevance)
+    .filter((item) => !activeForScoring || item?.isActiveForScoring === true)
     .filter((item) => {
       if (!allowedDirections.length) return true;
       const direction = String(item?.intelligence?.direction || "neutral").toLowerCase();
@@ -435,7 +472,10 @@ async function getStructuredMarketNewsBySymbols(symbols, limitPerSymbol = 5, opt
 
   const grouped = await marketNewsRepository.loadLatestMarketNewsBySymbols(
     normalizedSymbols,
-    normalizeLimit(limitPerSymbol)
+    normalizeLimit(limitPerSymbol),
+    {
+      onlyScoringActive: options?.activeForScoring === true,
+    }
   );
 
   const result = {};
@@ -452,6 +492,27 @@ async function getStructuredMarketNewsBySymbols(symbols, limitPerSymbol = 5, opt
   return result;
 }
 
+async function getScoringActiveMarketNewsBySymbols(symbols, limitPerSymbol = 5, options = {}) {
+  const normalizedSymbols = normalizeSymbols(symbols);
+  if (!normalizedSymbols.length) return {};
+
+  const grouped = await marketNewsRepository.loadScoringActiveMarketNewsBySymbols(
+    normalizedSymbols,
+    normalizeLimit(limitPerSymbol)
+  );
+
+  const result = {};
+  for (const symbol of normalizedSymbols) {
+    const items = Array.isArray(grouped?.[symbol]) ? grouped[symbol] : [];
+    result[symbol] = filterAndSortNewsItems(items, {
+      ...options,
+      activeForScoring: true,
+    });
+  }
+
+  return result;
+}
+
 module.exports = {
   fetchFmpMarketNewsForSymbols,
   normalizeFmpNewsItem,
@@ -462,4 +523,5 @@ module.exports = {
   buildTopNewsSummary,
   filterAndSortNewsItems,
   getStructuredMarketNewsBySymbols,
+  getScoringActiveMarketNewsBySymbols,
 };
