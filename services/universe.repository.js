@@ -152,50 +152,114 @@ async function setCursor(cursor, key = CURSOR_KEY_SNAPSHOT) {
   );
 }
 
-async function countActiveUniverse() {
+async function countActiveUniverse(country = null) {
+  const args = [];
+  const filters = [`is_active = TRUE`];
+
+  if (country) {
+    args.push(String(country).trim().toUpperCase());
+    filters.push(`UPPER(COALESCE(country, 'US')) = $1`);
+  }
+
   const res = await pool.query(
-    `SELECT COUNT(*)::bigint AS c FROM universe_symbols WHERE is_active = TRUE`
+    `SELECT COUNT(*)::bigint AS c FROM universe_symbols WHERE ${filters.join(" AND ")}`,
+    args
   );
   const n = Number(res.rows?.[0]?.c ?? 0);
   return Number.isFinite(n) ? n : 0;
+}
+
+async function listActiveUniverseSymbols(limit = 150, options = {}) {
+  const lim = Number(limit);
+  const safeLimit = Number.isFinite(lim) && lim > 0 ? Math.min(lim, 5000) : 150;
+  const params = [safeLimit];
+  const filters = [`is_active = TRUE`];
+
+  const country = String(options?.country || "").trim().toUpperCase();
+  if (country) {
+    params.push(country);
+    filters.push(`UPPER(COALESCE(country, 'US')) = $${params.length}`);
+  }
+
+  const res = await pool.query(
+    `
+    SELECT symbol
+    FROM universe_symbols
+    WHERE ${filters.join(" AND ")}
+    ORDER BY priority ASC, symbol ASC
+    LIMIT $1
+    `,
+    params
+  );
+
+  return (res.rows || [])
+    .map((row) => String(row.symbol || "").trim().toUpperCase())
+    .filter(Boolean);
 }
 
 /**
  * Get next batch of active symbols, using OFFSET cursor.
  * If end reached, cursor resets to 0 and batch starts from beginning.
  */
-async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT) {
+async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT, options = {}) {
   const lim = Number(limit);
   const safeLimit = Number.isFinite(lim) && lim > 0 ? Math.min(lim, 500) : 150;
+  const country = String(options?.country || "").trim().toUpperCase();
 
+  let wrapped = false;
   let cursor = await getCursor(key);
 
   async function fetchBatch(offset) {
+    const params = [safeLimit, offset];
+    const filters = [`is_active = TRUE`];
+
+    if (country) {
+      params.push(country);
+      filters.push(`UPPER(COALESCE(country, 'US')) = $${params.length}`);
+    }
+
     const res = await pool.query(
       `
-      SELECT symbol
+      SELECT symbol, priority, country
       FROM universe_symbols
-      WHERE is_active = TRUE
-      ORDER BY priority DESC, symbol ASC
+      WHERE ${filters.join(" AND ")}
+      -- lower numeric priority wins, matching watchlist ordering
+      ORDER BY priority ASC, symbol ASC
       LIMIT $1 OFFSET $2
       `,
-      [safeLimit, offset]
+      params
     );
-    return res.rows.map((r) => String(r.symbol).toUpperCase());
+    return res.rows.map((row) => ({
+      symbol: String(row.symbol || "").trim().toUpperCase(),
+      priority: Number.isFinite(Number(row.priority)) ? Number(row.priority) : 1,
+      country: String(row.country || "US").trim().toUpperCase() || "US",
+    }));
   }
 
+  const totalActive = await countActiveUniverse(country || null);
   let symbols = await fetchBatch(cursor);
 
   // If we hit the end, wrap around
   if (!symbols.length && cursor > 0) {
+    wrapped = true;
     cursor = 0;
     symbols = await fetchBatch(cursor);
   }
 
-  const nextCursor = cursor + symbols.length;
+  const nextCursor =
+    totalActive > 0
+      ? (cursor + symbols.length) % totalActive
+      : 0;
   await setCursor(nextCursor, key);
 
-  return { symbols, cursor, nextCursor };
+  return {
+    symbols: symbols.map((entry) => entry.symbol),
+    items: symbols,
+    cursor,
+    nextCursor,
+    totalActive,
+    wrapped,
+  };
 }
 
 module.exports = {
@@ -203,6 +267,7 @@ module.exports = {
   initUniverseTables,
   upsertUniverseSymbols,
   countActiveUniverse,
+  listActiveUniverseSymbols,
   getUniverseBatch,
   getCursor,
   setCursor,

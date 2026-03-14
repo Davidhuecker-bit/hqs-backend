@@ -17,6 +17,31 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+function normalizeSymbols(symbols = []) {
+  return [
+    ...new Set(
+      (Array.isArray(symbols) ? symbols : [])
+        .map((symbol) => String(symbol || "").trim().toUpperCase())
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function safeJson(value, fallback = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return fallback;
+  }
+
+  try {
+    if (typeof structuredClone === "function") {
+      return structuredClone(value);
+    }
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return fallback;
+  }
+}
+
 /* =========================================================
    TABLE INIT
 ========================================================= */
@@ -276,6 +301,64 @@ async function getSetupHistory(setupSignature, limit = 200) {
   }
 }
 
+async function loadLatestOutcomeTrackingBySymbols(symbols = []) {
+  try {
+    const normalizedSymbols = normalizeSymbols(symbols);
+    if (!normalizedSymbols.length) return {};
+
+    const res = await pool.query(
+      `
+      SELECT DISTINCT ON (symbol)
+        symbol,
+        regime,
+        final_conviction,
+        final_confidence,
+        opportunity_strength,
+        orchestrator_confidence,
+        payload,
+        predicted_at
+      FROM outcome_tracking
+      WHERE symbol = ANY($1::text[])
+        AND prediction_type = 'market_view'
+      ORDER BY symbol, predicted_at DESC, id DESC
+      `,
+      [normalizedSymbols]
+    );
+
+    const result = res.rows.reduce((acc, row) => {
+      const symbol = String(row?.symbol || "").trim().toUpperCase();
+      if (!symbol) return acc;
+
+      acc[symbol] = {
+        symbol,
+        regime: row?.regime ?? null,
+        finalConviction: safe(row?.final_conviction, 0),
+        finalConfidence: safe(row?.final_confidence, 0),
+        opportunityStrength: safe(row?.opportunity_strength, 0),
+        orchestratorConfidence: safe(row?.orchestrator_confidence, 0),
+        predictedAt: row?.predicted_at
+          ? new Date(row.predicted_at).toISOString()
+          : null,
+        payload: safeJson(row?.payload, {}),
+      };
+      return acc;
+    }, {});
+
+    for (const symbol of normalizedSymbols) {
+      if (!Object.prototype.hasOwnProperty.call(result, symbol)) {
+        result[symbol] = null;
+      }
+    }
+
+    return result;
+  } catch (err) {
+    logger.error("loadLatestOutcomeTrackingBySymbols error", {
+      message: err.message,
+    });
+    return {};
+  }
+}
+
 module.exports = {
   initOutcomeTrackingTable,
   createOutcomeTrackingEntry,
@@ -283,4 +366,5 @@ module.exports = {
   completeOutcomePrediction,
   calculateActualReturn,
   getSetupHistory,
+  loadLatestOutcomeTrackingBySymbols,
 };

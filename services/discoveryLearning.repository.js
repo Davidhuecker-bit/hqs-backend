@@ -7,6 +7,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+const RUNTIME_STATE_MARKET_MEMORY_KEY = "market_memory_store";
+const RUNTIME_STATE_META_LEARNING_KEY = "meta_learning_store";
+
 /**
  * Init / Migration-safe:
  * - erstellt discovery_history, falls nicht vorhanden
@@ -75,6 +78,77 @@ async function initDiscoveryTable() {
     CREATE INDEX IF NOT EXISTS idx_discovery_history_symbol_created
       ON discovery_history(symbol, created_at DESC);
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS learning_runtime_state (
+      key TEXT PRIMARY KEY,
+      payload JSONB DEFAULT '{}'::jsonb,
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_learning_runtime_state_updated_at
+      ON learning_runtime_state(updated_at DESC);
+  `);
+}
+
+function normalizeStateKey(key) {
+  const normalizedKey = String(key || "").trim().toLowerCase();
+  return normalizedKey || null;
+}
+
+function safeJson(value, fallback = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return fallback;
+  }
+
+  try {
+    if (typeof structuredClone === "function") {
+      return structuredClone(value);
+    }
+    return JSON.parse(JSON.stringify(value));
+  } catch (_) {
+    return fallback;
+  }
+}
+
+async function loadRuntimeState(key) {
+  const normalizedKey = normalizeStateKey(key);
+  if (!normalizedKey) return {};
+
+  try {
+    const res = await pool.query(
+      `
+      SELECT payload
+      FROM learning_runtime_state
+      WHERE key = $1
+      LIMIT 1
+      `,
+      [normalizedKey]
+    );
+
+    if (!res.rows.length) return {};
+    return safeJson(res.rows[0].payload, {});
+  } catch (_) {
+    return {};
+  }
+}
+
+async function saveRuntimeState(key, payload = {}) {
+  const normalizedKey = normalizeStateKey(key);
+  if (!normalizedKey) return;
+
+  await pool.query(
+    `
+    INSERT INTO learning_runtime_state (key, payload, updated_at)
+    VALUES ($1, $2::jsonb, NOW())
+    ON CONFLICT (key) DO UPDATE SET
+      payload = EXCLUDED.payload,
+      updated_at = NOW()
+    `,
+    [normalizedKey, JSON.stringify(safeJson(payload, {}))]
+  );
 }
 
 /**
@@ -203,6 +277,10 @@ async function updateDiscoveryResult(id, return7d) {
 module.exports = {
   initDiscoveryTable,
   saveDiscovery,
+  loadRuntimeState,
+  saveRuntimeState,
+  RUNTIME_STATE_MARKET_MEMORY_KEY,
+  RUNTIME_STATE_META_LEARNING_KEY,
 
   // neu (sauber)
   getPendingDiscoveries7d,

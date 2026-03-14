@@ -2,7 +2,7 @@
 
 /*
   HQS Market System – Enterprise AI Market Pipeline
-  DB-first snapshot scanning (watchlist based)
+  DB-first snapshot scanning (universe-first)
 
   Enthält:
   - Step 1: Snapshot Summary
@@ -63,6 +63,15 @@ const {
   initOutcomeTrackingTable,
   createOutcomeTrackingEntry,
 } = require("./outcomeTracking.repository");
+const {
+  initUniverseTables,
+  getUniverseBatch,
+} = require("./universe.repository");
+const {
+  loadRuntimeState,
+  RUNTIME_STATE_MARKET_MEMORY_KEY,
+  RUNTIME_STATE_META_LEARNING_KEY,
+} = require("./discoveryLearning.repository");
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 const { initMarketNewsTable } = require("./marketNews.repository");
@@ -96,6 +105,7 @@ const SNAPSHOT_STATE_KEY = "snapshot_watchlist_offset";
 
 let marketMemoryStore = {};
 let metaLearningStore = {};
+let runtimePreviewStoresLoaded = false;
 
 /* =========================================================
    UTIL
@@ -108,6 +118,31 @@ function safeNum(v, fallback = 0) {
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
+}
+
+async function ensureRuntimePreviewStoresLoaded() {
+  if (runtimePreviewStoresLoaded) return;
+
+  const [persistedMarketMemory, persistedMetaLearning] = await Promise.all([
+    loadRuntimeState(RUNTIME_STATE_MARKET_MEMORY_KEY),
+    loadRuntimeState(RUNTIME_STATE_META_LEARNING_KEY),
+  ]);
+
+  marketMemoryStore =
+    persistedMarketMemory &&
+    typeof persistedMarketMemory === "object" &&
+    !Array.isArray(persistedMarketMemory)
+      ? persistedMarketMemory
+      : {};
+
+  metaLearningStore =
+    persistedMetaLearning &&
+    typeof persistedMetaLearning === "object" &&
+    !Array.isArray(persistedMetaLearning)
+      ? persistedMetaLearning
+      : {};
+
+  runtimePreviewStoresLoaded = true;
 }
 
 function pct(part, total) {
@@ -319,6 +354,56 @@ async function countActiveSnapshotSymbols(region = SNAPSHOT_REGION) {
 
 async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
   const batchSize = clamp(Number(limit) || SNAPSHOT_BATCH_SIZE, 1, SNAPSHOT_SYMBOL_LIMIT);
+  await initUniverseTables();
+
+  const universeBatch = await getUniverseBatch(batchSize, undefined, {
+    country: SNAPSHOT_REGION,
+  });
+
+  const universeItems = Array.isArray(universeBatch?.items)
+    ? universeBatch.items
+    : [];
+
+  if (universeItems.length) {
+    const candidates = universeItems
+      .map((item) => {
+        const priority = normalizePriority(item.priority);
+        return {
+          symbol: String(item.symbol || "").trim().toUpperCase(),
+          priority,
+          tier: classifyPriorityTier(priority),
+          region: String(item.country || SNAPSHOT_REGION || "us").toLowerCase(),
+        };
+      })
+      .filter((item) => item.symbol);
+
+    const tierMix = candidates.reduce((acc, item) => {
+      acc[item.tier] = (acc[item.tier] || 0) + 1;
+      return acc;
+    }, {});
+
+    logger.info("Snapshot candidates loaded", {
+      count: candidates.length,
+      batchSize,
+      totalActive: safeNum(universeBatch?.totalActive, 0),
+      offsetUsed: safeNum(universeBatch?.cursor, 0),
+      nextOffset: safeNum(universeBatch?.nextCursor, 0),
+      wrapped: Boolean(universeBatch?.wrapped),
+      region: SNAPSHOT_REGION,
+      source: "universe_symbols",
+      tierMix,
+    });
+
+    return {
+      totalActive: safeNum(universeBatch?.totalActive, candidates.length),
+      batchSize,
+      offsetUsed: safeNum(universeBatch?.cursor, 0),
+      nextOffset: safeNum(universeBatch?.nextCursor, 0),
+      wrapped: Boolean(universeBatch?.wrapped),
+      candidates,
+    };
+  }
+
   const totalActive = await countActiveSnapshotSymbols(SNAPSHOT_REGION);
 
   if (!totalActive) {
@@ -420,6 +505,7 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
     nextOffset,
     wrapped,
     region: SNAPSHOT_REGION,
+    source: "watchlist_symbols_fallback",
     tierMix,
   });
 
@@ -473,6 +559,7 @@ async function ensureTablesExist() {
   await initOutcomeTrackingTable();
   await initSnapshotStateTable();
   await initMarketNewsTable();
+  await initUniverseTables();
 
   logger.info("Tables ensured");
 }
@@ -596,6 +683,8 @@ function buildCapitalFlowFallback({ normalized }) {
 ========================================================= */
 
 async function buildMarketSnapshot() {
+  await ensureRuntimePreviewStoresLoaded();
+
   const won = await acquireLock("snapshot_job", 12 * 60);
 
   if (!won) {

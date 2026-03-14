@@ -8,6 +8,10 @@ const {
   getPendingDiscoveries30d,
   updateDiscoveryResult7d,
   updateDiscoveryResult30d,
+  loadRuntimeState,
+  saveRuntimeState,
+  RUNTIME_STATE_MARKET_MEMORY_KEY,
+  RUNTIME_STATE_META_LEARNING_KEY,
 } = require("./discoveryLearning.repository");
 
 const {
@@ -34,6 +38,32 @@ const pool = new Pool({
 
 let marketMemoryStore = {};
 let metaLearningStore = {};
+let runtimeStoresLoaded = false;
+
+async function ensureRuntimeStoresLoaded() {
+  if (runtimeStoresLoaded) return;
+
+  const [persistedMarketMemory, persistedMetaLearning] = await Promise.all([
+    loadRuntimeState(RUNTIME_STATE_MARKET_MEMORY_KEY),
+    loadRuntimeState(RUNTIME_STATE_META_LEARNING_KEY),
+  ]);
+
+  marketMemoryStore =
+    persistedMarketMemory &&
+    typeof persistedMarketMemory === "object" &&
+    !Array.isArray(persistedMarketMemory)
+      ? persistedMarketMemory
+      : {};
+
+  metaLearningStore =
+    persistedMetaLearning &&
+    typeof persistedMetaLearning === "object" &&
+    !Array.isArray(persistedMetaLearning)
+      ? persistedMetaLearning
+      : {};
+
+  runtimeStoresLoaded = true;
+}
 
 /* =========================================================
    DISCOVERY SAVE
@@ -71,6 +101,8 @@ async function saveDiscovery(symbol, score, price) {
 ========================================================= */
 
 async function evaluateDiscoveries() {
+  await ensureRuntimeStoresLoaded();
+
   let done7 = 0;
   let done30 = 0;
 
@@ -131,6 +163,8 @@ async function evaluateDiscoveries() {
 ========================================================= */
 
 async function evaluateTrackedPredictions(limit = 200) {
+  await ensureRuntimeStoresLoaded();
+
   const due = await getDueOutcomePredictions(limit);
 
   if (!due.length) {
@@ -200,6 +234,8 @@ async function evaluateTrackedPredictions(limit = 200) {
       evaluated++;
 
       const payload = row.payload || {};
+      const globalContext =
+        payload?.finalView?.globalContext || payload?.globalContext || {};
 
       /* =========================
          LEARNING ENGINE
@@ -245,8 +281,7 @@ async function evaluateTrackedPredictions(limit = 200) {
           discoveries: payload.discoveries || [],
           narratives: payload.narratives || [],
           features: payload.features || {},
-          crossSignals:
-            payload?.globalContext?.crossAsset?.signals || [],
+          crossSignals: globalContext?.crossAsset?.signals || [],
           prediction: Number(row.ai_score || 0) / 100,
           actualReturn,
           confidence: Number(row.final_confidence || 0) / 100,
@@ -274,25 +309,19 @@ async function evaluateTrackedPredictions(limit = 200) {
           metaStore: metaLearningStore,
           context: {
             regime: row.regime || "neutral",
-            riskMode:
-              payload?.globalContext?.orchestrator?.riskMode?.mode || "neutral",
+            riskMode: globalContext?.orchestrator?.riskMode?.mode || "neutral",
             strategy: row.strategy || "balanced",
             dominantNarrative:
-              payload?.globalContext?.orchestrator?.dominantNarrative?.narrative ||
-              "none",
+              globalContext?.orchestrator?.dominantNarrative?.narrative || "none",
           },
           signalMetrics: {
             trendScore: Number(payload?.features?.trendStrength || 0),
             discoveryCount: Array.isArray(payload?.discoveries)
               ? payload.discoveries.length
               : 0,
-            capitalFlowStrength: Number(
-              payload?.globalContext?.orchestrator?.capitalFlowStrength || 0
-            ),
-            eventCount: Array.isArray(
-              payload?.globalContext?.eventIntelligence?.events
-            )
-              ? payload.globalContext.eventIntelligence.events.length
+            capitalFlowStrength: Number(globalContext?.orchestrator?.capitalFlowStrength || 0),
+            eventCount: Array.isArray(globalContext?.eventIntelligence?.events)
+              ? globalContext.eventIntelligence.events.length
               : 0,
             memoryScore: Number(row.memory_score || 0),
             narrativeCount: Array.isArray(payload?.narratives)
@@ -301,10 +330,8 @@ async function evaluateTrackedPredictions(limit = 200) {
             strategyScore: Number(
               payload?.strategy?.strategyAdjustedScore || 0
             ),
-            crossAssetCount: Array.isArray(
-              payload?.globalContext?.crossAsset?.signals
-            )
-              ? payload.globalContext.crossAsset.signals.length
+            crossAssetCount: Array.isArray(globalContext?.crossAsset?.signals)
+              ? globalContext.crossAsset.signals.length
               : 0,
           },
           actualReturn,
@@ -375,6 +402,14 @@ async function evaluateTrackedPredictions(limit = 200) {
     memoryUpdated,
     metaUpdated,
   };
+
+  if (memoryUpdated > 0) {
+    await saveRuntimeState(RUNTIME_STATE_MARKET_MEMORY_KEY, marketMemoryStore);
+  }
+
+  if (metaUpdated > 0) {
+    await saveRuntimeState(RUNTIME_STATE_META_LEARNING_KEY, metaLearningStore);
+  }
 
   logger.info("Tracked prediction evaluation finished", result);
 
