@@ -9,20 +9,9 @@ try {
   logger = null;
 }
 
-function resolveSslConfig() {
-  if (
-    process.env.NODE_ENV === "development" ||
-    String(process.env.PG_SSL_REJECT_UNAUTHORIZED || "").toLowerCase() === "false"
-  ) {
-    return { rejectUnauthorized: false };
-  }
-
-  return { rejectUnauthorized: true };
-}
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: resolveSslConfig(),
+  ssl: { rejectUnauthorized: false },
 });
 
 const ALLOWED_INTERVALS = new Set(["24 hours", "7 days", "30 days"]);

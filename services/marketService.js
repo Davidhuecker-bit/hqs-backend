@@ -356,17 +356,21 @@ async function loadSnapshotOffset() {
 async function saveSnapshotOffset(offsetValue) {
   const val = clamp(safeNum(offsetValue, 0), 0, 1000000);
 
-  await pool.query(
-    `
-    INSERT INTO snapshot_scan_state (key, offset_value, updated_at)
-    VALUES ($1, $2, NOW())
-    ON CONFLICT (key)
-    DO UPDATE SET
-      offset_value = EXCLUDED.offset_value,
-      updated_at = NOW()
-    `,
-    [SNAPSHOT_STATE_KEY, val]
-  );
+  try {
+    await pool.query(
+      `
+      INSERT INTO snapshot_scan_state (key, offset_value, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (key)
+      DO UPDATE SET
+        offset_value = EXCLUDED.offset_value,
+        updated_at = NOW()
+      `,
+      [SNAPSHOT_STATE_KEY, val]
+    );
+  } catch (err) {
+    logger.error("saveSnapshotOffset failed", { offset: val, message: err.message });
+  }
 }
 
 async function countActiveSnapshotSymbols(region = SNAPSHOT_REGION) {
@@ -1326,9 +1330,14 @@ async function getMarketData(symbol) {
   }
 }
 
+async function pingDb() {
+  await pool.query("SELECT 1");
+}
+
 module.exports = {
   getMarketData,
   buildMarketSnapshot,
   hydrateMarketRuntimeState,
   ensureTablesExist,
+  pingDb,
 };
