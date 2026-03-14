@@ -66,6 +66,10 @@ const {
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 const { initMarketNewsTable } = require("./marketNews.repository");
+const {
+  buildSignalContext,
+  loadOpportunityNewsContextBySymbols,
+} = require("./opportunityScanner.service");
 
 const logger = require("../utils/logger");
 const { Pool } = require("pg");
@@ -643,6 +647,22 @@ async function buildMarketSnapshot() {
     return;
   }
 
+  let scoringActiveNewsBySymbol = {};
+  let newsContextBySymbol = {};
+
+  try {
+    ({
+      scoringActiveNewsBySymbol,
+      newsContextBySymbol,
+    } = await loadOpportunityNewsContextBySymbols(
+      batch.candidates.map((candidate) => candidate.symbol)
+    ));
+  } catch (error) {
+    logger.warn("Snapshot news context load failed", {
+      message: error.message,
+    });
+  }
+
   for (const candidate of batch.candidates) {
     const symbol = candidate.symbol;
     const tier = candidate.tier;
@@ -735,6 +755,17 @@ async function buildMarketSnapshot() {
         0,
         adaptiveWeights,
         regime
+      );
+
+      const newsContext = newsContextBySymbol?.[symbol] || null;
+      const signalContext = buildSignalContext(
+        {
+          symbol,
+          momentum: hqs?.breakdown?.momentum,
+          trend: trendData?.trend,
+        },
+        newsContext,
+        scoringActiveNewsBySymbol?.[symbol] || []
       );
 
       if (hqs) {
@@ -863,6 +894,8 @@ async function buildMarketSnapshot() {
         eventIntelligence,
         marketMemory,
         metaLearning,
+        newsContext,
+        signalContext,
       });
 
       const finalView = buildIntegratedMarketView({
@@ -879,6 +912,8 @@ async function buildMarketSnapshot() {
         simulations,
         resilienceScore,
         research,
+        newsContext,
+        signalContext,
         globalContext: {
           crossAsset,
           capitalFlows,
@@ -886,6 +921,8 @@ async function buildMarketSnapshot() {
           orchestrator,
           marketMemory: marketMemory?.memoryStats || null,
           metaLearning: metaLearning?.trustProfile || null,
+          newsContext,
+          signalContext,
         },
       });
 

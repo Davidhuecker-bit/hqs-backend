@@ -38,6 +38,12 @@ const {
 } = require("./services/marketNews.service");
 
 const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
+const {
+  runMarketNewsRefreshJob,
+} = require("./jobs/marketNewsRefresh.job");
+const {
+  runNewsLifecycleCleanupJob,
+} = require("./jobs/newsLifecycleCleanup.job");
 
 /* =========================================================
 UNIVERSE
@@ -442,6 +448,27 @@ async function runUniverseRefreshLocked() {
   logger.info("Universe refresh executed");
 }
 
+async function runIntegratedWarmupCycle() {
+  try {
+    await runMarketNewsRefreshJob({ closePool: false });
+  } catch (error) {
+    logger.warn("Market news refresh failed inside RUN_JOBS", {
+      message: error.message,
+    });
+  }
+
+  try {
+    await runNewsLifecycleCleanupJob();
+  } catch (error) {
+    logger.warn("News lifecycle cleanup failed inside RUN_JOBS", {
+      message: error.message,
+    });
+  }
+
+  await buildMarketSnapshot();
+  await runForwardLearningLocked();
+}
+
 /* =========================================================
 SERVER START
 ========================================================= */
@@ -476,13 +503,11 @@ app.listen(PORT, async () => {
         });
       }
 
-      await buildMarketSnapshot();
-      await runForwardLearningLocked();
+      await runIntegratedWarmupCycle();
 
       setInterval(async () => {
         try {
-          await buildMarketSnapshot();
-          await runForwardLearningLocked();
+          await runIntegratedWarmupCycle();
           logger.info("Warmup executed");
         } catch (err) {
           logger.error("Warmup Fehler", { message: err.message });

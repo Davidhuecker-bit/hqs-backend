@@ -305,6 +305,43 @@ function buildSignalContext(row = {}, newsContext = null, newsItems = []) {
   return signalContext;
 }
 
+async function loadOpportunityNewsContextBySymbols(
+  symbols = [],
+  limitPerSymbol = OPPORTUNITY_NEWS_LIMIT
+) {
+  const normalizedSymbols = [
+    ...new Set(
+      (Array.isArray(symbols) ? symbols : [])
+        .map((symbol) => String(symbol || "").trim().toUpperCase())
+        .filter(Boolean)
+    ),
+  ];
+
+  if (!normalizedSymbols.length) {
+    return {
+      scoringActiveNewsBySymbol: {},
+      newsContextBySymbol: {},
+    };
+  }
+
+  const scoringActiveNewsBySymbol = await getScoringActiveMarketNewsBySymbols(
+    normalizedSymbols,
+    limitPerSymbol
+  );
+
+  const newsContextBySymbol = normalizedSymbols.reduce((result, symbol) => {
+    result[symbol] = buildScoringNewsContext(
+      scoringActiveNewsBySymbol?.[symbol] || []
+    );
+    return result;
+  }, {});
+
+  return {
+    scoringActiveNewsBySymbol,
+    newsContextBySymbol,
+  };
+}
+
 /* =========================================================
    FALLBACK CONTEXT HELPERS
 ========================================================= */
@@ -543,17 +580,13 @@ async function getTopOpportunities(arg = 10) {
   let signalContextBySymbol = {};
   if (rows.length) {
     try {
-      scoringActiveNewsBySymbol = await getScoringActiveMarketNewsBySymbols(
+      ({
+        scoringActiveNewsBySymbol,
+        newsContextBySymbol,
+      } = await loadOpportunityNewsContextBySymbols(
         rows.map((row) => row.symbol),
         OPPORTUNITY_NEWS_LIMIT
-      );
-
-      newsContextBySymbol = rows.reduce((result, row) => {
-        const symbol = String(row?.symbol || "").trim().toUpperCase();
-        if (!symbol) return result;
-        result[symbol] = buildScoringNewsContext(scoringActiveNewsBySymbol?.[symbol] || []);
-        return result;
-      }, {});
+      ));
 
       signalContextBySymbol = rows.reduce((result, row) => {
         const symbol = String(row?.symbol || "").trim().toUpperCase();
@@ -836,5 +869,7 @@ async function getTopOpportunities(arg = 10) {
 }
 
 module.exports = {
+  buildSignalContext,
+  loadOpportunityNewsContextBySymbols,
   getTopOpportunities,
 };
