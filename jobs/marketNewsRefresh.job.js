@@ -241,8 +241,8 @@ async function run() {
 
   await initJobLocksTable();
 
-  const won = await acquireLock("market_news_refresh_job", 60 * 60);
-  if (!won) {
+  const lockAcquired = await acquireLock("market_news_refresh_job", 60 * 60);
+  if (!lockAcquired) {
     if (logger?.warn) {
       logger.warn("Market news refresh skipped (lock held)");
     }
