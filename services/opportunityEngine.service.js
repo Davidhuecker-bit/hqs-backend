@@ -65,11 +65,11 @@ function getEarlySignalBonus(signal) {
 }
 
 function deriveEarlySignal(input = {}, trendData = null) {
-  const hasMomentumInput =
+  const hasMomentumData =
     Number.isFinite(Number(input?.priceMomentum)) ||
     Number.isFinite(Number(input?.changePercent));
 
-  if (!hasMomentumInput || !trendData?.symbol) return null;
+  if (!hasMomentumData || !trendData?.symbol) return null;
 
   const earlySignals = buildEarlySignals([
     {
@@ -116,10 +116,7 @@ function normalizeInputItem(input = {}) {
     earlySignal,
     marketSentiment: {
       ...marketSentiment,
-      sentimentScore: normalizeSentimentScore(
-        marketSentiment?.sentimentScore,
-        input?.marketSentiment?.sentimentScore
-      ),
+      sentimentScore: normalizeSentimentScore(marketSentiment?.sentimentScore, 0),
     },
     trendLevel: trendData?.trendLevel || null,
   };
