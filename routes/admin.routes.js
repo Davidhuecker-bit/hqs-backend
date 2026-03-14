@@ -40,6 +40,11 @@ const {
   rankPortfolioAntifragility,
   BLACK_SWAN_SCENARIOS,
 } = require("../services/syntheticStressTest.service");
+const {
+  getTechRadarEntries,
+  getEvolutionBoard,
+  markEntriesSeen,
+} = require("../services/techRadar.service");
 
 const router = express.Router();
 
@@ -709,6 +714,97 @@ router.post("/stress-test/single", (req, res) => {
     return res.json({ success: true, ...result, generatedAt: new Date().toISOString() });
   } catch (error) {
     logger.error("Admin stress-test/single error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   TECH-RADAR  –  Innovation Scanner
+========================================================= */
+
+/**
+ * GET /api/admin/tech-radar
+ * Returns recent Tech-Radar entries from arXiv / research RSS feeds.
+ * Query params:
+ *   limit     (number, 1-200, default 50)
+ *   relevance (string: 'high' | 'medium' | 'low')
+ *   category  (string: 'quant_finance' | 'ai_ml' | 'risk_models' | 'other')
+ */
+router.get("/tech-radar", async (req, res) => {
+  try {
+    const limit     = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const relevance = ["high", "medium", "low"].includes(req.query.relevance)
+      ? req.query.relevance : null;
+    const category  = req.query.category || null;
+
+    const entries = await getTechRadarEntries({ limit, relevance, category });
+    return res.json({
+      success: true,
+      entries,
+      count: entries.length,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("Admin tech-radar route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/evolution-board
+ * Returns the Evolution-Board: aggregated upgrade suggestions derived from
+ * high/medium-relevance Tech-Radar discoveries.
+ */
+router.get("/evolution-board", async (req, res) => {
+  try {
+    const board = await getEvolutionBoard();
+    // Mark new entries as seen after delivery
+    markEntriesSeen().catch(() => {});
+    return res.json({ success: true, ...board });
+  } catch (error) {
+    logger.error("Admin evolution-board route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   SAVED CAPITAL  –  Wealth Protection Tracker
+========================================================= */
+
+/**
+ * GET /api/admin/saved-capital
+ * Returns the total fictive capital protected by Guardian / Debate vetoes.
+ * Triggers a background evaluation of unscored near-misses.
+ */
+router.get("/saved-capital", async (req, res) => {
+  try {
+    // Non-blocking evaluation of pending near-miss records
+    evaluateSavedCapital().catch((err) => {
+      logger.warn("saved-capital: background evaluation failed", { message: err.message });
+    });
+
+    const nearMisses = await getNearMisses({ limit: 500, evaluatedOnly: true });
+    const totalSaved = nearMisses.reduce(
+      (sum, row) => sum + (Number(row.saved_capital) || 0), 0
+    );
+    const blockedCount = nearMisses.length;
+    const recentBlocked = nearMisses.slice(0, 10).map((r) => ({
+      symbol:        r.symbol,
+      savedCapital:  Number(r.saved_capital) || 0,
+      marketCluster: r.market_cluster,
+      robustness:    Number(r.robustness_score) || 0,
+      blockedAt:     r.created_at,
+    }));
+
+    return res.json({
+      success: true,
+      totalSavedCapital: Math.round(totalSaved * 100) / 100,
+      blockedSignalsCount: blockedCount,
+      recentBlocked,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("Admin saved-capital route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });

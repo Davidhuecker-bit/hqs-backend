@@ -90,6 +90,8 @@ const { initAgentForecastTable } = require("./services/agentForecast.repository"
 const { initDynamicWeightsTable } = require("./services/causalMemory.repository");
 const { runForecastVerificationJob } = require("./jobs/forecastVerification.job");
 const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
+const { initTechRadarTable } = require("./services/techRadar.service");
+const { runTechRadarJob } = require("./jobs/techRadar.job");
 
 /* =========================================================
 NOTIFICATIONS
@@ -708,6 +710,7 @@ app.listen(PORT, async () => {
     await initNearMissTable();
     await initAgentForecastTable();
     await initDynamicWeightsTable();
+    await initTechRadarTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();
@@ -744,6 +747,7 @@ app.listen(PORT, async () => {
       scheduleDailyUniverseRefresh();
       scheduleDailyForecastVerification();
       scheduleCausalMemoryRecalibration();
+      scheduleTechRadarScan();
     }
 
     startupState.ready = true;
@@ -830,6 +834,28 @@ async function scheduleCausalMemoryRecalibration() {
       logger.error("Causal memory recalibration failed", { message: err.message });
     } finally {
       scheduleCausalMemoryRecalibration();
+    }
+  }, delay);
+}
+
+/* =========================================================
+   TECH-RADAR SCAN  (Innovation Scanner)
+========================================================= */
+
+async function scheduleTechRadarScan() {
+  // Default: run at 06:00 daily (after causal memory at 04:00)
+  const hour   = Number(process.env.TECH_RADAR_HOUR   || 6);
+  const minute = Number(process.env.TECH_RADAR_MINUTE || 0);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+
+  setTimeout(async () => {
+    try {
+      await runTechRadarJob();
+    } catch (err) {
+      logger.error("Tech-Radar scan failed", { message: err.message });
+    } finally {
+      scheduleTechRadarScan();
     }
   }, delay);
 }

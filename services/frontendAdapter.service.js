@@ -73,10 +73,10 @@ function inferAllocation(hqsScore) {
 }
 
 function inferRecommendation(hqsScore) {
-  if (hqsScore >= 75) return "Starkes Setup";
-  if (hqsScore >= 62) return "Kaufzone";
-  if (hqsScore >= 50) return "Beobachten";
-  return "Risiko erhoht";
+  if (hqsScore >= 75) return "Starke Technische Übereinstimmung";
+  if (hqsScore >= 62) return "Technische Übereinstimmung";
+  if (hqsScore >= 50) return "Analytisches Signal – beobachten";
+  return "Kein klares Analytisches Signal";
 }
 
 function inferVolatility(changePercent) {
@@ -97,7 +97,7 @@ function buildSyntheticNewsItems(stock, generatedAt, maxItems = 3) {
       : `${symbol}: Korrekturphase bei ${changePercent.toFixed(2)}%`;
   const scoreTitle =
     hqsScore >= 70
-      ? `${symbol}: Quant-Signal bleibt auf Kaufniveau`
+      ? `${symbol}: Analytisches Signal auf hohem Niveau`
       : `${symbol}: Quant-Signal im neutralen Bereich`;
   const riskTitle =
     hqsScore < 50
