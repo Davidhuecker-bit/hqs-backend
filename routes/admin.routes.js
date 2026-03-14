@@ -19,6 +19,7 @@ const { buildAdminTargets } = require("../engines/adminTargets.engine");
 const { buildAdminCausality } = require("../engines/adminCausality.engine");
 const { buildAdminRelease } = require("../engines/adminRelease.engine");
 const { buildAdminBriefing } = require("../engines/adminBriefing.engine");
+const { buildAdminActionPlan } = require("../engines/adminActionPlan.engine");
 
 const router = express.Router();
 
@@ -338,6 +339,31 @@ router.get("/briefing", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin briefing route error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+router.get("/action-plan", async (req, res) => {
+  try {
+    const { briefing, priorities, recommendations, release } =
+      await buildAdminStack();
+
+    const actionPlan = buildAdminActionPlan({
+      briefing,
+      priorities,
+      recommendations,
+      release,
+    });
+
+    return res.json({
+      success: true,
+      actionPlan,
+    });
+  } catch (error) {
+    logger.error("Admin action plan route error", { message: error.message });
     return res.status(500).json({
       success: false,
       error: error.message,

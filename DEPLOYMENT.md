@@ -16,5 +16,6 @@
 ## What this repository now supports
 
 - `GET /health` returns startup readiness and the last startup error.
+- `GET /api/admin/action-plan` returns the current backend adjustments to focus on plus the most important next step.
 - `CORS_ORIGINS` lets you allow additional Railway/custom frontend domains without changing code.
 - `.env.example` lists the most important deployment variables.
