@@ -4,6 +4,8 @@
   HQS Backtesting Engine – Institutional Version
 */
 
+const { calculateSharpe, calculateMaxDrawdown } = require("./riskMetrics.service");
+
 function safe(v, f = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : f;
@@ -21,6 +23,8 @@ function simulateStrategy(history = [], threshold = 70) {
       winRate: 0,
       totalReturn: 0,
       averageReturn: 0,
+      sharpe: 0,
+      maxDrawdown: 0,
       equityCurve: []
     };
   }
@@ -60,6 +64,8 @@ function simulateStrategy(history = [], threshold = 70) {
     winRate: Math.round(winRate),
     totalReturn: Number(totalReturn.toFixed(2)),
     averageReturn: Number(avgReturn.toFixed(2)),
+    sharpe: calculateSharpe(trades),
+    maxDrawdown: calculateMaxDrawdown(equityCurve),
     equityCurve
   };
 }

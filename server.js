@@ -35,9 +35,13 @@ const { analyzeStockWithGuardian } = require("./services/guardianService");
 const { getMarketDataBySegment } = require("./services/aggregator.service");
 
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
+const { optimizePortfolio } = require("./services/portfolioOptimizer");
+const { simulateStrategy } = require("./services/backtestEngine");
+const { buildGuardianPayload } = require("./services/frontendAdapter.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
+const { getBacktestHistory } = require("./services/factorHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
 
@@ -525,13 +529,102 @@ app.post("/api/portfolio", async (req, res) => {
 
     const result = await calculatePortfolioHQS(normalizedPortfolio);
 
+    const optimizedAllocation = optimizePortfolio(
+      Array.isArray(result?.positions) ? result.positions : normalizedPortfolio
+    );
+
     return res.json({
       success: true,
       ...result,
+      optimizedAllocation,
     });
   } catch (error) {
     logger.error("Portfolio route error", { message: error.message });
 
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
+BACKTEST ROUTE
+========================================================= */
+
+/**
+ * GET /api/backtest?symbol=AAPL&threshold=70
+ * Simulates an HQS-threshold strategy on historical factor+price data.
+ * Returns winRate, totalReturn, averageReturn, sharpe, maxDrawdown.
+ */
+app.get("/api/backtest", async (req, res) => {
+  try {
+    const symbolResult = parseSymbol(req.query.symbol, {
+      required: true,
+      label: "symbol",
+    });
+    if (symbolResult.error) {
+      return badRequest(res, symbolResult.error);
+    }
+
+    const thresholdResult = parseInteger(req.query.threshold, {
+      defaultValue: 70,
+      min: 0,
+      max: 100,
+      label: "threshold",
+    });
+    if (thresholdResult.error) {
+      return badRequest(res, thresholdResult.error);
+    }
+
+    const symbol = symbolResult.value;
+    const threshold = thresholdResult.value;
+
+    const history = await getBacktestHistory(symbol);
+
+    if (!history.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Keine Backtest-Daten verfügbar für dieses Symbol.",
+        symbol,
+      });
+    }
+
+    const result = simulateStrategy(history, threshold);
+
+    return res.json({
+      success: true,
+      symbol,
+      threshold,
+      dataPoints: history.length,
+      ...result,
+    });
+  } catch (error) {
+    logger.error("Backtest route error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
+GUARDIAN DASHBOARD ROUTE
+========================================================= */
+
+/**
+ * GET /api/guardian/dashboard
+ * Returns a fully normalized guardian dashboard payload for the frontend.
+ * Includes portfolioHealth, topSignals, riskFlags, alerts, correlationSeries.
+ */
+app.get("/api/guardian/dashboard", async (req, res) => {
+  try {
+    const raw = await getMarketData();
+    const stocks = Array.isArray(raw) ? raw : [];
+    const payload = buildGuardianPayload(stocks);
+    return res.json(payload);
+  } catch (error) {
+    logger.error("Guardian dashboard route error", { message: error.message });
     return res.status(500).json({
       success: false,
       error: error.message,
