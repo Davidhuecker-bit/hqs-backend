@@ -408,6 +408,102 @@ function calculateConfidence(row, opportunityScore) {
 }
 
 /* =========================================================
+   STRESS-TEST ENGINE
+========================================================= */
+
+const STRESS_SCENARIO_COUNT = 10;
+const STRESS_PERCENT_MIN = 0.05;
+const STRESS_PERCENT_MAX = 0.15;
+const STRESS_ANTIFRAGILE_THRESHOLD = 0.8;
+const STRESS_MIN_HQS_SCORE = 35;
+const STRESS_MIN_OPPORTUNITY_SCORE = 30;
+const STRESS_MIN_OPPORTUNITY_STRENGTH = 20;
+
+function randomStressFactor() {
+  return STRESS_PERCENT_MIN + Math.random() * (STRESS_PERCENT_MAX - STRESS_PERCENT_MIN);
+}
+
+function simulateMarketStress(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return [];
+
+  const variants = [];
+
+  for (let i = 0; i < STRESS_SCENARIO_COUNT; i++) {
+    const volumeStress = randomStressFactor();
+    const rsiStress = randomStressFactor();
+    const priceStress = randomStressFactor();
+
+    const features = safeObject(snapshot.features, {});
+    const signalCtx = safeObject(snapshot.signalContext, {});
+    const orchestratorCtx = safeObject(snapshot.orchestrator, {});
+
+    variants.push({
+      hqsScore: safeNum(snapshot.hqsScore, 0),
+      features: {
+        momentum: Math.max(0, safeNum(features.momentum, 0) * (1 - rsiStress)),
+        quality: safeNum(features.quality, 0),
+        stability: safeNum(features.stability, 0),
+        relative: Math.max(0, safeNum(features.relative, 0) * (1 - rsiStress)),
+        volatility: safeNum(features.volatility, 0),
+        trendStrength: Math.max(0, safeNum(features.trendStrength, 0) * (1 - rsiStress)),
+        relativeVolume: Math.max(0, safeNum(features.relativeVolume, 0) * (1 - volumeStress)),
+        liquidityScore: Math.max(0, safeNum(features.liquidityScore, 0) * (1 - volumeStress)),
+      },
+      signalContext: {
+        signalStrength: Math.max(0, safeNum(signalCtx.signalStrength, 0) * (1 - rsiStress)),
+        trendScore: Math.max(0, safeNum(signalCtx.trendScore, 0) * (1 - rsiStress)),
+        signalDirectionScore: safeNum(signalCtx.signalDirectionScore, 0),
+        signalConfidence: safeNum(signalCtx.signalConfidence, 0),
+        buzzScore: Math.max(0, safeNum(signalCtx.buzzScore, 0) * (1 - volumeStress)),
+        sentimentScore: safeNum(signalCtx.sentimentScore, 0),
+        trendLevel: signalCtx.trendLevel || null,
+        earlySignalType: signalCtx.earlySignalType || null,
+      },
+      orchestrator: {
+        opportunityStrength: Math.max(0, safeNum(orchestratorCtx.opportunityStrength, 0) * (1 - priceStress)),
+        orchestratorConfidence: Math.max(0, safeNum(orchestratorCtx.orchestratorConfidence, 0) * (1 - priceStress)),
+      },
+      entryPrice: Math.max(0, safeNum(snapshot.entryPrice, 0) * (1 - priceStress)),
+    });
+  }
+
+  return variants;
+}
+
+function meetsMinimumSignalCriteria(stressedSnapshot) {
+  const hqs = safeNum(stressedSnapshot?.hqsScore, 0);
+  const features = stressedSnapshot?.features || {};
+
+  const stressedRow = {
+    hqs_score: hqs,
+    momentum: features.momentum,
+    quality: features.quality,
+    stability: features.stability,
+    relative: features.relative,
+    volatility: features.volatility,
+  };
+
+  const opportunityScore = calculateOpportunityScore(stressedRow);
+  const opportunityStrength = safeNum(stressedSnapshot?.orchestrator?.opportunityStrength, 0);
+
+  return (
+    hqs >= STRESS_MIN_HQS_SCORE &&
+    opportunityScore >= STRESS_MIN_OPPORTUNITY_SCORE &&
+    opportunityStrength >= STRESS_MIN_OPPORTUNITY_STRENGTH
+  );
+}
+
+function calculateRobustnessScore(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return 0;
+
+  const variants = simulateMarketStress(snapshot);
+  if (!variants.length) return 0;
+
+  const passing = variants.filter((v) => meetsMinimumSignalCriteria(v)).length;
+  return Number((passing / variants.length).toFixed(2));
+}
+
+/* =========================================================
    OPPORTUNITY TYPE
 ========================================================= */
 
@@ -534,6 +630,7 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
     payload?.orchestrator,
     safeObject(globalContext?.orchestrator, {})
   );
+  const historicalContext = safeObject(payload?.historicalContext, {});
   const newsContextCandidate = finalView?.newsContext ?? globalContext?.newsContext ?? null;
   const signalContextCandidate =
     finalView?.signalContext ?? globalContext?.signalContext ?? null;
@@ -560,6 +657,7 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
       ? finalView.narratives
       : [];
   const opportunityScore = calculateOpportunityScore(row);
+  const robustnessScore = safeNum(historicalContext?.robustness, 0);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
@@ -616,6 +714,9 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
 
     marketMemory: safeObject(globalContext?.marketMemory, null),
     metaLearning: safeObject(globalContext?.metaLearning, null),
+
+    robustnessScore,
+    antifragile: robustnessScore > STRESS_ANTIFRAGILE_THRESHOLD,
 
     advancedUpdatedAt: row?.advanced_updated_at
       ? new Date(row.advanced_updated_at).toISOString()
@@ -633,6 +734,7 @@ function buildFallbackOpportunity(row, tracked = null) {
     payload?.orchestrator,
     safeObject(globalContext?.orchestrator, {})
   );
+  const historicalContext = safeObject(payload?.historicalContext, {});
   const newsContextCandidate = finalView?.newsContext ?? globalContext?.newsContext ?? null;
   const signalContextCandidate =
     finalView?.signalContext ?? globalContext?.signalContext ?? null;
@@ -659,6 +761,7 @@ function buildFallbackOpportunity(row, tracked = null) {
       ? finalView.narratives
       : [];
   const opportunityScore = calculateOpportunityScore(row);
+  const robustnessScore = safeNum(historicalContext?.robustness, 0);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
@@ -715,6 +818,9 @@ function buildFallbackOpportunity(row, tracked = null) {
 
     marketMemory: safeObject(globalContext?.marketMemory, null),
     metaLearning: safeObject(globalContext?.metaLearning, null),
+
+    robustnessScore,
+    antifragile: robustnessScore > STRESS_ANTIFRAGILE_THRESHOLD,
 
     advancedUpdatedAt: row?.advanced_updated_at
       ? new Date(row.advanced_updated_at).toISOString()
@@ -878,4 +984,6 @@ module.exports = {
   hydrateOpportunityRuntimeState,
   loadOpportunityNewsContextBySymbols,
   getTopOpportunities,
+  simulateMarketStress,
+  calculateRobustnessScore,
 };

@@ -80,6 +80,7 @@ const { initMarketNewsTable } = require("./marketNews.repository");
 const {
   buildSignalContext,
   loadOpportunityNewsContextBySymbols,
+  calculateRobustnessScore,
 } = require("./opportunityScanner.service");
 
 const logger = require("../utils/logger");
@@ -1094,6 +1095,55 @@ async function buildMarketSnapshot() {
       );
       summary.hqsSaved++;
 
+      const rawInputSnapshotData = {
+        hqsScore: hqs?.hqsScore,
+        hqsBreakdown: hqs?.breakdown || {},
+        aiScore: brain?.aiScore,
+        regime,
+        strategy: strategy?.strategy || null,
+        features: {
+          momentum: features?.momentum,
+          quality: features?.quality,
+          stability: features?.stability,
+          relative: features?.relative,
+          trendStrength: features?.trendStrength,
+          relativeVolume: features?.relativeVolume,
+          liquidityScore: features?.liquidityScore,
+          volatility: features?.volatility,
+        },
+        signalContext: {
+          signalDirection: signalContext?.signalDirection || null,
+          signalStrength: signalContext?.signalStrength,
+          signalDirectionScore: signalContext?.signalDirectionScore,
+          signalConfidence: signalContext?.signalConfidence,
+          earlySignalType: signalContext?.earlySignalType || null,
+          buzzScore: signalContext?.buzzScore,
+          sentimentScore: signalContext?.sentimentScore,
+          trendScore: signalContext?.trendScore,
+          trendLevel: signalContext?.trendLevel || null,
+        },
+        newsContext: {
+          activeCount: newsContext?.activeCount,
+          direction: newsContext?.direction || null,
+          directionScore: newsContext?.directionScore,
+          strengthScore: newsContext?.strengthScore,
+          weightedRelevance: newsContext?.weightedRelevance,
+          weightedConfidence: newsContext?.weightedConfidence,
+          weightedMarketImpact: newsContext?.weightedMarketImpact,
+          dominantEventType: newsContext?.dominantEventType || null,
+        },
+        orchestrator: {
+          opportunityStrength: orchestrator?.opportunityStrength,
+          orchestratorConfidence: orchestrator?.orchestratorConfidence,
+        },
+        memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
+        entryPrice: normalized?.price,
+        capturedAt: new Date().toISOString(),
+      };
+
+      const robustnessScore = calculateRobustnessScore(rawInputSnapshotData);
+      rawInputSnapshotData.historical_context = { robustness: robustnessScore };
+
       const trackingEntry = await createOutcomeTrackingEntry({
         symbol: normalized.symbol,
         predictionType: "market_view",
@@ -1127,52 +1177,9 @@ async function buildMarketSnapshot() {
           strategy,
           orchestrator,
           finalView,
+          historicalContext: { robustness: robustnessScore },
         },
-        rawInputSnapshot: {
-          hqsScore: hqs?.hqsScore,
-          hqsBreakdown: hqs?.breakdown || {},
-          aiScore: brain?.aiScore,
-          regime,
-          strategy: strategy?.strategy || null,
-          features: {
-            momentum: features?.momentum,
-            quality: features?.quality,
-            stability: features?.stability,
-            relative: features?.relative,
-            trendStrength: features?.trendStrength,
-            relativeVolume: features?.relativeVolume,
-            liquidityScore: features?.liquidityScore,
-            volatility: features?.volatility,
-          },
-          signalContext: {
-            signalDirection: signalContext?.signalDirection || null,
-            signalStrength: signalContext?.signalStrength,
-            signalDirectionScore: signalContext?.signalDirectionScore,
-            signalConfidence: signalContext?.signalConfidence,
-            earlySignalType: signalContext?.earlySignalType || null,
-            buzzScore: signalContext?.buzzScore,
-            sentimentScore: signalContext?.sentimentScore,
-            trendScore: signalContext?.trendScore,
-            trendLevel: signalContext?.trendLevel || null,
-          },
-          newsContext: {
-            activeCount: newsContext?.activeCount,
-            direction: newsContext?.direction || null,
-            directionScore: newsContext?.directionScore,
-            strengthScore: newsContext?.strengthScore,
-            weightedRelevance: newsContext?.weightedRelevance,
-            weightedConfidence: newsContext?.weightedConfidence,
-            weightedMarketImpact: newsContext?.weightedMarketImpact,
-            dominantEventType: newsContext?.dominantEventType || null,
-          },
-          orchestrator: {
-            opportunityStrength: orchestrator?.opportunityStrength,
-            orchestratorConfidence: orchestrator?.orchestratorConfidence,
-          },
-          memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
-          entryPrice: normalized?.price,
-          capturedAt: new Date().toISOString(),
-        },
+        rawInputSnapshot: rawInputSnapshotData,
         analysisRationale: buildAnalysisRationale({
           hqsScore: hqs?.hqsScore,
           aiScore: brain?.aiScore,
