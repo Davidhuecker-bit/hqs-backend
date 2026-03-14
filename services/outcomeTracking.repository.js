@@ -33,6 +33,9 @@ function safeJson(value, fallback = {}) {
   }
 
   try {
+    if (typeof structuredClone === "function") {
+      return structuredClone(value);
+    }
     return JSON.parse(JSON.stringify(value));
   } catch (_) {
     return fallback;
@@ -322,14 +325,11 @@ async function loadLatestOutcomeTrackingBySymbols(symbols = []) {
       [normalizedSymbols]
     );
 
-    return normalizedSymbols.reduce((result, symbol) => {
-      result[symbol] = null;
-      return result;
-    }, res.rows.reduce((result, row) => {
+    const result = res.rows.reduce((acc, row) => {
       const symbol = String(row?.symbol || "").trim().toUpperCase();
-      if (!symbol) return result;
+      if (!symbol) return acc;
 
-      result[symbol] = {
+      acc[symbol] = {
         symbol,
         regime: row?.regime ?? null,
         finalConviction: safe(row?.final_conviction, 0),
@@ -341,8 +341,16 @@ async function loadLatestOutcomeTrackingBySymbols(symbols = []) {
           : null,
         payload: safeJson(row?.payload, {}),
       };
-      return result;
-    }, {}));
+      return acc;
+    }, {});
+
+    for (const symbol of normalizedSymbols) {
+      if (!Object.prototype.hasOwnProperty.call(result, symbol)) {
+        result[symbol] = null;
+      }
+    }
+
+    return result;
   } catch (err) {
     logger.error("loadLatestOutcomeTrackingBySymbols error", {
       message: err.message,

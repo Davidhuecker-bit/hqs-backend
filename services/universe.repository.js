@@ -223,6 +223,7 @@ async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT, options 
       SELECT symbol, priority, country
       FROM universe_symbols
       WHERE ${filters.join(" AND ")}
+      -- lower numeric priority wins, matching watchlist ordering
       ORDER BY priority ASC, symbol ASC
       LIMIT $1 OFFSET $2
       `,

@@ -104,6 +104,9 @@ function safeJson(value, fallback = {}) {
   }
 
   try {
+    if (typeof structuredClone === "function") {
+      return structuredClone(value);
+    }
     return JSON.parse(JSON.stringify(value));
   } catch (_) {
     return fallback;
