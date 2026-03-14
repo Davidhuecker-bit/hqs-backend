@@ -9,10 +9,23 @@ try {
   logger = null;
 }
 
+function resolveSslConfig() {
+  if (
+    process.env.NODE_ENV === "development" ||
+    String(process.env.PG_SSL_REJECT_UNAUTHORIZED || "").toLowerCase() === "false"
+  ) {
+    return { rejectUnauthorized: false };
+  }
+
+  return { rejectUnauthorized: true };
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: resolveSslConfig(),
 });
+
+const ALLOWED_INTERVALS = new Set(["24 hours", "7 days", "30 days"]);
 
 function parseSnapshotValue(value) {
   if (!value) return null;
@@ -73,6 +86,11 @@ async function saveAdminSnapshot({ insights, diagnostics, validation, tuning }) 
 }
 
 async function loadAdminSnapshotBefore(intervalValue) {
+  const normalizedInterval = String(intervalValue || "24 hours").trim().toLowerCase();
+  if (!ALLOWED_INTERVALS.has(normalizedInterval)) {
+    throw new Error(`Unsupported admin snapshot interval: ${intervalValue}`);
+  }
+
   const res = await pool.query(
     `
     SELECT insights, diagnostics, validation, tuning, created_at
@@ -81,7 +99,7 @@ async function loadAdminSnapshotBefore(intervalValue) {
     ORDER BY created_at DESC
     LIMIT 1
     `,
-    [String(intervalValue || "24 hours")]
+    [normalizedInterval]
   );
 
   return normalizeSnapshotRow(res.rows?.[0]);

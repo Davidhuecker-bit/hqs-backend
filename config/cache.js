@@ -18,12 +18,26 @@ try {
   }
 }
 
-const DEFAULT_TTL_SECONDS = Number(process.env.CACHE_TTL_SECONDS || 600);
+function normalizeBaseTtl(ttlSeconds, fallback = 600) {
+  const ttl = Number(ttlSeconds);
+  if (Number.isFinite(ttl) && ttl > 0) return ttl;
+  return fallback;
+}
+
+const DEFAULT_TTL_SECONDS = normalizeBaseTtl(
+  process.env.CACHE_TTL_SECONDS,
+  600
+);
+
+function normalizeTtl(ttlSeconds) {
+  return normalizeBaseTtl(ttlSeconds, DEFAULT_TTL_SECONDS);
+}
+
 function createMemoryFallbackCache(defaultTtlSeconds) {
   const store = new Map();
 
   function isExpired(entry) {
-    return Boolean(entry?.expiresAt) && entry.expiresAt <= Date.now();
+    return entry?.expiresAt != null && entry.expiresAt <= Date.now();
   }
 
   function getEntry(key) {
@@ -81,18 +95,24 @@ if (
   }
 }
 
-function normalizeTtl(ttlSeconds) {
-  const ttl = Number(ttlSeconds);
-  if (Number.isFinite(ttl) && ttl > 0) return ttl;
-  return DEFAULT_TTL_SECONDS;
-}
-
 async function get(key) {
   if (redisClient) {
     try {
       const value = await redisClient.get(key);
-      if (value !== null && value !== undefined) {
-        localCache.set(key, value);
+      if (value != null) {
+        let localTtl = DEFAULT_TTL_SECONDS;
+        try {
+          if (typeof redisClient.ttl === "function") {
+            const remainingTtl = await redisClient.ttl(key);
+            if (Number.isFinite(remainingTtl) && remainingTtl > 0) {
+              localTtl = remainingTtl;
+            }
+          }
+        } catch (_) {
+          localTtl = DEFAULT_TTL_SECONDS;
+        }
+
+        localCache.set(key, value, localTtl);
         return value;
       }
     } catch (error) {
