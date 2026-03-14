@@ -26,6 +26,8 @@ const { buildAdminCausality } = require("../engines/adminCausality.engine");
 const { buildAdminRelease } = require("../engines/adminRelease.engine");
 const { buildAdminBriefing } = require("../engines/adminBriefing.engine");
 const { buildAdminActionPlan } = require("../engines/adminActionPlan.engine");
+const { getNearMisses, evaluateSavedCapital } = require("../services/autonomyAudit.repository");
+const { getInterMarketCorrelation } = require("../services/interMarketCorrelation.service");
 
 const router = express.Router();
 
@@ -437,6 +439,67 @@ router.get("/portfolio/:symbol/audit-history", async (req, res) => {
     return res.json({ success: true, history });
   } catch (error) {
     logger.error("Admin portfolio audit-history route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   VIRTUAL CAPITAL PROTECTOR  –  near-miss feed
+========================================================= */
+
+/**
+ * GET /api/admin/near-misses
+ * Returns Guardian / Debate blocked signals with saved_capital estimates.
+ * Query params:
+ *   limit         (number, 1-100, default 25)
+ *   evaluatedOnly (boolean, default false) – only return evaluated records
+ */
+router.get("/near-misses", async (req, res) => {
+  try {
+    // Trigger evaluation of pending near-misses (fire-and-forget)
+    evaluateSavedCapital().catch((err) => {
+      logger.warn("near-misses: background evaluation failed", { message: err.message });
+    });
+
+    const limitParsed = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(limitParsed) ? Math.min(100, Math.max(1, limitParsed)) : 25;
+    const evaluatedOnly = req.query.evaluatedOnly === "true";
+
+    const nearMisses = await getNearMisses({ limit, evaluatedOnly });
+
+    const totalSavedCapital = nearMisses.reduce(
+      (sum, row) => sum + (Number(row.saved_capital) || 0),
+      0
+    );
+
+    return res.json({
+      success: true,
+      nearMisses,
+      count: nearMisses.length,
+      totalSavedCapital: Number(totalSavedCapital.toFixed(2)),
+      unit: "EUR (virtuell)",
+    });
+  } catch (error) {
+    logger.error("Admin near-misses route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   INTER-MARKET CORRELATION  –  BTC/Gold early-warning feed
+========================================================= */
+
+/**
+ * GET /api/admin/inter-market
+ * Returns the latest BTC/USD and Gold correlation snapshot.
+ * Results are cached for 5 minutes in the service layer.
+ */
+router.get("/inter-market", async (req, res) => {
+  try {
+    const data = await getInterMarketCorrelation();
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    logger.error("Admin inter-market route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
