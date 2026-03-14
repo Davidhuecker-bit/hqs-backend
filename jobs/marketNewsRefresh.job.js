@@ -18,6 +18,10 @@ const {
 const {
   loadEntityMapBySymbols,
 } = require("../services/entityMap.repository");
+const {
+  initJobLocksTable,
+  acquireLock,
+} = require("../services/jobLock.repository");
 
 const {
   analyzeNewsArticle,
@@ -235,108 +239,146 @@ async function run() {
     expired: 0,
   };
 
-  try {
-    await marketNewsRepository.initMarketNewsTable();
+  await initJobLocksTable();
 
-    const symbols = await loadTargetSymbols(SYMBOL_LIMIT);
-    summary.symbolsLoaded = symbols.length;
-
-    if (!symbols.length) {
-      if (logger?.warn) {
-        logger.warn("No symbols found in universe_symbols, watchlist_symbols or entity_map");
-      }
-      return;
+  const lockAcquired = await acquireLock("market_news_refresh_job", 60 * 60);
+  if (!lockAcquired) {
+    if (logger?.warn) {
+      logger.warn("Market news refresh skipped (lock held)");
     }
 
-    const entityMapBySymbol = await loadEntityMapBySymbols(symbols);
-    summary.symbolsWithEntityMap = Object.keys(entityMapBySymbol || {}).length;
+    return {
+      skipped: true,
+      summary,
+    };
+  }
 
-    if (logger?.info) {
-      logger.info("Market news refresh started", {
-        symbolsLoaded: summary.symbolsLoaded,
-        symbolsWithEntityMap: summary.symbolsWithEntityMap,
-        perSymbolLimit: NEWS_LIMIT_PER_SYMBOL,
-        maxFeedsPerSymbol: MAX_FEEDS_PER_SYMBOL,
-        minMatchScore: MIN_MATCH_SCORE,
-      });
+  await marketNewsRepository.initMarketNewsTable();
+
+  const symbols = await loadTargetSymbols(SYMBOL_LIMIT);
+  summary.symbolsLoaded = symbols.length;
+
+  if (!symbols.length) {
+    if (logger?.warn) {
+      logger.warn("No symbols found in universe_symbols, watchlist_symbols or entity_map");
     }
+    return {
+      skipped: true,
+      summary,
+    };
+  }
 
-    const rows = await collectFreeNewsForSymbols(symbols, entityMapBySymbol, {
+  const entityMapBySymbol = await loadEntityMapBySymbols(symbols);
+  summary.symbolsWithEntityMap = Object.keys(entityMapBySymbol || {}).length;
+
+  if (logger?.info) {
+    logger.info("Market news refresh started", {
+      symbolsLoaded: summary.symbolsLoaded,
+      symbolsWithEntityMap: summary.symbolsWithEntityMap,
+      perSymbolLimit: NEWS_LIMIT_PER_SYMBOL,
       maxFeedsPerSymbol: MAX_FEEDS_PER_SYMBOL,
-      maxItemsPerSymbol: NEWS_LIMIT_PER_SYMBOL,
       minMatchScore: MIN_MATCH_SCORE,
-      timeoutMs: REQUEST_TIMEOUT_MS,
     });
+  }
 
-    summary.rowsFetched = rows.length;
+  const rows = await collectFreeNewsForSymbols(symbols, entityMapBySymbol, {
+    maxFeedsPerSymbol: MAX_FEEDS_PER_SYMBOL,
+    maxItemsPerSymbol: NEWS_LIMIT_PER_SYMBOL,
+    minMatchScore: MIN_MATCH_SCORE,
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
 
-    const normalizedItems = [];
+  summary.rowsFetched = rows.length;
 
-    for (const rawItem of rows) {
-      try {
-        const intelligence = analyzeNewsArticle(rawItem, entityMapBySymbol);
-        summary.intelligenceBuilt += 1;
+  const normalizedItems = [];
 
-        const item = normalizeCollectedNewsItem(
-          rawItem,
-          rawItem?.symbol,
-          intelligence
-        );
+  for (const rawItem of rows) {
+    try {
+      const intelligence = analyzeNewsArticle(rawItem, entityMapBySymbol);
+      summary.intelligenceBuilt += 1;
 
-        if (!item) continue;
+      const item = normalizeCollectedNewsItem(
+        rawItem,
+        rawItem?.symbol,
+        intelligence
+      );
 
-        summary.rowsNormalized += 1;
-        const lifecycle = buildNewsLifecycle(item, intelligence);
+      if (!item) continue;
 
-        normalizedItems.push({
-          ...item,
-          retentionClass: lifecycle.retentionClass,
-          expiresAt: lifecycle.expiresAt,
-          isActiveForScoring: lifecycle.isActiveForScoring,
-          lifecycleState: lifecycle.lifecycleState,
+      summary.rowsNormalized += 1;
+      const lifecycle = buildNewsLifecycle(item, intelligence);
+
+      normalizedItems.push({
+        ...item,
+        retentionClass: lifecycle.retentionClass,
+        expiresAt: lifecycle.expiresAt,
+        isActiveForScoring: lifecycle.isActiveForScoring,
+        lifecycleState: lifecycle.lifecycleState,
+      });
+    } catch (error) {
+      summary.insertErrors += 1;
+
+      if (logger?.warn) {
+        logger.warn("Market news insert failed", {
+          symbol: rawItem?.symbol || null,
+          url: rawItem?.url || null,
+          message: error.message,
         });
-      } catch (error) {
-        summary.insertErrors += 1;
-
-        if (logger?.warn) {
-          logger.warn("Market news insert failed", {
-            symbol: rawItem?.symbol || null,
-            url: rawItem?.url || null,
-            message: error.message,
-          });
-        }
       }
     }
+  }
 
-    if (normalizedItems.length) {
-      const result = await marketNewsRepository.upsertMarketNews(normalizedItems);
-      summary.inserted = Number(result?.insertedOrUpdated ?? 0) || 0;
-      summary.duplicatesSkipped = Math.max(
-        0,
-        summary.rowsNormalized - summary.inserted
-      );
-      const lifecycleSummary = await marketNewsRepository.syncMarketNewsLifecycleStates();
-      summary.cooled = Number(lifecycleSummary?.cooled ?? 0) || 0;
-      summary.expired = Number(lifecycleSummary?.expired ?? 0) || 0;
-    }
+  if (normalizedItems.length) {
+    const result = await marketNewsRepository.upsertMarketNews(normalizedItems);
+    summary.inserted = Number(result?.insertedOrUpdated ?? 0) || 0;
+    summary.duplicatesSkipped = Math.max(
+      0,
+      summary.rowsNormalized - summary.inserted
+    );
+    const lifecycleSummary = await marketNewsRepository.syncMarketNewsLifecycleStates();
+    summary.cooled = Number(lifecycleSummary?.cooled ?? 0) || 0;
+    summary.expired = Number(lifecycleSummary?.expired ?? 0) || 0;
+  }
 
-    if (logger?.info) {
-      logger.info("Market news refresh completed", summary);
-    }
-  } catch (error) {
-    if (logger?.error) {
-      logger.error("Market news refresh job failed", {
-        message: error.message,
-        stack: error.stack,
-      });
-    } else {
-      console.error(error);
-    }
+  if (logger?.info) {
+    logger.info("Market news refresh completed", summary);
+  }
 
-    process.exitCode = 1;
+  return {
+    skipped: false,
+    summary,
+  };
+}
+
+async function runMarketNewsRefreshJob(options = {}) {
+  try {
+    return await run();
   } finally {
-    await pool.end().catch(() => {});
+    if (options?.closePool !== false) {
+      await pool.end().catch(() => {});
+    }
   }
 }
 
-run();
+if (require.main === module) {
+  runMarketNewsRefreshJob()
+    .then(() => {
+      process.exit(0);
+    })
+    .catch((error) => {
+      if (logger?.error) {
+        logger.error("Market news refresh job failed", {
+          message: error.message,
+          stack: error.stack,
+        });
+      } else {
+        console.error(error);
+      }
+
+      process.exit(1);
+    });
+}
+
+module.exports = {
+  runMarketNewsRefreshJob,
+};

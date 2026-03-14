@@ -1,5 +1,12 @@
 "use strict";
 
+/*
+  Legacy/parallel opportunity utility path.
+  The productive live integration stays on
+  opportunityScanner -> marketOrchestrator -> integrationEngine
+  until this module is intentionally consolidated.
+ */
+
 const { buildEarlySignals } = require("./earlySignal.service");
 const { buildMarketSentiment } = require("./marketSentiment.service");
 const { buildTrendingStock } = require("./trendingStocks.service");

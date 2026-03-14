@@ -31,14 +31,29 @@ async function run() {
     ...lifecycleSummary,
     ...cleanupSummary,
   });
+
+  return {
+    ...lifecycleSummary,
+    ...cleanupSummary,
+  };
 }
 
-run()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    logger.error("News lifecycle cleanup failed", {
-      message: error.message,
-      stack: error.stack,
+async function runNewsLifecycleCleanupJob() {
+  return run();
+}
+
+if (require.main === module) {
+  runNewsLifecycleCleanupJob()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      logger.error("News lifecycle cleanup failed", {
+        message: error.message,
+        stack: error.stack,
+      });
+      process.exit(1);
     });
-    process.exit(1);
-  });
+}
+
+module.exports = {
+  runNewsLifecycleCleanupJob,
+};
