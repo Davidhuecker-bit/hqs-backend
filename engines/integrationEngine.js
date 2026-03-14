@@ -15,6 +15,10 @@ function clamp(v, min, max) {
 }
 
 const NEWS_CONVICTION_MAX_ABS = 8;
+// Final conviction uses a softer news profile than the orchestrator so that
+// prepared news context can move ranking meaningfully without dominating HQS/AI.
+// Relevance still leads, market impact remains material, but activity/freshness
+// are deliberately smaller because the scanner already pre-filters to scoring-active news.
 const NEWS_SIGNAL_RELEVANCE_WEIGHT = 0.28;
 const NEWS_SIGNAL_CONFIDENCE_WEIGHT = 0.18;
 const NEWS_SIGNAL_MARKET_IMPACT_WEIGHT = 0.24;
@@ -23,6 +27,7 @@ const NEWS_SIGNAL_PERSISTENCE_WEIGHT = 0.12;
 const NEWS_SIGNAL_ACTIVITY_WEIGHT = 0.08;
 const NEWS_PERSISTENCE_MAX = 160;
 const NEWS_ACTIVITY_CAP = 4;
+const NEWS_REASON_STRENGTH_THRESHOLD = 0.45;
 
 function resolveNewsContext(newsContext = null, globalContext = {}) {
   if (newsContext && typeof newsContext === "object" && !Array.isArray(newsContext)) {
@@ -318,7 +323,7 @@ function buildWhyItIsInteresting({
   const newsStrength = calculateNewsStrength(news, globalContext);
   const newsDirectionScore = calculateNewsDirectionScore(news, globalContext);
 
-  if (safe(news?.activeCount, 0) > 0 && newsStrength >= 0.45) {
+  if (safe(news?.activeCount, 0) > 0 && newsStrength >= NEWS_REASON_STRENGTH_THRESHOLD) {
     if (newsDirectionScore >= 0.12) {
       reasons.push("positive News-Lage");
     } else if (newsDirectionScore <= -0.12) {

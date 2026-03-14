@@ -20,6 +20,8 @@ const {
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const FMP_NEWS_URL = "https://financialmodelingprep.com/api/v3/stock_news";
 const FMP_NEWS_TIMEOUT_MS = Number(process.env.FMP_NEWS_TIMEOUT_MS || 20000);
+// Prepared opportunity news context keeps the article-level weighting balanced at 1.0
+// so relevance stays primary while confidence, impact, freshness and persistence remain supportive.
 const NEWS_CONTEXT_MIN_WEIGHT = 0.2;
 const NEWS_CONTEXT_MAX_WEIGHT = 1.4;
 const NEWS_CONTEXT_RELEVANCE_WEIGHT = 0.32;
@@ -28,6 +30,7 @@ const NEWS_CONTEXT_MARKET_IMPACT_WEIGHT = 0.22;
 const NEWS_CONTEXT_FRESHNESS_WEIGHT = 0.12;
 const NEWS_CONTEXT_PERSISTENCE_WEIGHT = 0.16;
 const NEWS_CONTEXT_MAX_PERSISTENCE_SCORE = 160;
+const NEWS_CONTEXT_PERSISTENCE_TO_SCORE_RATIO = 1.6;
 const NEWS_CONTEXT_EVENT_LIMIT = 3;
 const NEWS_CONTEXT_HEADLINE_LIMIT = 2;
 const NEWS_CONTEXT_REASON_LIMIT = 3;
@@ -475,6 +478,31 @@ function buildNewsSummary({
   return parts.join(" · ");
 }
 
+function calculateContextStrengthScore({
+  weightedRelevance = 0,
+  weightedConfidence = 0,
+  weightedMarketImpact = 0,
+  weightedFreshness = 0,
+  weightedPersistence = 0,
+  totalWeight = 1,
+}) {
+  const safeWeight = totalWeight > 0 ? totalWeight : 1;
+
+  return roundNumber(
+    clamp(
+      weightedRelevance / safeWeight * NEWS_CONTEXT_RELEVANCE_WEIGHT +
+        weightedConfidence / safeWeight * NEWS_CONTEXT_CONFIDENCE_WEIGHT +
+        weightedMarketImpact / safeWeight * NEWS_CONTEXT_MARKET_IMPACT_WEIGHT +
+        weightedFreshness / safeWeight * NEWS_CONTEXT_FRESHNESS_WEIGHT +
+        clamp(weightedPersistence / safeWeight, 0, NEWS_CONTEXT_MAX_PERSISTENCE_SCORE) /
+          NEWS_CONTEXT_PERSISTENCE_TO_SCORE_RATIO *
+          NEWS_CONTEXT_PERSISTENCE_WEIGHT,
+      0,
+      100
+    )
+  );
+}
+
 function normalizeLoadedNewsItem(item) {
   const intelligence = safeJson(item?.intelligence, {});
   const lifecycle = buildNewsLifecycle(item, intelligence);
@@ -612,18 +640,14 @@ function buildScoringNewsContext(items = []) {
     weightedFreshness: roundNumber(weightedFreshness / safeWeight),
     weightedMarketImpact: roundNumber(weightedMarketImpact / safeWeight),
     weightedPersistence: roundNumber(weightedPersistence / safeWeight),
-    strengthScore: roundNumber(
-      clamp(
-        weightedRelevance / safeWeight * 0.32 +
-          weightedConfidence / safeWeight * 0.18 +
-          weightedMarketImpact / safeWeight * 0.24 +
-          weightedFreshness / safeWeight * 0.1 +
-          clamp(weightedPersistence / safeWeight, 0, NEWS_CONTEXT_MAX_PERSISTENCE_SCORE) / 1.6 *
-            0.16,
-        0,
-        100
-      )
-    ),
+    strengthScore: calculateContextStrengthScore({
+      weightedRelevance,
+      weightedConfidence,
+      weightedMarketImpact,
+      weightedFreshness,
+      weightedPersistence,
+      totalWeight: safeWeight,
+    }),
     direction,
     directionScore,
     bullishCount,
@@ -644,10 +668,13 @@ function buildScoringNewsContext(items = []) {
   };
 
   context.summary = buildNewsSummary(context);
+  const sentimentReasons = Array.isArray(context?.marketSentiment?.reasons)
+    ? context.marketSentiment.reasons
+    : [];
   context.reasons = [
     context.summary,
-    context.topHeadline ? `Top-Headline: ${context.topHeadline}` : null,
-    ...context.marketSentiment.reasons,
+    context.topHeadline ? `Top Headline: ${context.topHeadline}` : null,
+    ...sentimentReasons,
   ]
     .filter(Boolean)
     .slice(0, NEWS_CONTEXT_REASON_LIMIT);

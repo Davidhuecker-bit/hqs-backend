@@ -39,6 +39,7 @@ const OPPORTUNITY_NEWS_LIMIT = Math.max(
   1,
   Math.min(Number(process.env.OPPORTUNITY_NEWS_LIMIT || 5), 10)
 );
+const OPPORTUNITY_REASON_LIMIT = 4;
 
 /* =========================================================
    UTIL
@@ -211,7 +212,7 @@ function generateReason(row, newsContext = null) {
     reasons.push("solide Werte");
   }
 
-  return Array.from(new Set(reasons)).slice(0, 4).join(" + ");
+  return Array.from(new Set(reasons)).slice(0, OPPORTUNITY_REASON_LIMIT).join(" + ");
 }
 
 /* =========================================================

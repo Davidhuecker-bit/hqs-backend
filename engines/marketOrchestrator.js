@@ -18,6 +18,9 @@ function clamp(v, min, max) {
 }
 
 const NEWS_DIRECTION_THRESHOLD = 0.12;
+// Orchestrator weights the prepared news block for live signal alignment:
+// relevance still leads, but confidence and market impact stay slightly stronger
+// than in the final conviction layer because this stage judges whether signals agree now.
 const NEWS_STRENGTH_RELEVANCE_WEIGHT = 0.28;
 const NEWS_STRENGTH_CONFIDENCE_WEIGHT = 0.2;
 const NEWS_STRENGTH_MARKET_IMPACT_WEIGHT = 0.26;
@@ -25,7 +28,7 @@ const NEWS_STRENGTH_FRESHNESS_WEIGHT = 0.1;
 const NEWS_STRENGTH_PERSISTENCE_WEIGHT = 0.16;
 const NEWS_PERSISTENCE_MAX = 160;
 const NEWS_OPPORTUNITY_SIGNAL_WEIGHT = 12;
-const NEWS_CONFIDENCE_WEIGHT = 10;
+const NEWS_CONFIDENCE_WEIGHT = 8;
 
 function normalizeNewsContext(newsContext = {}) {
   if (!newsContext || typeof newsContext !== "object" || Array.isArray(newsContext)) {
