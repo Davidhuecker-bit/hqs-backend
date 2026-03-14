@@ -27,6 +27,7 @@ const {
   buildMarketSnapshot,
   hydrateMarketRuntimeState,
   ensureTablesExist,
+  pingDb,
 } = require("./services/marketService");
 
 const { buildHQSResponse } = require("./hqsEngine");
@@ -233,15 +234,27 @@ app.get("/", (req, res) => {
   });
 });
 
-app.get("/health", (req, res) => {
-  const statusCode = startupState.ready ? 200 : 503;
+app.get("/health", async (req, res) => {
+  let dbOk = false;
+  let dbError = null;
+  try {
+    await pingDb();
+    dbOk = true;
+  } catch (err) {
+    dbError = err.message;
+  }
+
+  const ready = startupState.ready && dbOk;
+  const statusCode = ready ? 200 : 503;
 
   return res.status(statusCode).json({
-    success: startupState.ready,
-    ready: startupState.ready,
+    success: ready,
+    ready,
+    db: dbOk ? "ok" : "error",
+    dbError: dbError || undefined,
     startedAt: startupState.startedAt,
     completedAt: startupState.completedAt,
-    error: startupState.error,
+    startupError: startupState.error || undefined,
     jobsEnabled: RUN_JOBS,
   });
 });

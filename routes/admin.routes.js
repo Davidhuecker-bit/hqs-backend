@@ -759,7 +759,9 @@ router.get("/evolution-board", async (req, res) => {
   try {
     const board = await getEvolutionBoard();
     // Mark new entries as seen after delivery
-    markEntriesSeen().catch(() => {});
+    markEntriesSeen().catch((err) => {
+      logger.warn("evolution-board: markEntriesSeen failed", { message: err.message });
+    });
     return res.json({ success: true, ...board });
   } catch (error) {
     logger.error("Admin evolution-board route error", { message: error.message });
