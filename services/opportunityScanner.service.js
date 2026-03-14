@@ -24,6 +24,8 @@ const { recordAutonomyDecision, logNearMiss } = require("./autonomyAudit.reposit
 const { runAgenticDebate } = require("./agenticDebate.service");
 const { getInterMarketCorrelation } = require("./interMarketCorrelation.service");
 const { logAgentForecasts } = require("./agentForecast.repository");
+const { getAgentWeights, buildMetaRationale } = require("./causalMemory.repository");
+const { getSharpenedThresholds } = require("./sectorCoherence.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1164,19 +1166,45 @@ async function getTopOpportunities(arg = 10) {
     });
   }
 
+  // ── Causal Memory: fetch current dynamic agent weights ──────────────────
+  let agentWeights = null;
+  try {
+    agentWeights = await getAgentWeights();
+  } catch (wmErr) {
+    logger.warn("getTopOpportunities: agent weight fetch failed, using defaults", {
+      message: wmErr.message,
+    });
+  }
+
   // ── Agentic Debate + Guardian Protocol + Insight building ───────────────
   let suppressedCount = 0;
   let debateBlockedCount = 0;
-  const withInsights = opportunities.map((opp) => {
-    // 1. Run the three-agent debate (GROWTH_BIAS, RISK_SKEPTIC, MACRO_JUDGE)
+  const withInsights = await Promise.all(opportunities.map(async (opp) => {
+    // 1. Meta-Rationale: historical context for this symbol
+    let metaRationale = null;
+    try {
+      metaRationale = await buildMetaRationale(opp.symbol);
+    } catch (_) {
+      // non-critical – continue without meta-rationale
+    }
+
+    // 1b. Sector Coherence: check whether sector alert is active for this symbol
+    const sectorThresholds = getSharpenedThresholds(opp.symbol);
+
+    // 2. Run the three-agent debate (GROWTH_BIAS, RISK_SKEPTIC, MACRO_JUDGE)
     const debateResult = runAgenticDebate(
       opp,
       marketCluster,
       opp.signalContext || null,
-      interMarketData
+      interMarketData,
+      {
+        dynamicWeights: agentWeights,
+        metaRationale,
+        sectorAlert: sectorThresholds.sectorAlert,
+      }
     );
 
-    // 2. Guardian Protocol robustness check
+    // 3. Guardian Protocol robustness check
     const guardianResult = executeSafetyFirst(opp, marketCluster);
 
     // Signal is suppressed if EITHER debate or Guardian blocks it
@@ -1295,7 +1323,7 @@ async function getTopOpportunities(arg = 10) {
       },
       insight,
     };
-  });
+  }));
 
   // Keep only non-suppressed signals in the final output (guardian enforcement)
   const out = withInsights

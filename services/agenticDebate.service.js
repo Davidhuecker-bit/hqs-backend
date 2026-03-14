@@ -21,6 +21,7 @@
   The debate result contains:
     - approved  (boolean)
     - approvalCount (0-3)
+    - weightedApproval (0.0-1.0, uses dynamicWeights when provided)
     - votes     { growthBias, riskSkeptic, macroJudge }
     - debateSummary  – German one-liner describing the outcome
 */
@@ -52,6 +53,9 @@ const GROWTH_MIN_OPP_SCORE  = 35;   // minimum opportunity score (0-100)
 const RISK_MAX_VOLATILITY   = 0.70; // above this = high volatility veto
 const RISK_MIN_ROBUSTNESS   = 0.35; // below this = low robustness veto
 const RISK_MIN_BUZZ         = 25;   // below this = volume/interest declining
+
+// RISK_SKEPTIC – sector-alert tightening (15 %)
+const RISK_SECTOR_ALERT_FACTOR = 0.85; // multiply thresholds by this when sectorAlert=true
 
 // MACRO_JUDGE
 const MACRO_EARLYWARNING_MIN_CONVICTION = 72; // override threshold when BTC+Gold warn
@@ -114,27 +118,49 @@ function runGrowthBias(opportunity, signalContext) {
 /**
  * Pessimistic risk agent.
  * Vetoes the signal when any of the classic danger markers are present.
+ * When sectorAlert is active the robustness bar is raised by 15 %.
  *
  * @param {object} opportunity
  * @param {object|null} signalContext
+ * @param {{ sectorAlert?: boolean }} [agentOptions]
  * @returns {{ agent: string, vote: "approve"|"reject", reason: string }}
  */
-function runRiskSkeptic(opportunity, signalContext) {
+function runRiskSkeptic(opportunity, signalContext, agentOptions = {}) {
   const agent = "RISK_SKEPTIC";
+  const sectorAlert = Boolean(agentOptions?.sectorAlert);
+
   const volatility = safeNum(opportunity?.volatility, 0);
   const robustness = safeNum(opportunity?.robustnessScore, 0);
-  const buzzScore = safeNum(signalContext?.buzzScore, 50);
+  const buzzScore  = safeNum(signalContext?.buzzScore, 50);
   const sigDirection = String(signalContext?.signalDirection || "neutral");
 
+  // When a sector coherence alert is active, tighten the robustness floor
+  const effectiveMinRobustness = sectorAlert
+    ? RISK_MIN_ROBUSTNESS / RISK_SECTOR_ALERT_FACTOR  // higher minimum (harder to approve)
+    : RISK_MIN_ROBUSTNESS;
+
+  const effectiveMaxVolatility = sectorAlert
+    ? RISK_MAX_VOLATILITY * RISK_SECTOR_ALERT_FACTOR  // lower ceiling (less tolerance)
+    : RISK_MAX_VOLATILITY;
+
   const problems = [];
-  if (volatility > RISK_MAX_VOLATILITY)
+  if (volatility > effectiveMaxVolatility)
     problems.push(`hohe Volatilität (${(volatility * 100).toFixed(0)}%)`);
-  if (robustness < RISK_MIN_ROBUSTNESS)
+  if (robustness < effectiveMinRobustness)
     problems.push(`niedrige Robustheit (${(robustness * 100).toFixed(0)}%)`);
   if (sigDirection === "bearish")
     problems.push("bearische Nachrichtenlage");
   if (buzzScore < RISK_MIN_BUZZ)
     problems.push(`sinkendes Volumen (Buzz ${buzzScore.toFixed(0)})`);
+
+  if (sectorAlert && problems.length === 0) {
+    return {
+      agent,
+      vote: "approve",
+      forecastDirection: "neutral",
+      reason: `Risiko-Skeptiker: Kennzahlen akzeptabel – ⚠️ Sektor-Alarm aktiv, verschärfte Schwellen bestanden (Robustheit ${(robustness * 100).toFixed(0)}%, Vol ${(volatility * 100).toFixed(0)}%)`,
+    };
+  }
 
   if (problems.length === 0) {
     return {
@@ -256,9 +282,18 @@ function runMacroJudge(opportunity, marketCluster, interMarketData) {
  * @param {string} marketCluster  - 'Safe' | 'Volatile' | 'Danger'
  * @param {object|null} signalContext
  * @param {object|null} interMarketData  - result of getInterMarketCorrelation()
+ * @param {object} [options]
+ * @param {object}  [options.dynamicWeights]  - per-agent weight map from causalMemory
+ *   e.g. { GROWTH_BIAS: 0.38, RISK_SKEPTIC: 0.34, MACRO_JUDGE: 0.28 }
+ *   When provided the weighted approval sum must exceed 0.5 to approve.
+ * @param {string|null} [options.metaRationale]  - historical context sentence from
+ *   causalMemory.buildMetaRationale(); prepended to debateSummary when present.
+ * @param {boolean} [options.sectorAlert]  - when true the RISK_SKEPTIC uses tighter
+ *   thresholds (sector coherence sharpening active).
  * @returns {{
  *   approved: boolean,
  *   approvalCount: number,
+ *   weightedApproval: number,
  *   votes: { growthBias: object, riskSkeptic: object, macroJudge: object },
  *   debateSummary: string
  * }}
@@ -267,26 +302,49 @@ function runAgenticDebate(
   opportunity,
   marketCluster,
   signalContext,
-  interMarketData
+  interMarketData,
+  options = {}
 ) {
-  const growthBias = runGrowthBias(opportunity, signalContext);
-  const riskSkeptic = runRiskSkeptic(opportunity, signalContext);
-  const macroJudge = runMacroJudge(opportunity, marketCluster, interMarketData);
+  const { dynamicWeights = null, metaRationale = null, sectorAlert = false } = options;
 
-  const agents = [growthBias, riskSkeptic, macroJudge];
+  const growthBias  = runGrowthBias(opportunity, signalContext);
+  const riskSkeptic = runRiskSkeptic(opportunity, signalContext, { sectorAlert });
+  const macroJudge  = runMacroJudge(opportunity, marketCluster, interMarketData);
+
+  // --- Simple majority (unchanged legacy behaviour) ---
+  const agents        = [growthBias, riskSkeptic, macroJudge];
   const approvalCount = agents.filter((a) => a.vote === "approve").length;
-  const approved = approvalCount >= 2;
+
+  // --- Weighted approval (new: uses dynamicWeights when available) ---
+  const DEFAULT_W = 1 / 3;
+  const wGrowth  = safeNum(dynamicWeights?.GROWTH_BIAS,  DEFAULT_W);
+  const wSkeptic = safeNum(dynamicWeights?.RISK_SKEPTIC, DEFAULT_W);
+  const wMacro   = safeNum(dynamicWeights?.MACRO_JUDGE,  DEFAULT_W);
+
+  const weightedApproval =
+    (growthBias.vote  === "approve" ? wGrowth  : 0) +
+    (riskSkeptic.vote === "approve" ? wSkeptic : 0) +
+    (macroJudge.vote  === "approve" ? wMacro   : 0);
+
+  // With equal weights (1/3 each) approving agents need a weighted sum > 0.5,
+  // which requires at least 2 agents (2 × 1/3 ≈ 0.667 > 0.5), preserving the
+  // legacy "2-of-3 consensus" behaviour.  Dynamic weights may shift this balance
+  // while keeping the threshold fixed at > 0.5.
+  const WEIGHTED_APPROVAL_THRESHOLD = 0.5;
+  const approved = weightedApproval > WEIGHTED_APPROVAL_THRESHOLD;
 
   const debateSummary = buildDebateSummary(
     growthBias,
     riskSkeptic,
     macroJudge,
-    approved
+    approved,
+    metaRationale
   );
 
   return {
     approved,
     approvalCount,
+    weightedApproval: Number(weightedApproval.toFixed(4)),
     votes: {
       growthBias,
       riskSkeptic,
@@ -303,9 +361,21 @@ function runAgenticDebate(
 /**
  * Generates a concise German summary of the internal debate,
  * naming which agents approved or rejected and why.
+ * When metaRationale is provided it is prepended to give historical context.
+ *
+ * @param {object} growthBias
+ * @param {object} riskSkeptic
+ * @param {object} macroJudge
+ * @param {boolean} approved
+ * @param {string|null} [metaRationale]
  */
-function buildDebateSummary(growthBias, riskSkeptic, macroJudge, approved) {
+function buildDebateSummary(growthBias, riskSkeptic, macroJudge, approved, metaRationale = null) {
   const parts = [];
+
+  // Historical context from CausalMemory (Meta-Rationale)
+  if (metaRationale && typeof metaRationale === "string" && metaRationale.trim()) {
+    parts.push(metaRationale.trim());
+  }
 
   // Always include the rejections first (most informative)
   const rejects = [growthBias, riskSkeptic, macroJudge].filter(

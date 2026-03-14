@@ -29,6 +29,17 @@ const { buildAdminActionPlan } = require("../engines/adminActionPlan.engine");
 const { getNearMisses, evaluateSavedCapital } = require("../services/autonomyAudit.repository");
 const { getInterMarketCorrelation } = require("../services/interMarketCorrelation.service");
 const { getAgentWisdomScores } = require("../services/agentForecast.repository");
+const { getAgentWeights, adjustAgentWeights } = require("../services/causalMemory.repository");
+const {
+  getSharpenedSectorSnapshot,
+  getSectorDefinitions,
+  notifySectorLeaderQuote,
+} = require("../services/sectorCoherence.service");
+const {
+  runBlackSwanTest,
+  rankPortfolioAntifragility,
+  BLACK_SWAN_SCENARIOS,
+} = require("../services/syntheticStressTest.service");
 
 const router = express.Router();
 
@@ -527,6 +538,177 @@ router.get("/agent-wisdom", async (req, res) => {
     return res.json({ success: true, ...data });
   } catch (error) {
     logger.error("Admin agent-wisdom route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   CAUSAL MEMORY  –  Dynamic Agent Weights
+========================================================= */
+
+/**
+ * GET /api/admin/agent-weights
+ * Returns the current dynamic influence weights for each swarm agent.
+ */
+router.get("/agent-weights", async (req, res) => {
+  try {
+    const weights = await getAgentWeights();
+    return res.json({ success: true, weights, generatedAt: new Date().toISOString() });
+  } catch (error) {
+    logger.error("Admin agent-weights route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/agent-weights/recalibrate
+ * Triggers a manual Causal Memory recalibration cycle (adjusts weights
+ * based on verified 48-h forecasts).
+ */
+router.post("/agent-weights/recalibrate", async (req, res) => {
+  try {
+    const result = await adjustAgentWeights();
+    return res.json({ success: true, ...result, generatedAt: new Date().toISOString() });
+  } catch (error) {
+    logger.error("Admin agent-weights recalibrate error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   SECTOR COHERENCE CHECK
+========================================================= */
+
+/**
+ * GET /api/admin/sector-coherence
+ * Returns currently sharpened sectors and their definitions.
+ */
+router.get("/sector-coherence", async (req, res) => {
+  try {
+    const sharpened  = getSharpenedSectorSnapshot();
+    const definitions = getSectorDefinitions();
+    return res.json({
+      success: true,
+      sharpened,
+      sharpenedCount: sharpened.length,
+      definitions,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("Admin sector-coherence route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/sector-coherence/notify
+ * Manually notify the coherence engine about a leader's price change.
+ * Body: { symbol: string, changeFraction: number }
+ * Example: { symbol: "AAPL", changeFraction: -0.03 }
+ */
+router.post("/sector-coherence/notify", (req, res) => {
+  try {
+    const symbol = String(req.body?.symbol || "").trim().toUpperCase();
+    const changeFraction = Number(req.body?.changeFraction);
+
+    if (!symbol) {
+      return res.status(400).json({ success: false, error: "symbol is required" });
+    }
+    if (!Number.isFinite(changeFraction)) {
+      return res.status(400).json({ success: false, error: "changeFraction must be a finite number" });
+    }
+    if (changeFraction < -1.0 || changeFraction > 1.0) {
+      return res.status(400).json({ success: false, error: "changeFraction must be between -1.0 and 1.0" });
+    }
+
+    notifySectorLeaderQuote(symbol, changeFraction);
+    const sharpened = getSharpenedSectorSnapshot();
+    return res.json({
+      success: true,
+      message: `Sector coherence updated for ${symbol} (change: ${(changeFraction * 100).toFixed(2)}%)`,
+      sharpened,
+    });
+  } catch (error) {
+    logger.error("Admin sector-coherence notify error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   SYNTHETIC STRESS-TEST  –  Black Swan Engine
+========================================================= */
+
+/**
+ * GET /api/admin/stress-test
+ * Runs the Black Swan phantom scenario suite against all portfolio stocks
+ * and returns an antifragility ranking.
+ * Uses the latest portfolio data (mock portfolio).
+ */
+router.get("/stress-test", async (req, res) => {
+  try {
+    const portfolio = await getMockPortfolio();
+    const rows = Array.isArray(portfolio) ? portfolio : (portfolio?.items || []);
+
+    const ranked = rankPortfolioAntifragility(
+      rows.map((item) => ({
+        symbol: item.symbol,
+        snapshot: {
+          hqsScore:    item.hqs_score    ?? item.hqsScore    ?? 0,
+          entryPrice:  item.entry_price  ?? item.entryPrice  ?? 0,
+          features: {
+            momentum:       item.momentum       ?? 0,
+            quality:        item.quality        ?? 0,
+            stability:      item.stability      ?? 0,
+            relative:       item.relative       ?? 0,
+            volatility:     item.volatility     ?? 0,
+            trendStrength:  item.trend_strength ?? item.trendStrength  ?? 0,
+            relativeVolume: item.relative_volume ?? item.relativeVolume ?? 0,
+            liquidityScore: item.liquidity_score ?? item.liquidityScore ?? 0,
+          },
+          signalContext: {
+            signalStrength:       item.signal_strength       ?? item.signalStrength       ?? 0,
+            trendScore:           item.trend_score           ?? item.trendScore           ?? 0,
+            signalDirectionScore: item.signal_direction_score ?? item.signalDirectionScore ?? 0,
+            signalConfidence:     item.signal_confidence     ?? item.signalConfidence     ?? 0,
+            buzzScore:            item.buzz_score            ?? item.buzzScore            ?? 50,
+            sentimentScore:       item.sentiment_score       ?? item.sentimentScore       ?? 0,
+          },
+          orchestrator: {
+            opportunityStrength:    item.opportunity_strength    ?? item.opportunityStrength    ?? 0,
+            orchestratorConfidence: item.orchestrator_confidence ?? item.orchestratorConfidence ?? 0,
+          },
+        },
+      }))
+    );
+
+    return res.json({
+      success: true,
+      ranking: ranked,
+      scenarios: BLACK_SWAN_SCENARIOS.map((s) => ({ id: s.id, label: s.label, description: s.description })),
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("Admin stress-test route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/stress-test/single
+ * Runs the Black Swan suite against a single snapshot provided in the body.
+ * Body: { snapshot: { hqsScore, entryPrice, features, signalContext, orchestrator } }
+ */
+router.post("/stress-test/single", (req, res) => {
+  try {
+    const snapshot = req.body?.snapshot;
+    if (!snapshot || typeof snapshot !== "object") {
+      return res.status(400).json({ success: false, error: "snapshot object is required" });
+    }
+
+    const result = runBlackSwanTest(snapshot);
+    return res.json({ success: true, ...result, generatedAt: new Date().toISOString() });
+  } catch (error) {
+    logger.error("Admin stress-test/single error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
