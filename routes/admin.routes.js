@@ -28,6 +28,7 @@ const { buildAdminBriefing } = require("../engines/adminBriefing.engine");
 const { buildAdminActionPlan } = require("../engines/adminActionPlan.engine");
 const { getNearMisses, evaluateSavedCapital } = require("../services/autonomyAudit.repository");
 const { getInterMarketCorrelation } = require("../services/interMarketCorrelation.service");
+const { getAgentWisdomScores } = require("../services/agentForecast.repository");
 
 const router = express.Router();
 
@@ -500,6 +501,32 @@ router.get("/inter-market", async (req, res) => {
     return res.json({ success: true, ...data });
   } catch (error) {
     logger.error("Admin inter-market route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   AGENT WISDOM SCORES  (Prediction-Self-Audit)
+========================================================= */
+
+/**
+ * GET /api/admin/agent-wisdom
+ * Returns the Wisdom Score (hit-rate) for each swarm agent over the
+ * last N calendar days.
+ * Query params:
+ *   windowDays  (number, 1-365, default 30)
+ */
+router.get("/agent-wisdom", async (req, res) => {
+  try {
+    const windowRaw = parseInt(req.query.windowDays, 10);
+    const windowDays = Number.isFinite(windowRaw)
+      ? Math.min(365, Math.max(1, windowRaw))
+      : 30;
+
+    const data = await getAgentWisdomScores({ windowDays });
+    return res.json({ success: true, ...data });
+  } catch (error) {
+    logger.error("Admin agent-wisdom route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
