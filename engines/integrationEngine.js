@@ -14,6 +14,89 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+const NEWS_CONVICTION_MAX_ABS = 8;
+// Final conviction uses a softer news profile than the orchestrator so that
+// prepared news context can move ranking meaningfully without dominating HQS/AI.
+// Relevance still leads, market impact remains material, but activity/freshness
+// are deliberately smaller because the scanner already pre-filters to scoring-active news.
+const NEWS_SIGNAL_RELEVANCE_WEIGHT = 0.28;
+const NEWS_SIGNAL_CONFIDENCE_WEIGHT = 0.18;
+const NEWS_SIGNAL_MARKET_IMPACT_WEIGHT = 0.24;
+const NEWS_SIGNAL_FRESHNESS_WEIGHT = 0.1;
+const NEWS_SIGNAL_PERSISTENCE_WEIGHT = 0.12;
+const NEWS_SIGNAL_ACTIVITY_WEIGHT = 0.08;
+const NEWS_PERSISTENCE_MAX = 160;
+const NEWS_ACTIVITY_CAP = 4;
+const NEWS_REASON_STRENGTH_THRESHOLD = 0.45;
+
+function resolveNewsContext(newsContext = null, globalContext = {}) {
+  if (newsContext && typeof newsContext === "object" && !Array.isArray(newsContext)) {
+    return newsContext;
+  }
+
+  const nested = globalContext?.newsContext;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return nested;
+  }
+
+  return null;
+}
+
+function calculateNewsDirectionScore(newsContext = null, globalContext = {}) {
+  const news = resolveNewsContext(newsContext, globalContext);
+  if (!news) return 0;
+
+  const explicitDirectionScore = Number(news?.directionScore);
+  if (Number.isFinite(explicitDirectionScore)) {
+    return clamp(explicitDirectionScore, -1, 1);
+  }
+
+  const sentimentScore = safe(news?.marketSentiment?.sentimentScore, 0);
+  if (sentimentScore !== 0) {
+    return clamp(sentimentScore / 100, -1, 1);
+  }
+
+  const direction = String(news?.direction || "").toLowerCase();
+  if (direction === "bullish") return 0.35;
+  if (direction === "bearish") return -0.35;
+  return 0;
+}
+
+function calculateNewsStrength(newsContext = null, globalContext = {}) {
+  const news = resolveNewsContext(newsContext, globalContext);
+  if (!news || safe(news?.activeCount, 0) <= 0) return 0;
+
+  const relevance = clamp(safe(news?.weightedRelevance, 0), 0, 100) / 100;
+  const confidence = clamp(safe(news?.weightedConfidence, 0), 0, 100) / 100;
+  const marketImpact = clamp(safe(news?.weightedMarketImpact, 0), 0, 100) / 100;
+  const freshness = clamp(safe(news?.weightedFreshness, 0), 0, 100) / 100;
+  const persistence = clamp(safe(news?.weightedPersistence, 0) / NEWS_PERSISTENCE_MAX, 0, 1);
+  const activity = clamp(safe(news?.activeCount, 0) / NEWS_ACTIVITY_CAP, 0, 1);
+
+  return clamp(
+    relevance * NEWS_SIGNAL_RELEVANCE_WEIGHT +
+      confidence * NEWS_SIGNAL_CONFIDENCE_WEIGHT +
+      marketImpact * NEWS_SIGNAL_MARKET_IMPACT_WEIGHT +
+      freshness * NEWS_SIGNAL_FRESHNESS_WEIGHT +
+      persistence * NEWS_SIGNAL_PERSISTENCE_WEIGHT +
+      activity * NEWS_SIGNAL_ACTIVITY_WEIGHT,
+    0,
+    1
+  );
+}
+
+function calculateNewsAdjustment(newsContext = null, globalContext = {}) {
+  const newsStrength = calculateNewsStrength(newsContext, globalContext);
+  if (newsStrength <= 0) return 0;
+
+  const directionScore = calculateNewsDirectionScore(newsContext, globalContext);
+  return clamp(
+    Math.round(newsStrength * directionScore * NEWS_CONVICTION_MAX_ABS),
+    -NEWS_CONVICTION_MAX_ABS,
+    NEWS_CONVICTION_MAX_ABS
+  );
+}
+
 /* ===============================
    GLOBAL REGIME EXTRACTION
 ================================ */
@@ -120,6 +203,7 @@ function calculateFinalConviction({
   discoveries,
   researchSignals,
   globalContext,
+  newsContext,
 }) {
   const hqs = safe(hqsScore);
   const ai = safe(aiScore);
@@ -142,6 +226,7 @@ function calculateFinalConviction({
   const memoryBoost = calculateMemoryBoost(globalContext);
   const metaBoost = calculateMetaBoost(globalContext);
   const eventPenalty = calculateEventPenalty(globalContext);
+  const newsAdjustment = calculateNewsAdjustment(newsContext, globalContext);
 
   let conviction =
     hqs * 0.22 +
@@ -154,7 +239,8 @@ function calculateFinalConviction({
     globalBoost +
     memoryBoost +
     metaBoost -
-    eventPenalty;
+    eventPenalty +
+    newsAdjustment;
 
   return clamp(Math.round(conviction), 0, 100);
 }
@@ -221,6 +307,7 @@ function buildWhyItIsInteresting({
   globalContext = {},
   strategy = {},
   features = {},
+  newsContext = null,
 }) {
   const reasons = [];
 
@@ -231,6 +318,24 @@ function buildWhyItIsInteresting({
   if (trendStrength > 1) reasons.push("starker Trend");
   if (relativeVolume > 1.2) reasons.push("überdurchschnittliches Volumen");
   if (liquidityScore >= 70) reasons.push("hohe Liquidität");
+
+  const news = resolveNewsContext(newsContext, globalContext);
+  const newsStrength = calculateNewsStrength(news, globalContext);
+  const newsDirectionScore = calculateNewsDirectionScore(news, globalContext);
+
+  if (safe(news?.activeCount, 0) > 0 && newsStrength >= NEWS_REASON_STRENGTH_THRESHOLD) {
+    if (newsDirectionScore >= 0.12) {
+      reasons.push("positive News-Lage");
+    } else if (newsDirectionScore <= -0.12) {
+      reasons.push("belastende News-Lage");
+    } else {
+      reasons.push("relevante News-Lage");
+    }
+  }
+
+  if (news?.dominantEventType && safe(news?.activeCount, 0) > 0) {
+    reasons.push(`News-Fokus ${news.dominantEventType}`);
+  }
 
   if (Array.isArray(discoveries) && discoveries.length > 0) {
     reasons.push("aktives Marktsignal");
@@ -268,7 +373,13 @@ function buildIntegratedMarketView({
   resilienceScore,
   research,
   globalContext,
+  newsContext = null,
 }) {
+  const mergedGlobalContext = {
+    ...(globalContext ?? {}),
+    newsContext: resolveNewsContext(newsContext, globalContext),
+  };
+
   const finalConviction = calculateFinalConviction({
     hqsScore: hqs?.hqsScore,
     aiScore: brain?.aiScore,
@@ -277,13 +388,14 @@ function buildIntegratedMarketView({
     narratives,
     discoveries,
     researchSignals: research?.researchSignals,
-    globalContext,
+    globalContext: mergedGlobalContext,
+    newsContext,
   });
 
   const finalConfidence = buildFinalConfidence({
     learning,
     brain,
-    globalContext,
+    globalContext: mergedGlobalContext,
     resilienceScore,
   });
 
@@ -293,10 +405,16 @@ function buildIntegratedMarketView({
   const whyInteresting = buildWhyItIsInteresting({
     narratives,
     discoveries,
-    globalContext,
+    globalContext: mergedGlobalContext,
     strategy,
     features,
+    newsContext,
   });
+
+  const newsAdjustment = calculateNewsAdjustment(newsContext, mergedGlobalContext);
+  const newsStrength = Math.round(
+    calculateNewsStrength(newsContext, mergedGlobalContext) * 100
+  );
 
   return {
     symbol,
@@ -319,7 +437,8 @@ function buildIntegratedMarketView({
     simulations: simulations ?? [],
     resilienceScore: safe(resilienceScore),
     research: research ?? {},
-    globalContext: globalContext ?? {},
+    globalContext: mergedGlobalContext,
+    newsContext: mergedGlobalContext.newsContext ?? null,
 
     whyInteresting,
 
@@ -328,15 +447,17 @@ function buildIntegratedMarketView({
       ai: safe(brain?.aiScore),
       strategyAdjusted: safe(strategy?.strategyAdjustedScore),
       resilience: safe(resilienceScore),
-      memoryScore: safe(globalContext?.marketMemory?.memoryScore, 0),
+      memoryScore: safe(mergedGlobalContext?.marketMemory?.memoryScore, 0),
       opportunityStrength: safe(
-        globalContext?.orchestrator?.opportunityStrength,
+        mergedGlobalContext?.orchestrator?.opportunityStrength,
         0
       ),
       orchestratorConfidence: safe(
-        globalContext?.orchestrator?.orchestratorConfidence,
+        mergedGlobalContext?.orchestrator?.orchestratorConfidence,
         0
       ),
+      newsStrength,
+      newsAdjustment,
     },
 
     timestamp: new Date().toISOString(),
