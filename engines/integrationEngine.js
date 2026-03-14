@@ -5,6 +5,8 @@
   Combines all subsystem outputs into one final intelligence object
 */
 
+const { runPlugins } = require("./opportunityPluginRegistry");
+
 function safe(n, fallback = 0) {
   const v = Number(n);
   return Number.isFinite(v) ? v : fallback;
@@ -452,7 +454,7 @@ function buildWhyItIsInteresting({
    MAIN INTEGRATION
 ================================ */
 
-function buildIntegratedMarketView({
+async function buildIntegratedMarketView({
   symbol,
   hqs,
   features,
@@ -519,7 +521,7 @@ function buildIntegratedMarketView({
     calculateSignalStrength(signalContext, mergedGlobalContext) * 100
   );
 
-  return {
+  const baseView = {
     symbol,
 
     hqsScore: safe(hqs?.hqsScore),
@@ -568,6 +570,8 @@ function buildIntegratedMarketView({
 
     timestamp: new Date().toISOString(),
   };
+
+  return runPlugins(baseView);
 }
 
 module.exports = {
