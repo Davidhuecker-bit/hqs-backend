@@ -2,15 +2,23 @@
 
 const OpenAI = require("openai");
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+let client = null;
 
-async function generateBriefingText({ userName, symbols, facts }) {
+function getClient() {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("Missing OPENAI_API_KEY");
   }
 
+  if (!client) {
+    client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+
+  return client;
+}
+
+async function generateBriefingText({ userName, symbols, facts }) {
   const prompt = `
 Du bist ein freundlicher Assistent für ein Portfolio-Dashboard.
 
@@ -44,7 +52,7 @@ WAS BEDEUTET DAS FÜR DICH?
 - <max 3 kurze Sätze>
 `.trim();
 
-  const resp = await client.chat.completions.create({
+  const resp = await getClient().chat.completions.create({
     model: process.env.OPENAI_MODEL || "gpt-4o-mini",
     temperature: 0.4,
     max_tokens: 700,

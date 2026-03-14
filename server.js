@@ -100,19 +100,45 @@ const SUPPORTED_SEGMENTS = ["usa", "europe", "china", "japan", "india"];
 const SEGMENT_ALIASES = {
   us: "usa",
 };
+const DEFAULT_CORS_ORIGINS = [
+  "https://dhsystemhqs.de",
+  "https://www.dhsystemhqs.de",
+  "https://hqs-frontend-v8.vercel.app",
+  /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
+  "http://localhost:3000",
+];
 
 const RUN_JOBS =
   String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
+const EXTRA_CORS_ORIGINS = String(process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const ALLOWED_CORS_ORIGINS = [...DEFAULT_CORS_ORIGINS, ...EXTRA_CORS_ORIGINS];
+const startupState = {
+  ready: false,
+  startedAt: new Date().toISOString(),
+  completedAt: null,
+  error: null,
+};
+
+function isAllowedCorsOrigin(origin) {
+  if (!origin) return true;
+
+  return ALLOWED_CORS_ORIGINS.some((allowedOrigin) => {
+    if (allowedOrigin instanceof RegExp) {
+      return allowedOrigin.test(origin);
+    }
+
+    return allowedOrigin === origin;
+  });
+}
 
 app.use(
   cors({
-    origin: [
-      "https://dhsystemhqs.de",
-      "https://www.dhsystemhqs.de",
-      "https://hqs-frontend-v8.vercel.app",
-      /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
-      "http://localhost:3000",
-    ],
+    origin(origin, callback) {
+      return callback(null, isAllowedCorsOrigin(origin));
+    },
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -191,6 +217,19 @@ app.get("/", (req, res) => {
     success: true,
     status: "HQS Backend running",
     time: new Date().toISOString(),
+  });
+});
+
+app.get("/health", (req, res) => {
+  const statusCode = startupState.ready ? 200 : 503;
+
+  return res.status(statusCode).json({
+    success: startupState.ready,
+    ready: startupState.ready,
+    startedAt: startupState.startedAt,
+    completedAt: startupState.completedAt,
+    error: startupState.error,
+    jobsEnabled: RUN_JOBS,
   });
 });
 
@@ -601,8 +640,13 @@ app.listen(PORT, async () => {
       scheduleDailyUniverseRefresh();
     }
 
+    startupState.ready = true;
+    startupState.completedAt = new Date().toISOString();
+    startupState.error = null;
     logger.info("Startup completed successfully");
   } catch (err) {
+    startupState.ready = false;
+    startupState.error = err.message;
     logger.error("Startup Fehler", { message: err.message });
   }
 });
