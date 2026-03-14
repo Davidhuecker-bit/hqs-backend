@@ -239,9 +239,11 @@ function buildSignalContext(row = {}, newsContext = null, newsItems = []) {
   const earlySignalStrength = clamp(safeNum(earlySignal?.strength, 0), 0, 100);
   const trendBias = clamp(safeNum(row?.trend, 0), -1, 1);
   const momentumBias = clamp((momentumScore - 50) / 50, -1, 1);
+  const normalizedSentimentDirection = (sentimentScore / 100) * 0.5;
+  const normalizedSentimentStrength = Math.abs(sentimentScore) * 0.2;
 
   let signalDirectionScore = clamp(
-    sentimentScore / 100 * 0.5 + momentumBias * 0.35 + trendBias * 0.15,
+    normalizedSentimentDirection + momentumBias * 0.35 + trendBias * 0.15,
     -1,
     1
   );
@@ -253,7 +255,7 @@ function buildSignalContext(row = {}, newsContext = null, newsItems = []) {
   const signalStrength = clamp(
     Math.round(
       trendScore * 0.55 +
-        Math.abs(sentimentScore) * 0.2 +
+        normalizedSentimentStrength +
         buzzScore * 0.1 +
         earlySignalStrength * 0.15
     ),
