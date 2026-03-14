@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HQS Admin · Portfolio Intelligence</title>
+  <style>
+    /* ─────────────────────────── Design Tokens ─────────────────────────── */
+    :root {
+      --bg-deep:    #0a0e1a;
+      --bg-card:    #111827;
+      --bg-card2:   #1a2236;
+      --border:     #1e2d4a;
+      --accent:     #3b82f6;
+      --accent2:    #8b5cf6;
+      --accent3:    #06b6d4;
+      --green:      #10b981;
+      --yellow:     #f59e0b;
+      --red:        #ef4444;
+      --text:       #e2e8f0;
+      --text-muted: #64748b;
+      --text-dim:   #94a3b8;
+      --radius:     12px;
+      --radius-sm:  8px;
+      --shadow:     0 4px 24px rgba(0,0,0,0.5);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg-deep);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ─────────────────────────── Header ─────────────────────────── */
+    .hqs-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 32px;
+      background: linear-gradient(135deg, #0d1526 0%, #111827 100%);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .hqs-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .hqs-logo-icon {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 900; letter-spacing: -1px;
+    }
+    .hqs-logo-text { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; }
+    .hqs-logo-sub  { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+    .header-badge {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 14px;
+      background: rgba(16,185,129,0.12);
+      border: 1px solid rgba(16,185,129,0.25);
+      border-radius: 20px;
+      font-size: 12px; font-weight: 600; color: var(--green);
+    }
+    .pulse {
+      width: 8px; height: 8px; background: var(--green);
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(0.8); }
+    }
+
+    /* ─────────────────────────── Layout ─────────────────────────── */
+    .hqs-main  { max-width: 1600px; margin: 0 auto; padding: 32px 24px; }
+    .section-title {
+      font-size: 18px; font-weight: 700;
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 20px;
+    }
+    .section-title .icon { font-size: 20px; }
+    .section-sub { font-size: 12px; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+
+    /* ─────────────────────────── Stats Bar ─────────────────────────── */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 16px 18px;
+    }
+    .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; }
+    .stat-value { font-size: 26px; font-weight: 800; margin-top: 4px; }
+    .stat-value.green { color: var(--green); }
+    .stat-value.blue  { color: var(--accent); }
+    .stat-value.purple{ color: var(--accent2); }
+    .stat-value.cyan  { color: var(--accent3); }
+
+    /* ─────────────────────────── Portfolio Grid ─────────────────────────── */
+    .portfolio-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 40px;
+    }
+
+    .portfolio-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+      cursor: default;
+    }
+    .portfolio-card:hover {
+      border-color: var(--accent);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow);
+    }
+
+    /* card top row */
+    .card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    .card-symbol  { font-size: 18px; font-weight: 800; letter-spacing: 0.5px; }
+    .card-sector  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .card-strategy{ font-size: 10px; color: var(--accent3); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
+
+    /* regime badge */
+    .regime-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      white-space: nowrap;
+    }
+    .regime-badge.risk_on   { background: rgba(16,185,129,0.15); color: var(--green);  border: 1px solid rgba(16,185,129,0.3); }
+    .regime-badge.risk_off  { background: rgba(239,68,68,0.12);  color: var(--red);    border: 1px solid rgba(239,68,68,0.25); }
+    .regime-badge.neutral   { background: rgba(245,158,11,0.12); color: var(--yellow); border: 1px solid rgba(245,158,11,0.25); }
+    .regime-badge.volatile  { background: rgba(239,68,68,0.12);  color: var(--red);    border: 1px solid rgba(239,68,68,0.25); }
+    .regime-badge.safe      { background: rgba(16,185,129,0.15); color: var(--green);  border: 1px solid rgba(16,185,129,0.3); }
+    .regime-badge.danger    { background: rgba(239,68,68,0.18);  color: #ff6b6b;       border: 1px solid rgba(239,68,68,0.35); }
+    .regime-badge.aggressive{ background: rgba(245,158,11,0.15); color: var(--yellow); border: 1px solid rgba(245,158,11,0.3); }
+    .regime-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    /* robustness shield */
+    .shield-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .shield-icon {
+      font-size: 20px;
+      line-height: 1;
+    }
+    .shield-bar-wrap { flex: 1; }
+    .shield-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+    }
+    .shield-bar {
+      height: 6px;
+      border-radius: 4px;
+      background: var(--border);
+      overflow: hidden;
+    }
+    .shield-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.8s ease;
+    }
+
+    /* scores row */
+    .scores-row {
+      display: flex;
+      gap: 12px;
+    }
+    .score-pill {
+      flex: 1;
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      text-align: center;
+    }
+    .score-pill .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .score-pill .val { font-size: 16px; font-weight: 800; margin-top: 2px; }
+
+    /* card buttons */
+    .card-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 7px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+    .btn:hover   { opacity: 0.85; transform: translateY(-1px); }
+    .btn:active  { transform: translateY(0); }
+    .btn-insight {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff;
+      flex: 1;
+    }
+    .btn-snapshot {
+      background: var(--bg-card2);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      flex: 1;
+    }
+    .btn-snapshot.disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+    .btn-snapshot.disabled:hover { transform: none; }
+
+    /* ─────────────────────────── Audit Feed ─────────────────────────── */
+    .audit-feed {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .audit-feed-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-card2);
+    }
+    .audit-feed-header .title {
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .audit-feed-body { overflow-y: auto; max-height: 420px; }
+    .audit-entry {
+      display: grid;
+      grid-template-columns: 90px 1fr auto auto;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.15s;
+      font-size: 13px;
+    }
+    .audit-entry:last-child { border-bottom: none; }
+    .audit-entry:hover { background: var(--bg-card2); }
+    .audit-sym { font-weight: 800; font-size: 14px; }
+    .audit-info { color: var(--text-dim); }
+    .audit-info .decision { font-weight: 600; color: var(--text); }
+    .audit-score-pill {
+      padding: 3px 9px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .audit-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+    .badge-guardian {
+      display: inline-flex; align-items: center; gap: 3px;
+      background: rgba(59,130,246,0.15); color: var(--accent);
+      border: 1px solid rgba(59,130,246,0.25);
+      padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700;
+    }
+    .badge-suppressed {
+      display: inline-flex; align-items: center; gap: 3px;
+      background: rgba(239,68,68,0.12); color: var(--red);
+      border: 1px solid rgba(239,68,68,0.25);
+      padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 700;
+    }
+
+    /* ─────────────────────────── Modal ─────────────────────────── */
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    .modal-overlay.open {
+      opacity: 1;
+      pointer-events: all;
+    }
+    .modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      max-width: 640px;
+      width: 100%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 24px 64px rgba(0,0,0,0.8);
+      transform: translateY(20px);
+      transition: transform 0.2s;
+    }
+    .modal-overlay.open .modal { transform: translateY(0); }
+    .modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .modal-title { font-size: 18px; font-weight: 800; }
+    .modal-sub   { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
+    .modal-close {
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .modal-close:hover { background: var(--border); }
+    .modal-body { font-size: 14px; line-height: 1.7; color: var(--text-dim); }
+    .modal-body strong { color: var(--text); }
+    .modal-section { margin-top: 16px; }
+    .modal-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .snapshot-json {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px;
+      font-family: 'Menlo', 'Fira Code', monospace;
+      font-size: 11px;
+      color: #7dd3fc;
+      overflow-x: auto;
+      white-space: pre;
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    /* ─────────────────────────── Loading / Empty ─────────────────────────── */
+    .loading-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 60px;
+      color: var(--text-muted);
+      gap: 12px;
+    }
+    .spinner {
+      width: 22px; height: 22px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+    .empty-state .icon { font-size: 40px; margin-bottom: 12px; }
+
+    /* ─────────────────────────── Filters ─────────────────────────── */
+    .filter-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .filter-btn {
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .filter-btn:hover,
+    .filter-btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(59,130,246,0.1);
+    }
+    .filter-search {
+      margin-left: auto;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text);
+      outline: none;
+      width: 180px;
+    }
+    .filter-search:focus { border-color: var(--accent); }
+    .filter-search::placeholder { color: var(--text-muted); }
+
+    /* ─────────────────────────── Refresh button ─────────────────────────── */
+    .refresh-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-dim);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .refresh-btn.spinning .refresh-icon { animation: spin 0.7s linear infinite; }
+
+    /* ─────────────────────────── Responsive ─────────────────────────── */
+    @media (max-width: 640px) {
+      .hqs-header { padding: 14px 16px; }
+      .hqs-main   { padding: 20px 12px; }
+      .audit-entry { grid-template-columns: 70px 1fr; }
+      .audit-time  { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════ HEADER ═══════════════════ -->
+<header class="hqs-header">
+  <div class="hqs-logo">
+    <div class="hqs-logo-icon">HQ</div>
+    <div>
+      <div class="hqs-logo-text">HQS Quant System</div>
+      <div class="hqs-logo-sub">Admin Intelligence Dashboard</div>
+    </div>
+  </div>
+  <div class="header-badge">
+    <div class="pulse"></div>
+    Wealth Protection · Live
+  </div>
+</header>
+
+<!-- ═══════════════════ MAIN ═══════════════════ -->
+<main class="hqs-main">
+
+  <!-- Stats Bar -->
+  <div class="stats-bar" id="statsBar">
+    <div class="stat-card">
+      <div class="stat-label">Portfolio Positionen</div>
+      <div class="stat-value blue" id="statTotal">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">⌀ Robustness Score</div>
+      <div class="stat-value green" id="statAvgRobust">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Risk-On Positionen</div>
+      <div class="stat-value green" id="statRiskOn">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Risk-Off Positionen</div>
+      <div class="stat-value" style="color:var(--red)" id="statRiskOff">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Audit-Entscheidungen</div>
+      <div class="stat-value purple" id="statAudit">–</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Guardian geschützt</div>
+      <div class="stat-value cyan" id="statGuardian">–</div>
+    </div>
+  </div>
+
+  <!-- Portfolio Section -->
+  <div class="section-title">
+    <span class="icon">🛡️</span>
+    Bürger-Portfolio
+    <span class="section-sub">40 Positionen · MockPortfolioEngine · Sektoren-Mix</span>
+    <button class="refresh-btn" id="reloadPortfolioBtn" style="margin-left:auto" onclick="loadPortfolio()">
+      <span class="refresh-icon">↻</span> Neu laden
+    </button>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar" id="filterBar">
+    <button class="filter-btn active" onclick="setFilter('all', this)">Alle</button>
+    <button class="filter-btn" onclick="setFilter('Technologie', this)">Technologie</button>
+    <button class="filter-btn" onclick="setFilter('Finanzen', this)">Finanzen</button>
+    <button class="filter-btn" onclick="setFilter('Energie', this)">Energie</button>
+    <button class="filter-btn" onclick="setFilter('Gesundheit', this)">Gesundheit</button>
+    <button class="filter-btn" onclick="setFilter('Konsum', this)">Konsum</button>
+    <button class="filter-btn" onclick="setFilter('Industrie', this)">Industrie</button>
+    <button class="filter-btn" onclick="setFilter('Rohstoffe', this)">Rohstoffe</button>
+    <input class="filter-search" id="searchInput" placeholder="Symbol suchen…" oninput="renderPortfolio()" />
+  </div>
+
+  <!-- Portfolio Grid -->
+  <div class="portfolio-grid" id="portfolioGrid">
+    <div class="loading-wrap" style="grid-column:1/-1">
+      <div class="spinner"></div> Portfolio wird geladen…
+    </div>
+  </div>
+
+  <!-- Audit Feed Section -->
+  <div class="section-title">
+    <span class="icon">⚡</span>
+    Live Audit-Feed
+    <span class="section-sub">Autonomy-Audit · Letzte Entscheidungen</span>
+    <button class="refresh-btn" id="reloadAuditBtn" style="margin-left:auto" onclick="loadAuditFeed()">
+      <span class="refresh-icon">↻</span> Aktualisieren
+    </button>
+  </div>
+
+  <div class="audit-feed">
+    <div class="audit-feed-header">
+      <span class="title">🔍 Wealth-Protection Entscheidungen</span>
+      <span id="auditTimestamp" style="font-size:12px;color:var(--text-muted)"></span>
+    </div>
+    <div class="audit-feed-body" id="auditFeedBody">
+      <div class="loading-wrap">
+        <div class="spinner"></div> Feed wird geladen…
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ═══════════════════ INSIGHT MODAL ═══════════════════ -->
+<div class="modal-overlay" id="insightModal" onclick="closeInsightModal(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="insightModalTitle">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="insightModalTitle">🔍 System-Analyse</div>
+        <div class="modal-sub" id="insightModalSub"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('insightModal')" aria-label="Schließen">✕</button>
+    </div>
+    <div class="modal-body" id="insightModalBody"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════ SNAPSHOT MODAL ═══════════════════ -->
+<div class="modal-overlay" id="snapshotModal" onclick="closeInsightModal(event)">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshotModalTitle">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="snapshotModalTitle">📋 Raw Input Snapshot</div>
+        <div class="modal-sub" id="snapshotModalSub"></div>
+      </div>
+      <button class="modal-close" onclick="closeModal('snapshotModal')" aria-label="Schließen">✕</button>
+    </div>
+    <div class="modal-body" id="snapshotModalBody"></div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════ STATE ═══════════════════ */
+let portfolioData   = [];
+let auditFeedData   = [];
+let activeFilter    = 'all';
+const API_BASE      = '/api/admin';
+
+/* ═══════════════════ SHIELD HELPERS ═══════════════════ */
+function shieldEmoji(score) {
+  if (score >= 0.85) return '🛡️';
+  if (score >= 0.65) return '⚔️';
+  if (score >= 0.45) return '🔰';
+  return '⚠️';
+}
+function shieldColor(score) {
+  if (score >= 0.85) return 'var(--green)';
+  if (score >= 0.65) return 'var(--accent)';
+  if (score >= 0.45) return 'var(--yellow)';
+  return 'var(--red)';
+}
+function regimeLabel(regime) {
+  const map = {
+    risk_on:    { label: 'Risk-On',    icon: '📈' },
+    risk_off:   { label: 'Risk-Off',   icon: '🛡' },
+    neutral:    { label: 'Neutral',    icon: '⚖️' },
+    safe:       { label: 'Safe',       icon: '✅' },
+    volatile:   { label: 'Volatil',   icon: '⚡' },
+    danger:     { label: 'Danger',     icon: '🚨' },
+    aggressive: { label: 'Aggressiv', icon: '🔥' },
+  };
+  const key = String(regime || '').toLowerCase().replace(/[\s-]/g, '_');
+  return map[key] || { label: String(regime || '–').toUpperCase(), icon: '●' };
+}
+function regimeBadgeClass(regime) {
+  const key = String(regime || '').toLowerCase().replace(/[\s-]/g, '_');
+  const known = ['risk_on','risk_off','neutral','safe','volatile','danger','aggressive'];
+  return known.includes(key) ? key : 'neutral';
+}
+
+function auditScoreStyle(score) {
+  const s = Number(score) || 0;
+  if (s >= 0.8) return 'background:rgba(16,185,129,0.15);color:var(--green);border:1px solid rgba(16,185,129,0.3)';
+  if (s >= 0.6) return 'background:rgba(59,130,246,0.12);color:var(--accent);border:1px solid rgba(59,130,246,0.25)';
+  if (s >= 0.4) return 'background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.25)';
+  return 'background:rgba(239,68,68,0.1);color:var(--red);border:1px solid rgba(239,68,68,0.2)';
+}
+
+function relativeTime(ts) {
+  if (!ts) return '–';
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60000)          return 'Gerade eben';
+  if (diff < 3600000)        return `vor ${Math.floor(diff/60000)} Min`;
+  if (diff < 86400000)       return `vor ${Math.floor(diff/3600000)} Std`;
+  if (diff < 604800000)      return `vor ${Math.floor(diff/86400000)} Tagen`;
+  return new Date(ts).toLocaleDateString('de-DE', {day:'2-digit',month:'short',year:'numeric'});
+}
+
+/* ═══════════════════ STATS ═══════════════════ */
+function updateStats(portfolio, feed) {
+  const total    = portfolio.length;
+  const avgR     = total ? (portfolio.reduce((s,p) => s + p.robustness_score, 0) / total) : 0;
+  const riskOn   = portfolio.filter(p => ['risk_on','safe'].includes(String(p.market_regime).toLowerCase())).length;
+  const riskOff  = portfolio.filter(p => ['risk_off','danger'].includes(String(p.market_regime).toLowerCase())).length;
+  const auditCnt = feed.length;
+  const guardian = feed.filter(f => f.guardian_applied).length;
+
+  document.getElementById('statTotal').textContent    = total;
+  document.getElementById('statAvgRobust').textContent = (avgR * 100).toFixed(0) + '%';
+  document.getElementById('statRiskOn').textContent   = riskOn;
+  document.getElementById('statRiskOff').textContent  = riskOff;
+  document.getElementById('statAudit').textContent    = auditCnt;
+  document.getElementById('statGuardian').textContent = guardian;
+}
+
+/* ═══════════════════ FILTERS ═══════════════════ */
+function setFilter(sector, btn) {
+  activeFilter = sector;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPortfolio();
+}
+
+/* ═══════════════════ PORTFOLIO RENDER ═══════════════════ */
+function renderPortfolio() {
+  const grid   = document.getElementById('portfolioGrid');
+  const search = (document.getElementById('searchInput').value || '').toUpperCase().trim();
+
+  let data = portfolioData.slice();
+  if (activeFilter !== 'all') {
+    data = data.filter(p => p.sector === activeFilter);
+  }
+  if (search) {
+    data = data.filter(p => p.symbol.includes(search) || (p.sector || '').toUpperCase().includes(search));
+  }
+
+  if (!data.length) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="icon">📭</div><div>Keine Positionen gefunden</div></div>`;
+    return;
+  }
+
+  grid.innerHTML = data.map(p => {
+    const regime  = regimeLabel(p.market_regime);
+    const bCls    = regimeBadgeClass(p.market_regime);
+    const score   = Number(p.robustness_score) || 0;
+    const pct     = Math.round(score * 100);
+    const sColor  = shieldColor(score);
+    const sEmoji  = shieldEmoji(score);
+    const hasSnap = Boolean(p.has_snapshot);
+    const hasRat  = Boolean(p.analysis_rationale);
+    const hqs     = p.hqs_score != null ? Math.round(p.hqs_score) : null;
+    const conv    = p.final_conviction != null ? Math.round(p.final_conviction) : null;
+
+    return `
+<div class="portfolio-card">
+  <div class="card-top">
+    <div>
+      <div class="card-symbol">${esc(p.symbol)}</div>
+      <div class="card-sector">${esc(p.sector)}</div>
+      ${p.strategy ? `<div class="card-strategy">${esc(p.strategy)}</div>` : ''}
+    </div>
+    <div class="regime-badge ${bCls}">
+      <div class="regime-dot"></div>
+      ${regime.icon} ${regime.label}
+    </div>
+  </div>
+
+  <div class="shield-row">
+    <div class="shield-icon">${sEmoji}</div>
+    <div class="shield-bar-wrap">
+      <div class="shield-label">
+        <span>Robustness Score</span>
+        <span style="color:${sColor};font-weight:700">${pct}%</span>
+      </div>
+      <div class="shield-bar">
+        <div class="shield-fill" style="width:${pct}%;background:${sColor}"></div>
+      </div>
+    </div>
+  </div>
+
+  ${(hqs != null || conv != null) ? `
+  <div class="scores-row">
+    ${hqs != null ? `<div class="score-pill"><div class="lbl">HQS Score</div><div class="val" style="color:var(--accent)">${hqs}</div></div>` : ''}
+    ${conv != null ? `<div class="score-pill"><div class="lbl">Conviction</div><div class="val" style="color:var(--green)">${conv}%</div></div>` : ''}
+  </div>` : ''}
+
+  <div class="card-actions">
+    ${hasRat
+      ? `<button class="btn btn-insight" onclick="openInsight(${JSON.stringify(p.symbol)}, ${JSON.stringify(p.analysis_rationale)}, ${JSON.stringify(p.sector)})">
+           🔍 Insight
+         </button>`
+      : `<button class="btn btn-insight" style="opacity:0.4;cursor:not-allowed" disabled>🔍 Insight</button>`
+    }
+    <button class="btn btn-snapshot${hasSnap ? '' : ' disabled'}"
+      ${hasSnap ? `onclick="openSnapshot(${JSON.stringify(p.source)}, ${p.id})"` : 'disabled'}
+      title="${hasSnap ? 'Raw Input Snapshot anzeigen' : 'Kein Snapshot verfügbar'}">
+      📋 Snapshot
+    </button>
+  </div>
+</div>`;
+  }).join('');
+}
+
+/* ═══════════════════ INSIGHT MODAL ═══════════════════ */
+function openInsight(symbol, rationale, sector) {
+  document.getElementById('insightModalTitle').textContent = `🔍 Analyse · ${symbol}`;
+  document.getElementById('insightModalSub').textContent   = `Sektor: ${sector}`;
+  document.getElementById('insightModalBody').innerHTML    = `
+<p>${esc(rationale)}</p>
+<div class="modal-section">
+  <div class="modal-section-title">Hinweis</div>
+  <p>Diese Analyse basiert auf dem letzten verarbeiteten Markt-Snapshot und der integrierten Regime-Erkennung des HQS-Systems. Sie dient ausschliesslich als Demonstration der System-Intelligenz.</p>
+</div>`;
+  openModal('insightModal');
+}
+
+/* ═══════════════════ SNAPSHOT MODAL ═══════════════════ */
+async function openSnapshot(source, id) {
+  document.getElementById('snapshotModalTitle').textContent = '📋 Raw Input Snapshot';
+  document.getElementById('snapshotModalSub').textContent   = `ID: ${id} · Quelle: ${source}`;
+  document.getElementById('snapshotModalBody').innerHTML    = `<div class="loading-wrap"><div class="spinner"></div> Snapshot wird geladen…</div>`;
+  openModal('snapshotModal');
+
+  try {
+    const res  = await fetch(`${API_BASE}/snapshot/${encodeURIComponent(source)}/${id}`);
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Fehler');
+
+    if (!data.snapshot || data.note) {
+      document.getElementById('snapshotModalBody').innerHTML = `<p>${esc(data.note || 'Kein Snapshot verfügbar.')}</p>`;
+      return;
+    }
+
+    const snap   = data.snapshot;
+    const rawStr = JSON.stringify(snap.raw_input_snapshot || {}, null, 2);
+    document.getElementById('snapshotModalBody').innerHTML = `
+<div class="modal-section">
+  <div class="modal-section-title">Entscheidungs-Kontext</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+    ${snap.symbol ? `<div><span style="color:var(--text-muted);font-size:11px">Symbol</span><br/><strong>${esc(snap.symbol)}</strong></div>` : ''}
+    ${snap.decided_at || snap.predicted_at ? `<div><span style="color:var(--text-muted);font-size:11px">Zeitpunkt</span><br/><strong>${relativeTime(snap.decided_at || snap.predicted_at)}</strong></div>` : ''}
+    ${snap.decision_type || snap.regime ? `<div><span style="color:var(--text-muted);font-size:11px">Typ / Regime</span><br/><strong>${esc(snap.decision_type || snap.regime || '–')}</strong></div>` : ''}
+    ${snap.decision_value || snap.strategy ? `<div><span style="color:var(--text-muted);font-size:11px">Entscheidung / Strategie</span><br/><strong>${esc(snap.decision_value || snap.strategy || '–')}</strong></div>` : ''}
+    ${snap.hqs_score != null ? `<div><span style="color:var(--text-muted);font-size:11px">HQS Score</span><br/><strong style="color:var(--accent)">${Math.round(snap.hqs_score)}</strong></div>` : ''}
+    ${snap.final_conviction != null ? `<div><span style="color:var(--text-muted);font-size:11px">Conviction</span><br/><strong style="color:var(--green)">${Math.round(snap.final_conviction)}%</strong></div>` : ''}
+  </div>
+</div>
+<div class="modal-section">
+  <div class="modal-section-title">Raw Input Snapshot (JSON)</div>
+  <div class="snapshot-json">${escJson(rawStr)}</div>
+</div>
+${snap.analysis_rationale ? `
+<div class="modal-section">
+  <div class="modal-section-title">Analyse-Begründung</div>
+  <p style="font-size:13px;line-height:1.7;color:var(--text-dim)">${esc(snap.analysis_rationale)}</p>
+</div>` : ''}`;
+  } catch (err) {
+    document.getElementById('snapshotModalBody').innerHTML = `<p style="color:var(--red)">Fehler: ${esc(err.message)}</p>`;
+  }
+}
+
+/* ═══════════════════ MODAL HELPERS ═══════════════════ */
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+  document.body.style.overflow = '';
+}
+function closeInsightModal(e) {
+  if (e.target.classList.contains('modal-overlay')) {
+    e.target.classList.remove('open');
+    document.body.style.overflow = '';
+  }
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeModal('insightModal');
+    closeModal('snapshotModal');
+  }
+});
+
+/* ═══════════════════ AUDIT FEED ═══════════════════ */
+async function loadAuditFeed() {
+  const body = document.getElementById('auditFeedBody');
+  const btn  = document.getElementById('reloadAuditBtn');
+  btn.classList.add('spinning');
+  try {
+    const res  = await fetch(`${API_BASE}/audit-feed?limit=25`);
+    const data = await res.json();
+    const feed = data.feed || [];
+    auditFeedData = feed;
+
+    document.getElementById('auditTimestamp').textContent = `Aktualisiert: ${new Date().toLocaleTimeString('de-DE')}`;
+    updateStats(portfolioData, auditFeedData);
+
+    if (!feed.length) {
+      body.innerHTML = `<div class="empty-state"><div class="icon">📭</div><div>Keine Audit-Einträge vorhanden</div></div>`;
+      return;
+    }
+
+    body.innerHTML = feed.map(entry => {
+      const score  = Number(entry.robustness_score) || 0;
+      const bStyle = auditScoreStyle(score);
+      const regime = regimeLabel(entry.market_cluster);
+      return `
+<div class="audit-entry">
+  <div>
+    <div class="audit-sym">${esc(entry.symbol)}</div>
+    <div style="display:flex;gap:5px;margin-top:4px;flex-wrap:wrap">
+      ${entry.guardian_applied ? `<span class="badge-guardian">🛡 Guardian</span>` : ''}
+      ${entry.suppressed       ? `<span class="badge-suppressed">⛔ Suppressed</span>` : ''}
+    </div>
+  </div>
+  <div class="audit-info">
+    <div class="decision">${esc(entry.decision_value || '–')}</div>
+    <div style="font-size:11px;margin-top:2px">
+      ${regime.icon} ${regime.label} ·
+      <span style="color:var(--text-muted)">${esc(entry.decision_type || '–')}</span>
+    </div>
+    ${entry.suppression_reason ? `<div style="font-size:11px;color:var(--red);margin-top:2px">${esc(entry.suppression_reason)}</div>` : ''}
+  </div>
+  <div>
+    <span class="audit-score-pill" style="${bStyle}">${Math.round(score * 100)}%</span>
+  </div>
+  <div class="audit-time">${relativeTime(entry.decided_at)}</div>
+</div>`;
+    }).join('');
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><div>Feed nicht verfügbar: ${esc(err.message)}</div></div>`;
+  } finally {
+    btn.classList.remove('spinning');
+  }
+}
+
+/* ═══════════════════ PORTFOLIO LOAD ═══════════════════ */
+async function loadPortfolio() {
+  const grid = document.getElementById('portfolioGrid');
+  const btn  = document.getElementById('reloadPortfolioBtn');
+  btn.classList.add('spinning');
+  grid.innerHTML = `<div class="loading-wrap" style="grid-column:1/-1"><div class="spinner"></div> Portfolio wird geladen…</div>`;
+
+  try {
+    const [portfolioRes] = await Promise.all([
+      fetch(`${API_BASE}/portfolio`),
+    ]);
+    const data = await portfolioRes.json();
+    portfolioData = data.portfolio || [];
+    renderPortfolio();
+    updateStats(portfolioData, auditFeedData);
+    // Load audit feed in parallel; stats update inside loadAuditFeed
+    loadAuditFeed();
+  } catch (err) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="icon">⚠️</div><div>Portfolio konnte nicht geladen werden: ${esc(err.message)}</div></div>`;
+  } finally {
+    btn.classList.remove('spinning');
+  }
+}
+
+/* ═══════════════════ ESCAPE HELPERS ═══════════════════ */
+function esc(str) {
+  return String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function escJson(str) {
+  return esc(str);
+}
+
+/* ═══════════════════ INIT ═══════════════════ */
+loadPortfolio();
+// Auto-refresh audit feed every 60 seconds
+setInterval(loadAuditFeed, 60000);
+</script>
+</body>
+</html>
