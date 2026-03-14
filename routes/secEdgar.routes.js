@@ -5,30 +5,59 @@ const express = require("express");
 const {
   getSecEdgarSnapshotBySymbol,
 } = require("../services/secEdgar.service");
+const {
+  badRequest,
+  parseBoolean,
+  parseInteger,
+  parseSymbol,
+} = require("../utils/requestValidation");
 
 const logger = require("../utils/logger");
 
 const router = express.Router();
 
-function normalizeLimit(value, fallback, maxValue) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.max(1, Math.min(Math.trunc(numeric), maxValue));
-}
-
 router.get("/", async (req, res) => {
   try {
-    const symbol = String(req.query.symbol || "").trim().toUpperCase();
-    const filingLimit = normalizeLimit(req.query.filingLimit, 10, 25);
-    const factLimit = normalizeLimit(req.query.factLimit, 25, 100);
-    const refresh = String(req.query.refresh || "false").toLowerCase() === "true";
-
-    if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        message: 'The "symbol" query parameter is required',
-      });
+    const symbolResult = parseSymbol(req.query.symbol, {
+      required: true,
+      label: "symbol",
+    });
+    if (symbolResult.error) {
+      return badRequest(res, symbolResult.error);
     }
+
+    const filingLimitResult = parseInteger(req.query.filingLimit, {
+      defaultValue: 10,
+      min: 1,
+      max: 25,
+      label: "filingLimit",
+    });
+    if (filingLimitResult.error) {
+      return badRequest(res, filingLimitResult.error);
+    }
+
+    const factLimitResult = parseInteger(req.query.factLimit, {
+      defaultValue: 25,
+      min: 1,
+      max: 100,
+      label: "factLimit",
+    });
+    if (factLimitResult.error) {
+      return badRequest(res, factLimitResult.error);
+    }
+
+    const refreshResult = parseBoolean(req.query.refresh, {
+      defaultValue: false,
+      label: "refresh",
+    });
+    if (refreshResult.error) {
+      return badRequest(res, refreshResult.error);
+    }
+
+    const symbol = symbolResult.value;
+    const filingLimit = filingLimitResult.value;
+    const factLimit = factLimitResult.value;
+    const refresh = refreshResult.value;
 
     const snapshot = await getSecEdgarSnapshotBySymbol(symbol, {
       filingLimit,
