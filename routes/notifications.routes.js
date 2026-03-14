@@ -9,6 +9,11 @@ const {
   markRead,
   saveDeviceToken,
 } = require("../services/notifications.repository");
+const {
+  badRequest,
+  parseEnum,
+  parseInteger,
+} = require("../utils/requestValidation");
 
 /**
  * ✅ Health / Quick Test
@@ -28,16 +33,26 @@ router.get("/health", async (req, res) => {
  */
 router.get("/", async (req, res) => {
   try {
-    const userId = Number(req.query.userId);
-    const limit = Number(req.query.limit || 50);
-
-    if (!Number.isFinite(userId)) {
-      return res.status(400).json({ success: false, message: "userId fehlt." });
+    const userIdResult = parseInteger(req.query.userId, {
+      required: true,
+      min: 1,
+      label: "userId",
+    });
+    if (userIdResult.error) {
+      return badRequest(res, userIdResult.error);
     }
 
-    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 50;
+    const limitResult = parseInteger(req.query.limit, {
+      defaultValue: 50,
+      min: 1,
+      max: 200,
+      label: "limit",
+    });
+    if (limitResult.error) {
+      return badRequest(res, limitResult.error);
+    }
 
-    const items = await listNotifications(userId, safeLimit);
+    const items = await listNotifications(userIdResult.value, limitResult.value);
     return res.json({ success: true, notifications: items });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
@@ -50,12 +65,16 @@ router.get("/", async (req, res) => {
  */
 router.get("/unread-count", async (req, res) => {
   try {
-    const userId = Number(req.query.userId);
-    if (!Number.isFinite(userId)) {
-      return res.status(400).json({ success: false, message: "userId fehlt." });
+    const userIdResult = parseInteger(req.query.userId, {
+      required: true,
+      min: 1,
+      label: "userId",
+    });
+    if (userIdResult.error) {
+      return badRequest(res, userIdResult.error);
     }
 
-    const c = await unreadCount(userId);
+    const c = await unreadCount(userIdResult.value);
     return res.json({ success: true, unread: c });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
@@ -69,16 +88,25 @@ router.get("/unread-count", async (req, res) => {
  */
 router.post("/mark-read", async (req, res) => {
   try {
-    const userId = Number(req.body?.userId);
-    const notificationId = Number(req.body?.notificationId);
-
-    if (!Number.isFinite(userId) || !Number.isFinite(notificationId)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "userId/notificationId fehlt." });
+    const userIdResult = parseInteger(req.body?.userId, {
+      required: true,
+      min: 1,
+      label: "userId",
+    });
+    if (userIdResult.error) {
+      return badRequest(res, userIdResult.error);
     }
 
-    await markRead(userId, notificationId);
+    const notificationIdResult = parseInteger(req.body?.notificationId, {
+      required: true,
+      min: 1,
+      label: "notificationId",
+    });
+    if (notificationIdResult.error) {
+      return badRequest(res, notificationIdResult.error);
+    }
+
+    await markRead(userIdResult.value, notificationIdResult.value);
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
@@ -92,15 +120,37 @@ router.post("/mark-read", async (req, res) => {
  */
 router.post("/register-device", async (req, res) => {
   try {
-    const userId = Number(req.body?.userId);
-    const token = String(req.body?.token || "");
-    const deviceType = String(req.body?.deviceType || "web");
-
-    if (!Number.isFinite(userId) || !token.trim()) {
-      return res.status(400).json({ success: false, message: "userId/token fehlt." });
+    const userIdResult = parseInteger(req.body?.userId, {
+      required: true,
+      min: 1,
+      label: "userId",
+    });
+    if (userIdResult.error) {
+      return badRequest(res, userIdResult.error);
     }
 
-    await saveDeviceToken(userId, token, deviceType);
+    const token = String(req.body?.token || "").trim();
+    if (!token) {
+      return badRequest(res, "token is required");
+    }
+
+    if (token.length > 2048) {
+      return badRequest(res, "token is too long");
+    }
+
+    const deviceTypeResult = parseEnum(
+      req.body?.deviceType,
+      ["web", "ios", "android"],
+      {
+        defaultValue: "web",
+        label: "deviceType",
+      }
+    );
+    if (deviceTypeResult.error) {
+      return badRequest(res, deviceTypeResult.error);
+    }
+
+    await saveDeviceToken(userIdResult.value, token, deviceTypeResult.value);
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });

@@ -9,6 +9,13 @@ LOGGER
 ========================================================= */
 
 const logger = require("./utils/logger");
+const {
+  badRequest,
+  parseEnum,
+  parseInteger,
+  parseNumber,
+  parseSymbol,
+} = require("./utils/requestValidation");
 
 /* =========================================================
 CORE SERVICES
@@ -85,6 +92,7 @@ APP INIT
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+const SUPPORTED_SEGMENTS = ["us", "usa", "europe", "china", "japan", "india"];
 
 const RUN_JOBS =
   String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
@@ -180,9 +188,15 @@ MARKET ROUTE
 
 app.get("/api/market", async (req, res) => {
   try {
-    const symbol = req.query.symbol
-      ? String(req.query.symbol).trim().toUpperCase()
-      : null;
+    const symbolResult = parseSymbol(req.query.symbol, {
+      required: false,
+      label: "symbol",
+    });
+    if (symbolResult.error) {
+      return badRequest(res, symbolResult.error);
+    }
+
+    const symbol = symbolResult.value;
 
     const raw = await getMarketData(symbol || undefined);
 
@@ -211,13 +225,20 @@ ADMIN NEWS COLLECTOR
 app.get("/api/admin/collect-market-news", async (req, res) => {
   try {
     const symbols = normalizeSymbols((req.query.symbols || "").split(","));
-    const limit = Number(req.query.limit || 5);
+    const limitResult = parseInteger(req.query.limit, {
+      defaultValue: 5,
+      min: 1,
+      max: 25,
+      label: "limit",
+    });
+    if (limitResult.error) {
+      return badRequest(res, limitResult.error);
+    }
+
+    const limit = limitResult.value;
 
     if (!symbols.length) {
-      return res.status(400).json({
-        success: false,
-        message: "symbols query parameter is required",
-      });
+      return badRequest(res, "symbols query parameter is required");
     }
 
     const summary = await collectAndStoreMarketNews(symbols, limit);
@@ -241,14 +262,15 @@ HQS ROUTE
 
 app.get("/api/hqs", async (req, res) => {
   try {
-    const symbol = String(req.query.symbol || "").trim().toUpperCase();
-
-    if (!symbol) {
-      return res.status(400).json({
-        success: false,
-        message: "Symbol fehlt.",
-      });
+    const symbolResult = parseSymbol(req.query.symbol, {
+      required: true,
+      label: "symbol",
+    });
+    if (symbolResult.error) {
+      return badRequest(res, symbolResult.error);
     }
+
+    const symbol = symbolResult.value;
 
     const marketData = await getMarketData(symbol);
 
@@ -313,16 +335,24 @@ SEGMENT ROUTE
 
 app.get("/api/segment", async (req, res) => {
   try {
-    const segment = String(req.query.segment || "").toLowerCase();
-    const symbol = String(req.query.symbol || "").toUpperCase();
-
-    if (!segment || !symbol) {
-      return res.status(400).json({
-        success: false,
-        message: "segment und symbol sind erforderlich.",
-      });
+    const segmentResult = parseEnum(req.query.segment, SUPPORTED_SEGMENTS, {
+      required: true,
+      label: "segment",
+    });
+    if (segmentResult.error) {
+      return badRequest(res, segmentResult.error);
     }
 
+    const symbolResult = parseSymbol(req.query.symbol, {
+      required: true,
+      label: "symbol",
+    });
+    if (symbolResult.error) {
+      return badRequest(res, symbolResult.error);
+    }
+
+    const segment = segmentResult.value;
+    const symbol = symbolResult.value;
     const result = await getMarketDataBySegment({ segment, symbol });
 
     return res.json(result);
@@ -342,16 +372,24 @@ GUARDIAN ROUTE
 
 app.get("/api/guardian/analyze/:ticker", async (req, res) => {
   try {
-    const ticker = String(req.params.ticker || "").toUpperCase();
-    const segment = String(req.query.segment || "usa").toLowerCase();
-
-    if (!ticker) {
-      return res.status(400).json({
-        success: false,
-        message: "Ticker fehlt.",
-      });
+    const tickerResult = parseSymbol(req.params.ticker, {
+      required: true,
+      label: "ticker",
+    });
+    if (tickerResult.error) {
+      return badRequest(res, tickerResult.error);
     }
 
+    const segmentResult = parseEnum(req.query.segment, SUPPORTED_SEGMENTS, {
+      defaultValue: "usa",
+      label: "segment",
+    });
+    if (segmentResult.error) {
+      return badRequest(res, segmentResult.error);
+    }
+
+    const ticker = tickerResult.value;
+    const segment = segmentResult.value;
     const segmentData = await getMarketDataBySegment({
       segment,
       symbol: ticker,
@@ -401,7 +439,37 @@ app.post("/api/portfolio", async (req, res) => {
       });
     }
 
-    const result = await calculatePortfolioHQS(portfolio);
+    const normalizedPortfolio = [];
+    for (const [index, position] of portfolio.entries()) {
+      if (!position || typeof position !== "object") {
+        return badRequest(res, `portfolio[${index}] must be an object`);
+      }
+
+      const symbolResult = parseSymbol(position.symbol, {
+        required: true,
+        label: `portfolio[${index}].symbol`,
+      });
+      if (symbolResult.error) {
+        return badRequest(res, symbolResult.error);
+      }
+
+      const weightResult = parseNumber(position.weight, {
+        defaultValue: 1,
+        min: 0,
+        label: `portfolio[${index}].weight`,
+      });
+      if (weightResult.error) {
+        return badRequest(res, weightResult.error);
+      }
+
+      normalizedPortfolio.push({
+        ...position,
+        symbol: symbolResult.value,
+        weight: weightResult.value,
+      });
+    }
+
+    const result = await calculatePortfolioHQS(normalizedPortfolio);
 
     return res.json({
       success: true,

@@ -4,25 +4,53 @@ const express = require("express");
 const router = express.Router();
 
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
-
-function clamp(n, min, max) {
-  const x = Number(n);
-  if (!Number.isFinite(x)) return min;
-  return Math.max(min, Math.min(max, x));
-}
+const {
+  badRequest,
+  parseEnum,
+  parseInteger,
+  parseNumber,
+} = require("../utils/requestValidation");
 
 /**
  * GET /api/opportunities?limit=10&minHqs=70&regime=bull
  */
 router.get("/", async (req, res) => {
   try {
-    const limit = clamp(Number(req.query.limit || 10), 1, 25);
+    const limitResult = parseInteger(req.query.limit, {
+      defaultValue: 10,
+      min: 1,
+      max: 25,
+      label: "limit",
+    });
+    if (limitResult.error) {
+      return badRequest(res, limitResult.error);
+    }
 
-    const minHqsRaw = req.query.minHqs;
-    const minHqs = minHqsRaw === undefined ? null : clamp(Number(minHqsRaw), 0, 100);
+    const minHqsResult = parseNumber(req.query.minHqs, {
+      defaultValue: null,
+      min: 0,
+      max: 100,
+      label: "minHqs",
+    });
+    if (minHqsResult.error) {
+      return badRequest(res, minHqsResult.error);
+    }
 
-    const regimeRaw = String(req.query.regime || "").trim().toLowerCase();
-    const regime = regimeRaw ? regimeRaw : null;
+    const regimeResult = parseEnum(
+      req.query.regime,
+      ["bull", "bear", "neutral", "expansion", "crash", "bullish", "bearish"],
+      {
+        defaultValue: null,
+        label: "regime",
+      }
+    );
+    if (regimeResult.error) {
+      return badRequest(res, regimeResult.error);
+    }
+
+    const limit = limitResult.value;
+    const minHqs = minHqsResult.value;
+    const regime = regimeResult.value;
 
     // Service ist abwärts-kompatibel:
     // - wenn er nur (limit) erwartet, ignoriert er die extra args nicht,
