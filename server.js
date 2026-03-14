@@ -85,12 +85,12 @@ DISCOVERY
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
 const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
-const { initAutonomyAuditTable, initNearMissTable } = require("./services/autonomyAudit.repository");
-const { initAgentForecastTable } = require("./services/agentForecast.repository");
+const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable } = require("./services/autonomyAudit.repository");
+const { initAgentForecastTable, initAgentsTable } = require("./services/agentForecast.repository");
 const { initDynamicWeightsTable } = require("./services/causalMemory.repository");
 const { runForecastVerificationJob } = require("./jobs/forecastVerification.job");
 const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
-const { initTechRadarTable } = require("./services/techRadar.service");
+const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
 const { runTechRadarJob } = require("./jobs/techRadar.job");
 
 /* =========================================================
@@ -709,8 +709,11 @@ app.listen(PORT, async () => {
     await initAutonomyAuditTable();
     await initNearMissTable();
     await initAgentForecastTable();
+    await initAgentsTable();
     await initDynamicWeightsTable();
     await initTechRadarTable();
+    await initSystemEvolutionProposalsTable();
+    await initAutomationAuditTable();
 
     await initNotificationTables();
     await seedDemoUserIfEmpty();

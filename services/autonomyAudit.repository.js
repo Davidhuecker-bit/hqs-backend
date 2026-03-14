@@ -54,6 +54,23 @@ async function initAutonomyAuditTable() {
   if (logger?.info) logger.info("autonomy_audit table ready");
 }
 
+async function initAutomationAuditTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automation_audit (
+      id         SERIAL PRIMARY KEY,
+      symbol     TEXT,
+      action     TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(
+    `ALTER TABLE automation_audit ADD COLUMN IF NOT EXISTS saved_capital_potential FLOAT DEFAULT 0.0;`
+  );
+
+  if (logger?.info) logger.info("automation_audit table ready");
+}
+
 /* =========================================================
    RECORD A DECISION
 ========================================================= */
@@ -314,6 +331,7 @@ async function getNearMisses({ limit = 25, evaluatedOnly = false } = {}) {
 
 module.exports = {
   initAutonomyAuditTable,
+  initAutomationAuditTable,
   recordAutonomyDecision,
   initNearMissTable,
   logNearMiss,
