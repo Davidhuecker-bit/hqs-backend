@@ -23,8 +23,9 @@ try {
 const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || "";
 
-if (!MASSIVE_API_KEY) {
-  const msg = "MASSIVE_API_KEY is not set in environment variables";
+if (!MASSIVE_API_KEY && !TWELVE_DATA_API_KEY) {
+  const msg =
+    "No quote provider is configured. Set MASSIVE_API_KEY or TWELVE_DATA_API_KEY.";
   if (logger?.warn) logger.warn(msg);
   else console.warn("⚠️ " + msg);
 }
@@ -259,40 +260,58 @@ async function fetchQuote(symbol) {
     throw new Error("fetchQuote called without symbol");
   }
 
-  try {
-    return await fetchFromMassive(sym);
-  } catch (massiveError) {
-    const massiveMsg = `Massive failed for ${sym}: ${massiveError.message}`;
+  const providers = [];
+  if (MASSIVE_API_KEY) {
+    providers.push({ name: "MASSIVE", fetcher: fetchFromMassive });
+  }
+  if (TWELVE_DATA_API_KEY) {
+    providers.push({ name: "TWELVE_DATA", fetcher: fetchFromTwelveData });
+  }
 
-    if (logger?.warn) logger.warn(massiveMsg);
-    else console.warn("⚠️ " + massiveMsg);
+  if (!providers.length) {
+    throw new Error(
+      "No quote providers configured. Set MASSIVE_API_KEY or TWELVE_DATA_API_KEY."
+    );
+  }
 
-    if (!TWELVE_DATA_API_KEY) {
-      if (logger?.error) logger.error(massiveMsg);
-      else console.error("❌ " + massiveMsg);
-      throw massiveError;
-    }
+  let lastError = null;
+  const providerErrors = [];
+
+  for (let index = 0; index < providers.length; index++) {
+    const provider = providers[index];
 
     try {
-      const fallbackData = await fetchFromTwelveData(sym);
+      const data = await provider.fetcher(sym);
 
-      if (logger?.info) {
+      if (lastError && logger?.info) {
         logger.info("Provider fallback success", {
           symbol: sym,
-          provider: "TWELVE_DATA",
+          provider: provider.name,
         });
       }
 
-      return fallbackData;
-    } catch (fallbackError) {
-      const finalMsg = `All providers failed for ${sym}: Massive=${massiveError.message}; TwelveData=${fallbackError.message}`;
+      return data;
+    } catch (providerError) {
+      lastError = providerError;
+      providerErrors.push(`${provider.name}=${providerError.message}`);
+      const providerMsg = `${provider.name} failed for ${sym}: ${providerError.message}`;
 
-      if (logger?.error) logger.error(finalMsg);
-      else console.error("❌ " + finalMsg);
+      if (logger?.warn) logger.warn(providerMsg);
+      else console.warn("⚠️ " + providerMsg);
 
-      throw fallbackError;
+      if (index === providers.length - 1) {
+        const finalMsg =
+          providers.length > 1
+            ? `All providers failed for ${sym}: ${providerErrors.join("; ")}`
+            : providerMsg;
+
+        if (logger?.error) logger.error(finalMsg);
+        else console.error("❌ " + finalMsg);
+      }
     }
   }
+
+  throw lastError || new Error(`Unable to fetch quote for ${sym}`);
 }
 
 /* =========================================================
