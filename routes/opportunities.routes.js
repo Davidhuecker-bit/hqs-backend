@@ -4,6 +4,7 @@ const express = require("express");
 const router = express.Router();
 
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
+const { classifyMarketRegime } = require("../services/regimeDetection.service");
 const {
   badRequest,
   parseEnum,
@@ -52,18 +53,24 @@ router.get("/", async (req, res) => {
     const minHqs = minHqsResult.value;
     const regime = regimeResult.value;
 
-    // Service ist abwärts-kompatibel:
-    // - wenn er nur (limit) erwartet, ignoriert er die extra args nicht,
-    //   weil wir sie als options übergeben.
-    const opportunities = await getTopOpportunities({
-      limit,
-      minHqs,
-      regime,
-    });
+    // Fetch regime classification in parallel with opportunities
+    const [opportunities, marketRegime] = await Promise.all([
+      getTopOpportunities({ limit, minHqs, regime }),
+      classifyMarketRegime().catch(() => null),
+    ]);
 
     return res.json({
       success: true,
       count: opportunities.length,
+      marketRegime: marketRegime
+        ? {
+            cluster: marketRegime.cluster,
+            avgHqs: marketRegime.avgHqs,
+            bearRatio: marketRegime.bearRatio,
+            highVolRatio: marketRegime.highVolRatio,
+            capturedAt: marketRegime.capturedAt,
+          }
+        : null,
       opportunities,
       meta: {
         limit,
