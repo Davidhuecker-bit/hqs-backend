@@ -46,6 +46,14 @@ const {
   markEntriesSeen,
 } = require("../services/techRadar.service");
 const { getWorldState, buildWorldState } = require("../services/worldState.service");
+const {
+  calculatePositionSize,
+  applyCapitalAllocation,
+  REGIME_MULTIPLIERS,
+  DEFAULT_MAX_SECTOR_PCT,
+  SECTOR_ALERT_MAX_PCT,
+  DEFAULT_MAX_POSITIONS,
+} = require("../services/capitalAllocation.service");
 
 const router = express.Router();
 
@@ -835,6 +843,123 @@ router.get("/world-state", async (req, res) => {
     return res.json({ success: true, worldState });
   } catch (error) {
     logger.error("Admin world-state route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/allocation-preview
+ * -------------------------------------------------------
+ * Returns the current Capital Allocation Layer plan:
+ *   - Reads worldState (regime, risk_mode, uncertainty)
+ *   - Loads top portfolio items from MockPortfolioEngine
+ *   - Runs applyCapitalAllocation() in-memory (no DB writes)
+ *   - Returns per-item allocation fields + budget summary
+ *
+ * Optional query params:
+ *   ?budget=10000    – override total budget in EUR
+ *   ?maxPositions=10 – override max positions
+ *   ?maxSectorPct=30 – override per-sector cap
+ */
+router.get("/allocation-preview", async (req, res) => {
+  try {
+    // 1. World state (cached, no extra cost)
+    const ws = await getWorldState();
+
+    const riskMode    = ws.risk_mode    || "neutral";
+    const uncertainty = Number(ws.uncertainty) || 0;
+
+    // 2. Portfolio candidates from MockPortfolioEngine (reads from DB, already cached path)
+    const portfolioRows = await getMockPortfolio();
+    const candidates    = Array.isArray(portfolioRows) ? portfolioRows : [];
+
+    // Map portfolio rows to the shape capitalAllocation expects
+    const mappedCandidates = candidates
+      .filter(row => !row.suppressed)
+      .map(row => ({
+        symbol:          String(row.symbol || "").toUpperCase(),
+        finalConviction: Number(row.final_conviction) || 0,
+        finalRating:     null,
+        robustnessScore: Number(row.robustness_score) || 0.5,
+        volatility:      0,          // not stored on portfolio rows
+        sectorAlert:     false,      // sector alerts come from sectorCoherence (runtime)
+        hqsScore:        Number(row.hqs_score) || 0,
+        strategy:        row.strategy || null,
+        market_regime:   row.market_regime || "neutral",
+      }))
+      // Sort by finalConviction desc (mirrors opportunityScanner priority order)
+      .sort((a, b) => b.finalConviction - a.finalConviction);
+
+    // 3. Parse optional overrides
+    const totalBudgetEur = Number(req.query.budget)       || Number(process.env.ALLOCATION_BUDGET_EUR) || 10000;
+    const maxPositions   = Number(req.query.maxPositions) || DEFAULT_MAX_POSITIONS;
+    const maxSectorPct   = Number(req.query.maxSectorPct) || DEFAULT_MAX_SECTOR_PCT;
+
+    // 4. Run allocation (pure, O(n))
+    const { opportunities: allocated, budgetSummary } = applyCapitalAllocation(
+      mappedCandidates,
+      { riskMode, uncertainty },
+      { totalBudgetEur, maxPositions, maxSectorPct }
+    );
+
+    // 5. Split approved vs. rejected
+    const approved = allocated.filter(o => o.allocationApproved);
+    const rejected = allocated.filter(o => !o.allocationApproved);
+
+    return res.json({
+      success: true,
+      worldState: {
+        riskMode,
+        uncertainty: Number(uncertainty.toFixed(3)),
+        regime:      ws.regime?.cluster || "unknown",
+        volatilityState: ws.volatility_state || "unknown",
+        capturedAt:  ws.created_at || null,
+      },
+      budgetSummary,
+      approvedPositions:  approved,
+      rejectedCandidates: rejected,
+      config: {
+        totalBudgetEur,
+        maxPositions,
+        maxSectorPct,
+        regimeMultipliers:  REGIME_MULTIPLIERS,
+        sectorAlertMaxPct:  SECTOR_ALERT_MAX_PCT,
+        env_ALLOCATION_BUDGET_EUR: process.env.ALLOCATION_BUDGET_EUR || null,
+      },
+    });
+  } catch (error) {
+    logger.error("Admin allocation-preview route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/allocation-preview/simulate
+ * -------------------------------------------------------
+ * Simulates position sizing for a single set of parameters.
+ * Useful for testing how regime / uncertainty affect sizing.
+ *
+ * Body (JSON):
+ *   { finalConviction, finalRating, robustnessScore, volatility,
+ *     riskMode, uncertainty, sectorAlert, totalBudgetEur }
+ */
+router.post("/allocation-preview/simulate", (req, res) => {
+  try {
+    const body = req.body || {};
+    const result = calculatePositionSize({
+      finalConviction: Number(body.finalConviction) || 0,
+      finalRating:     body.finalRating     || null,
+      robustnessScore: Number(body.robustnessScore) || 0.5,
+      volatility:      Number(body.volatility)      || 0,
+      riskMode:        body.riskMode        || "neutral",
+      uncertainty:     Number(body.uncertainty)     || 0,
+      sectorAlert:     Boolean(body.sectorAlert),
+      totalBudgetEur:  Number(body.totalBudgetEur)  || 10000,
+    });
+
+    return res.json({ success: true, sizing: result });
+  } catch (error) {
+    logger.error("Admin allocation-preview/simulate route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
