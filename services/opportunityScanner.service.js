@@ -1151,10 +1151,15 @@ async function getTopOpportunities(arg = 10) {
   // ── World State: single source of global market truth ───────────────────
   // Replaces three individual async calls (regime, inter-market, agent weights)
   // with one unified getWorldState() lookup that is already cached in-memory.
+  // Also exposes orchestrator_global, capital_flow_summary, and news_pulse for
+  // use by debate/guardian/insight building.
   // Falls back to direct service calls if world_state is unavailable.
   let marketRegime = { cluster: "Safe", capturedAt: new Date().toISOString() };
   let interMarketData = null;
   let agentWeights = null;
+  let orchestratorGlobal = null;
+  let capitalFlowSummary = null;
+  let globalNewsPulse = null;
 
   try {
     const ws = await getWorldState();
@@ -1172,7 +1177,10 @@ async function getTopOpportunities(arg = 10) {
       earlyWarning: ws.cross_asset_state.earlyWarning,
       timestamp:    ws.created_at,
     };
-    agentWeights = ws.agent_calibration.weights;
+    agentWeights        = ws.agent_calibration.weights;
+    orchestratorGlobal  = ws.orchestrator_global  || null;
+    capitalFlowSummary  = ws.capital_flow_summary  || null;
+    globalNewsPulse     = ws.news_pulse            || null;
   } catch (wsErr) {
     logger.warn(
       "getTopOpportunities: world_state unavailable – falling back to direct service calls",
@@ -1262,6 +1270,8 @@ async function getTopOpportunities(arg = 10) {
       debateSummary: debateResult.debateSummary,
       debateVotes: debateResult.votes,
       interMarketWarning: Boolean(interMarketData?.earlyWarning),
+      // Global orchestrator risk mode from world_state (available when present)
+      globalRiskMode: orchestratorGlobal?.riskMode?.mode || null,
     };
 
     const insight = buildOpportunityInsight(opp, enrichedGuardian, marketCluster);
@@ -1377,7 +1387,10 @@ async function getTopOpportunities(arg = 10) {
     fallbackCount,
     suppressedCount,
     debateBlockedCount,
-    interMarketWarning: Boolean(interMarketData?.earlyWarning),
+    interMarketWarning:      Boolean(interMarketData?.earlyWarning),
+    orchestratorGlobalMode:  orchestratorGlobal?.riskMode?.mode || null,
+    capitalFlowBullish:      capitalFlowSummary?.flowSummary?.bullish ?? null,
+    newsPulseDirection:      globalNewsPulse?.direction || null,
     returned: out.length,
   });
 
