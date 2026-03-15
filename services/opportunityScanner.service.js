@@ -28,6 +28,8 @@ const { getInterMarketCorrelation } = require("./interMarketCorrelation.service"
 const { logAgentForecasts } = require("./agentForecast.repository");
 const { getAgentWeights, buildMetaRationale } = require("./causalMemory.repository");
 const { getSharpenedThresholds } = require("./sectorCoherence.service");
+// World State: unified global market truth (regime + cross-asset + sector + agents)
+const { getWorldState } = require("./worldState.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1146,37 +1148,49 @@ async function getTopOpportunities(arg = 10) {
     return b.opportunityScore - a.opportunityScore;
   });
 
-  // ── Regime Detection: classify market-wide cluster ──────────────────────
+  // ── World State: single source of global market truth ───────────────────
+  // Replaces three individual async calls (regime, inter-market, agent weights)
+  // with one unified getWorldState() lookup that is already cached in-memory.
+  // Falls back to direct service calls if world_state is unavailable.
   let marketRegime = { cluster: "Safe", capturedAt: new Date().toISOString() };
+  let interMarketData = null;
+  let agentWeights = null;
+
   try {
-    marketRegime = await classifyMarketRegime();
-  } catch (regimeErr) {
-    logger.warn("getTopOpportunities: regime detection failed, defaulting to Safe", {
-      message: regimeErr.message,
-    });
+    const ws = await getWorldState();
+    marketRegime = {
+      cluster:      ws.regime.cluster,
+      avgHqs:       ws.regime.avgHqs,
+      bearRatio:    ws.regime.bearRatio,
+      highVolRatio: ws.regime.highVolRatio,
+      totalSymbols: ws.regime.totalSymbols,
+      capturedAt:   ws.created_at,
+    };
+    interMarketData = {
+      btc:          ws.cross_asset_state.btc,
+      gold:         ws.cross_asset_state.gold,
+      earlyWarning: ws.cross_asset_state.earlyWarning,
+      timestamp:    ws.created_at,
+    };
+    agentWeights = ws.agent_calibration.weights;
+  } catch (wsErr) {
+    logger.warn(
+      "getTopOpportunities: world_state unavailable – falling back to direct service calls",
+      { message: wsErr.message }
+    );
+    // Fallback: call the individual services directly (pre-world_state behaviour)
+    try {
+      marketRegime = await classifyMarketRegime();
+    } catch (_) { /* default Safe stays */ }
+    try {
+      interMarketData = await getInterMarketCorrelation();
+    } catch (_) { /* continues without cross-asset data */ }
+    try {
+      agentWeights = await getAgentWeights();
+    } catch (_) { /* agentWeights stays null – debate uses its internal defaults */ }
   }
 
   const marketCluster = marketRegime.cluster;
-
-  // ── Inter-Market Correlation (BTC/Gold early-warning) ───────────────────
-  let interMarketData = null;
-  try {
-    interMarketData = await getInterMarketCorrelation();
-  } catch (imErr) {
-    logger.warn("getTopOpportunities: inter-market fetch failed, continuing without", {
-      message: imErr.message,
-    });
-  }
-
-  // ── Causal Memory: fetch current dynamic agent weights ──────────────────
-  let agentWeights = null;
-  try {
-    agentWeights = await getAgentWeights();
-  } catch (wmErr) {
-    logger.warn("getTopOpportunities: agent weight fetch failed, using defaults", {
-      message: wmErr.message,
-    });
-  }
 
   // ── Agentic Debate + Guardian Protocol + Insight building ───────────────
   let suppressedCount = 0;

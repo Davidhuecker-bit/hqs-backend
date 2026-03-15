@@ -45,6 +45,7 @@ const {
   getEvolutionBoard,
   markEntriesSeen,
 } = require("../services/techRadar.service");
+const { getWorldState, buildWorldState } = require("../services/worldState.service");
 
 const router = express.Router();
 
@@ -807,6 +808,33 @@ router.get("/saved-capital", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin saved-capital route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   WORLD STATE  –  Global Market Truth Layer
+========================================================= */
+
+/**
+ * GET /api/admin/world-state
+ * Returns the current unified world_state (regime + cross-asset + sector + agents).
+ * Served from the in-memory cache when fresh; triggers a background rebuild
+ * when the snapshot is stale.
+ *
+ * Optional query parameter:
+ *   ?refresh=true  – forces a synchronous rebuild before responding
+ */
+router.get("/world-state", async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh === "true";
+    const worldState = forceRefresh
+      ? await buildWorldState()
+      : await getWorldState();
+
+    return res.json({ success: true, worldState });
+  } catch (error) {
+    logger.error("Admin world-state route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
