@@ -61,6 +61,7 @@ const {
 const {
   hydrateOpportunityRuntimeState,
 } = require("./services/opportunityScanner.service");
+const { buildWorldState } = require("./services/worldState.service");
 
 /* =========================================================
 UNIVERSE
@@ -702,6 +703,14 @@ async function runIntegratedWarmupCycle() {
 
   await buildMarketSnapshot();
   await runForwardLearningLocked();
+
+  // Rebuild world_state after each market snapshot so it reflects the latest
+  // regime, volatility and cross-asset signals. Non-blocking.
+  buildWorldState().catch((wsErr) => {
+    logger.warn("worldState: rebuild after warmup failed", {
+      message: wsErr.message,
+    });
+  });
 }
 
 /* =========================================================
@@ -733,6 +742,14 @@ app.listen(PORT, async () => {
     await initSecEdgarTables();
     await hydrateMarketRuntimeState();
     await hydrateOpportunityRuntimeState();
+
+    // Build the initial world_state snapshot (regime + cross-asset + sector + agents)
+    // Non-blocking: errors are logged but do not abort startup.
+    buildWorldState().catch((wsErr) => {
+      logger.warn("worldState: initial build failed on startup", {
+        message: wsErr.message,
+      });
+    });
 
     if (RUN_JOBS) {
       logger.info("RUN_JOBS=true -> starting background jobs inside API server");
