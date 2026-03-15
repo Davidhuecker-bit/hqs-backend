@@ -2638,11 +2638,11 @@ function _renderAtAGlance(data) {
   const statusSub  = document.getElementById('glanceStatusSub');
   if (statusCard && statusVal) {
     const modeMap = {
-      calm: { icon: '🟢', label: 'System stabil',       cls: 'positive', sub: `SIS ${sis}/100` },
-      warning:         { icon: '🟡', label: 'Warnung aktiv',     cls: 'neutral',  sub: `SIS ${sis}/100 · ${riskMode}` },
-      debate:          { icon: '🟣', label: 'Signale gemischt',  cls: 'neutral',  sub: `SIS ${sis}/100` },
-      blocked:         { icon: '🔴', label: 'System blockiert',  cls: 'urgent',   sub: `SIS ${sis}/100 · risk_off` },
-      expansion_ready: { icon: '🔵', label: 'Expansion möglich', cls: 'info',     sub: `SIS ${sis}/100 · risk_on` },
+      calm:            { icon: '🟢', label: 'System stabil',       cls: 'positive', sub: `SIS ${sis}/100` },
+      warning:         { icon: '🟡', label: 'Warnung aktiv',       cls: 'neutral',  sub: `SIS ${sis}/100 · ${riskMode}` },
+      debate:          { icon: '🟣', label: 'Signale gemischt',    cls: 'neutral',  sub: `SIS ${sis}/100` },
+      blocked:         { icon: '🔴', label: 'System blockiert',    cls: 'urgent',   sub: `SIS ${sis}/100 · risk_off` },
+      expansion_ready: { icon: '🔵', label: 'Expansion möglich',   cls: 'info',     sub: `SIS ${sis}/100 · risk_on` },
     };
     const s = modeMap[mode] || modeMap.calm;
     statusCard.querySelector('.glance-icon').textContent = s.icon;
@@ -2758,7 +2758,13 @@ function _updateHeaderBadge(mode, blockerCount) {
   else if (mode === 'blocked')    badge.classList.add('mode-blocked');
   else if (mode === 'expansion_ready') badge.classList.add('mode-expansion_ready');
 
-  const modeLabel = { calm: 'Stabil · Live', warning: 'Warnung · Live', debate: 'Debatte · Live', blocked: 'Blockiert · Live', expansion_ready: 'Bereit · Live' };
+  const modeLabel = {
+    calm:            'Stabil · Live',
+    warning:         'Warnung · Live',
+    debate:          'Debatte · Live',
+    blocked:         'Blockiert · Live',
+    expansion_ready: 'Bereit · Live',
+  };
   if (badgeText) badgeText.textContent = modeLabel[mode] || 'Live';
 
   // Blocker beacon

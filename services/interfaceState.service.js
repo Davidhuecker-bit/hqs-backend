@@ -162,7 +162,7 @@ function _buildNarrative(surfaceMode, sis, riskMode, dominantTopic, sisRec, tren
     case "blocked":
       return `Das System ist blockiert. Kein automatischer Betrieb möglich. ` +
         `${topicText}. System-Score: ${sis}/100. ${trendText} ` +
-        `${blockers.slice(0,2).map(b => b?.reason ?? '–').filter(Boolean).join(" · ") || "Marktbedingungen prüfen."} ` +
+        `${blockers.slice(0,2).map(b => b?.reason ?? '–').join(" · ") || "Marktbedingungen prüfen."} ` +
         `Bitte jetzt die Marktlage und den Risk-Mode überprüfen.`;
     case "warning":
       return `Das System ist vorsichtig. ${topicText}. ` +
