@@ -32,6 +32,11 @@ const { getSharpenedThresholds } = require("./sectorCoherence.service");
 const { getWorldState } = require("./worldState.service");
 // Capital Allocation Layer: position sizing, risk-budget, sector caps
 const { applyCapitalAllocation } = require("./capitalAllocation.service");
+// Portfolio Twin: virtual position tracking (Stage 2 – auto live-integration)
+const {
+  hasOpenVirtualPosition,
+  openVirtualPositionFromAllocation,
+} = require("./portfolioTwin.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1413,7 +1418,98 @@ async function getTopOpportunities(arg = 10) {
     });
   }
 
-  const out = allocatedCandidates.slice(0, limit);
+  // ── Portfolio Twin Stage 2: auto live-integration ───────────────────────
+  // For every allocation-approved candidate with positionSizeEur > 0,
+  // attempt to open a virtual position (sequential to avoid DB pool pressure).
+  // Duplicate guard: skip if an open position for the symbol already exists.
+  // Can be disabled via PORTFOLIO_TWIN_AUTO_OPEN=false env var.
+  const autoOpenEnabled = process.env.PORTFOLIO_TWIN_AUTO_OPEN !== "false";
+  const virtualOpenResults = [];
+  for (const opp of allocatedCandidates) {
+    // Gate 0: feature flag
+    if (!autoOpenEnabled) {
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: "autoOpenDisabled" });
+      continue;
+    }
+
+    // Gate 1: only approved allocations
+    if (!opp.allocationApproved) {
+      logger.debug("portfolioTwin: skip – allocationApproved=false", { symbol: opp.symbol });
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: "allocationApproved=false" });
+      continue;
+    }
+
+    // Gate 2: must have positive position size
+    const positionSizeEur = safeNum(opp.positionSizeEur, 0);
+    if (positionSizeEur <= 0) {
+      logger.debug("portfolioTwin: skip – positionSizeEur<=0", { symbol: opp.symbol });
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: "positionSizeEur<=0" });
+      continue;
+    }
+
+    // Gate 3: must have a valid entry price
+    const entryPrice = safeNum(opp.entryPrice, 0);
+    if (entryPrice <= 0) {
+      logger.debug("portfolioTwin: skip – entryPrice not available", { symbol: opp.symbol });
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: "entryPriceMissing" });
+      continue;
+    }
+
+    // Gate 4: duplicate guard – skip if open position already exists
+    try {
+      const alreadyOpen = await hasOpenVirtualPosition(opp.symbol);
+      if (alreadyOpen) {
+        logger.info("portfolioTwin: skip – open position already exists", { symbol: opp.symbol });
+        virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: "alreadyOpen" });
+        continue;
+      }
+    } catch (guardErr) {
+      logger.warn("portfolioTwin: duplicate guard check failed – skipping open", {
+        symbol: opp.symbol, message: guardErr.message,
+      });
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: "guardCheckFailed" });
+      continue;
+    }
+
+    // All gates passed – open the virtual position
+    try {
+      await openVirtualPositionFromAllocation({
+        symbol:             opp.symbol,
+        entryPrice,
+        allocatedEur:       positionSizeEur,
+        allocatedPct:       safeNum(opp.positionSizePct, 0),
+        convictionTier:     opp.convictionTier     || null,
+        riskModeAtEntry:    riskMode               || null,
+        uncertaintyAtEntry: uncertainty,
+        sourceRunId:        opp.sourceRunId        || null,
+      });
+      logger.info("portfolioTwin: virtual position opened via scanner flow", {
+        symbol: opp.symbol, entryPrice, positionSizeEur,
+      });
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: true });
+    } catch (openErr) {
+      logger.warn("portfolioTwin: openVirtualPositionFromAllocation failed", {
+        symbol: opp.symbol, message: openErr.message,
+      });
+      virtualOpenResults.push({ symbol: opp.symbol, virtualPositionOpened: false, virtualPositionSkippedReason: openErr.message });
+    }
+  }
+
+  // Attach virtualPositionOpened / virtualPositionSkippedReason to each candidate
+  const vpBySymbol = Object.fromEntries(
+    virtualOpenResults.map((r) => [r.symbol, r])
+  );
+  const allocatedWithVp = allocatedCandidates.map((opp) => {
+    const vr = vpBySymbol[opp.symbol];
+    if (!vr) return opp;
+    const extra = { virtualPositionOpened: vr.virtualPositionOpened };
+    if (!vr.virtualPositionOpened && vr.virtualPositionSkippedReason) {
+      extra.virtualPositionSkippedReason = vr.virtualPositionSkippedReason;
+    }
+    return { ...opp, ...extra };
+  });
+
+  const out = allocatedWithVp.slice(0, limit);
 
   logger.info("getTopOpportunities", {
     limit,
@@ -1432,6 +1528,7 @@ async function getTopOpportunities(arg = 10) {
     newsPulseDirection:      globalNewsPulse?.direction || null,
     allocationApproved:      budgetSummary ? budgetSummary.approvedPositions : null,
     budgetConsumedPct:       budgetSummary ? budgetSummary.consumedBudgetPct : null,
+    virtualPositionsOpened:  virtualOpenResults.filter((r) => r.virtualPositionOpened).length,
     returned: out.length,
   });
 
