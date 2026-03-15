@@ -1388,6 +1388,12 @@ async function getTopOpportunities(arg = 10) {
 
   // ── Capital Allocation Layer ─────────────────────────────────────────────
   // Pure, O(n) budget distribution. No DB calls. Falls back gracefully.
+  // maxPositions is set to 2× the requested limit so the allocation engine
+  // has a larger candidate pool to work with: it can reject weaker signals
+  // and still fill up to `limit` approved positions in the final slice.
+  const ALLOC_MIN_POSITIONS = 5;   // floor: always consider at least 5 candidates
+  const ALLOC_MAX_POSITIONS = 20;  // ceiling: cap to avoid over-allocating budget
+
   let allocatedCandidates = candidates;
   let budgetSummary       = null;
   try {
@@ -1396,7 +1402,7 @@ async function getTopOpportunities(arg = 10) {
       { riskMode, uncertainty },
       {
         totalBudgetEur: safeNum(Number(process.env.ALLOCATION_BUDGET_EUR), 10000),
-        maxPositions:   clamp(limit * 2, 5, 20),
+        maxPositions:   clamp(limit * 2, ALLOC_MIN_POSITIONS, ALLOC_MAX_POSITIONS),
       }
     );
     allocatedCandidates = allocResult.opportunities;

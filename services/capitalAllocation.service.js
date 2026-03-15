@@ -58,12 +58,14 @@ const LOW_ROBUSTNESS_PENALTY   = 0.80;  // fragile signal: -20 %
 // Sector caps
 const DEFAULT_MAX_SECTOR_PCT   = 30.0;  // max % of total budget per sector
 const SECTOR_ALERT_MAX_PCT     = 20.0;  // reduced cap when sectorAlert is active
+const SECTOR_ALERT_SIZE_FACTOR = 0.80;  // per-position size reduction when sectorAlert active (-20%)
 
 // Global deployment caps
 const DEFAULT_MAX_POSITIONS    = 10;    // max concurrent approved positions
 const DEFAULT_TOTAL_BUDGET_PCT = 80.0;  // max total % of budget to deploy
 const MIN_POSITION_PCT         = 1.0;   // never go below this if approved
 const MAX_POSITION_PCT         = 15.0;  // absolute hard cap per position
+const MAX_VOL_COMPRESSION      = 0.10;  // max size reduction from volatility (at vol=1.0)
 
 /* =========================================================
    SECTOR LOOKUP
@@ -226,11 +228,11 @@ function calculatePositionSize({
   }
 
   // 5. Sector alert factor
-  const sectorAlertFactor = sectorAlert ? 0.80 : 1.00;
+  const sectorAlertFactor = sectorAlert ? SECTOR_ALERT_SIZE_FACTOR : 1.00;
 
   // 6. Volatility micro-adjustment: high vol slightly compresses size
-  //    vol=0 → 1.0;  vol=1.0 → 0.90  (max 10% compression)
-  const volFactor = 1.0 - (vol * 0.10);
+  //    vol=0 → 1.0;  vol=1.0 → (1 - MAX_VOL_COMPRESSION)
+  const volFactor = 1.0 - (vol * MAX_VOL_COMPRESSION);
 
   // 7. Compose
   const rawPct = basePct
