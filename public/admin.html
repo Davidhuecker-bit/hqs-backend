@@ -819,6 +819,63 @@
     </div>
   </div>
 
+  <!-- SIS Trend Section (History Layer) -->
+  <div class="section-title" style="margin-top:40px">
+    <span class="icon">📈</span>
+    SIS-Verlauf &amp; Trend
+    <span class="section-sub">Historischer Trend · 24h / 7d / 30d · Frühwarnung</span>
+    <button class="refresh-btn" id="reloadSisTrendBtn" style="margin-left:auto" onclick="loadSisTrend()">
+      <span class="refresh-icon">↻</span> Aktualisieren
+    </button>
+  </div>
+
+  <div id="sisTrendPanel" style="
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:24px;
+    margin-bottom:32px;
+  ">
+    <!-- Trend Summary Row -->
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:20px">
+      <div style="text-align:center;min-width:100px">
+        <div id="sisTrendDirection" style="font-size:28px;font-weight:900;line-height:1;color:var(--text-muted)">–</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Trend</div>
+      </div>
+      <div style="flex:1;min-width:200px">
+        <div id="sisTrendDeltas" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px"></div>
+        <div id="sisTrendCauses" style="font-size:11px;color:var(--text-muted)">Wird geladen…</div>
+      </div>
+      <div style="text-align:right;min-width:110px">
+        <div style="font-size:10px;color:var(--text-muted)">Snapshots</div>
+        <div id="sisTrendCount" style="font-size:18px;font-weight:700;color:var(--text-muted)">–</div>
+        <div id="sisTrendLastUpdated" style="font-size:10px;color:var(--text-muted);margin-top:2px">–</div>
+      </div>
+    </div>
+
+    <!-- Verlaufsliste -->
+    <div style="border-top:1px solid var(--border);padding-top:16px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">
+        🕓 Verlauf (letzte 7 Tage)
+      </div>
+      <div id="sisTrendHistory" style="display:flex;flex-direction:column;gap:4px;max-height:220px;overflow-y:auto">
+        <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
+      </div>
+    </div>
+
+    <!-- Regressions / Improvements -->
+    <div style="border-top:1px solid var(--border);padding-top:16px;margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--red);margin-bottom:8px">⚠️ Rückschläge (30d)</div>
+        <div id="sisRegressions" style="font-size:11px;color:var(--text-muted)">Wird geladen…</div>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--green);margin-bottom:8px">✅ Verbesserungen (30d)</div>
+        <div id="sisImprovements" style="font-size:11px;color:var(--text-muted)">Wird geladen…</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Operational Status Section (Portfolio Twin Stage 3 + SIS Release Control) -->
   <div class="section-title" style="margin-top:40px">
     <span class="icon">🎛️</span>
@@ -1622,6 +1679,127 @@ async function loadSystemIntelligence() {
   }
 }
 
+/* ═══════════════════ SIS TREND / HISTORY ═══════════════════ */
+async function loadSisTrend() {
+  const btn = document.getElementById('reloadSisTrendBtn');
+  if (btn) { btn.disabled = true; btn.querySelector('.refresh-icon').textContent = '⟳'; }
+
+  try {
+    const [trendRes, regRes, histRes] = await Promise.all([
+      fetch(`${API_BASE}/sis-trend-summary`),
+      fetch(`${API_BASE}/sis-regressions`),
+      fetch(`${API_BASE}/sis-history?range=7d`),
+    ]);
+    const trend = await trendRes.json();
+    const reg   = await regRes.json();
+    const hist  = await histRes.json();
+
+    // ── Direction ──────────────────────────────────────────────────────────
+    const dirEl = document.getElementById('sisTrendDirection');
+    if (dirEl && trend.success) {
+      const dir = trend.direction || 'stable';
+      const dirColor = dir === 'improving' ? 'var(--green)' : dir === 'declining' ? 'var(--red)' : 'var(--text-muted)';
+      const dirIcon  = dir === 'improving' ? '↑' : dir === 'declining' ? '↓' : '→';
+      dirEl.textContent  = dirIcon;
+      dirEl.style.color  = dirColor;
+      dirEl.title        = trend.directionLabel || '';
+    }
+
+    // ── Delta badges ─────────────────────────────────────────────────────
+    const deltaEl = document.getElementById('sisTrendDeltas');
+    if (deltaEl && trend.success) {
+      const fmt = (v, label) => {
+        if (v == null) return `<span style="font-size:11px;color:var(--text-muted);padding:3px 8px;border-radius:8px;border:1px solid var(--border)">${label}: n/a</span>`;
+        const col = v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text-muted)';
+        const sign = v > 0 ? '+' : '';
+        return `<span style="font-size:11px;font-weight:700;color:${col};padding:3px 8px;border-radius:8px;background:${col}22;border:1px solid ${col}44">${label}: ${sign}${v}</span>`;
+      };
+      deltaEl.innerHTML = fmt(trend.delta24h, '24h') + fmt(trend.delta7d, '7d') + fmt(trend.delta30d, '30d');
+    }
+
+    // ── Causes ────────────────────────────────────────────────────────────
+    const causesEl = document.getElementById('sisTrendCauses');
+    if (causesEl && trend.success) {
+      const parts = [];
+      if (trend.topDeclineLayer) parts.push(`📉 Hauptrückgang: ${esc(trend.topDeclineLayer.id)} (${trend.topDeclineLayer.delta})`);
+      if (trend.topGainLayer)    parts.push(`📈 Hauptgewinn: ${esc(trend.topGainLayer.id)} (+${trend.topGainLayer.delta})`);
+      if (trend.directionLabel)  parts.unshift(`<strong>${esc(trend.directionLabel)}</strong>`);
+      causesEl.innerHTML = parts.join(' &nbsp;·&nbsp; ') || 'Keine Trend-Ursache erkannt';
+    }
+
+    // ── Count + timestamp ─────────────────────────────────────────────────
+    const countEl = document.getElementById('sisTrendCount');
+    if (countEl && trend.success) countEl.textContent = trend.snapshotCount ?? '–';
+    const luEl = document.getElementById('sisTrendLastUpdated');
+    if (luEl && trend.success && trend.lastUpdated) {
+      luEl.textContent = `Zuletzt: ${new Date(trend.lastUpdated).toLocaleString('de-DE')}`;
+    }
+
+    // ── History list ──────────────────────────────────────────────────────
+    const histEl = document.getElementById('sisTrendHistory');
+    if (histEl && hist.success && Array.isArray(hist.history)) {
+      if (!hist.history.length) {
+        histEl.innerHTML = `<div style="color:var(--text-muted);font-size:12px">Noch keine Verlaufsdaten vorhanden. Daten akkumulieren sich über die nächsten Warmup-Zyklen.</div>`;
+      } else {
+        const rows = [...hist.history].reverse(); // newest first
+        histEl.innerHTML = rows.map(row => {
+          const score = row.sis_score ?? '?';
+          const mode  = row.recommended_mode || '–';
+          const ts    = row.created_at ? new Date(row.created_at).toLocaleString('de-DE') : '–';
+          return `<div style="display:flex;align-items:center;gap:10px;padding:5px 8px;border-radius:6px;background:var(--bg-card2);font-size:11px">
+  <span style="font-weight:700;color:var(--text);min-width:36px">${esc(String(score))}</span>
+  <div style="flex:1;height:4px;background:var(--bg-card2);border-radius:2px;overflow:hidden">
+    <div style="height:100%;width:${Math.min(score,100)}%;background:${score >= 70 ? 'var(--green)' : score >= 40 ? 'var(--yellow)' : 'var(--red)'};border-radius:2px"></div>
+  </div>
+  <span style="color:var(--text-muted);min-width:70px;text-align:right">${esc(mode)}</span>
+  <span style="color:var(--text-muted);min-width:130px;text-align:right">${esc(ts)}</span>
+</div>`;
+        }).join('');
+      }
+    }
+
+    // ── Regressions ───────────────────────────────────────────────────────
+    const regEl = document.getElementById('sisRegressions');
+    if (regEl && reg.success) {
+      if (!reg.regressions.length) {
+        regEl.innerHTML = `<span style="color:var(--green)">Keine Rückschläge in 30d</span>`;
+      } else {
+        regEl.innerHTML = reg.regressions.map(r => {
+          const ts = r.at ? new Date(r.at).toLocaleString('de-DE') : '–';
+          return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+  <span style="color:var(--red);font-weight:700">${esc(String(r.from))} → ${esc(String(r.to))} (${esc(String(r.delta))})</span>
+  <span style="color:var(--text-muted);margin-left:6px">${esc(ts)}</span>
+  ${r.topLayer ? `<span style="color:var(--text-muted);margin-left:4px">· ${esc(r.topLayer)}</span>` : ''}
+</div>`;
+        }).join('');
+      }
+    }
+
+    // ── Improvements ─────────────────────────────────────────────────────
+    const impEl = document.getElementById('sisImprovements');
+    if (impEl && reg.success) {
+      if (!reg.improvements.length) {
+        impEl.innerHTML = `<span style="color:var(--text-muted)">Keine messbaren Verbesserungen in 30d</span>`;
+      } else {
+        impEl.innerHTML = reg.improvements.map(r => {
+          const ts = r.at ? new Date(r.at).toLocaleString('de-DE') : '–';
+          return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
+  <span style="color:var(--green);font-weight:700">${esc(String(r.from))} → ${esc(String(r.to))} (+${esc(String(r.delta))})</span>
+  <span style="color:var(--text-muted);margin-left:6px">${esc(ts)}</span>
+  ${r.topLayer ? `<span style="color:var(--text-muted);margin-left:4px">· ${esc(r.topLayer)}</span>` : ''}
+</div>`;
+        }).join('');
+      }
+    }
+
+  } catch (err) {
+    const p = document.getElementById('sisTrendPanel');
+    if (p) p.insertAdjacentHTML('beforeend', `<div style="color:var(--red);padding:8px">Fehler: ${esc(err.message || String(err))}</div>`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.querySelector('.refresh-icon').textContent = '↻'; }
+  }
+}
+
 /* ═══════════════════ OPERATIONAL STATUS ═══════════════════ */
 async function loadOperationalStatus() {
   const btn = document.getElementById('reloadOpsBtn');
@@ -1756,6 +1934,7 @@ loadSavedCapital();
 loadEvolutionBoard();
 loadSystemIntelligence();
 loadOperationalStatus();
+loadSisTrend();
 // Auto-refresh audit feed every 60 seconds
 setInterval(loadAuditFeed, 60000);
 // Refresh wisdom scores every 5 minutes
@@ -1766,6 +1945,8 @@ setInterval(loadSavedCapital, 10 * 60 * 1000);
 setInterval(loadSystemIntelligence, 15 * 60 * 1000);
 // Refresh operational status every 15 minutes
 setInterval(loadOperationalStatus, 15 * 60 * 1000);
+// Refresh SIS trend every 15 minutes
+setInterval(loadSisTrend, 15 * 60 * 1000);
 </script>
 </body>
 </html>

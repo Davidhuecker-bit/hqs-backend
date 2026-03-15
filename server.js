@@ -95,6 +95,8 @@ const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
 const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
 const { runTechRadarJob } = require("./jobs/techRadar.job");
 const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
+const { ensureSisHistoryTable, saveSisSnapshot } = require("./services/sisHistory.service");
+const { getSystemIntelligenceReport } = require("./services/systemIntelligence.service");
 
 /* =========================================================
 NOTIFICATIONS
@@ -712,6 +714,13 @@ async function runIntegratedWarmupCycle() {
       message: wsErr.message,
     });
   });
+
+  // Persist a SIS snapshot after each warmup – non-blocking, deduped by interval.
+  getSystemIntelligenceReport().then((report) => saveSisSnapshot(report)).catch((sisErr) => {
+    logger.warn("sisHistory: snapshot after warmup failed", {
+      message: sisErr.message,
+    });
+  });
 }
 
 /* =========================================================
@@ -742,6 +751,7 @@ app.listen(PORT, async () => {
     await seedDemoUserIfEmpty();
     await initSecEdgarTables();
     await ensureVirtualPositionsTable();
+    await ensureSisHistoryTable();
     await hydrateMarketRuntimeState();
     await hydrateOpportunityRuntimeState();
 
