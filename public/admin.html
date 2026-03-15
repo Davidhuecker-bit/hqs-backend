@@ -819,6 +819,75 @@
     </div>
   </div>
 
+  <!-- Operational Status Section (Portfolio Twin Stage 3 + SIS Release Control) -->
+  <div class="section-title" style="margin-top:40px">
+    <span class="icon">🎛️</span>
+    Operativer Status
+    <span class="section-sub">Portfolio Twin Stage 3 · SIS-Freigabe · Skalierungslogik</span>
+    <button class="refresh-btn" id="reloadOpsBtn" style="margin-left:auto" onclick="loadOperationalStatus()">
+      <span class="refresh-icon">↻</span> Auswerten
+    </button>
+  </div>
+
+  <div id="opsPanel" style="
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:24px;
+    margin-bottom:32px;
+  ">
+    <!-- Mode + Summary Row -->
+    <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:20px">
+      <div id="opsModeBlock" style="text-align:center;min-width:120px">
+        <div id="opsModeLabel" style="font-size:13px;font-weight:700;padding:6px 16px;border-radius:16px;border:1px solid var(--border);color:var(--text-muted);display:inline-block">Wird geladen…</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Empfohlener Modus</div>
+      </div>
+      <div style="flex:1;min-width:180px">
+        <div id="opsModeDesc" style="font-size:12px;color:var(--text-muted)">–</div>
+        <div id="opsGateBar" style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap"></div>
+      </div>
+      <div style="text-align:right;min-width:120px">
+        <div style="font-size:11px;color:var(--text-muted)">Risk-Mode</div>
+        <div id="opsRiskMode" style="font-size:14px;font-weight:700;color:var(--text-muted)">–</div>
+        <div id="opsTimestamp" style="font-size:10px;color:var(--text-muted);margin-top:2px">–</div>
+      </div>
+    </div>
+
+    <!-- Gate Grid -->
+    <div id="opsGates" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:20px">
+      <div style="color:var(--text-muted);text-align:center;padding:20px;grid-column:1/-1">Wird geladen…</div>
+    </div>
+
+    <!-- Portfolio Twin Metrics Row -->
+    <div style="border-top:1px solid var(--border);padding-top:16px;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">
+        📊 Portfolio Twin State (Stage 3)
+      </div>
+      <div id="opsTwinMetrics" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
+        <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
+      </div>
+    </div>
+
+    <!-- Biggest Blockers + Next Step -->
+    <div style="border-top:1px solid var(--border);padding-top:16px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">
+        🚧 Größte Blocker &amp; Nächster Schritt
+      </div>
+      <div id="opsBlockers">
+        <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
+      </div>
+      <div id="opsNextStep" style="
+        margin-top:12px;
+        padding:10px 14px;
+        background:rgba(59,130,246,0.08);
+        border:1px solid rgba(59,130,246,0.15);
+        border-radius:var(--radius-sm);
+        font-size:12px;
+        color:var(--text-muted);
+      ">–</div>
+    </div>
+  </div>
+
 </main>
 
 <!-- ═══════════════════ INSIGHT MODAL ═══════════════════ -->
@@ -1553,12 +1622,140 @@ async function loadSystemIntelligence() {
   }
 }
 
+/* ═══════════════════ OPERATIONAL STATUS ═══════════════════ */
+async function loadOperationalStatus() {
+  const btn = document.getElementById('reloadOpsBtn');
+  if (btn) { btn.disabled = true; btn.querySelector('.refresh-icon').textContent = '⟳'; }
+
+  try {
+    const res  = await fetch(`${API_BASE}/operational-status`);
+    const data = await res.json();
+    if (!data.success) return;
+
+    const rel  = data.operationalRelease || {};
+    const twin = data.portfolioTwinState || {};
+
+    // ── Recommended Mode ──────────────────────────────────────────────────
+    const mode = rel.recommendedMode || {};
+    const modeEl = document.getElementById('opsModeLabel');
+    if (modeEl) {
+      modeEl.textContent    = mode.label || '–';
+      modeEl.style.color    = mode.color || 'var(--text-muted)';
+      modeEl.style.borderColor = mode.color || 'var(--border)';
+      modeEl.style.background  = mode.color ? `${mode.color}22` : 'transparent';
+    }
+    const descEl = document.getElementById('opsModeDesc');
+    if (descEl) descEl.textContent = mode.description || '–';
+
+    // ── Risk Mode ──────────────────────────────────────────────────────────
+    const rmEl = document.getElementById('opsRiskMode');
+    if (rmEl) {
+      const rm = data.riskMode || '–';
+      rmEl.textContent = rm;
+      rmEl.style.color = rm === 'risk_on' ? '#10b981' : rm === 'neutral' ? '#f59e0b' : '#ef4444';
+    }
+    const tsEl = document.getElementById('opsTimestamp');
+    if (tsEl && data.generatedAt) {
+      tsEl.textContent = new Date(data.generatedAt).toLocaleTimeString('de-DE');
+    }
+
+    // ── Gate summary bar ───────────────────────────────────────────────────
+    const barEl = document.getElementById('opsGateBar');
+    if (barEl) {
+      barEl.innerHTML = `
+<span style="font-size:11px;color:#10b981;font-weight:700">${rel.grantedCount ?? 0} freigegeben</span>
+<span style="font-size:11px;color:var(--text-muted);margin:0 4px">·</span>
+<span style="font-size:11px;color:#ef4444;font-weight:700">${rel.blockerCount ?? 0} blockiert</span>`;
+    }
+
+    // ── Gate Grid ──────────────────────────────────────────────────────────
+    const GATE_LABELS = {
+      allowAutoPositionOpen:   { icon: '🤖', label: 'Auto-Open' },
+      allowBroaderDiscovery:   { icon: '🔭', label: 'Breiter Discovery' },
+      allowAggressiveWeights:  { icon: '⚡', label: 'Aggressive Gewichte' },
+      allowScaleTo450:         { icon: '📈', label: 'Skala → 450' },
+      allowScaleTo600:         { icon: '🚀', label: 'Skala → 600' },
+      allowChinaExpansion:     { icon: '🇨🇳', label: 'China' },
+      allowEuropeExpansion:    { icon: '🇪🇺', label: 'Europa' },
+    };
+    const gatesEl = document.getElementById('opsGates');
+    if (gatesEl) {
+      const keys = Object.keys(GATE_LABELS);
+      gatesEl.innerHTML = keys.map(k => {
+        const gate = rel[k] || {};
+        const meta = GATE_LABELS[k];
+        const ok   = gate.granted === true;
+        const bg   = ok ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.06)';
+        const bc   = ok ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.2)';
+        const col  = ok ? '#10b981' : '#ef4444';
+        const badge = ok ? '✅ Freigegeben' : '🔒 Blockiert';
+        return `
+<div style="background:${bg};border:1px solid ${bc};border-radius:var(--radius-sm);padding:12px 14px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+    <span style="font-size:16px">${meta.icon}</span>
+    <span style="font-size:10px;font-weight:700;color:${col}">${badge}</span>
+  </div>
+  <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px">${esc(meta.label)}</div>
+  <div style="font-size:10px;color:var(--text-muted);line-height:1.4">${esc(gate.reason || '–')}</div>
+</div>`;
+      }).join('');
+    }
+
+    // ── Portfolio Twin Metrics ─────────────────────────────────────────────
+    const twinEl = document.getElementById('opsTwinMetrics');
+    if (twinEl) {
+      const mat    = twin.twinMaturity || {};
+      const matCol = mat.color || 'var(--text-muted)';
+      const fmt = (v, suffix='') => v !== null && v !== undefined ? `${v}${suffix}` : '–';
+      twinEl.innerHTML = [
+        { label: 'Reife',          val: `<span style="color:${matCol};font-weight:700">${esc(mat.label || '–')}</span>` },
+        { label: 'Offen / Geschl.', val: `${fmt(twin.openCount)} / ${fmt(twin.closedCount)}` },
+        { label: 'Win-Rate',       val: fmt(twin.hitRate, ' %') },
+        { label: 'Ø Gewinn',       val: twin.avgGainEur !== null ? `€ ${twin.avgGainEur}` : '–' },
+        { label: 'Ø Verlust',      val: twin.avgLossEur !== null ? `€ ${twin.avgLossEur}` : '–' },
+        { label: 'Deployed',       val: twin.deployedCapitalPct !== null ? `${twin.deployedCapitalPct} %` : '–' },
+        { label: 'Drawdown',       val: fmt(twin.maxDrawdownPct, ' %') },
+        { label: 'Gesamt PnL',     val: twin.totalPnlEur !== null ? `€ ${twin.totalPnlEur}` : '–' },
+      ].map(m => `
+<div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;text-align:center">
+  <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">${esc(m.label)}</div>
+  <div style="font-size:13px;font-weight:700;color:var(--text)">${m.val}</div>
+</div>`).join('');
+    }
+
+    // ── Blockers ───────────────────────────────────────────────────────────
+    const blockEl = document.getElementById('opsBlockers');
+    if (blockEl) {
+      const blockers = data.biggestBlockers || [];
+      if (!blockers.length) {
+        blockEl.innerHTML = `<div style="color:#10b981;font-size:12px">✅ Keine aktiven Blocker</div>`;
+      } else {
+        blockEl.innerHTML = blockers.map(b => `
+<div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-sm);padding:8px 12px;margin-bottom:6px;font-size:11px;color:var(--text-muted)">
+  🔒 <strong>${esc(b.key)}</strong>: ${esc(b.reason)}
+</div>`).join('');
+      }
+    }
+
+    // ── Next Step ──────────────────────────────────────────────────────────
+    const nsEl = document.getElementById('opsNextStep');
+    if (nsEl) nsEl.textContent = `💡 Nächster Schritt: ${data.nextStep || '–'}`;
+
+  } catch (err) {
+    const panel = document.getElementById('opsGates');
+    if (panel) panel.innerHTML = `<div style="color:var(--red);padding:16px;grid-column:1/-1">Fehler: ${esc(err.message || String(err))}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.querySelector('.refresh-icon').textContent = '↻'; }
+  }
+}
+
 /* ═══════════════════ INIT ═══════════════════ */
 loadPortfolio();
 loadAgentWisdom();
 loadSavedCapital();
 loadEvolutionBoard();
 loadSystemIntelligence();
+loadOperationalStatus();
 // Auto-refresh audit feed every 60 seconds
 setInterval(loadAuditFeed, 60000);
 // Refresh wisdom scores every 5 minutes
@@ -1567,6 +1764,8 @@ setInterval(loadAgentWisdom, 5 * 60 * 1000);
 setInterval(loadSavedCapital, 10 * 60 * 1000);
 // Refresh system intelligence every 15 minutes
 setInterval(loadSystemIntelligence, 15 * 60 * 1000);
+// Refresh operational status every 15 minutes
+setInterval(loadOperationalStatus, 15 * 60 * 1000);
 </script>
 </body>
 </html>

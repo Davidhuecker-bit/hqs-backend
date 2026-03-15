@@ -62,6 +62,7 @@ const {
   listVirtualPositions,
 } = require("../services/portfolioTwin.service");
 const { getSystemIntelligenceReport } = require("../services/systemIntelligence.service");
+const { getOperationalReleaseStatus } = require("../services/sisReleaseControl.service");
 
 const router = express.Router();
 
@@ -1146,6 +1147,61 @@ router.get("/system-intelligence", async (req, res) => {
     return res.json({ success: true, ...report });
   } catch (error) {
     logger.error("Admin system-intelligence route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   OPERATIONAL STATUS  (Portfolio Twin Stage 3 + SIS Release Control)
+========================================================= */
+
+/**
+ * GET /api/admin/operational-status
+ *
+ * Returns the combined operational view:
+ *   - portfolioTwinState : Stage 3 snapshot (win rate, avg gain/loss, maturity, …)
+ *   - sisReport          : current SIS score, layers, recommendations
+ *   - operationalRelease : per-gate decisions (granted/blocked + reason each)
+ *   - controlStatus      : three-way split (technically possible / released / blocked)
+ *   - biggestBlockers    : list of currently blocking gates with reasons
+ *   - nextStep           : concrete recommendation for the next improvement
+ *
+ * Pure read – no writes, no external API calls.
+ */
+router.get("/operational-status", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+
+    const [releaseStatus, twinSnapshot, sisReport] = await Promise.all([
+      getOperationalReleaseStatus(),
+      getPortfolioTwinSnapshot({ limit }),
+      getSystemIntelligenceReport(),
+    ]);
+
+    return res.json({
+      success: true,
+      portfolioTwinState: twinSnapshot,
+      sisReport,
+      operationalRelease: {
+        recommendedMode:        releaseStatus.recommendedMode,
+        allowAutoPositionOpen:  releaseStatus.allowAutoPositionOpen,
+        allowBroaderDiscovery:  releaseStatus.allowBroaderDiscovery,
+        allowAggressiveWeights: releaseStatus.allowAggressiveWeights,
+        allowScaleTo450:        releaseStatus.allowScaleTo450,
+        allowScaleTo600:        releaseStatus.allowScaleTo600,
+        allowChinaExpansion:    releaseStatus.allowChinaExpansion,
+        allowEuropeExpansion:   releaseStatus.allowEuropeExpansion,
+        grantedCount:           releaseStatus.grantedCount,
+        blockerCount:           releaseStatus.blockerCount,
+      },
+      controlStatus:   releaseStatus.controlStatus,
+      biggestBlockers: releaseStatus.biggestBlockers,
+      nextStep:        releaseStatus.nextStep,
+      riskMode:        releaseStatus.riskMode,
+      generatedAt:     releaseStatus.generatedAt,
+    });
+  } catch (error) {
+    logger.error("Admin operational-status route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });

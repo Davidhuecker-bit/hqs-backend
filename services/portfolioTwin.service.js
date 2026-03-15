@@ -1,8 +1,8 @@
 "use strict";
 
 /*
-  Portfolio Twin Service – Minimal Capital Twin (Stage 1)
-  --------------------------------------------------------
+  Portfolio Twin Service – Capital Twin (Stage 1 → Stage 3)
+  ----------------------------------------------------------
   Virtual portfolio tracking layer.  No broker, no real trades.
   Only re-uses existing DB infrastructure (market_snapshots) and
   existing allocation fields from capitalAllocation.service.js.
@@ -12,7 +12,8 @@
     openVirtualPositionFromAllocation(data)
     refreshOpenVirtualPositions()
     closeVirtualPosition(id, reason)
-    getPortfolioTwinSnapshot()
+    getPortfolioTwinSnapshot()   ← Stage 3: extended with win rate, avg gain/loss,
+                                             deployed capital %, twin maturity
 
   Design rules followed:
     - no new external API calls
@@ -357,6 +358,9 @@ async function getPortfolioTwinSnapshot({ limit = 50 } = {}) {
 
   const budget = safeNum(Number(process.env.ALLOCATION_BUDGET_EUR), 10000);
 
+  // Stage 3: extended metrics (win rate, avg gain/loss, deployed capital, maturity)
+  const stage3 = _computeStage3Metrics(closedPositions, openPositions, budget);
+
   return {
     generatedAt:        new Date().toISOString(),
     autoOpenEnabled:    process.env.PORTFOLIO_TWIN_AUTO_OPEN !== "false",
@@ -368,9 +372,117 @@ async function getPortfolioTwinSnapshot({ limit = 50 } = {}) {
     openCount:          openPositions.length,
     closedCount:        closedPositions.length,
     maxDrawdownPct:     maxDrawdownPct !== null ? Math.round(maxDrawdownPct * 10000) / 100 : null,
+    // Stage 3 metrics
+    winRate:            stage3.winRate,
+    hitRate:            stage3.hitRate,
+    avgGainEur:         stage3.avgGainEur,
+    avgLossEur:         stage3.avgLossEur,
+    avgGainPct:         stage3.avgGainPct,
+    avgLossPct:         stage3.avgLossPct,
+    deployedCapitalEur: stage3.deployedCapitalEur,
+    deployedCapitalPct: stage3.deployedCapitalPct,
+    twinMaturity:       stage3.twinMaturity,
+    openPct:            stage3.openPct,
+    closedPct:          stage3.closedPct,
     openPositions,
     closedPositions,
     equityCurve,
+  };
+}
+
+/* =========================================================
+   HELPERS – Stage 3: win rate, avg gain/loss, twin maturity
+========================================================= */
+
+/**
+ * Derives a twin maturity label from operational state.
+ * Used as a lightweight readiness indicator for release control.
+ */
+function _twinMaturityLabel(openCount, winRate, closedCount) {
+  const total = openCount + closedCount;
+  if (total === 0) {
+    return { key: "uninitialized", label: "Nicht initialisiert", color: "#9ca3af" };
+  }
+  if (openCount >= 5 && winRate !== null && winRate >= 0.6 && closedCount >= 10) {
+    return { key: "advanced", label: "Fortgeschritten", color: "#3b82f6" };
+  }
+  if (openCount >= 3 && winRate !== null && winRate >= 0.5) {
+    return { key: "operational", label: "Operativ", color: "#10b981" };
+  }
+  if (openCount >= 1 || closedCount >= 3) {
+    return { key: "developing", label: "Entwicklung", color: "#f59e0b" };
+  }
+  return { key: "emerging", label: "Initialisierung", color: "#ef4444" };
+}
+
+/**
+ * Computes Stage 3 performance metrics from already-fetched position arrays.
+ * Pure function – no DB calls.
+ *
+ * @param {object[]} closedPositions  – formatted closed position objects
+ * @param {object[]} openPositions    – formatted open position objects
+ * @param {number}   budget           – total allocation budget in EUR
+ * @returns {object}
+ */
+function _computeStage3Metrics(closedPositions, openPositions, budget) {
+  // ── Win rate / hit rate ──────────────────────────────────────────────────
+  const closedWithPnl = closedPositions.filter((p) => p.pnlEur !== null);
+  const winners = closedWithPnl.filter((p) => safeNum(p.pnlEur) > 0);
+  const losers  = closedWithPnl.filter((p) => safeNum(p.pnlEur) <= 0);
+
+  // winRate: fractional (0–1), used by release-control gates for threshold comparisons
+  // hitRate: percentage (0–100), used for display/UI purposes
+  const winRate = closedWithPnl.length > 0
+    ? Math.round((winners.length / closedWithPnl.length) * 1000) / 1000
+    : null;
+  const hitRate = winRate !== null
+    ? Math.round(winRate * 1000) / 10   // 0–100 %
+    : null;
+
+  // ── Average gain / average loss ─────────────────────────────────────────
+  const avgGainEur = winners.length > 0
+    ? Math.round(winners.reduce((s, p) => s + safeNum(p.pnlEur), 0) / winners.length * 100) / 100
+    : null;
+  const avgLossEur = losers.length > 0
+    ? Math.round(losers.reduce((s, p) => s + safeNum(p.pnlEur), 0) / losers.length * 100) / 100
+    : null;
+  const avgGainPct = winners.length > 0
+    ? Math.round(winners.reduce((s, p) => s + safeNum(p.pnlPct), 0) / winners.length * 10000) / 10000
+    : null;
+  const avgLossPct = losers.length > 0
+    ? Math.round(losers.reduce((s, p) => s + safeNum(p.pnlPct), 0) / losers.length * 10000) / 10000
+    : null;
+
+  // ── Deployed capital ─────────────────────────────────────────────────────
+  const deployedCapitalEur = openPositions.reduce((s, p) => s + safeNum(p.allocatedEur), 0);
+  const deployedCapitalPct = budget > 0
+    ? Math.round((deployedCapitalEur / budget) * 10000) / 100
+    : null;
+
+  // ── Portfolio twin maturity ───────────────────────────────────────────────
+  const twinMaturity = _twinMaturityLabel(openPositions.length, winRate, closedPositions.length);
+
+  // ── Open / closed distribution ───────────────────────────────────────────
+  const totalPositions = openPositions.length + closedPositions.length;
+  const openPct  = totalPositions > 0
+    ? Math.round((openPositions.length / totalPositions) * 1000) / 10
+    : null;
+  const closedPct = totalPositions > 0
+    ? Math.round((closedPositions.length / totalPositions) * 1000) / 10
+    : null;
+
+  return {
+    winRate,
+    hitRate,
+    avgGainEur,
+    avgLossEur,
+    avgGainPct,
+    avgLossPct,
+    deployedCapitalEur: Math.round(deployedCapitalEur * 100) / 100,
+    deployedCapitalPct,
+    twinMaturity,
+    openPct,
+    closedPct,
   };
 }
 
