@@ -71,6 +71,14 @@ async function ensureVirtualPositionsTable() {
     ON virtual_positions (status, opened_at DESC);
   `);
 
+  // Unique partial index: prevent duplicate open positions for the same symbol.
+  // This is the DB-level guard against race conditions in the auto-open flow.
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_virtual_positions_unique_open_symbol
+    ON virtual_positions (symbol)
+    WHERE status = 'open';
+  `);
+
   logger.info("virtual_positions table ready");
 }
 
@@ -115,6 +123,35 @@ function _calcPnl(allocatedEur, entryPrice, currentPrice) {
     pnlEur: Math.round(pnlEur * 100) / 100,
     pnlPct: Math.round(pnlPct * 10000) / 10000,
   };
+}
+
+/* =========================================================
+   DUPLICATE GUARD
+========================================================= */
+
+/**
+ * Returns true if there is already an open virtual position for the given symbol.
+ * Used as a guard before openVirtualPositionFromAllocation to prevent duplicates.
+ *
+ * @param {string} symbol
+ * @returns {Promise<boolean>}
+ */
+async function hasOpenVirtualPosition(symbol) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  if (!sym) return false;
+  try {
+    const res = await pool.query(
+      `SELECT 1 FROM virtual_positions
+       WHERE symbol = $1 AND status = 'open'
+       LIMIT 1`,
+      [sym]
+    );
+    return res.rows.length > 0;
+  } catch (err) {
+    logger.warn("portfolioTwin: hasOpenVirtualPosition check failed", { symbol: sym, message: err.message });
+    // Fail-safe: return true to prevent accidental duplicate insertion on DB error
+    return true;
+  }
 }
 
 /* =========================================================
@@ -322,6 +359,7 @@ async function getPortfolioTwinSnapshot({ limit = 50 } = {}) {
 
   return {
     generatedAt:        new Date().toISOString(),
+    autoOpenEnabled:    process.env.PORTFOLIO_TWIN_AUTO_OPEN !== "false",
     budget,
     totalAllocatedEur:  Math.round(totalAllocatedEur  * 100) / 100,
     unrealizedPnlEur:   Math.round(unrealizedPnlEur   * 100) / 100,
@@ -438,6 +476,7 @@ async function listVirtualPositions({ status = null, limit = 50, offset = 0 } = 
 
 module.exports = {
   ensureVirtualPositionsTable,
+  hasOpenVirtualPosition,
   openVirtualPositionFromAllocation,
   refreshOpenVirtualPositions,
   closeVirtualPosition,
