@@ -56,7 +56,7 @@ const pool = new Pool({
 ========================================================= */
 
 // Minimum minutes between two persisted snapshots (budget guard: ~4×/day max)
-const MIN_SNAPSHOT_INTERVAL_MIN = 60 * 6; // 6 hours
+const MIN_SNAPSHOT_INTERVAL_MINUTES = 60 * 6; // 6 hours
 
 // Minimum SIS drop/rise to flag as regression/improvement
 const REGRESSION_THRESHOLD  = 5;
@@ -104,9 +104,9 @@ async function saveSisSnapshot(report, releaseStatus) {
     // ── Dedup guard: skip if a recent snapshot already exists ───────────────
     const recent = await pool.query(`
       SELECT id FROM sis_history
-      WHERE created_at >= NOW() - ($1 || ' minutes')::INTERVAL
+      WHERE created_at >= NOW() - INTERVAL '1 minute' * $1
       LIMIT 1
-    `, [String(MIN_SNAPSHOT_INTERVAL_MIN)]);
+    `, [MIN_SNAPSHOT_INTERVAL_MINUTES]);
 
     if (recent.rows.length > 0) {
       logger.debug("sisHistory: snapshot skipped – recent entry within interval");
@@ -352,7 +352,7 @@ async function detectSisRegression() {
           to:    Number(row.sis_score),
           delta,
           at:    row.created_at,
-          topLayer: _findTopChangedLayer(row.layer_scores, delta < 0 ? "decline" : "gain"),
+          topLayer: _findTopChangedLayer(row.layer_scores, "decline"),
         });
       }
     }

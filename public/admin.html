@@ -1767,7 +1767,7 @@ async function loadSisTrend() {
         regEl.innerHTML = reg.regressions.map(r => {
           const ts = r.at ? new Date(r.at).toLocaleString('de-DE') : '–';
           return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
-  <span style="color:var(--red);font-weight:700">${r.from} → ${r.to} (${r.delta})</span>
+  <span style="color:var(--red);font-weight:700">${esc(String(r.from))} → ${esc(String(r.to))} (${esc(String(r.delta))})</span>
   <span style="color:var(--text-muted);margin-left:6px">${esc(ts)}</span>
   ${r.topLayer ? `<span style="color:var(--text-muted);margin-left:4px">· ${esc(r.topLayer)}</span>` : ''}
 </div>`;
@@ -1784,7 +1784,7 @@ async function loadSisTrend() {
         impEl.innerHTML = reg.improvements.map(r => {
           const ts = r.at ? new Date(r.at).toLocaleString('de-DE') : '–';
           return `<div style="padding:4px 0;border-bottom:1px solid var(--border)">
-  <span style="color:var(--green);font-weight:700">${r.from} → ${r.to} (+${r.delta})</span>
+  <span style="color:var(--green);font-weight:700">${esc(String(r.from))} → ${esc(String(r.to))} (+${esc(String(r.delta))})</span>
   <span style="color:var(--text-muted);margin-left:6px">${esc(ts)}</span>
   ${r.topLayer ? `<span style="color:var(--text-muted);margin-left:4px">· ${esc(r.topLayer)}</span>` : ''}
 </div>`;
