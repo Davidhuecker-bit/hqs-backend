@@ -57,6 +57,15 @@ const RISK_MIN_BUZZ         = 25;   // below this = volume/interest declining
 // RISK_SKEPTIC – sector-alert tightening (15 %)
 const RISK_SECTOR_ALERT_FACTOR = 0.85; // multiply thresholds by this when sectorAlert=true
 
+// RISK_SKEPTIC – pattern memory influence
+// When a pattern's historical 24h hit-rate is below PATTERN_WEAK_THRESHOLD and the
+// sample size is large enough to be trustworthy, the robustness floor is raised by
+// PATTERN_ROBUSTNESS_PENALTY to make the skeptic harder to satisfy.
+const PATTERN_MIN_SAMPLE           = 5;    // min samples needed before applying penalty
+const PATTERN_WEAK_THRESHOLD       = 0.35; // hitRate24h below this = historically poor pattern
+const PATTERN_STRONG_THRESHOLD     = 0.65; // hitRate24h above this = historically strong pattern
+const PATTERN_ROBUSTNESS_PENALTY   = 0.05; // raise robustness floor for weak patterns
+
 // MACRO_JUDGE
 const MACRO_EARLYWARNING_MIN_CONVICTION = 72; // override threshold when BTC+Gold warn
 const MACRO_DANGER_MIN_CONVICTION       = 75; // min conviction to approve in Danger cluster
@@ -116,6 +125,33 @@ function runGrowthBias(opportunity, signalContext) {
 ========================================================= */
 
 /**
+ * Build a short annotation string that describes what the Pattern Memory
+ * context says about this type of setup.  Returns an empty string when
+ * no relevant context is available.
+ *
+ * @param {object|null} patternContext  - result of getPatternStats()
+ * @returns {string}
+ */
+function buildPatternNote(patternContext) {
+  if (!patternContext || safeNum(patternContext?.sampleSize, 0) < PATTERN_MIN_SAMPLE) {
+    return "";
+  }
+  const hitRate = patternContext?.hitRate24h;
+  if (!Number.isFinite(hitRate)) return "";
+
+  const pct = `${(hitRate * 100).toFixed(0)}%`;
+  const n   = patternContext.sampleSize;
+
+  if (hitRate < PATTERN_WEAK_THRESHOLD) {
+    return ` ⚠️ Muster-Gedächtnis: schwache Historik (${pct}, n=${n})`;
+  }
+  if (hitRate > PATTERN_STRONG_THRESHOLD) {
+    return ` ✅ Muster-Gedächtnis: starke Historik (${pct}, n=${n})`;
+  }
+  return "";
+}
+
+/**
  * Pessimistic risk agent.
  * Vetoes the signal when any of the classic danger markers are present.
  * When sectorAlert is active the robustness bar is raised by 15 %.
@@ -127,21 +163,33 @@ function runGrowthBias(opportunity, signalContext) {
  */
 function runRiskSkeptic(opportunity, signalContext, agentOptions = {}) {
   const agent = "RISK_SKEPTIC";
-  const sectorAlert = Boolean(agentOptions?.sectorAlert);
+  const sectorAlert    = Boolean(agentOptions?.sectorAlert);
+  const patternContext = agentOptions?.patternContext || null;
 
-  const volatility = safeNum(opportunity?.volatility, 0);
-  const robustness = safeNum(opportunity?.robustnessScore, 0);
-  const buzzScore  = safeNum(signalContext?.buzzScore, 50);
+  const volatility   = safeNum(opportunity?.volatility, 0);
+  const robustness   = safeNum(opportunity?.robustnessScore, 0);
+  const buzzScore    = safeNum(signalContext?.buzzScore, 50);
   const sigDirection = String(signalContext?.signalDirection || "neutral");
 
   // When a sector coherence alert is active, tighten the robustness floor
-  const effectiveMinRobustness = sectorAlert
+  const sectorAdjustedBase = sectorAlert
     ? RISK_MIN_ROBUSTNESS / RISK_SECTOR_ALERT_FACTOR  // higher minimum (harder to approve)
     : RISK_MIN_ROBUSTNESS;
 
   const effectiveMaxVolatility = sectorAlert
     ? RISK_MAX_VOLATILITY * RISK_SECTOR_ALERT_FACTOR  // lower ceiling (less tolerance)
     : RISK_MAX_VOLATILITY;
+
+  // Pattern memory: if this type of setup historically performs poorly, raise the bar
+  const patternPenalty =
+    patternContext !== null &&
+    safeNum(patternContext?.sampleSize, 0) >= PATTERN_MIN_SAMPLE &&
+    Number.isFinite(patternContext?.hitRate24h) &&
+    patternContext.hitRate24h < PATTERN_WEAK_THRESHOLD
+      ? PATTERN_ROBUSTNESS_PENALTY
+      : 0;
+
+  const effectiveMinRobustness = sectorAdjustedBase + patternPenalty;
 
   const problems = [];
   if (volatility > effectiveMaxVolatility)
@@ -153,12 +201,15 @@ function runRiskSkeptic(opportunity, signalContext, agentOptions = {}) {
   if (buzzScore < RISK_MIN_BUZZ)
     problems.push(`sinkendes Volumen (Buzz ${buzzScore.toFixed(0)})`);
 
+  // Build optional pattern memory annotation for the reason string
+  const patternNote = buildPatternNote(patternContext);
+
   if (sectorAlert && problems.length === 0) {
     return {
       agent,
       vote: "approve",
       forecastDirection: "neutral",
-      reason: `Risiko-Skeptiker: Kennzahlen akzeptabel – ⚠️ Sektor-Alarm aktiv, verschärfte Schwellen bestanden (Robustheit ${(robustness * 100).toFixed(0)}%, Vol ${(volatility * 100).toFixed(0)}%)`,
+      reason: `Risiko-Skeptiker: Kennzahlen akzeptabel – ⚠️ Sektor-Alarm aktiv, verschärfte Schwellen bestanden (Robustheit ${(robustness * 100).toFixed(0)}%, Vol ${(volatility * 100).toFixed(0)}%)${patternNote}`,
     };
   }
 
@@ -167,7 +218,7 @@ function runRiskSkeptic(opportunity, signalContext, agentOptions = {}) {
       agent,
       vote: "approve",
       forecastDirection: "neutral",
-      reason: `Risiko-Skeptiker: Kennzahlen akzeptabel (Robustheit ${(robustness * 100).toFixed(0)}%, Vol ${(volatility * 100).toFixed(0)}%)`,
+      reason: `Risiko-Skeptiker: Kennzahlen akzeptabel (Robustheit ${(robustness * 100).toFixed(0)}%, Vol ${(volatility * 100).toFixed(0)}%)${patternNote}`,
     };
   }
 
@@ -175,7 +226,7 @@ function runRiskSkeptic(opportunity, signalContext, agentOptions = {}) {
     agent,
     vote: "reject",
     forecastDirection: "bearish",
-    reason: `Risiko-Skeptiker stimmte gegen Kauf wegen ${problems.join("; ")}`,
+    reason: `Risiko-Skeptiker stimmte gegen Kauf wegen ${problems.join("; ")}${patternNote}`,
   };
 }
 
@@ -305,10 +356,10 @@ function runAgenticDebate(
   interMarketData,
   options = {}
 ) {
-  const { dynamicWeights = null, metaRationale = null, sectorAlert = false } = options;
+  const { dynamicWeights = null, metaRationale = null, sectorAlert = false, patternContext = null } = options;
 
   const growthBias  = runGrowthBias(opportunity, signalContext);
-  const riskSkeptic = runRiskSkeptic(opportunity, signalContext, { sectorAlert });
+  const riskSkeptic = runRiskSkeptic(opportunity, signalContext, { sectorAlert, patternContext });
   const macroJudge  = runMacroJudge(opportunity, marketCluster, interMarketData);
 
   // --- Simple majority (unchanged legacy behaviour) ---
@@ -338,7 +389,8 @@ function runAgenticDebate(
     riskSkeptic,
     macroJudge,
     approved,
-    metaRationale
+    metaRationale,
+    patternContext
   );
 
   return {
@@ -369,12 +421,28 @@ function runAgenticDebate(
  * @param {boolean} approved
  * @param {string|null} [metaRationale]
  */
-function buildDebateSummary(growthBias, riskSkeptic, macroJudge, approved, metaRationale = null) {
+function buildDebateSummary(growthBias, riskSkeptic, macroJudge, approved, metaRationale = null, patternContext = null) {
   const parts = [];
 
   // Historical context from CausalMemory (Meta-Rationale)
   if (metaRationale && typeof metaRationale === "string" && metaRationale.trim()) {
     parts.push(metaRationale.trim());
+  }
+
+  // Pattern Memory context: summarise historical performance for this setup type
+  if (
+    patternContext !== null &&
+    safeNum(patternContext?.sampleSize, 0) >= PATTERN_MIN_SAMPLE
+  ) {
+    const hitStr = Number.isFinite(patternContext?.hitRate24h)
+      ? `${(patternContext.hitRate24h * 100).toFixed(0)}%`
+      : "n/a";
+    const hit7dStr = Number.isFinite(patternContext?.hitRate7d)
+      ? `, 7d: ${(patternContext.hitRate7d * 100).toFixed(0)}%`
+      : "";
+    parts.push(
+      `🧠 Pattern-Memory: n=${patternContext.sampleSize}, 24h-Trefferquote ${hitStr}${hit7dStr}`
+    );
   }
 
   // Always include the rejections first (most informative)

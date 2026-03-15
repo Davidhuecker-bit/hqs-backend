@@ -43,6 +43,221 @@ function safeJson(value, fallback = {}) {
 }
 
 /* =========================================================
+   STRUCTURED PATTERN SIGNATURE  (machine-readable, bucketed)
+   ----------------------------------------------------------
+   Converts continuous signal values into discrete bucket labels
+   so identical market setups produce the same deterministic key.
+   Stored in outcome_tracking.pattern_key for historical lookup.
+========================================================= */
+
+// Bucket threshold arrays (each index = upper bound of that bucket)
+const PATTERN_VOL_THRESHOLDS    = [0.2,  0.5,  0.7 ];  // low|mid|high|extreme
+const PATTERN_TREND_THRESHOLDS  = [0,    0.3,  0.6 ];  // negative|flat|rising|strong
+const PATTERN_SENT_THRESHOLDS   = [-20,  10,   40  ];  // negative|neutral|positive|bullish
+const PATTERN_BUZZ_THRESHOLDS   = [25,   50,   75  ];  // low|mid|high|hot
+const PATTERN_ROBUST_THRESHOLDS = [0.35, 0.55, 0.80];  // low|moderate|solid|antifragile
+const PATTERN_HQS_THRESHOLDS    = [50,   65,   80  ];  // weak|base|strong|elite
+const PATTERN_CONV_THRESHOLDS   = [45,   58,   72  ];  // low|moderate|high|elite
+
+function stepBucket(value, thresholds, labels) {
+  const v = Number.isFinite(Number(value)) ? Number(value) : 0;
+  for (let i = 0; i < thresholds.length; i++) {
+    if (v <= thresholds[i]) return labels[i];
+  }
+  return labels[labels.length - 1];
+}
+
+// Normalise a value that may arrive on a 0-100 OR 0-1 scale to 0-1.
+function norm0to1Pattern(x) {
+  const n = Number.isFinite(Number(x)) ? Number(x) : 0;
+  if (n > 1.5) return Math.min(1, Math.max(0, n / 100));
+  return Math.min(1, Math.max(0, n));
+}
+
+/**
+ * Build a deterministic, machine-readable pattern signature from a set of
+ * bucketed signal dimensions.  Used as `pattern_key` in outcome_tracking.
+ *
+ * Returns both the compact string key and the structured context object.
+ *
+ * @param {object} params
+ * @returns {{ patternKey: string, patternContext: object }}
+ */
+function buildStructuredPatternSignature({
+  regime = "neutral",
+  volatility = 0,        // 0-1 (annual vol)
+  trendStrength = 0,     // 0-1 or 0-100 (auto-normalised)
+  sentimentScore = 0,    // -100 to +100
+  newsDirection = null,  // "bullish"|"bearish"|"neutral"|null
+  buzzScore = 0,         // 0-100
+  signalDirection = "neutral",  // "bullish"|"bearish"|"neutral"
+  robustnessScore = 0,   // 0-1
+  hqsScore = 0,          // 0-100
+  finalConviction = 0,   // 0-100
+} = {}) {
+  const volBand    = stepBucket(norm0to1Pattern(volatility),    PATTERN_VOL_THRESHOLDS,    ["low",    "mid",      "high",    "extreme"    ]);
+  const trendBand  = stepBucket(norm0to1Pattern(trendStrength), PATTERN_TREND_THRESHOLDS,  ["negative","flat",    "rising",  "strong"     ]);
+  const sentBand   = stepBucket(safe(sentimentScore),           PATTERN_SENT_THRESHOLDS,   ["negative","neutral", "positive","bullish"     ]);
+  const buzzBand   = stepBucket(safe(buzzScore),                PATTERN_BUZZ_THRESHOLDS,   ["low",    "mid",      "high",    "hot"         ]);
+  const robustBand = stepBucket(safe(robustnessScore),          PATTERN_ROBUST_THRESHOLDS, ["low",    "moderate", "solid",   "antifragile" ]);
+  const hqsBand    = stepBucket(safe(hqsScore),                 PATTERN_HQS_THRESHOLDS,    ["weak",   "base",     "strong",  "elite"       ]);
+  const convBand   = stepBucket(safe(finalConviction),          PATTERN_CONV_THRESHOLDS,   ["low",    "moderate", "high",    "elite"       ]);
+
+  const newsDir = String(newsDirection || "none").toLowerCase();
+  const sigDir  = String(signalDirection || "neutral").toLowerCase();
+  const regStr  = String(regime || "neutral").toLowerCase();
+
+  const patternKey = [
+    `regime:${regStr}`,
+    `vol:${volBand}`,
+    `trend:${trendBand}`,
+    `sent:${sentBand}`,
+    `news:${newsDir}`,
+    `buzz:${buzzBand}`,
+    `sig:${sigDir}`,
+    `robust:${robustBand}`,
+    `hqs:${hqsBand}`,
+    `conv:${convBand}`,
+  ].join("|");
+
+  const patternContext = {
+    regime: regStr,
+    volatilityBand:   volBand,
+    trendBand,
+    sentimentBand:    sentBand,
+    newsDirection:    newsDir,
+    buzzBand,
+    signalDirection:  sigDir,
+    robustnessBand:   robustBand,
+    hqsBand,
+    convictionBand:   convBand,
+  };
+
+  return { patternKey, patternContext };
+}
+
+/* =========================================================
+   PATTERN STATS  (historical aggregation by pattern_key)
+========================================================= */
+
+/**
+ * For a given pattern key compute aggregated performance statistics
+ * from all matching historical outcome_tracking rows.
+ *
+ * Returns null when no rows exist for this pattern key.
+ *
+ * @param {string} patternKey
+ * @returns {Promise<{
+ *   patternKey: string,
+ *   sampleSize: number,
+ *   evaluated24hCount: number,
+ *   evaluated7dCount: number,
+ *   hitRate24h: number|null,
+ *   hitRate7d: number|null,
+ *   avgReturn24h: number|null,
+ *   avgReturn7d: number|null,
+ *   patternConfidence: number
+ * }|null>}
+ */
+async function getPatternStats(patternKey) {
+  if (!patternKey || typeof patternKey !== "string") return null;
+
+  try {
+    const res = await pool.query(
+      `
+      SELECT
+        COUNT(*)                                                                              AS sample_size,
+        COUNT(CASE WHEN performance_24h IS NOT NULL THEN 1 END)                              AS evaluated_24h_count,
+        COUNT(CASE WHEN performance_7d  IS NOT NULL THEN 1 END)                              AS evaluated_7d_count,
+        AVG(CASE WHEN performance_24h IS NOT NULL
+                 THEN (performance_24h->>'success_rate')::numeric END)                       AS hit_rate_24h,
+        AVG(CASE WHEN performance_7d  IS NOT NULL
+                 THEN (performance_7d ->>'success_rate')::numeric END)                       AS hit_rate_7d,
+        AVG(CASE WHEN performance_24h IS NOT NULL
+                 THEN (performance_24h->>'price_delta')::numeric END)                        AS avg_return_24h,
+        AVG(CASE WHEN performance_7d  IS NOT NULL
+                 THEN (performance_7d ->>'price_delta')::numeric END)                        AS avg_return_7d
+      FROM outcome_tracking
+      WHERE pattern_key = $1
+      `,
+      [patternKey]
+    );
+
+    const row = res.rows?.[0];
+    if (!row) return null;
+
+    const sampleSize       = Number(row.sample_size      || 0);
+    const evaluated24hCount= Number(row.evaluated_24h_count || 0);
+    const evaluated7dCount = Number(row.evaluated_7d_count  || 0);
+
+    if (sampleSize === 0) return null;
+
+    const hitRate24h   = evaluated24hCount > 0 ? Number(Number(row.hit_rate_24h   || 0).toFixed(4)) : null;
+    const hitRate7d    = evaluated7dCount  > 0 ? Number(Number(row.hit_rate_7d    || 0).toFixed(4)) : null;
+    const avgReturn24h = evaluated24hCount > 0 ? Number(Number(row.avg_return_24h || 0).toFixed(6)) : null;
+    const avgReturn7d  = evaluated7dCount  > 0 ? Number(Number(row.avg_return_7d  || 0).toFixed(6)) : null;
+
+    // patternConfidence: how reliably does this pattern predict outcomes?
+    // Scales with sample size (max at 20) × clarity of historical hit rate
+    // (a hit rate far from 0.5 = clearer signal, regardless of direction)
+    const sampleFactor = Math.min(1.0, sampleSize / 20.0);
+    const hitFactor    = hitRate24h !== null
+      ? Math.abs(hitRate24h - 0.5) * 2.0   // 0 = random, 1 = perfect
+      : 0.0;
+    const patternConfidence = Number((sampleFactor * (0.4 + hitFactor * 0.6)).toFixed(4));
+
+    return {
+      patternKey,
+      sampleSize,
+      evaluated24hCount,
+      evaluated7dCount,
+      hitRate24h,
+      hitRate7d,
+      avgReturn24h,
+      avgReturn7d,
+      patternConfidence,
+    };
+  } catch (err) {
+    logger.warn("getPatternStats: DB error", { message: err.message });
+    return null;
+  }
+}
+
+/* =========================================================
+   7-DAY VERIFICATION CANDIDATES
+========================================================= */
+
+/**
+ * Returns outcome_tracking rows that are at least 7 days old,
+ * have a known entry price, and have not yet been verified at the 7d window.
+ *
+ * Used by forecastVerification.job to fill in performance_7d.
+ *
+ * @param {number} [limit=50]
+ * @returns {Promise<Array<{ id: number, symbol: string, entry_price: number }>>}
+ */
+async function getDue7dVerifications(limit = 50) {
+  try {
+    const res = await pool.query(
+      `
+      SELECT id, symbol, entry_price
+      FROM outcome_tracking
+      WHERE predicted_at  <= NOW() - INTERVAL '7 days'
+        AND performance_7d IS NULL
+        AND entry_price    >  0
+      ORDER BY predicted_at ASC
+      LIMIT $1
+      `,
+      [clamp(safe(limit, 50), 1, 200)]
+    );
+    return res.rows || [];
+  } catch (err) {
+    logger.warn("getDue7dVerifications: DB error", { message: err.message });
+    return [];
+  }
+}
+
+/* =========================================================
    TABLE INIT
 ========================================================= */
 
@@ -79,7 +294,9 @@ async function initOutcomeTrackingTable() {
       raw_input_snapshot JSONB,
       analysis_rationale TEXT,
       performance_24h JSONB,
-      performance_7d JSONB
+      performance_7d JSONB,
+      pattern_key TEXT,
+      pattern_context JSONB
     );
   `);
 
@@ -92,7 +309,9 @@ async function initOutcomeTrackingTable() {
       ADD COLUMN IF NOT EXISTS raw_input_snapshot JSONB,
       ADD COLUMN IF NOT EXISTS analysis_rationale TEXT,
       ADD COLUMN IF NOT EXISTS performance_24h JSONB,
-      ADD COLUMN IF NOT EXISTS performance_7d JSONB;
+      ADD COLUMN IF NOT EXISTS performance_7d JSONB,
+      ADD COLUMN IF NOT EXISTS pattern_key TEXT,
+      ADD COLUMN IF NOT EXISTS pattern_context JSONB;
   `);
 
   await pool.query(`
@@ -113,6 +332,11 @@ async function initOutcomeTrackingTable() {
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_outcome_tracking_predicted_at
     ON outcome_tracking(predicted_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_outcome_tracking_pattern_key
+    ON outcome_tracking(pattern_key);
   `);
 
   logger.info("Outcome tracking table ensured");
@@ -140,6 +364,8 @@ async function createOutcomeTrackingEntry({
   payload = {},
   rawInputSnapshot = {},
   analysisRationale = null,
+  patternKey = null,
+  patternContext = null,
 }) {
   try {
     const dueAtRes = await pool.query(
@@ -171,7 +397,9 @@ async function createOutcomeTrackingEntry({
         entry_price,
         payload,
         raw_input_snapshot,
-        analysis_rationale
+        analysis_rationale,
+        pattern_key,
+        pattern_context
       )
       VALUES (
         $1,$2,$3,$4,
@@ -179,7 +407,8 @@ async function createOutcomeTrackingEntry({
         $9,$10,$11,
         $12,$13,$14,
         $15,$16,
-        $17,$18
+        $17,$18,
+        $19,$20
       )
       RETURNING id
       `,
@@ -202,6 +431,8 @@ async function createOutcomeTrackingEntry({
         payload || {},
         rawInputSnapshot || {},
         analysisRationale || null,
+        patternKey || null,
+        patternContext || null,
       ]
     );
 
@@ -641,4 +872,7 @@ module.exports = {
   loadLatestOutcomeTrackingBySymbols,
   buildAnalysisRationale,
   verifyPerformance,
+  buildStructuredPatternSignature,
+  getPatternStats,
+  getDue7dVerifications,
 };

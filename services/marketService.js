@@ -63,6 +63,7 @@ const {
   initOutcomeTrackingTable,
   createOutcomeTrackingEntry,
   buildAnalysisRationale,
+  buildStructuredPatternSignature,
 } = require("./outcomeTracking.repository");
 const {
   initUniverseTables,
@@ -1160,6 +1161,20 @@ async function buildMarketSnapshot() {
       const robustnessScore = calculateRobustnessScore(rawInputSnapshotData);
       rawInputSnapshotData.historical_context = { robustness: robustnessScore };
 
+      // Re-compute pattern signature now that actual robustnessScore is known.
+      const { patternKey, patternContext } = buildStructuredPatternSignature({
+        regime,
+        volatility:      features?.volatility,
+        trendStrength:   features?.trendStrength,
+        sentimentScore:  signalContext?.sentimentScore,
+        newsDirection:   newsContext?.direction,
+        buzzScore:       signalContext?.buzzScore,
+        signalDirection: signalContext?.signalDirection,
+        robustnessScore,
+        hqsScore:        hqs?.hqsScore,
+        finalConviction: finalView?.finalConviction,
+      });
+
       const trackingEntry = await createOutcomeTrackingEntry({
         symbol: normalized.symbol,
         predictionType: "market_view",
@@ -1208,6 +1223,8 @@ async function buildMarketSnapshot() {
           discoveries,
           narratives,
         }),
+        patternKey,
+        patternContext,
       });
 
       if (trackingEntry) {

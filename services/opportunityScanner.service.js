@@ -9,6 +9,8 @@ const {
 } = require("./marketNews.service");
 const {
   loadLatestOutcomeTrackingBySymbols,
+  buildStructuredPatternSignature,
+  getPatternStats,
 } = require("./outcomeTracking.repository");
 const {
   loadRuntimeState,
@@ -1191,6 +1193,27 @@ async function getTopOpportunities(arg = 10) {
     // 1b. Sector Coherence: check whether sector alert is active for this symbol
     const sectorThresholds = getSharpenedThresholds(opp.symbol);
 
+    // 1c. Pattern Memory: derive structured key for this opportunity's signal setup
+    //     and look up historical performance statistics for identical setups.
+    let patternContext = null;
+    try {
+      const { patternKey } = buildStructuredPatternSignature({
+        regime:          opp.regime,
+        volatility:      opp.volatility,
+        trendStrength:   opp.signalContext?.trendScore,
+        sentimentScore:  opp.signalContext?.sentimentScore,
+        newsDirection:   opp.newsContext?.direction,
+        buzzScore:       opp.signalContext?.buzzScore,
+        signalDirection: opp.signalContext?.signalDirection,
+        robustnessScore: opp.robustnessScore,
+        hqsScore:        opp.hqsScore,
+        finalConviction: opp.finalConviction,
+      });
+      patternContext = await getPatternStats(patternKey);
+    } catch (_) {
+      // non-critical – continue without pattern context
+    }
+
     // 2. Run the three-agent debate (GROWTH_BIAS, RISK_SKEPTIC, MACRO_JUDGE)
     const debateResult = runAgenticDebate(
       opp,
@@ -1201,6 +1224,7 @@ async function getTopOpportunities(arg = 10) {
         dynamicWeights: agentWeights,
         metaRationale,
         sectorAlert: sectorThresholds.sectorAlert,
+        patternContext,
       }
     );
 
