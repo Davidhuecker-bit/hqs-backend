@@ -945,6 +945,60 @@
     </div>
   </div>
 
+  <!-- ═══════════════════ PORTFOLIO TWIN STAGE 4 ═══════════════════ -->
+  <div id="twin4Panel" style="
+      background:var(--bg-card);
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      padding:24px;
+      margin-bottom:32px;
+    ">
+    <!-- Header row -->
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--text)">🧠 Portfolio Twin · Stage 4</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Drawdown · Konzentration · Korrelation · Counterfactual</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="twin4RiskMode" style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:10px;background:rgba(100,116,139,0.15);color:var(--text-muted)">–</span>
+        <button onclick="loadTwin4()" style="background:rgba(59,130,246,0.12);border:1px solid rgba(59,130,246,0.25);border-radius:var(--radius-sm);padding:6px 14px;color:var(--accent);font-size:11px;cursor:pointer">↻ Aktualisieren</button>
+      </div>
+    </div>
+
+    <!-- Drawdown + PnL metrics row -->
+    <div id="twin4Metrics" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:20px">
+      <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
+    </div>
+
+    <!-- Active Flags row -->
+    <div style="border-top:1px solid var(--border);padding-top:16px;margin-bottom:16px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">⚠️ Aktive Warnungen</div>
+      <div id="twin4Flags" style="display:flex;flex-wrap:wrap;gap:6px">
+        <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
+      </div>
+    </div>
+
+    <!-- Concentration + Correlation row -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <!-- Sector breakdown -->
+      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">📊 Sektor-Konzentration</div>
+        <div id="twin4Sectors" style="font-size:12px;color:var(--text-muted)">–</div>
+      </div>
+      <!-- Correlation risk -->
+      <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px">
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">🔗 Korrelations-Risiko</div>
+        <div id="twin4Correlation" style="font-size:12px;color:var(--text-muted)">–</div>
+      </div>
+    </div>
+
+    <!-- Counterfactual hints -->
+    <div style="border-top:1px solid var(--border);padding-top:16px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">💡 Counterfactual / Was-wäre-wenn</div>
+      <div id="twin4Counterfactual" style="font-size:12px;color:var(--text-muted)">–</div>
+    </div>
+  </div>
+
 </main>
 
 <!-- ═══════════════════ INSIGHT MODAL ═══════════════════ -->
@@ -1927,6 +1981,135 @@ async function loadOperationalStatus() {
   }
 }
 
+/* ═══════════════════ PORTFOLIO TWIN STAGE 4 ═══════════════════ */
+async function loadTwin4() {
+  try {
+    const res  = await fetch(`${API_BASE}/portfolio-twin/stage4`);
+    const data = await res.json();
+    if (!data.success) return;
+    const s4 = data.stage4 || {};
+
+    // Risk mode badge
+    const rmEl = document.getElementById('twin4RiskMode');
+    if (rmEl) {
+      const rm = s4.worldRiskMode || '–';
+      rmEl.textContent = rm;
+      rmEl.style.color = rm === 'risk_on' ? '#10b981' : rm === 'neutral' ? '#f59e0b' : '#ef4444';
+      rmEl.style.background = rm === 'risk_on' ? 'rgba(16,185,129,0.12)' : rm === 'neutral' ? 'rgba(245,158,11,0.12)' : 'rgba(239,68,68,0.12)';
+    }
+
+    // ── Metrics row ─────────────────────────────────────────────────────
+    const metricsEl = document.getElementById('twin4Metrics');
+    if (metricsEl) {
+      const fmtPct = (v) => v !== null && v !== undefined ? `${v} %` : '–';
+      const fmtEur = (v) => v !== null && v !== undefined ? `€ ${v}` : '–';
+      const metricData = [
+        { label: 'Offen', val: s4.openPositionsCount ?? '–' },
+        { label: 'Unrealized PnL', val: fmtEur(s4.unrealizedPnlEur) },
+        { label: 'Deployed Kapital', val: fmtEur(s4.totalAllocatedEur) },
+        { label: 'Akt. Drawdown', val: fmtPct(s4.currentDrawdownPct) },
+        { label: 'Max. Drawdown', val: fmtPct(s4.maxDrawdownPct) },
+        { label: 'Konz.-Score', val: s4.concentrationFlags ? `${s4.concentrationFlags.concentrationScore}/100` : '–' },
+        { label: 'Korr.-Score', val: s4.correlationApprox ? `${s4.correlationApprox.correlationRiskScore}/100` : '–' },
+      ];
+      metricsEl.innerHTML = metricData.map(m => `
+<div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;text-align:center">
+  <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">${esc(m.label)}</div>
+  <div style="font-size:13px;font-weight:700;color:var(--text)">${m.val}</div>
+</div>`).join('');
+    }
+
+    // ── Active flags ─────────────────────────────────────────────────────
+    const flagsEl = document.getElementById('twin4Flags');
+    if (flagsEl) {
+      const flags = s4.activeFlags || [];
+      if (!flags.length) {
+        flagsEl.innerHTML = `<span style="color:#10b981;font-size:12px">✅ Keine aktiven Warnungen</span>`;
+      } else {
+        const FLAG_COLORS = {
+          sectorConcentrationHigh:       '#f59e0b',
+          clusterConcentrationHigh:      '#f59e0b',
+          tooManyHighRiskPositions:      '#ef4444',
+          tooManySameThemePositions:     '#f59e0b',
+          defensiveMismatchToWorldState: '#ef4444',
+        };
+        flagsEl.innerHTML = flags.map(f => {
+          const col = FLAG_COLORS[f] || '#94a3b8';
+          return `<span style="background:${col}22;border:1px solid ${col}44;border-radius:10px;padding:3px 10px;font-size:11px;font-weight:700;color:${col}">${esc(f)}</span>`;
+        }).join('');
+      }
+    }
+
+    // ── Sector breakdown ──────────────────────────────────────────────────
+    const secEl = document.getElementById('twin4Sectors');
+    if (secEl) {
+      const bd = (s4.concentrationFlags || {}).sectorBreakdown || {};
+      const entries = Object.entries(bd).sort((a, b) => b[1].pct - a[1].pct);
+      if (!entries.length) {
+        secEl.innerHTML = `<div style="color:var(--text-muted)">Keine offenen Positionen</div>`;
+      } else {
+        secEl.innerHTML = entries.map(([sec, d]) => {
+          const pct    = d.pct || 0;
+          const barCol = pct > 40 ? 'var(--red)' : pct > 25 ? 'var(--yellow)' : 'var(--green)';
+          return `
+<div style="margin-bottom:8px">
+  <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+    <span style="color:var(--text)">${esc(sec)}</span>
+    <span style="color:var(--text-muted)">${d.positionCount}× · ${pct} %</span>
+  </div>
+  <div style="height:4px;background:var(--bg-card2);border-radius:2px">
+    <div style="height:4px;background:${barCol};border-radius:2px;width:${Math.min(100,pct)}%"></div>
+  </div>
+</div>`;
+        }).join('');
+      }
+    }
+
+    // ── Correlation risk ──────────────────────────────────────────────────
+    const corrEl = document.getElementById('twin4Correlation');
+    if (corrEl) {
+      const ca = s4.correlationApprox || {};
+      const score = ca.correlationRiskScore ?? 0;
+      const scoreCol = score > 70 ? 'var(--red)' : score > 40 ? 'var(--yellow)' : 'var(--green)';
+      const warnings = ca.topCorrelationWarnings || [];
+      const drivers  = ca.concentrationDrivers  || [];
+      corrEl.innerHTML = `
+<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+  <div style="font-size:24px;font-weight:900;color:${scoreCol}">${score}</div>
+  <div style="flex:1">
+    <div style="height:6px;background:var(--bg-card2);border-radius:3px">
+      <div style="height:6px;background:${scoreCol};border-radius:3px;width:${score}%"></div>
+    </div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:2px">Korrelations-Risiko-Score (0=gut, 100=hoch)</div>
+  </div>
+</div>
+${warnings.length ? warnings.map(w => `<div style="font-size:11px;color:var(--yellow);margin-bottom:4px">⚠️ ${esc(w.warning)}</div>`).join('') : '<div style="font-size:11px;color:#10b981">✅ Keine erhöhten Korrelationsrisiken</div>'}
+${drivers.length ? `<div style="font-size:10px;color:var(--text-muted);margin-top:8px">Treiber: ${drivers.map(d => `${esc(d.sector)} (${d.weightPct}%)`).join(', ')}</div>` : ''}`;
+    }
+
+    // ── Counterfactual ────────────────────────────────────────────────────
+    const cfEl = document.getElementById('twin4Counterfactual');
+    if (cfEl) {
+      const cf = s4.counterfactual || {};
+      const hints = cf.alternativeAllocationHints || [];
+      cfEl.innerHTML = `
+<div style="background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.15);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--text-muted)">
+  💡 ${esc(cf.counterfactualSummary || '–')}
+</div>
+${hints.length ? hints.map(h => `
+<div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:8px">
+  <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px">${esc(h.variant)}</div>
+  <div style="font-size:11px;color:var(--text-muted);margin-bottom:2px">${esc(h.description)}</div>
+  <div style="font-size:10px;color:var(--accent)">${esc(h.estimatedImpact)}</div>
+</div>`).join('') : ''}`;
+    }
+
+  } catch (err) {
+    const el = document.getElementById('twin4Metrics');
+    if (el) el.innerHTML = `<div style="color:var(--red);font-size:12px">Fehler: ${esc(err.message || String(err))}</div>`;
+  }
+}
+
 /* ═══════════════════ INIT ═══════════════════ */
 loadPortfolio();
 loadAgentWisdom();
@@ -1935,6 +2118,7 @@ loadEvolutionBoard();
 loadSystemIntelligence();
 loadOperationalStatus();
 loadSisTrend();
+loadTwin4();
 // Auto-refresh audit feed every 60 seconds
 setInterval(loadAuditFeed, 60000);
 // Refresh wisdom scores every 5 minutes
@@ -1947,6 +2131,8 @@ setInterval(loadSystemIntelligence, 15 * 60 * 1000);
 setInterval(loadOperationalStatus, 15 * 60 * 1000);
 // Refresh SIS trend every 15 minutes
 setInterval(loadSisTrend, 15 * 60 * 1000);
+// Refresh Stage 4 every 15 minutes
+setInterval(loadTwin4, 15 * 60 * 1000);
 </script>
 </body>
 </html>
