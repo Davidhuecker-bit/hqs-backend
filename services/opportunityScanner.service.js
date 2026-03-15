@@ -30,6 +30,8 @@ const { getAgentWeights, buildMetaRationale } = require("./causalMemory.reposito
 const { getSharpenedThresholds } = require("./sectorCoherence.service");
 // World State: unified global market truth (regime + cross-asset + sector + agents)
 const { getWorldState } = require("./worldState.service");
+// Capital Allocation Layer: position sizing, risk-budget, sector caps
+const { applyCapitalAllocation } = require("./capitalAllocation.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1160,6 +1162,8 @@ async function getTopOpportunities(arg = 10) {
   let orchestratorGlobal = null;
   let capitalFlowSummary = null;
   let globalNewsPulse = null;
+  let riskMode = "neutral";
+  let uncertainty = 0;
 
   try {
     const ws = await getWorldState();
@@ -1181,6 +1185,8 @@ async function getTopOpportunities(arg = 10) {
     orchestratorGlobal  = ws.orchestrator_global  || null;
     capitalFlowSummary  = ws.capital_flow_summary  || null;
     globalNewsPulse     = ws.news_pulse            || null;
+    riskMode            = ws.risk_mode             || "neutral";
+    uncertainty         = safeNum(ws.uncertainty, 0);
   } catch (wsErr) {
     logger.warn(
       "getTopOpportunities: world_state unavailable – falling back to direct service calls",
@@ -1370,19 +1376,46 @@ async function getTopOpportunities(arg = 10) {
         debateSummary: debateResult.debateSummary,
       },
       insight,
+      // Pass sector-alert flag to the Capital Allocation Layer
+      sectorAlert: sectorThresholds.sectorAlert,
     };
   }));
 
   // Keep only non-suppressed signals in the final output (guardian enforcement)
-  const out = withInsights
-    .filter((opp) => !opp.suppressed)
-    .slice(0, limit);
+  // Capital Allocation runs on ALL non-suppressed candidates BEFORE the limit-slice
+  // so the budget logic can reject weaker signals and keep capacity for stronger ones.
+  const candidates = withInsights.filter((opp) => !opp.suppressed);
+
+  // ── Capital Allocation Layer ─────────────────────────────────────────────
+  // Pure, O(n) budget distribution. No DB calls. Falls back gracefully.
+  let allocatedCandidates = candidates;
+  let budgetSummary       = null;
+  try {
+    const allocResult = applyCapitalAllocation(
+      candidates,
+      { riskMode, uncertainty },
+      {
+        totalBudgetEur: safeNum(Number(process.env.ALLOCATION_BUDGET_EUR), 10000),
+        maxPositions:   clamp(limit * 2, 5, 20),
+      }
+    );
+    allocatedCandidates = allocResult.opportunities;
+    budgetSummary       = allocResult.budgetSummary;
+  } catch (allocErr) {
+    logger.warn("getTopOpportunities: capital allocation layer failed – returning without allocation fields", {
+      message: allocErr.message,
+    });
+  }
+
+  const out = allocatedCandidates.slice(0, limit);
 
   logger.info("getTopOpportunities", {
     limit,
     minHqs,
     regime,
     marketCluster,
+    riskMode,
+    uncertainty:             Number(uncertainty.toFixed(2)),
     persistedCount,
     fallbackCount,
     suppressedCount,
@@ -1391,6 +1424,8 @@ async function getTopOpportunities(arg = 10) {
     orchestratorGlobalMode:  orchestratorGlobal?.riskMode?.mode || null,
     capitalFlowBullish:      capitalFlowSummary?.flowSummary?.bullish ?? null,
     newsPulseDirection:      globalNewsPulse?.direction || null,
+    allocationApproved:      budgetSummary ? budgetSummary.approvedPositions : null,
+    budgetConsumedPct:       budgetSummary ? budgetSummary.consumedBudgetPct : null,
     returned: out.length,
   });
 
