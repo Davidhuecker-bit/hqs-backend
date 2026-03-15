@@ -51,6 +51,15 @@ Railway will detect Node.js automatically via `package.json` and install depende
 ## What this repository supports
 
 - `GET /health` returns startup readiness, database status, and the last startup error.
+- `GET /admin.html` – **live admin dashboard** served directly from the backend; this is the primary live view for administrators. It provides:
+  - Portfolio overview with guardian/stress-test scores, market weather, and decision history
+  - Audit feed and snapshot evidence viewer
+  - Tech-Radar / Evolution Board
+  - System Intelligence Score (SIS) with trend and regression tracking
+  - Operational Release Gates (SIS-driven scaling thresholds)
+  - Portfolio Twin Stage 4 (drawdown, concentration, correlation, counterfactual)
+  - Swarm Wisdom panel (per-agent accuracy scores)
+- `GET /api/admin/*` – all admin API endpoints are mounted here and consumed by the dashboard above.
 - `GET /api/admin/action-plan` returns the current backend adjustments and the most important next step.
 - `CORS_ORIGINS` lets you allow additional Railway/custom frontend domains without changing code.
 - `.env.example` lists all supported environment variables with their defaults.
