@@ -54,6 +54,13 @@ const {
   SECTOR_ALERT_MAX_PCT,
   DEFAULT_MAX_POSITIONS,
 } = require("../services/capitalAllocation.service");
+const {
+  openVirtualPositionFromAllocation,
+  refreshOpenVirtualPositions,
+  closeVirtualPosition,
+  getPortfolioTwinSnapshot,
+  listVirtualPositions,
+} = require("../services/portfolioTwin.service");
 
 const router = express.Router();
 
@@ -960,6 +967,157 @@ router.post("/allocation-preview/simulate", (req, res) => {
     return res.json({ success: true, sizing: result });
   } catch (error) {
     logger.error("Admin allocation-preview/simulate route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   PORTFOLIO TWIN  –  Virtual Capital Tracker (Stage 1)
+========================================================= */
+
+/**
+ * GET /api/admin/portfolio-twin
+ * Returns a full portfolio twin snapshot:
+ *   totalAllocatedEur, unrealizedPnlEur, realizedPnlEur,
+ *   openPositions, closedPositions, equityCurve, maxDrawdownPct
+ *
+ * Optional query params:
+ *   ?limit=50  – max positions per bucket (open / closed)
+ */
+router.get("/portfolio-twin", async (req, res) => {
+  try {
+    const limit    = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const snapshot = await getPortfolioTwinSnapshot({ limit });
+    return res.json({ success: true, portfolioTwin: snapshot });
+  } catch (error) {
+    logger.error("Admin portfolio-twin route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/portfolio-twin/positions
+ * Returns a paginated list of virtual positions.
+ *
+ * Optional query params:
+ *   ?status=open|closed  – filter by status
+ *   ?limit=50            – max results
+ *   ?offset=0            – pagination offset
+ */
+router.get("/portfolio-twin/positions", async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    const limit  = Math.max(1, Math.min(Number(req.query.limit)  || 50,  200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    if (status && status !== "open" && status !== "closed") {
+      return res.status(400).json({
+        success: false,
+        error: "status must be 'open' or 'closed'",
+      });
+    }
+
+    const positions = await listVirtualPositions({ status, limit, offset });
+    return res.json({ success: true, positions, count: positions.length });
+  } catch (error) {
+    logger.error("Admin portfolio-twin/positions route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/portfolio-twin/refresh
+ * Refreshes current_price and unrealised PnL for all open positions
+ * using latest prices from market_snapshots (no external API cost).
+ */
+router.post("/portfolio-twin/refresh", async (req, res) => {
+  try {
+    const result = await refreshOpenVirtualPositions();
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("Admin portfolio-twin/refresh route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/portfolio-twin/close/:id
+ * Closes a virtual position manually.
+ *
+ * Optional body:
+ *   { reason: "manual", exitPrice: 150.00 }
+ */
+router.post("/portfolio-twin/close/:id", async (req, res) => {
+  try {
+    const id    = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: "id must be a positive integer" });
+    }
+
+    const body      = req.body || {};
+    const reason    = String(body.reason || "manual").slice(0, 100);
+    const exitPrice = body.exitPrice != null ? Number(body.exitPrice) : null;
+
+    if (exitPrice !== null && (!Number.isFinite(exitPrice) || exitPrice <= 0)) {
+      return res.status(400).json({ success: false, error: "exitPrice must be a positive number" });
+    }
+
+    const position = await closeVirtualPosition(id, reason, exitPrice || null);
+    return res.json({ success: true, position });
+  } catch (error) {
+    // Surface "not found" / "already closed" as 400
+    if (error.message && (
+      error.message.includes("not found") ||
+      error.message.includes("already closed")
+    )) {
+      return res.status(400).json({ success: false, error: error.message });
+    }
+    logger.error("Admin portfolio-twin/close route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/portfolio-twin/open
+ * Debug/admin endpoint: manually open a virtual position.
+ *
+ * Body (JSON, all required unless noted):
+ *   { symbol, entryPrice, allocatedEur, allocatedPct,
+ *     convictionTier?, riskModeAtEntry?, uncertaintyAtEntry?, sourceRunId? }
+ */
+router.post("/portfolio-twin/open", async (req, res) => {
+  try {
+    const body = req.body || {};
+
+    const symbol       = String(body.symbol || "").trim().toUpperCase();
+    const entryPrice   = Number(body.entryPrice);
+    const allocatedEur = Number(body.allocatedEur);
+    const allocatedPct = Number(body.allocatedPct) || 0;
+
+    if (!symbol) {
+      return res.status(400).json({ success: false, error: "symbol is required" });
+    }
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) {
+      return res.status(400).json({ success: false, error: "entryPrice must be a positive number" });
+    }
+    if (!Number.isFinite(allocatedEur) || allocatedEur <= 0) {
+      return res.status(400).json({ success: false, error: "allocatedEur must be a positive number" });
+    }
+
+    const position = await openVirtualPositionFromAllocation({
+      symbol,
+      entryPrice,
+      allocatedEur,
+      allocatedPct,
+      convictionTier:     body.convictionTier    || null,
+      riskModeAtEntry:    body.riskModeAtEntry   || null,
+      uncertaintyAtEntry: body.uncertaintyAtEntry != null ? Number(body.uncertaintyAtEntry) : null,
+      sourceRunId:        body.sourceRunId        || null,
+    });
+
+    return res.status(201).json({ success: true, position });
+  } catch (error) {
+    logger.error("Admin portfolio-twin/open route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });

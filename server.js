@@ -94,6 +94,7 @@ const { runForecastVerificationJob } = require("./jobs/forecastVerification.job"
 const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
 const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
 const { runTechRadarJob } = require("./jobs/techRadar.job");
+const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
 
 /* =========================================================
 NOTIFICATIONS
@@ -740,6 +741,7 @@ app.listen(PORT, async () => {
     await initNotificationTables();
     await seedDemoUserIfEmpty();
     await initSecEdgarTables();
+    await ensureVirtualPositionsTable();
     await hydrateMarketRuntimeState();
     await hydrateOpportunityRuntimeState();
 
