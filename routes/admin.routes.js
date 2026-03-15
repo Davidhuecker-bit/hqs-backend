@@ -63,6 +63,13 @@ const {
 } = require("../services/portfolioTwin.service");
 const { getSystemIntelligenceReport } = require("../services/systemIntelligence.service");
 const { getOperationalReleaseStatus } = require("../services/sisReleaseControl.service");
+const {
+  saveSisSnapshot,
+  getSisHistory,
+  getSisTrendSummary,
+  detectSisRegression,
+  detectSisImprovement,
+} = require("../services/sisHistory.service");
 
 const router = express.Router();
 
@@ -1202,6 +1209,76 @@ router.get("/operational-status", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin operational-status route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   SIS HISTORY  (Trend Layer)
+========================================================= */
+
+/**
+ * GET /api/admin/sis-history?range=24h|7d|30d
+ *
+ * Returns raw SIS snapshot rows for the requested time window.
+ * Also triggers a fresh snapshot save (deduped by interval).
+ */
+router.get("/sis-history", async (req, res) => {
+  try {
+    const VALID_RANGES = ["24h", "7d", "30d"];
+    const range = VALID_RANGES.includes(req.query.range) ? req.query.range : "7d";
+
+    // Opportunistically refresh the snapshot (deduped – low cost)
+    getSystemIntelligenceReport()
+      .then((r) => saveSisSnapshot(r))
+      .catch(() => {});
+
+    const rows = await getSisHistory(range);
+    return res.json({ success: true, range, count: rows.length, history: rows });
+  } catch (error) {
+    logger.error("Admin sis-history route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/sis-trend-summary
+ *
+ * Returns a compact trend summary:
+ *   current, delta24h, delta7d, delta30d, direction, directionLabel,
+ *   topDeclineLayer, topGainLayer, snapshotCount, lastUpdated
+ */
+router.get("/sis-trend-summary", async (req, res) => {
+  try {
+    const summary = await getSisTrendSummary();
+    return res.json({ success: true, ...summary });
+  } catch (error) {
+    logger.error("Admin sis-trend-summary route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/sis-regressions
+ *
+ * Returns regression and improvement episodes from the last 30 days.
+ * Useful for early-warning and root-cause analysis.
+ */
+router.get("/sis-regressions", async (req, res) => {
+  try {
+    const [regressions, improvements] = await Promise.all([
+      detectSisRegression(),
+      detectSisImprovement(),
+    ]);
+    return res.json({
+      success: true,
+      regressions,
+      improvements,
+      regressionCount:  regressions.length,
+      improvementCount: improvements.length,
+    });
+  } catch (error) {
+    logger.error("Admin sis-regressions route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
