@@ -769,6 +769,56 @@
     </div>
   </div>
 
+  <!-- System Intelligence Section -->
+  <div class="section-title" style="margin-top:40px">
+    <span class="icon">🧩</span>
+    System Intelligence
+    <span class="section-sub">Meta-Schicht · Selbstbewertung · SIS-Score</span>
+    <button class="refresh-btn" id="reloadSisBtn" style="margin-left:auto" onclick="loadSystemIntelligence()">
+      <span class="refresh-icon">↻</span> Auswerten
+    </button>
+  </div>
+
+  <div id="sisPanel" style="
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:24px;
+    margin-bottom:32px;
+  ">
+    <!-- SIS Score + Maturity -->
+    <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;margin-bottom:24px">
+      <div style="text-align:center;min-width:100px">
+        <div id="sisScore" style="font-size:52px;font-weight:900;line-height:1;color:var(--text-muted)">–</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">/ 100 SIS</div>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span id="sisMaturityBadge" style="font-size:12px;font-weight:700;padding:3px 12px;border-radius:12px;border:1px solid var(--border);color:var(--text-muted)">Wird geladen…</span>
+        </div>
+        <div style="height:8px;background:var(--bg-card2);border-radius:4px;overflow:hidden">
+          <div id="sisBar" style="height:100%;width:0%;border-radius:4px;background:var(--text-muted);transition:width 0.6s ease"></div>
+        </div>
+        <div id="sisTimestamp" style="font-size:10px;color:var(--text-muted);margin-top:6px">–</div>
+      </div>
+    </div>
+
+    <!-- Layer Health Grid -->
+    <div id="sisLayers" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:20px">
+      <div style="color:var(--text-muted);text-align:center;padding:20px;grid-column:1/-1">Wird geladen…</div>
+    </div>
+
+    <!-- Recommendations -->
+    <div style="border-top:1px solid var(--border);padding-top:16px">
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.6px;color:var(--text-muted);margin-bottom:10px">
+        🤖 Autonome Empfehlungen
+      </div>
+      <div id="sisRecommendations">
+        <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <!-- ═══════════════════ INSIGHT MODAL ═══════════════════ -->
@@ -1403,17 +1453,120 @@ async function loadEvolutionBoard() {
   }
 }
 
+/* ═══════════════════ SYSTEM INTELLIGENCE ═══════════════════ */
+const LAYER_STATUS_STYLE = {
+  healthy:  { color: 'var(--green)',      bg: 'rgba(16,185,129,0.12)',  border: 'rgba(16,185,129,0.3)',  badge: '● Aktiv' },
+  degraded: { color: 'var(--yellow)',     bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.25)', badge: '◑ Schwach' },
+  inactive: { color: 'var(--text-muted)', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.2)', badge: '○ Inaktiv' },
+};
+
+async function loadSystemIntelligence() {
+  const btn = document.getElementById('reloadSisBtn');
+  if (btn) { btn.disabled = true; btn.querySelector('.refresh-icon').textContent = '⟳'; }
+
+  try {
+    const res  = await fetch(`${API_BASE}/system-intelligence`);
+    const data = await res.json();
+    if (!data.success) return;
+
+    // SIS score + bar
+    const sis      = data.sis ?? 0;
+    const maturity = data.maturity || {};
+    const barColor = maturity.color || 'var(--text-muted)';
+
+    const sisEl = document.getElementById('sisScore');
+    if (sisEl) { sisEl.textContent = sis; sisEl.style.color = barColor; }
+
+    const barEl = document.getElementById('sisBar');
+    if (barEl) { barEl.style.width = `${sis}%`; barEl.style.background = barColor; }
+
+    const badgeEl = document.getElementById('sisMaturityBadge');
+    if (badgeEl) {
+      badgeEl.textContent = maturity.label || '–';
+      badgeEl.style.color        = barColor;
+      badgeEl.style.borderColor  = barColor;
+      badgeEl.style.background   = `${barColor}22`;
+    }
+
+    const tsEl = document.getElementById('sisTimestamp');
+    if (tsEl && data.generatedAt) {
+      tsEl.textContent = `Ausgewertet: ${new Date(data.generatedAt).toLocaleTimeString('de-DE')}`;
+    }
+
+    // Layer cards
+    const layersEl = document.getElementById('sisLayers');
+    if (layersEl && Array.isArray(data.layers)) {
+      layersEl.innerHTML = data.layers.map(l => {
+        const st     = LAYER_STATUS_STYLE[l.status] || LAYER_STATUS_STYLE.inactive;
+        const pct    = l.max > 0 ? Math.round((l.score / l.max) * 100) : 0;
+        return `
+<div style="
+  background:${st.bg};
+  border:1px solid ${st.border};
+  border-radius:var(--radius-sm);
+  padding:14px 16px;
+">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <span style="font-size:18px">${esc(l.icon)}</span>
+    <span style="font-size:10px;font-weight:700;color:${st.color}">${st.badge}</span>
+  </div>
+  <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">${esc(l.label)}</div>
+  <div style="height:4px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;margin-bottom:6px">
+    <div style="height:100%;width:${pct}%;background:${st.color};border-radius:2px;transition:width 0.5s ease"></div>
+  </div>
+  <div style="font-size:11px;color:var(--text-muted)">${esc(l.detail || '')}</div>
+  <div style="font-size:11px;font-weight:700;color:${st.color};margin-top:4px">${l.score} / ${l.max} Pkt</div>
+</div>`;
+      }).join('');
+    }
+
+    // Recommendations
+    const recEl = document.getElementById('sisRecommendations');
+    if (recEl && Array.isArray(data.recommendations)) {
+      if (!data.recommendations.length) {
+        recEl.innerHTML = `<div style="color:var(--text-muted);font-size:12px">Keine Empfehlungen – System ist optimal konfiguriert.</div>`;
+      } else {
+        recEl.innerHTML = data.recommendations.map((r, i) => `
+<div style="
+  background:var(--bg-card2);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  padding:12px 14px;
+  margin-bottom:8px;
+  display:flex;
+  gap:12px;
+  align-items:flex-start;
+">
+  <span style="font-size:18px;flex-shrink:0">${i === 0 ? '🔴' : i === 1 ? '🟡' : '🟢'}</span>
+  <div>
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:3px">${esc(r.layer)}: ${esc(r.action)}</div>
+    <div style="font-size:11px;color:var(--text-muted)">${esc(r.howTo)}</div>
+  </div>
+</div>`).join('');
+      }
+    }
+  } catch (err) {
+    const panel = document.getElementById('sisLayers');
+    if (panel) panel.innerHTML = `<div style="color:var(--red);padding:16px;grid-column:1/-1">Fehler beim Laden des System-Intelligence-Reports: ${esc(err.message || String(err))}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.querySelector('.refresh-icon').textContent = '↻'; }
+  }
+}
+
 /* ═══════════════════ INIT ═══════════════════ */
 loadPortfolio();
 loadAgentWisdom();
 loadSavedCapital();
 loadEvolutionBoard();
+loadSystemIntelligence();
 // Auto-refresh audit feed every 60 seconds
 setInterval(loadAuditFeed, 60000);
 // Refresh wisdom scores every 5 minutes
 setInterval(loadAgentWisdom, 5 * 60 * 1000);
 // Refresh saved capital every 10 minutes
 setInterval(loadSavedCapital, 10 * 60 * 1000);
+// Refresh system intelligence every 15 minutes
+setInterval(loadSystemIntelligence, 15 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -61,6 +61,7 @@ const {
   getPortfolioTwinSnapshot,
   listVirtualPositions,
 } = require("../services/portfolioTwin.service");
+const { getSystemIntelligenceReport } = require("../services/systemIntelligence.service");
 
 const router = express.Router();
 
@@ -1118,6 +1119,33 @@ router.post("/portfolio-twin/open", async (req, res) => {
     return res.status(201).json({ success: true, position });
   } catch (error) {
     logger.error("Admin portfolio-twin/open route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   SYSTEM INTELLIGENCE  (Meta-Layer Self-Assessment)
+========================================================= */
+
+/**
+ * GET /api/admin/system-intelligence
+ * Returns a unified System Intelligence Report (SIS 0–100) aggregated
+ * from all active intelligence layers:
+ *   - Prediction Quality (agent forecast accuracy)
+ *   - Capital Protection (Guardian near-miss records)
+ *   - Portfolio Twin     (virtual positions & PnL)
+ *   - Adaptive Learning  (dynamic-weight divergence)
+ *   - Innovation Awareness (tech-radar entries)
+ *   - Pattern Memory     (verified outcome records)
+ *
+ * Pure read – no writes, no external API calls.
+ */
+router.get("/system-intelligence", async (req, res) => {
+  try {
+    const report = await getSystemIntelligenceReport();
+    return res.json({ success: true, ...report });
+  } catch (error) {
+    logger.error("Admin system-intelligence route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
