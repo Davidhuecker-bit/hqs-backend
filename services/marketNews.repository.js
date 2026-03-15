@@ -614,6 +614,88 @@ async function cleanupExpiredMarketNews() {
   }
 }
 
+// ── Global news aggregate thresholds ────────────────────────────────────────
+const NEWS_AGGREGATE_MIN_HOURS      = 1;   // minimum allowed look-back window
+const NEWS_AGGREGATE_MAX_HOURS      = 168; // maximum: 1 week
+const NEWS_AGGREGATE_BULLISH_THRESHOLD = 0.1;  // directionScore ≥ threshold → bullish
+const NEWS_AGGREGATE_BEARISH_THRESHOLD = -0.1; // directionScore ≤ threshold → bearish
+
+/**
+ * Returns a lightweight global news aggregate for the last `hours` hours.
+ * Scans all scoring-active news items regardless of symbol and returns:
+ *   - totalActive: count of scoring-active items
+ *   - bullish / bearish / neutral: direction counts
+ *   - direction: dominant direction ("bullish"|"bearish"|"neutral")
+ *   - directionScore: -1..1 composite score (positive = bullish)
+ *   - capturedAt: ISO timestamp of the query
+ *
+ * This is intentionally lightweight (single aggregation query) and is used by
+ * worldState.service.js to build the global `news_pulse` without symbol-specific
+ * context.
+ *
+ * @param {number} hours  Look-back window in hours (default 24)
+ * @returns {Promise<object>}
+ */
+async function getGlobalNewsAggregate(hours = 24) {
+  try {
+    await initMarketNewsTable();
+
+    const hoursInt = Math.max(
+      NEWS_AGGREGATE_MIN_HOURS,
+      Math.min(NEWS_AGGREGATE_MAX_HOURS, Math.round(Number(hours) || 24))
+    );
+
+    const result = await pool.query(
+      `
+      SELECT
+        COUNT(*) FILTER (WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE)  AS total_active,
+        COUNT(*) FILTER (
+          WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE
+            AND (intelligence->>'direction') = 'bullish'
+        )                                                                      AS bullish_count,
+        COUNT(*) FILTER (
+          WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE
+            AND (intelligence->>'direction') = 'bearish'
+        )                                                                      AS bearish_count
+      FROM market_news
+      WHERE published_at >= NOW() - ($1 || ' hours')::INTERVAL
+        AND COALESCE(lifecycle_state, 'active') NOT IN ('expired', 'cooling')
+      `,
+      [hoursInt]
+    );
+
+    const row = result.rows[0] || {};
+    const totalActive = Number(row.total_active || 0);
+    const bullish = Number(row.bullish_count || 0);
+    const bearish = Number(row.bearish_count || 0);
+    const neutral = Math.max(0, totalActive - bullish - bearish);
+
+    let directionScore = 0;
+    if (totalActive > 0) {
+      directionScore = parseFloat(((bullish - bearish) / totalActive).toFixed(4));
+    }
+
+    const direction =
+      directionScore >= NEWS_AGGREGATE_BULLISH_THRESHOLD  ? "bullish"
+        : directionScore <= NEWS_AGGREGATE_BEARISH_THRESHOLD ? "bearish"
+        : "neutral";
+
+    return {
+      totalActive,
+      bullish,
+      bearish,
+      neutral,
+      direction,
+      directionScore,
+      lookbackHours: hoursInt,
+      capturedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    if (logger?.error) logger.error("getGlobalNewsAggregate error", { message: error.message });
+    throw error;
+  }
+}
+
 module.exports = {
   initMarketNewsTable,
   upsertMarketNews,
@@ -622,4 +704,5 @@ module.exports = {
   countMarketNewsBySymbol,
   syncMarketNewsLifecycleStates,
   cleanupExpiredMarketNews,
+  getGlobalNewsAggregate,
 };

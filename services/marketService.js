@@ -84,6 +84,7 @@ const {
   calculateRobustnessScore,
 } = require("./opportunityScanner.service");
 const { collectSocialSignals } = require("./socialScanner.service");
+const { getWorldState } = require("./worldState.service");
 
 const logger = require("../utils/logger");
 const { Pool } = require("pg");
@@ -678,14 +679,40 @@ function buildMultiHorizonScenarios(S, mu, sigmaDaily, simulations) {
    HELPER: MACRO / FLOW FALLBACK CONTEXT
 ========================================================= */
 
-function buildMacroContextFallback({ trendData, normalized }) {
+/**
+ * Builds a per-symbol macroContext.
+ *
+ * When `globalWs` (world_state) is available the globally consistent values
+ * for marketBreadth and goldTrend are taken from it, so all symbols in a
+ * snapshot run share the same macro truth rather than each computing an
+ * independent rough estimate.  Symbol-specific fields (vixTrend, marketTrend,
+ * techTrend) are still derived from the symbol's own trendData / quote.
+ *
+ * @param {object} p.trendData  - per-symbol trend data
+ * @param {object} p.normalized - per-symbol normalised quote
+ * @param {object|null} p.globalWs - current world_state (optional, non-blocking)
+ */
+function buildMacroContextFallback({ trendData, normalized, globalWs = null }) {
+  // Use world_state's regime-derived breadth when available (more accurate than
+  // the per-symbol binary estimate).
+  const marketBreadth =
+    globalWs?.macro_context_global?.marketBreadth != null
+      ? globalWs.macro_context_global.marketBreadth
+      : (safeNum(trendData?.trend, 0) > 0 ? 0.62 : 0.42);
+
+  // Use actual gold 24 h change from world_state when available.
+  const goldTrend =
+    globalWs?.macro_context_global?.goldTrend != null
+      ? globalWs.macro_context_global.goldTrend
+      : 0;
+
   return {
     vixTrend: safeNum(trendData?.volatilityAnnual, 0) - 0.2,
-    marketBreadth: safeNum(trendData?.trend, 0) > 0 ? 0.62 : 0.42,
+    marketBreadth,
     dollarTrend: 0,
     marketTrend: safeNum(trendData?.trend, 0),
     oilTrend: 0,
-    goldTrend: 0,
+    goldTrend,
     bondTrend: 0,
     techTrend: safeNum(normalized?.changesPercentage, 0) / 100,
   };
@@ -786,6 +813,18 @@ async function buildMarketSnapshot() {
     logger.warn("Snapshot news context load failed", {
       message: error.message,
     });
+  }
+
+  // ── Load world_state once for the entire batch ──────────────────────────
+  // Provides a shared macro-truth (breadth, gold trend, risk mode) so every
+  // symbol in this snapshot run uses the same global context instead of
+  // each computing independent per-symbol macro estimates.
+  let globalWs = null;
+  try {
+    globalWs = await getWorldState();
+  } catch (_) {
+    // Non-critical – per-symbol fallbacks remain active when world_state is
+    // unavailable (e.g. first startup before initial build completes).
   }
 
   let socialPosts = [];
@@ -956,6 +995,7 @@ async function buildMarketSnapshot() {
       const macroContext = buildMacroContextFallback({
         trendData,
         normalized,
+        globalWs,
       });
 
       const crossAsset = analyzeCrossAssetEnvironment(macroContext);
