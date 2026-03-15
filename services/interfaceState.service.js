@@ -162,7 +162,7 @@ function _buildNarrative(surfaceMode, sis, riskMode, dominantTopic, sisRec, tren
     case "blocked":
       return `Das System befindet sich im Blockierzustand. ${topicText}. ` +
         `Der SIS-Score liegt bei ${sis}/100. ${trendText} ` +
-        `Hauptblocker: ${blockers.slice(0,2).map(b=>b.reason).join(" / ") || "–"}. ` +
+        `Hauptblocker: ${blockers.slice(0,2).map(b => b?.reason ?? '–').join(" / ") || "–"}. ` +
         `Sofortmaßnahme: Marktbedingungen prüfen und Risk-Mode-Schwelle überprüfen.`;
     case "warning":
       return `Das System meldet eine aktive Warnung. ${topicText}. ` +
@@ -283,7 +283,7 @@ function _buildAgentDiscourse(sis, riskMode, layers, gates, twinData, trendDir) 
   if (riskMode === "risk_off") {
     addEntry(
       AGENTS.GUARDIAN.agent, "blocking",
-      "Risk-Mode ist auf risk_off. Automatische Positionseröffnung ist gesperrt. Marktbedingungen sind nicht günstig.",
+      "Risk-Mode ist auf risk_off gesetzt. Automatische Positionseröffnung ist gesperrt. Marktbedingungen sind nicht günstig.",
       90, "risk_mode"
     );
     addEntry(

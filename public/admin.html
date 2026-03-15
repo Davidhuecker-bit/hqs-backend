@@ -2342,11 +2342,11 @@ ${hints.length ? hints.map(h => `
 /* ═══════════════════ INTERFACE STATE (Interface on Demand) ═══════════════════ */
 
 const _SURFACE_BADGE = {
-  calm:            { label: 'Stabil',           bg: 'rgba(16,185,129,0.15)',  color: 'var(--green)' },
-  warning:         { label: 'Warnung',           bg: 'rgba(245,158,11,0.15)', color: 'var(--yellow)' },
-  debate:          { label: 'Debatte',           bg: 'rgba(139,92,246,0.15)', color: 'var(--accent2)' },
-  blocked:         { label: 'Blockiert',         bg: 'rgba(239,68,68,0.15)',  color: 'var(--red)' },
-  expansion_ready: { label: 'Expansionsbereit',  bg: 'rgba(59,130,246,0.15)', color: 'var(--accent)' },
+  calm:            { label: 'Stabil',           bg: 'rgba(16,185,129,0.15)',  color: 'var(--green)',   border: 'rgba(16,185,129,0.4)'  },
+  warning:         { label: 'Warnung',           bg: 'rgba(245,158,11,0.15)', color: 'var(--yellow)',  border: 'rgba(245,158,11,0.5)'  },
+  debate:          { label: 'Debatte',           bg: 'rgba(139,92,246,0.15)', color: 'var(--accent2)', border: 'rgba(139,92,246,0.45)' },
+  blocked:         { label: 'Blockiert',         bg: 'rgba(239,68,68,0.15)',  color: 'var(--red)',     border: 'rgba(239,68,68,0.5)'   },
+  expansion_ready: { label: 'Expansionsbereit',  bg: 'rgba(59,130,246,0.15)', color: 'var(--accent)',  border: 'rgba(59,130,246,0.5)'  },
 };
 
 const _AGENT_ICONS = {
@@ -2407,7 +2407,7 @@ function _renderChiefBanner(data) {
     modeBadge.textContent = badge.label;
     modeBadge.style.background = badge.bg;
     modeBadge.style.color = badge.color;
-    modeBadge.style.border = '1px solid ' + badge.color.replace('var(--', '').replace(')', '');
+    modeBadge.style.border = '1px solid ' + badge.border;
   }
 
   const narrative = document.getElementById('chiefNarrative');
