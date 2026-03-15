@@ -100,9 +100,9 @@ async function _queryPortfolioTwin() {
       SELECT
         COUNT(*) FILTER (WHERE status = 'open')           AS open_count,
         COUNT(*) FILTER (WHERE status = 'closed')         AS closed_count,
-        COALESCE(SUM(unrealised_pnl_eur)
+        COALESCE(SUM(pnl_eur)
           FILTER (WHERE status = 'open'),   0)            AS unrealised_pnl,
-        COALESCE(SUM(realised_pnl_eur)
+        COALESCE(SUM(pnl_eur)
           FILTER (WHERE status = 'closed'), 0)            AS realised_pnl
       FROM virtual_positions
     `);
