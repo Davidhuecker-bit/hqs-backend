@@ -755,6 +755,154 @@
     .stance-neutral    .dc-confidence-fill { background: var(--text-muted); }
     .dc-confidence-label { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
     .dc-tag { font-size: 9px; color: var(--text-muted); background: var(--bg-card2); border-radius: 8px; padding: 2px 7px; flex-shrink: 0; }
+
+    /* ─────────────────────────── Neural Glass / Living UI (Phase D) ─────────────────────────── */
+
+    /* Subtle dot-grid background – gives "system alive" depth */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.022) 1px, transparent 0);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .hqs-main { position: relative; z-index: 1; }
+
+    /* Chief banner inner glow reacts to mode */
+    .chief-banner { position: relative; overflow: hidden; }
+    .chief-banner::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      transition: box-shadow 0.7s ease;
+    }
+    .chief-banner.mode-warning::after {
+      box-shadow: inset 0 0 50px rgba(245,158,11,0.07);
+    }
+    .chief-banner.mode-blocked::after {
+      box-shadow: inset 0 0 50px rgba(239,68,68,0.10);
+      animation: bannerBlockedPulse 2.8s ease-in-out infinite;
+    }
+    .chief-banner.mode-expansion_ready::after {
+      box-shadow: inset 0 0 50px rgba(59,130,246,0.08);
+    }
+    .chief-banner.mode-debate::after {
+      box-shadow: inset 0 0 50px rgba(139,92,246,0.07);
+    }
+    @keyframes bannerBlockedPulse {
+      0%, 100% { box-shadow: inset 0 0 50px rgba(239,68,68,0.08); }
+      50%       { box-shadow: inset 0 0 70px rgba(239,68,68,0.18); }
+    }
+
+    /* Panel priority highlights (applied dynamically via JS) */
+    .panel-priority-urgent {
+      box-shadow: 0 0 0 2px rgba(239,68,68,0.45), 0 0 24px rgba(239,68,68,0.12) !important;
+      border-color: rgba(239,68,68,0.55) !important;
+      animation: panelUrgentPulse 3s ease-in-out infinite;
+    }
+    .panel-priority-high {
+      box-shadow: 0 0 0 2px rgba(59,130,246,0.4), 0 0 18px rgba(59,130,246,0.10) !important;
+      border-color: rgba(59,130,246,0.5) !important;
+    }
+    .panel-priority-medium {
+      box-shadow: 0 0 0 1px rgba(245,158,11,0.35) !important;
+      border-color: rgba(245,158,11,0.4) !important;
+    }
+    @keyframes panelUrgentPulse {
+      0%, 100% { box-shadow: 0 0 0 2px rgba(239,68,68,0.4), 0 0 24px rgba(239,68,68,0.10); }
+      50%       { box-shadow: 0 0 0 2px rgba(239,68,68,0.65), 0 0 32px rgba(239,68,68,0.20); }
+    }
+
+    /* Header live-beacon brightens on warning */
+    .header-badge.mode-warning { background: rgba(245,158,11,0.15); border-color: rgba(245,158,11,0.35); color: var(--yellow); }
+    .header-badge.mode-warning .pulse { background: var(--yellow); }
+    .header-badge.mode-blocked  { background: rgba(239,68,68,0.15);  border-color: rgba(239,68,68,0.35);  color: var(--red); }
+    .header-badge.mode-blocked  .pulse { background: var(--red); }
+    .header-badge.mode-expansion_ready { background: rgba(59,130,246,0.15); border-color: rgba(59,130,246,0.35); color: var(--accent); }
+
+    /* ─────────────────────────── At-a-Glance Row (Phase C) ─────────────────────────── */
+    .at-a-glance {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .glance-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: border-color 0.25s, box-shadow 0.25s;
+    }
+    .glance-card.urgent {
+      border-color: rgba(239,68,68,0.4);
+      background: linear-gradient(135deg, rgba(239,68,68,0.07), rgba(239,68,68,0.02));
+    }
+    .glance-card.positive {
+      border-color: rgba(16,185,129,0.35);
+      background: linear-gradient(135deg, rgba(16,185,129,0.07), rgba(16,185,129,0.02));
+    }
+    .glance-card.neutral {
+      border-color: rgba(245,158,11,0.3);
+      background: linear-gradient(135deg, rgba(245,158,11,0.06), rgba(245,158,11,0.01));
+    }
+    .glance-card.info {
+      border-color: rgba(59,130,246,0.3);
+      background: linear-gradient(135deg, rgba(59,130,246,0.07), rgba(59,130,246,0.01));
+    }
+    .glance-icon  { font-size: 16px; margin-bottom: 2px; }
+    .glance-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.7px; }
+    .glance-value { font-size: 13px; font-weight: 700; color: var(--text); line-height: 1.35; }
+    .glance-sub   { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+    /* ─────────────────────────── Discourse Verdict Card (Phase B) ─────────────────────────── */
+    .discourse-verdict {
+      background: linear-gradient(135deg, rgba(139,92,246,0.10), rgba(139,92,246,0.03));
+      border: 1px solid rgba(139,92,246,0.35);
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .verdict-icon  { font-size: 22px; flex-shrink: 0; margin-top: 2px; }
+    .verdict-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--accent2); margin-bottom: 3px; }
+    .verdict-text  { font-size: 13px; color: var(--text); font-weight: 600; line-height: 1.5; }
+    .verdict-sub   { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+    /* ─────────────────────────── Blocker beacon in header ─────────────────────────── */
+    .blocker-beacon {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      background: rgba(239,68,68,0.13);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--red);
+      animation: beaconPulse 2.5s ease-in-out infinite;
+    }
+    .blocker-beacon.visible { display: flex; }
+    @keyframes beaconPulse {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.6; }
+    }
+    .blocker-beacon .pulse { background: var(--red); }
+
+    @media (max-width: 640px) {
+      .at-a-glance { grid-template-columns: 1fr 1fr; }
+      .blocker-beacon { display: none !important; }
+    }
   </style>
 </head>
 <body>
@@ -768,14 +916,48 @@
       <div class="hqs-logo-sub">Admin Intelligence Dashboard</div>
     </div>
   </div>
-  <div class="header-badge">
-    <div class="pulse"></div>
-    Informations-Service · Live
+  <div style="display:flex;align-items:center;gap:10px">
+    <div class="blocker-beacon" id="blockerBeacon">
+      <div class="pulse"></div>
+      <span id="blockerBeaconText">Blocker aktiv</span>
+    </div>
+    <div class="header-badge" id="headerBadge">
+      <div class="pulse"></div>
+      <span id="headerBadgeText">Informations-Service · Live</span>
+    </div>
   </div>
 </header>
 
 <!-- ═══════════════════ MAIN ═══════════════════ -->
 <main class="hqs-main">
+
+  <!-- ═══════════════════ AT A GLANCE (Phase C – Adaptive Info Density) ═══════════════════ -->
+  <div class="at-a-glance" id="atAGlanceRow">
+    <div class="glance-card" id="glanceStatus">
+      <div class="glance-icon">🟢</div>
+      <div class="glance-label">System-Status</div>
+      <div class="glance-value" id="glanceStatusVal">Wird geladen…</div>
+      <div class="glance-sub" id="glanceStatusSub">–</div>
+    </div>
+    <div class="glance-card" id="glanceBlocker">
+      <div class="glance-icon">🚧</div>
+      <div class="glance-label">Größter Engpass</div>
+      <div class="glance-value" id="glanceBlockerVal">–</div>
+      <div class="glance-sub" id="glanceBlockerSub">–</div>
+    </div>
+    <div class="glance-card" id="glanceChance">
+      <div class="glance-icon">💡</div>
+      <div class="glance-label">Größte Chance</div>
+      <div class="glance-value" id="glanceChanceVal">–</div>
+      <div class="glance-sub" id="glanceChanceSub">–</div>
+    </div>
+    <div class="glance-card info" id="glanceAction">
+      <div class="glance-icon">▶</div>
+      <div class="glance-label">Nächster Schritt</div>
+      <div class="glance-value" id="glanceActionVal">–</div>
+      <div class="glance-sub" id="glanceActionSub">–</div>
+    </div>
+  </div>
 
   <!-- ═══════════════════ CHIEF SUMMARY (Interface on Demand) ═══════════════════ -->
   <div id="chiefSummaryPanel" class="chief-banner mode-calm" style="margin-bottom:20px">
@@ -855,6 +1037,14 @@
       </button>
     </div>
     <div class="discourse-panel" id="discoursePanel">
+      <div class="discourse-verdict" id="discourseVerdict" style="display:none">
+        <div class="verdict-icon">⚖️</div>
+        <div>
+          <div class="verdict-label">System-Urteil</div>
+          <div class="verdict-text" id="verdictText">–</div>
+          <div class="verdict-sub" id="verdictSub">–</div>
+        </div>
+      </div>
       <div class="discourse-grid" id="discourseGrid">
         <div style="color:var(--text-muted);font-size:12px;padding:8px">Wird geladen…</div>
       </div>
@@ -2370,8 +2560,11 @@ async function loadInterfaceState() {
     if (!data.success) throw new Error(data.error || 'Unbekannter Fehler');
 
     _renderChiefBanner(data);
-    _renderAgentDiscourse(data.agentDiscourse || []);
+    _renderAtAGlance(data);
+    _renderAgentDiscourse(data.agentDiscourse || [], data);
     _applyDeepDiveRecommendation(data.deepDiveLevelRecommendation || 1);
+    _applyPanelPriority(data.surfaceMode, data.uiPriorityPanels || []);
+    _updateHeaderBadge(data.surfaceMode, data.blockerCount);
 
   } catch (err) {
     // Graceful fallback – same style as the rest of the panel, no raw error
@@ -2433,11 +2626,160 @@ function _renderChiefBanner(data) {
   }
 }
 
-function _renderAgentDiscourse(entries) {
+/* Phase A + C – At-a-Glance row: 4 key cards above the chief banner */
+function _renderAtAGlance(data) {
+  const mode   = data.surfaceMode || 'calm';
+  const sis    = data.sis ?? 0;
+  const riskMode = data.riskMode || 'neutral';
+
+  // --- Card 1: System status ---
+  const statusCard = document.getElementById('glanceStatus');
+  const statusVal  = document.getElementById('glanceStatusVal');
+  const statusSub  = document.getElementById('glanceStatusSub');
+  if (statusCard && statusVal) {
+    const modeMap = {
+      calm: { icon: '🟢', label: 'System stabil',       cls: 'positive', sub: `SIS ${sis}/100` },
+      warning:         { icon: '🟡', label: 'Warnung aktiv',     cls: 'neutral',  sub: `SIS ${sis}/100 · ${riskMode}` },
+      debate:          { icon: '🟣', label: 'Signale gemischt',  cls: 'neutral',  sub: `SIS ${sis}/100` },
+      blocked:         { icon: '🔴', label: 'System blockiert',  cls: 'urgent',   sub: `SIS ${sis}/100 · risk_off` },
+      expansion_ready: { icon: '🔵', label: 'Expansion möglich', cls: 'info',     sub: `SIS ${sis}/100 · risk_on` },
+    };
+    const s = modeMap[mode] || modeMap.calm;
+    statusCard.querySelector('.glance-icon').textContent = s.icon;
+    statusCard.className = 'glance-card ' + s.cls;
+    statusVal.textContent  = s.label;
+    if (statusSub) statusSub.textContent = s.sub;
+  }
+
+  // --- Card 2: Biggest blocker ---
+  const blockerCard = document.getElementById('glanceBlocker');
+  const blockerVal  = document.getElementById('glanceBlockerVal');
+  const blockerSub  = document.getElementById('glanceBlockerSub');
+  if (blockerCard && blockerVal) {
+    const disc = data.agentDiscourse || [];
+    const blockEntry = disc.find(e => e.stance === 'blocking');
+    const warnEntry  = disc.find(e => e.stance === 'warning');
+    if (blockEntry) {
+      blockerCard.className = 'glance-card urgent';
+      blockerCard.querySelector('.glance-icon').textContent = '🚧';
+      blockerVal.textContent = blockEntry.message.length > 60
+        ? blockEntry.message.slice(0, 57) + '…'
+        : blockEntry.message;
+      if (blockerSub) blockerSub.textContent = blockEntry.evidenceTag || 'Blocker';
+    } else if (warnEntry) {
+      blockerCard.className = 'glance-card neutral';
+      blockerCard.querySelector('.glance-icon').textContent = '⚠️';
+      blockerVal.textContent = warnEntry.message.length > 60
+        ? warnEntry.message.slice(0, 57) + '…'
+        : warnEntry.message;
+      if (blockerSub) blockerSub.textContent = warnEntry.evidenceTag || 'Warnung';
+    } else {
+      blockerCard.className = 'glance-card positive';
+      blockerCard.querySelector('.glance-icon').textContent = '✅';
+      blockerVal.textContent = 'Kein aktiver Blocker';
+      if (blockerSub) blockerSub.textContent = 'Alle Gates offen';
+    }
+  }
+
+  // --- Card 3: Biggest chance ---
+  const chanceCard = document.getElementById('glanceChance');
+  const chanceVal  = document.getElementById('glanceChanceVal');
+  const chanceSub  = document.getElementById('glanceChanceSub');
+  if (chanceCard && chanceVal) {
+    const disc = data.agentDiscourse || [];
+    const supportEntry = disc.find(e => e.stance === 'supporting');
+    if (supportEntry) {
+      chanceCard.className = 'glance-card positive';
+      chanceCard.querySelector('.glance-icon').textContent = '💡';
+      chanceVal.textContent = supportEntry.message.length > 60
+        ? supportEntry.message.slice(0, 57) + '…'
+        : supportEntry.message;
+      if (chanceSub) chanceSub.textContent = supportEntry.evidenceTag || 'Chance';
+    } else {
+      chanceCard.className = 'glance-card';
+      chanceCard.querySelector('.glance-icon').textContent = '🔍';
+      chanceVal.textContent = 'Keine Chancensignale';
+      if (chanceSub) chanceSub.textContent = 'System beobachtet';
+    }
+  }
+
+  // --- Card 4: Next step ---
+  const actionCard = document.getElementById('glanceAction');
+  const actionVal  = document.getElementById('glanceActionVal');
+  const actionSub  = document.getElementById('glanceActionSub');
+  if (actionCard && actionVal) {
+    const step = data.primaryAction || '–';
+    actionVal.textContent = step.length > 60 ? step.slice(0, 57) + '…' : step;
+    if (actionSub) actionSub.textContent = 'Empfohlene Sofortmaßnahme';
+  }
+}
+
+/* Phase A – Panel priority: visually highlight the most relevant panels */
+function _applyPanelPriority(mode, panels) {
+  // Remove all priority classes from known panels
+  const allPanels = ['sisPanel', 'sisTrendPanel', 'opsPanel', 'twin4Panel', 'discoursePanel', 'wisdomPanel'];
+  allPanels.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('panel-priority-urgent', 'panel-priority-high', 'panel-priority-medium');
+  });
+
+  if (mode === 'blocked') {
+    // Blocked: highlight ops + discourse most prominently
+    _setPanelPriority('opsPanel', 'urgent');
+    _setPanelPriority('discoursePanel', 'high');
+  } else if (mode === 'warning') {
+    _setPanelPriority('opsPanel', 'high');
+    _setPanelPriority('sisPanel', 'medium');
+  } else if (mode === 'debate') {
+    _setPanelPriority('discoursePanel', 'high');
+    _setPanelPriority('sisPanel', 'medium');
+  } else if (mode === 'expansion_ready') {
+    _setPanelPriority('opsPanel', 'high');
+    _setPanelPriority('twin4Panel', 'medium');
+  }
+  // calm: no highlights
+}
+
+function _setPanelPriority(id, level) {
+  const el = document.getElementById(id);
+  if (el) el.classList.add('panel-priority-' + level);
+}
+
+/* Phase D – Update header badge to reflect system mode */
+function _updateHeaderBadge(mode, blockerCount) {
+  const badge = document.getElementById('headerBadge');
+  const badgeText = document.getElementById('headerBadgeText');
+  const beacon = document.getElementById('blockerBeacon');
+  const beaconText = document.getElementById('blockerBeaconText');
+  if (!badge) return;
+
+  badge.className = 'header-badge';
+  if (mode === 'warning')         badge.classList.add('mode-warning');
+  else if (mode === 'blocked')    badge.classList.add('mode-blocked');
+  else if (mode === 'expansion_ready') badge.classList.add('mode-expansion_ready');
+
+  const modeLabel = { calm: 'Stabil · Live', warning: 'Warnung · Live', debate: 'Debatte · Live', blocked: 'Blockiert · Live', expansion_ready: 'Bereit · Live' };
+  if (badgeText) badgeText.textContent = modeLabel[mode] || 'Live';
+
+  // Blocker beacon
+  if (beacon) {
+    const cnt = blockerCount ?? 0;
+    if ((mode === 'blocked' || mode === 'warning') && cnt > 0) {
+      beacon.classList.add('visible');
+      if (beaconText) beaconText.textContent = cnt === 1 ? '1 Blocker aktiv' : `${cnt} Blocker aktiv`;
+    } else {
+      beacon.classList.remove('visible');
+    }
+  }
+}
+
+/* Phase B – Agent discourse: render entries + verdict card */
+function _renderAgentDiscourse(entries, data) {
   const grid = document.getElementById('discourseGrid');
   if (!grid) return;
   if (!entries.length) {
     grid.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px">Keine Debatteneinträge verfügbar.</div>';
+    _hideVerdict();
     return;
   }
   grid.innerHTML = entries.map(e => {
@@ -2461,6 +2803,68 @@ function _renderAgentDiscourse(entries) {
   </div>
 </div>`;
   }).join('');
+
+  // Render verdict card
+  _renderVerdict(entries, data);
+}
+
+function _renderVerdict(entries, data) {
+  const verdictEl  = document.getElementById('discourseVerdict');
+  const textEl     = document.getElementById('verdictText');
+  const subEl      = document.getElementById('verdictSub');
+  if (!verdictEl || !textEl) return;
+
+  const mode = (data && data.surfaceMode) || 'calm';
+  const sis  = (data && data.sis) != null ? data.sis : '–';
+
+  // Find a RICHTER or GUARDIAN entry for the verdict base
+  const richter  = entries.find(e => e.agent === 'RICHTER');
+  const guardian = entries.find(e => e.agent === 'GUARDIAN');
+  const blockers = entries.filter(e => e.stance === 'blocking');
+  const supporters = entries.filter(e => e.stance === 'supporting');
+
+  let verdictText = '';
+  let verdictSub  = '';
+
+  if (mode === 'blocked') {
+    verdictText = guardian
+      ? `Guardian hält den Betrieb an: ${guardian.message}`
+      : 'Das System ist blockiert. Kein automatischer Betrieb möglich.';
+    verdictSub = `${blockers.length} Blocker aktiv · SIS ${sis}/100`;
+  } else if (mode === 'warning') {
+    verdictText = richter
+      ? richter.message
+      : 'Das System arbeitet mit Einschränkungen. Vorsicht ist geboten.';
+    verdictSub = `Warnmodus · SIS ${sis}/100`;
+  } else if (mode === 'expansion_ready') {
+    verdictText = supporters.length > 0
+      ? supporters[0].message
+      : 'Alle Gates freigegeben. Das System ist bereit zur Skalierung.';
+    verdictSub = `Expansionsbereit · SIS ${sis}/100`;
+  } else if (mode === 'debate') {
+    verdictText = richter
+      ? richter.message
+      : `Gemischte Signale: ${supporters.length} Argumente für, ${blockers.length} dagegen.`;
+    verdictSub = `Debatte läuft · SIS ${sis}/100`;
+  } else {
+    // calm
+    if (supporters.length > 0) {
+      verdictText = 'System stabil. Kein Eingriff erforderlich.';
+      verdictSub  = `SIS ${sis}/100 · kontrollierter Betrieb`;
+    } else {
+      verdictText = richter ? richter.message : 'System im Normalbetrieb.';
+      verdictSub  = `SIS ${sis}/100`;
+    }
+  }
+
+  textEl.textContent = verdictText;
+  if (subEl) subEl.textContent = verdictSub;
+  verdictEl.style.display = 'flex';
+}
+
+function _hideVerdict() {
+  const verdictEl = document.getElementById('discourseVerdict');
+  if (verdictEl) verdictEl.style.display = 'none';
 }
 
 function _applyDeepDiveRecommendation(level) {

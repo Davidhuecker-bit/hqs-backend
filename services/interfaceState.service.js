@@ -139,49 +139,49 @@ const _SURFACE_HEADLINES = {
 
 function _buildNarrative(surfaceMode, sis, riskMode, dominantTopic, sisRec, trendDir, blockers) {
   const topicLabels = {
-    risk_mode:         "Risk-Mode ist aktiv risk_off",
-    outcome_learning:  "Prognose-Genauigkeit noch ausbaufähig",
-    capital_protection:"Guardian-Protokoll hat noch wenig Eingriffe protokolliert",
-    portfolio_twin:    "Portfolio-Twin hat wenig aktive Positionen",
-    adaptive_learning: "Causal-Memory noch auf Standard-Gewichten",
-    discovery:         "Tech-Radar noch nicht vollständig gelaufen",
-    pattern_memory:    "Outcome-Tracking noch wenige verifizierte Datenpunkte",
-    scale_450:         "Skalierungs-Gate auf €450 noch gesperrt",
-    scale_600:         "Skalierungs-Gate auf €600 noch gesperrt",
-    china_gate:        "China-Expansion-Gate gesperrt",
-    europe_gate:       "Europa-Expansion-Gate gesperrt",
-    expansion_ready:   "alle Kern-Gates freigegeben",
-    advanced_metrics:  "Systemmetriken insgesamt stabil",
+    risk_mode:         "Der Markt ist gerade nicht günstig",
+    outcome_learning:  "Die Prognose-Genauigkeit kann noch besser werden",
+    capital_protection:"Der Guardian hat noch wenig Eingriffe protokolliert",
+    portfolio_twin:    "Der Portfolio-Twin hat noch wenig aktive Positionen",
+    adaptive_learning: "Das Lerngedächtnis arbeitet noch mit Standardwerten",
+    discovery:         "Der Tech-Radar hat noch nicht vollständig gescannt",
+    pattern_memory:    "Noch wenige verifizierte Datenpunkte vorhanden",
+    scale_450:         "Das Skalierungs-Gate auf €450 ist noch gesperrt",
+    scale_600:         "Das Skalierungs-Gate auf €600 ist noch gesperrt",
+    china_gate:        "Das China-Expansions-Gate ist gesperrt",
+    europe_gate:       "Das Europa-Expansions-Gate ist gesperrt",
+    expansion_ready:   "Alle Kern-Gates sind freigegeben",
+    advanced_metrics:  "Die Systemmetriken sind insgesamt stabil",
   };
   const topicText = topicLabels[dominantTopic] || dominantTopic;
 
-  const trendText = trendDir === "improving" ? "Der SIS-Trend ist positiv." :
-                    trendDir === "declining"  ? "Der SIS-Trend zeigt Rückgang." : "";
+  const trendText = trendDir === "improving" ? "Das System verbessert sich gerade." :
+                    trendDir === "declining"  ? "Der System-Score sinkt – Ursache prüfen." : "";
 
   switch (surfaceMode) {
     case "blocked":
-      return `Das System befindet sich im Blockierzustand. ${topicText}. ` +
-        `Der SIS-Score liegt bei ${sis}/100. ${trendText} ` +
-        `Hauptblocker: ${blockers.slice(0,2).map(b => b?.reason ?? '–').join(" / ") || "–"}. ` +
-        `Sofortmaßnahme: Marktbedingungen prüfen und Risk-Mode-Schwelle überprüfen.`;
+      return `Das System ist blockiert. Kein automatischer Betrieb möglich. ` +
+        `${topicText}. System-Score: ${sis}/100. ${trendText} ` +
+        `${blockers.slice(0,2).map(b => b?.reason ?? '–').filter(Boolean).join(" · ") || "Marktbedingungen prüfen."} ` +
+        `Bitte jetzt die Marktlage und den Risk-Mode überprüfen.`;
     case "warning":
-      return `Das System meldet eine aktive Warnung. ${topicText}. ` +
-        `SIS-Score: ${sis}/100. ${trendText} ` +
-        `${sisRec?.action ? `Empfohlene Aktion: ${sisRec.action}.` : ""} ` +
-        `Weiteren Betrieb nur in konservativem Modus empfohlen.`;
+      return `Das System ist vorsichtig. ${topicText}. ` +
+        `System-Score: ${sis}/100. ${trendText} ` +
+        `${sisRec?.action ? `Was jetzt hilft: ${sisRec.action}.` : ""} ` +
+        `Nur konservativer Betrieb ist gerade sinnvoll.`;
     case "debate":
-      return `Das System zeigt gemischte Signale – einige Schichten sind gesund, andere noch inaktiv. ` +
-        `${topicText}. SIS-Score: ${sis}/100. ${trendText} ` +
-        `Eine Debatte zwischen optimistischen und vorsichtigen Systemsignalen ist aktiv.`;
+      return `Das System sendet gemischte Signale. Einige Bereiche laufen gut, andere brauchen noch Zeit. ` +
+        `${topicText}. System-Score: ${sis}/100. ${trendText} ` +
+        `Optimist und Skeptiker sind sich nicht einig – der Richter beobachtet.`;
     case "expansion_ready":
-      return `Das System ist expansionsbereit. Alle Kern-Gates sind freigegeben. ` +
-        `SIS-Score: ${sis}/100. Risk-Mode: risk_on. ${trendText} ` +
-        `Kontrollierte Skalierung und erweiterter Discovery-Scan sind möglich.`;
+      return `Das System ist bereit. Alle wichtigen Gates sind freigegeben. ` +
+        `System-Score: ${sis}/100. Markt ist günstig. ${trendText} ` +
+        `Kontrollierte Skalierung und breitere Suche sind jetzt möglich.`;
     case "calm":
     default:
-      return `Das System arbeitet stabil im kontrollierten Betrieb. ` +
-        `${topicText}. SIS-Score: ${sis}/100. ${trendText} ` +
-        `${sisRec?.action ? `Nächste Optimierung: ${sisRec.action}.` : "Keine kritischen Handlungsfelder."}`;
+      return `Das System läuft stabil. ${topicText}. ` +
+        `System-Score: ${sis}/100. ${trendText} ` +
+        `${sisRec?.action ? `Nächste Verbesserung: ${sisRec.action}.` : "Kein dringender Handlungsbedarf."}`;
   }
 }
 
@@ -457,6 +457,7 @@ async function getInterfaceState() {
     // meta
     sis,
     riskMode,
+    blockerCount: opsStatus.blockerCount ?? 0,
     generatedAt: new Date().toISOString(),
   };
 }
