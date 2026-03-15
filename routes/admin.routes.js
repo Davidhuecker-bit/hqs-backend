@@ -59,6 +59,7 @@ const {
   refreshOpenVirtualPositions,
   closeVirtualPosition,
   getPortfolioTwinSnapshot,
+  getStage4Analysis,
   listVirtualPositions,
 } = require("../services/portfolioTwin.service");
 const { getSystemIntelligenceReport } = require("../services/systemIntelligence.service");
@@ -1127,6 +1128,31 @@ router.post("/portfolio-twin/open", async (req, res) => {
     return res.status(201).json({ success: true, position });
   } catch (error) {
     logger.error("Admin portfolio-twin/open route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/portfolio-twin/stage4
+ *
+ * Returns the Stage 4 Portfolio Twin intelligence block:
+ *   - currentDrawdownPct  : live drawdown from equity peak
+ *   - maxDrawdownPct      : historical maximum drawdown
+ *   - concentrationFlags  : sector/cluster/risk concentration heuristics  (Paket B)
+ *   - activeFlags         : list of currently active warning flags
+ *   - correlationApprox   : lightweight correlation risk score + warnings  (Paket C)
+ *   - counterfactual      : what-if estimates for trimming/capping          (Paket D)
+ *
+ * Pure read – no writes, no external API calls.
+ * WorldState consumed opportunistically (graceful fallback on failure).
+ */
+router.get("/portfolio-twin/stage4", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 200));
+    const analysis = await getStage4Analysis({ limit });
+    return res.json({ success: true, stage4: analysis });
+  } catch (error) {
+    logger.error("Admin portfolio-twin/stage4 route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
