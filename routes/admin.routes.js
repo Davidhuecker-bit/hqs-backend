@@ -64,6 +64,7 @@ const {
 } = require("../services/portfolioTwin.service");
 const { getSystemIntelligenceReport } = require("../services/systemIntelligence.service");
 const { getOperationalReleaseStatus } = require("../services/sisReleaseControl.service");
+const { getInterfaceState } = require("../services/interfaceState.service");
 const {
   saveSisSnapshot,
   getSisHistory,
@@ -1305,6 +1306,24 @@ router.get("/sis-regressions", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin sis-regressions route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+ * GET /api/admin/interface-state
+ * ─────────────────────────────────────────────────────────
+ * Returns the UI-direction payload for the "Interface on Demand" layer.
+ * Aggregates SIS, operational gates, world state and SIS trend into a
+ * single surfaceMode + agentDiscourse payload. Pure derivation – no DB
+ * writes, no external API calls.
+ */
+router.get("/interface-state", async (req, res) => {
+  try {
+    const state = await getInterfaceState();
+    return res.json({ success: true, ...state });
+  } catch (error) {
+    logger.error("Admin interface-state route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
