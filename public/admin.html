@@ -597,6 +597,164 @@
       flex-shrink: 0;
     }
     .wisdom-agent-sub { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+    /* ─────────────────────────── Interface-State / Chief Summary ─────────────── */
+    .chief-banner {
+      border-radius: var(--radius);
+      border: 2px solid var(--border);
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      transition: border-color 0.4s, background 0.4s;
+    }
+    .chief-banner.mode-calm        { border-color: rgba(16,185,129,0.4);  background: linear-gradient(135deg,rgba(16,185,129,0.08),rgba(16,185,129,0.03)); }
+    .chief-banner.mode-warning     { border-color: rgba(245,158,11,0.55); background: linear-gradient(135deg,rgba(245,158,11,0.12),rgba(245,158,11,0.04)); }
+    .chief-banner.mode-debate      { border-color: rgba(139,92,246,0.45); background: linear-gradient(135deg,rgba(139,92,246,0.10),rgba(139,92,246,0.03)); }
+    .chief-banner.mode-blocked     { border-color: rgba(239,68,68,0.55);  background: linear-gradient(135deg,rgba(239,68,68,0.12),rgba(239,68,68,0.04)); }
+    .chief-banner.mode-expansion_ready { border-color: rgba(59,130,246,0.55); background: linear-gradient(135deg,rgba(59,130,246,0.10),rgba(59,130,246,0.03)); }
+    .chief-headline {
+      font-size: 16px;
+      font-weight: 800;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .chief-mode-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      padding: 3px 10px;
+      border-radius: 12px;
+    }
+    .chief-narrative { font-size: 13px; color: var(--text-dim); line-height: 1.65; margin-bottom: 14px; }
+    .chief-actions   { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+    .chief-action-primary {
+      font-size: 12px; font-weight: 700;
+      background: rgba(59,130,246,0.15); border: 1px solid rgba(59,130,246,0.3);
+      color: var(--accent); border-radius: var(--radius-sm);
+      padding: 7px 14px; flex-shrink: 0;
+    }
+    .chief-action-secondary {
+      font-size: 11px;
+      background: var(--bg-card2); border: 1px solid var(--border);
+      color: var(--text-muted); border-radius: var(--radius-sm);
+      padding: 6px 12px;
+    }
+    .chief-meta { font-size: 10px; color: var(--text-muted); margin-top: 12px; }
+
+    /* ─────────────────────────── Deep-Dive Toggle ────────────────────────────── */
+    .deep-dive-bar {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      margin-bottom: 28px;
+      flex-wrap: wrap;
+    }
+    .deep-dive-bar .dd-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-right: 4px;
+    }
+    .dd-btn {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s, background 0.2s;
+    }
+    .dd-btn.active {
+      background: rgba(59,130,246,0.15);
+      border-color: rgba(59,130,246,0.4);
+      color: var(--accent);
+    }
+    .dd-btn:hover:not(.active) { border-color: var(--accent); color: var(--text); }
+
+    /* Level 2 / Level 3 content visibility */
+    /* display:contents makes wrapper transparent to layout when shown */
+    .level2-content { display: none; }
+    .level3-content { display: none; }
+    body.dd-level-2 .level2-content { display: contents; }
+    body.dd-level-2 .level3-content { display: none; }
+    body.dd-level-3 .level2-content { display: contents; }
+    body.dd-level-3 .level3-content { display: contents; }
+
+    /* ─────────────────────────── Agent Discourse Section ────────────────────── */
+    .discourse-panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 32px;
+    }
+    .discourse-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .discourse-card {
+      border-radius: var(--radius-sm);
+      padding: 14px 16px;
+      border: 1px solid transparent;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .discourse-card.stance-supporting {
+      background: rgba(16,185,129,0.07);
+      border-color: rgba(16,185,129,0.25);
+    }
+    .discourse-card.stance-warning {
+      background: rgba(245,158,11,0.08);
+      border-color: rgba(245,158,11,0.28);
+    }
+    .discourse-card.stance-blocking {
+      background: rgba(239,68,68,0.08);
+      border-color: rgba(239,68,68,0.28);
+    }
+    .discourse-card.stance-neutral {
+      background: rgba(100,116,139,0.10);
+      border-color: rgba(100,116,139,0.25);
+    }
+    .dc-header { display: flex; align-items: center; gap: 8px; }
+    .dc-agent   { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px; }
+    .dc-stance-badge {
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-left: auto;
+    }
+    .stance-supporting .dc-stance-badge { background: rgba(16,185,129,0.18); color: var(--green); }
+    .stance-warning    .dc-stance-badge { background: rgba(245,158,11,0.18); color: var(--yellow); }
+    .stance-blocking   .dc-stance-badge { background: rgba(239,68,68,0.18);  color: var(--red); }
+    .stance-neutral    .dc-stance-badge { background: rgba(100,116,139,0.18);color: var(--text-muted); }
+    .dc-message   { font-size: 12px; color: var(--text-dim); line-height: 1.55; }
+    .dc-footer    { display: flex; align-items: center; gap: 8px; }
+    .dc-confidence-bar {
+      flex: 1;
+      height: 4px;
+      background: var(--bg-card2);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .dc-confidence-fill { height: 100%; border-radius: 2px; }
+    .stance-supporting .dc-confidence-fill { background: var(--green); }
+    .stance-warning    .dc-confidence-fill { background: var(--yellow); }
+    .stance-blocking   .dc-confidence-fill { background: var(--red); }
+    .stance-neutral    .dc-confidence-fill { background: var(--text-muted); }
+    .dc-confidence-label { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+    .dc-tag { font-size: 9px; color: var(--text-muted); background: var(--bg-card2); border-radius: 8px; padding: 2px 7px; flex-shrink: 0; }
   </style>
 </head>
 <body>
@@ -618,6 +776,25 @@
 
 <!-- ═══════════════════ MAIN ═══════════════════ -->
 <main class="hqs-main">
+
+  <!-- ═══════════════════ CHIEF SUMMARY (Interface on Demand) ═══════════════════ -->
+  <div id="chiefSummaryPanel" class="chief-banner mode-calm" style="margin-bottom:20px">
+    <div class="chief-headline">
+      <span id="chiefHeadline">System-Status wird geladen…</span>
+      <span id="chiefModeBadge" class="chief-mode-badge" style="background:rgba(100,116,139,0.15);color:var(--text-muted)">–</span>
+    </div>
+    <div id="chiefNarrative" class="chief-narrative" style="color:var(--text-muted)">Regie-Schicht wird initialisiert…</div>
+    <div class="chief-actions" id="chiefActions"></div>
+    <div class="chief-meta" id="chiefMeta">–</div>
+  </div>
+
+  <!-- ═══════════════════ DEEP-DIVE TOGGLE ═══════════════════ -->
+  <div class="deep-dive-bar" id="deepDiveBar">
+    <span class="dd-label">Informationstiefe:</span>
+    <button class="dd-btn active" id="ddBtn1" onclick="setDeepDive(1)" title="Nur Chef-Zusammenfassung + Hauptaktion">🎯 Fokus</button>
+    <button class="dd-btn" id="ddBtn2" onclick="setDeepDive(2)" title="Agenten-Debatte + Warnungen + Freigaben">📊 Mehr Kontext</button>
+    <button class="dd-btn" id="ddBtn3" onclick="setDeepDive(3)" title="Alle technischen Panels">🔬 Technische Tiefe</button>
+  </div>
 
   <!-- Stats Bar -->
   <div class="stats-bar" id="statsBar">
@@ -653,6 +830,7 @@
   </div>
 
   <!-- Swarm Wisdom Panel -->
+  <div class="level2-content">
   <div class="wisdom-panel" id="wisdomPanel">
     <div class="wisdom-header">
       <div class="wisdom-title">🤖 Swarm Wisdom · Vorhersage-Genauigkeit der Agenten</div>
@@ -664,7 +842,27 @@
       <div class="wisdom-agent-card"><div class="wisdom-agent-icon">⚖️</div><div class="wisdom-agent-info"><div class="wisdom-agent-name">Richter</div><div class="wisdom-agent-label">MACRO_JUDGE</div><div class="wisdom-agent-sub">Lädt…</div></div><div class="wisdom-agent-acc" style="color:var(--text-muted)">–</div></div>
     </div>
   </div>
+  </div>
 
+  <!-- ═══════════════════ AGENT DISCOURSE ═══════════════════ -->
+  <div class="level2-content">
+    <div class="section-title" style="margin-top:0">
+      <span class="icon">🤝</span>
+      Agenten-Debatte
+      <span class="section-sub">Live Debattenlage · Systemzustand-abgeleitet</span>
+      <button class="refresh-btn" style="margin-left:auto" onclick="loadInterfaceState()">
+        <span class="refresh-icon">↻</span> Aktualisieren
+      </button>
+    </div>
+    <div class="discourse-panel" id="discoursePanel">
+      <div class="discourse-grid" id="discourseGrid">
+        <div style="color:var(--text-muted);font-size:12px;padding:8px">Wird geladen…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Level 3: Portfolio Section, Audit Feed, Evolution Board -->
+  <div class="level3-content">
   <!-- Portfolio Section -->
   <div class="section-title">
     <span class="icon">🛡️</span>
@@ -674,7 +872,6 @@
       <span class="refresh-icon">↻</span> Neu laden
     </button>
   </div>
-
   <!-- Filter Bar -->
   <div class="filter-bar" id="filterBar">
     <button class="filter-btn active" onclick="setFilter('all', this)">Alle</button>
@@ -768,6 +965,11 @@
       </div>
     </div>
   </div>
+  <!-- End Level 3: Portfolio, Audit, Evolution Board -->
+  </div>
+
+  <!-- Level 2: System Intelligence, SIS Trend, Ops Status -->
+  <div class="level2-content">
 
   <!-- System Intelligence Section -->
   <div class="section-title" style="margin-top:40px">
@@ -944,7 +1146,11 @@
       ">–</div>
     </div>
   </div>
+  <!-- End Level 2: System Intelligence, SIS Trend, Ops Status -->
+  </div>
 
+  <!-- Level 3: Portfolio Twin Stage 4 -->
+  <div class="level3-content">
   <!-- ═══════════════════ PORTFOLIO TWIN STAGE 4 ═══════════════════ -->
   <div id="twin4Panel" style="
       background:var(--bg-card);
@@ -998,6 +1204,8 @@
       <div id="twin4Counterfactual" style="font-size:12px;color:var(--text-muted)">–</div>
     </div>
   </div>
+  <!-- End Level 3: Portfolio Twin Stage 4 -->
+  </div>
 
 </main>
 
@@ -1039,6 +1247,27 @@ const API_BASE      = '/api/admin';
 // Cache per-symbol audit history so we don't re-fetch on every toggle
 const historyCache  = {};
 const HISTORY_LIMIT = 3;
+
+// Current deep-dive level (1=Fokus, 2=Mehr Kontext, 3=Technische Tiefe)
+let currentDeepDiveLevel = 1;
+
+/* ═══════════════════ DEEP DIVE ═══════════════════ */
+function setDeepDive(level) {
+  currentDeepDiveLevel = level;
+  document.body.classList.remove('dd-level-1', 'dd-level-2', 'dd-level-3');
+  if (level >= 2) document.body.classList.add('dd-level-' + level);
+  ['ddBtn1', 'ddBtn2', 'ddBtn3'].forEach((id, i) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.classList.toggle('active', i + 1 === level);
+  });
+  // Load deferred data when user expands for the first time
+  if (level >= 2 && !_wisdomLoaded) { loadAgentWisdom(); _wisdomLoaded = true; }
+  if (level >= 3 && !_portfolioLoaded) { loadPortfolio(); _portfolioLoaded = true; }
+  if (level >= 3 && !_evolutionLoaded) { loadEvolutionBoard(); _evolutionLoaded = true; }
+}
+let _wisdomLoaded    = false;
+let _portfolioLoaded = false;
+let _evolutionLoaded = false;
 
 /* ═══════════════════ SHIELD HELPERS ═══════════════════ */
 function shieldEmoji(score) {
@@ -2110,21 +2339,154 @@ ${hints.length ? hints.map(h => `
   }
 }
 
+/* ═══════════════════ INTERFACE STATE (Interface on Demand) ═══════════════════ */
+
+const _SURFACE_BADGE = {
+  calm:            { label: 'Stabil',           bg: 'rgba(16,185,129,0.15)',  color: 'var(--green)' },
+  warning:         { label: 'Warnung',           bg: 'rgba(245,158,11,0.15)', color: 'var(--yellow)' },
+  debate:          { label: 'Debatte',           bg: 'rgba(139,92,246,0.15)', color: 'var(--accent2)' },
+  blocked:         { label: 'Blockiert',         bg: 'rgba(239,68,68,0.15)',  color: 'var(--red)' },
+  expansion_ready: { label: 'Expansionsbereit',  bg: 'rgba(59,130,246,0.15)', color: 'var(--accent)' },
+};
+
+const _AGENT_ICONS = {
+  OPTIMIST:  '📈',
+  SKEPTIKER: '🛡️',
+  RICHTER:   '⚖️',
+  GUARDIAN:  '🔒',
+};
+
+const _STANCE_LABELS = {
+  supporting: 'Unterstützend',
+  warning:    'Warnung',
+  blocking:   'Blockierend',
+  neutral:    'Neutral',
+};
+
+async function loadInterfaceState() {
+  try {
+    const res  = await fetch(`${API_BASE}/interface-state`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Unbekannter Fehler');
+
+    _renderChiefBanner(data);
+    _renderAgentDiscourse(data.agentDiscourse || []);
+    _applyDeepDiveRecommendation(data.deepDiveLevelRecommendation || 1);
+
+  } catch (err) {
+    // Graceful fallback – same style as the rest of the panel, no raw error
+    const banner = document.getElementById('chiefSummaryPanel');
+    if (banner) {
+      banner.className = 'chief-banner mode-warning';
+      document.getElementById('chiefHeadline').textContent = '⚠️ Regie-Schicht nicht verfügbar';
+      document.getElementById('chiefNarrative').textContent =
+        'Die Interface-State-Daten konnten nicht geladen werden. ' +
+        'Das System läuft im Basis-Modus weiter. Bitte Logs prüfen.';
+      document.getElementById('chiefActions').innerHTML = '';
+      document.getElementById('chiefMeta').textContent = 'Fehler: ' + esc(String(err.message || err));
+    }
+    const grid = document.getElementById('discourseGrid');
+    if (grid) grid.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px">Agenten-Debatte nicht verfügbar.</div>';
+  }
+}
+
+function _renderChiefBanner(data) {
+  const banner = document.getElementById('chiefSummaryPanel');
+  if (!banner) return;
+
+  const mode  = data.surfaceMode || 'calm';
+  const badge = _SURFACE_BADGE[mode] || _SURFACE_BADGE.calm;
+
+  banner.className = 'chief-banner mode-' + mode;
+
+  const headline = document.getElementById('chiefHeadline');
+  if (headline) headline.textContent = data.headline || '–';
+
+  const modeBadge = document.getElementById('chiefModeBadge');
+  if (modeBadge) {
+    modeBadge.textContent = badge.label;
+    modeBadge.style.background = badge.bg;
+    modeBadge.style.color = badge.color;
+    modeBadge.style.border = '1px solid ' + badge.color.replace('var(--', '').replace(')', '');
+  }
+
+  const narrative = document.getElementById('chiefNarrative');
+  if (narrative) {
+    narrative.textContent = data.executiveNarrative || '–';
+    narrative.style.color = '';
+  }
+
+  const actionsEl = document.getElementById('chiefActions');
+  if (actionsEl) {
+    const primary = data.primaryAction
+      ? `<span class="chief-action-primary">▶ ${esc(data.primaryAction)}</span>` : '';
+    const secondary = (data.secondaryActions || [])
+      .map(a => `<span class="chief-action-secondary">${esc(a)}</span>`)
+      .join('');
+    actionsEl.innerHTML = primary + secondary;
+  }
+
+  const meta = document.getElementById('chiefMeta');
+  if (meta) {
+    const ts = data.generatedAt ? new Date(data.generatedAt).toLocaleString('de-DE') : '–';
+    meta.textContent = `SIS: ${data.sis ?? '–'}/100 · Risk-Mode: ${data.riskMode ?? '–'} · ${ts}`;
+  }
+}
+
+function _renderAgentDiscourse(entries) {
+  const grid = document.getElementById('discourseGrid');
+  if (!grid) return;
+  if (!entries.length) {
+    grid.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px">Keine Debatteneinträge verfügbar.</div>';
+    return;
+  }
+  grid.innerHTML = entries.map(e => {
+    const icon       = _AGENT_ICONS[e.agent] || '🤖';
+    const stanceLabel = _STANCE_LABELS[e.stance] || e.stance || '–';
+    const confidence  = Math.max(0, Math.min(100, e.confidence || 0));
+    return `
+<div class="discourse-card stance-${esc(e.stance || 'neutral')}">
+  <div class="dc-header">
+    <span style="font-size:16px">${icon}</span>
+    <span class="dc-agent">${esc(e.agent)}</span>
+    <span class="dc-stance-badge">${esc(stanceLabel)}</span>
+  </div>
+  <div class="dc-message">${esc(e.message)}</div>
+  <div class="dc-footer">
+    <div class="dc-confidence-bar">
+      <div class="dc-confidence-fill" style="width:${confidence}%"></div>
+    </div>
+    <span class="dc-confidence-label">${confidence}%</span>
+    ${e.evidenceTag ? `<span class="dc-tag">${esc(e.evidenceTag)}</span>` : ''}
+  </div>
+</div>`;
+  }).join('');
+}
+
+function _applyDeepDiveRecommendation(level) {
+  // Only auto-apply if user hasn't manually changed the level
+  if (currentDeepDiveLevel === 1 && level > 1) {
+    setDeepDive(level);
+  }
+}
+
 /* ═══════════════════ INIT ═══════════════════ */
-loadPortfolio();
-loadAgentWisdom();
+loadInterfaceState();
 loadSavedCapital();
-loadEvolutionBoard();
 loadSystemIntelligence();
 loadOperationalStatus();
 loadSisTrend();
 loadTwin4();
+loadAuditFeed();
+// Deferred: portfolio, wisdom, evolution only loaded when deep-dive level requires it
 // Auto-refresh audit feed every 60 seconds
 setInterval(loadAuditFeed, 60000);
 // Refresh wisdom scores every 5 minutes
 setInterval(loadAgentWisdom, 5 * 60 * 1000);
 // Refresh saved capital every 10 minutes
 setInterval(loadSavedCapital, 10 * 60 * 1000);
+// Refresh interface state every 5 minutes
+setInterval(loadInterfaceState, 5 * 60 * 1000);
 // Refresh system intelligence every 15 minutes
 setInterval(loadSystemIntelligence, 15 * 60 * 1000);
 // Refresh operational status every 15 minutes
