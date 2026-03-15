@@ -711,11 +711,12 @@ function _computeConcentrationFlags(openPositions, worldRiskMode) {
     concentrationScore += 20;
   }
 
-  // Flag 4: >= 3 positions in the single largest sector (same theme = same sector here)
-  const tooManySameThemePositions = clusterConcentrationHigh; // reuse cluster check
-  if (tooManySameThemePositions && !clusterConcentrationHigh) {
-    // only add detail if not already added above
-    details.push("Zu viele Positionen im gleichen Thema/Sektor");
+  // Flag 4: >= 4 positions open simultaneously (same theme concentration proxy)
+  // Distinct from clusterConcentrationHigh (which is per-sector): this flag
+  // fires when the overall open position count is high regardless of sector.
+  const tooManySameThemePositions = openPositions.length >= 4;
+  if (tooManySameThemePositions) {
+    details.push(`${openPositions.length} gleichzeitig offene Positionen – Themen-/Klumpenrisiko prüfen`);
     concentrationScore += 10;
   }
 
@@ -770,10 +771,10 @@ function _computeCorrelationApprox(openPositions, sectorBreakdown) {
   }
   // HHI ranges 1/n (perfectly diversified) to 1 (fully concentrated).
   // Map to 0–100: score = (HHI - 1/n) / (1 - 1/n) * 100
-  const maxConc = n > 1 ? (n - 1) / n : 1;  // max possible HHI above 1/n
+  const hhiRange = n > 1 ? (n - 1) / n : 1;  // normalization range: max HHI above the uniform baseline 1/n
   const baseConc = 1 / n;
-  const correlationRiskScore = maxConc > 0
-    ? Math.round(Math.min(100, Math.max(0, (hhi - baseConc) / maxConc) * 100))
+  const correlationRiskScore = hhiRange > 0
+    ? Math.round(Math.min(100, Math.max(0, (hhi - baseConc) / hhiRange) * 100))
     : 0;
 
   // ── Top warnings: sectors with > 1 position ───────────────────────────
@@ -809,7 +810,7 @@ function _computeCorrelationApprox(openPositions, sectorBreakdown) {
  * Paket D – Counterfactual / What-if Basis.
  *
  * Compares current portfolio metrics against simple hypothetical variants:
- *  1. Trimmed: all positions capped at 50 % of actual size
+ *  1. Trimmed: each position capped at 10 % of total budget
  *  2. SectorCapped: no single sector > 30 % of total budget
  *  3. RiskOff: risk_on positions scaled to 60 %
  *
@@ -833,7 +834,7 @@ function _computeCounterfactual(openPositions, totalAllocatedEur, concentrationF
   const hints = [];
   let reducedConcentrationEst = null;
 
-  // ── Variant 1: Trimmed (50 % cap per position) ───────────────────────
+  // ── Variant 1: Trimmed (each position capped at 10 % of total budget) ──────
   const trimmedTotal = openPositions.reduce(
     (s, p) => s + Math.min(safeNum(p.allocatedEur), totalAllocatedEur * 0.1), 0
   );
@@ -841,9 +842,12 @@ function _computeCounterfactual(openPositions, totalAllocatedEur, concentrationF
     ? Math.round((1 - trimmedTotal / totalAllocatedEur) * 10000) / 100
     : null;
 
-  // Estimate drawdown savings: less capital deployed → lower absolute drawdown impact
+  // Estimate drawdown savings: less capital deployed → lower absolute drawdown impact.
+  // Factor 0.6 is a conservative approximation (drawdown impact scales sub-linearly with
+  // capital reduction – not 1:1 – because diversified trimming reduces correlated losses).
+  // This is intentionally rough and should be re-calibrated from historical data.
   const savedDrawdownEstimate = trimmedSavingPct !== null
-    ? Math.round(trimmedSavingPct * 0.6 * 100) / 100  // rough heuristic: 60 % of capital reduction
+    ? Math.round(trimmedSavingPct * 0.6 * 100) / 100  // heuristic: ~60 % of capital-reduction benefit
     : null;
 
   if (trimmedSavingPct !== null && trimmedSavingPct > 5) {
