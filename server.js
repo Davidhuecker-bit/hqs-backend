@@ -1187,7 +1187,8 @@ async function scheduleTechRadarScan() {
 ========================================================= */
 
 async function scheduleDailyDiscoveryScan() {
-  // Default: run at 09:00 daily (after snapshot data is fresh)
+  // Default: run at 09:00 daily.
+  // Snapshot data refreshes every 15 min via warmup cycle, so prices are always recent.
   const hour   = Number(process.env.DISCOVERY_SCAN_HOUR   || 9);
   const minute = Number(process.env.DISCOVERY_SCAN_MINUTE || 0);
 
@@ -1209,7 +1210,8 @@ async function scheduleDailyDiscoveryScan() {
 ========================================================= */
 
 async function scheduleDailyDiscoveryLearning() {
-  // Default: run at 11:00 daily (after discovery scan at 09:00)
+  // Default: run at 11:00 daily.
+  // Evaluates discoveries ≥ 7d / ≥ 30d old (independent of scan timing).
   const hour   = Number(process.env.DISCOVERY_LEARNING_HOUR   || 11);
   const minute = Number(process.env.DISCOVERY_LEARNING_MINUTE || 0);
 
