@@ -200,7 +200,7 @@ async function loadOutcomeBatch(symbols) {
       const snap = row.raw_input_snapshot || {};
       const signal = snap.signalDirection ?? snap.signal ?? null;
       map.set(row.symbol, {
-        signal: signal,
+        signal,
         confidence: row.final_confidence !== null ? Number(row.final_confidence) : null,
         conviction: row.final_conviction !== null ? Number(row.final_conviction) : null,
         regime: row.regime ?? null,
