@@ -11,6 +11,14 @@ try {
   logger = console;
 }
 
+let runJob = null;
+try {
+  ({ runJob } = require("../utils/jobRunner"));
+} catch (_) {
+  // graceful fallback: execute fn directly without wrapper
+  runJob = async (name, fn) => fn();
+}
+
 const {
   collectFreeNewsForSymbols,
 } = require("../services/freeNewsCollector.service");
@@ -331,13 +339,15 @@ async function run() {
 
   return {
     skipped: false,
+    processedCount: summary.inserted ?? 0,
     summary,
   };
 }
 
 async function runMarketNewsRefreshJob(options = {}) {
   try {
-    return await run();
+    const result = await runJob("marketNewsRefresh", run);
+    return result;
   } finally {
     if (options?.closePool !== false) {
       await pool.end().catch(() => {});

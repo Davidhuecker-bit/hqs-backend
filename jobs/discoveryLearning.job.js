@@ -3,7 +3,7 @@
 require("dotenv").config();
 
 const logger = require("../utils/logger");
-
+const { runJob } = require("../utils/jobRunner");
 const {
   initJobLocksTable,
   acquireLock,
@@ -17,22 +17,23 @@ const {
 const EVAL_LIMIT = Number(process.env.OUTCOME_EVAL_LIMIT || 200);
 
 async function run() {
-  await initJobLocksTable();
+  return runJob("discoveryLearning", async () => {
+    await initJobLocksTable();
 
-  const won = await acquireLock("discovery_learning_job", 20 * 60);
-  if (!won) {
-    logger.warn("Discovery learning skipped (lock held)");
-    return;
-  }
+    const won = await acquireLock("discovery_learning_job", 20 * 60);
+    if (!won) {
+      logger.warn("[job:discoveryLearning] skipped – lock held");
+      return { processedCount: 0 };
+    }
 
-  logger.info("Discovery learning started");
+    const discoveryResult = await evaluateDiscoveries();
+    const trackedPredictionResult = await evaluateTrackedPredictions(EVAL_LIMIT);
 
-  const discoveryResult = await evaluateDiscoveries();
-  const trackedPredictionResult = await evaluateTrackedPredictions(EVAL_LIMIT);
+    const processedCount =
+      (discoveryResult?.evaluated ?? 0) +
+      (trackedPredictionResult?.evaluated ?? 0);
 
-  logger.info("Discovery learning finished", {
-    discoveryResult,
-    trackedPredictionResult,
+    return { processedCount, discoveryResult, trackedPredictionResult };
   });
 }
 

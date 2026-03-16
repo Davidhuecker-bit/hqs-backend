@@ -103,7 +103,7 @@ const { getSystemIntelligenceReport } = require("./services/systemIntelligence.s
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
 
-const { waitForDb, checkDbReady, DB_ERROR_TYPES, classifyDbError } = require("./utils/dbHealth");
+const { waitForDb, classifyDbError } = require("./utils/dbHealth");
 
 /* =========================================================
 TABLE HEALTH  (Task 5 – admin table diagnostics)
@@ -258,11 +258,14 @@ app.get("/", (req, res) => {
 app.get("/health", async (req, res) => {
   let dbOk = false;
   let dbError = null;
+  let dbErrorType = null;
+
   try {
     await pingDb();
     dbOk = true;
   } catch (err) {
-    dbError = err.message;
+    dbError     = err.message;
+    dbErrorType = classifyDbError(err);
   }
 
   // Railway restart loop prevention: once the listen callback has completed
@@ -272,16 +275,27 @@ app.get("/health", async (req, res) => {
   // A 503 is only returned during the brief startup window while the listen
   // callback is still running.
   const serverAlive = startupState.completedAt !== null;
-  const statusCode = serverAlive ? 200 : 503;
+  const statusCode  = serverAlive ? 200 : 503;
+
+  // Surface the first critical init error for fast triage
+  const criticalInitErrors = Array.isArray(startupState.initErrors)
+    ? startupState.initErrors.filter((e) => e.critical)
+    : [];
+  const lastCriticalError = criticalInitErrors.length > 0
+    ? criticalInitErrors[criticalInitErrors.length - 1]
+    : undefined;
 
   return res.status(statusCode).json({
-    success: serverAlive,
-    ready: startupState.ready,
-    db: dbOk ? "ok" : "error",
-    dbError: dbError || undefined,
-    startedAt: startupState.startedAt,
-    completedAt: startupState.completedAt,
-    startupError: startupState.error || undefined,
+    success:     serverAlive,
+    ready:       startupState.ready,
+    db:          dbOk ? "ok" : "error",
+    dbReady:     dbOk,
+    dbError:     dbError     || undefined,
+    dbErrorType: dbErrorType || undefined,
+    startedAt:      startupState.startedAt,
+    completedAt:    startupState.completedAt,
+    startupError:   startupState.error || undefined,
+    lastCriticalError: lastCriticalError || undefined,
     initErrors: Array.isArray(startupState.initErrors) && startupState.initErrors.length > 0
       ? startupState.initErrors
       : undefined,

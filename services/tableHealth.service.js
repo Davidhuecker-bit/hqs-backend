@@ -74,7 +74,7 @@ async function getRowCount(name) {
     return -1;
   }
   try {
-    const r = await pool.query(`SELECT COUNT(*) AS cnt FROM ${name}`);
+    const r = await pool.query(`SELECT COUNT(*) AS cnt FROM "${name}"`);
     return Number(r.rows?.[0]?.cnt || 0);
   } catch (_) {
     return -1; // signals query failure
@@ -97,7 +97,7 @@ async function getLastTimestamp(name, candidates) {
       );
       if (!colCheck.rows.length) continue;
 
-      const r = await pool.query(`SELECT MAX(${col}) AS ts FROM ${name}`);
+      const r = await pool.query(`SELECT MAX("${col}") AS ts FROM "${name}"`);
       const ts = r.rows?.[0]?.ts;
       if (ts) return new Date(ts).toISOString();
     } catch (_) {

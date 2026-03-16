@@ -95,10 +95,19 @@ async function runJob(name, fn, opts = {}) {
     const durationMs = Date.now() - startMs;
     const finishedAt = new Date().toISOString();
 
+    let errorType = "UNKNOWN";
+    try {
+      const { classifyDbError } = require("./dbHealth");
+      errorType = classifyDbError(err);
+    } catch (_) {
+      // dbHealth unavailable – keep UNKNOWN
+    }
+
     logger.error(`[job:${name}] failed`, {
       startedAt,
       finishedAt,
       durationMs,
+      errorType,
       error: err.message,
     });
 
@@ -107,6 +116,7 @@ async function runJob(name, fn, opts = {}) {
       durationMs,
       processedCount: 0,
       skipped: false,
+      errorType,
       error: err.message,
     };
   }

@@ -3,6 +3,7 @@
 require("dotenv").config();
 
 const logger = require("../utils/logger");
+const { runJob } = require("../utils/jobRunner");
 const {
   initJobLocksTable,
   acquireLock,
@@ -14,28 +15,23 @@ const {
 } = require("../services/marketNews.repository");
 
 async function run() {
-  await initJobLocksTable();
+  return runJob("newsLifecycleCleanup", async () => {
+    await initJobLocksTable();
 
-  const won = await acquireLock("news_lifecycle_cleanup_job", 60 * 60);
-  if (!won) {
-    logger.warn("News lifecycle cleanup skipped (lock held)");
-    return;
-  }
+    const won = await acquireLock("news_lifecycle_cleanup_job", 60 * 60);
+    if (!won) {
+      logger.warn("[job:newsLifecycleCleanup] skipped – lock held");
+      return { processedCount: 0 };
+    }
 
-  await initMarketNewsTable();
+    await initMarketNewsTable();
 
-  const lifecycleSummary = await syncMarketNewsLifecycleStates();
-  const cleanupSummary = await cleanupExpiredMarketNews();
+    const lifecycleSummary = await syncMarketNewsLifecycleStates();
+    const cleanupSummary   = await cleanupExpiredMarketNews();
 
-  logger.info("News lifecycle cleanup completed", {
-    ...lifecycleSummary,
-    ...cleanupSummary,
+    const processedCount = (lifecycleSummary?.updated ?? 0) + (cleanupSummary?.deleted ?? 0);
+    return { processedCount, ...lifecycleSummary, ...cleanupSummary };
   });
-
-  return {
-    ...lifecycleSummary,
-    ...cleanupSummary,
-  };
 }
 
 async function runNewsLifecycleCleanupJob() {
