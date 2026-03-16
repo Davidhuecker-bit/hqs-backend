@@ -5,13 +5,26 @@
   -------------------------
   Liefert ein kuratiertes Demo-Portfolio (~20 Symbole) mit echten DB-Daten.
   Keine Mock-Daten, keine Fake-Werte – nur Daten aus:
-    • market_snapshots   → lastPrice, lastSnapshotAt
+    • market_snapshots   → lastPrice, lastSnapshotAt, changePercent
     • hqs_scores         → hqsScore, momentum, quality, stability, regime
     • market_advanced_metrics → regime, trend, volatility, scenarios
     • market_news        → latestNews (title, source, publishedAt, sentiment)
     • outcome_tracking   → signal, confidence/conviction
 
   Defensive Programmierung: Teilfehler liefern null + Status, niemals 500er.
+
+  Pipeline-Logik:
+    Core-Pipeline  = snapshotOk + scoreOk + metricsOk  → bestimmt overallStatus
+    News           = supplementäre Datenquelle          → newsOk separat gemeldet
+    overallStatus  = green (alle Core ok), yellow (teilweise), red (keine Core-Daten)
+
+  Response-Shape pro Holding:
+    { symbol, companyName, lastSnapshotAt, lastPrice,
+      changePercent, priceChangeAvailable,
+      hqsScore, confidence, signal, regime,
+      latestNews, latestNewsCount,
+      advancedMetrics, advancedMetricsAvailable,
+      dataStatus, errorDetail, pipeline }
 */
 
 const { Pool } = require("pg");
@@ -62,22 +75,79 @@ const COMPANY_NAMES = {
 
 /**
  * Latest snapshot per symbol from market_snapshots.
- * Returns Map<symbol, { price, createdAt }>.
+ * Returns Map<symbol, { price, createdAt, changesPercentage, previousClose }>.
+ *
+ * changePercent sources (in priority order):
+ *   1. changes_percentage column on the latest snapshot (from provider)
+ *   2. Computed from latest price vs previous_close column
+ *   3. Computed from latest price vs second-most-recent snapshot price
+ *   4. null (no valid comparison available)
  */
 async function loadSnapshotsBatch(symbols) {
   const map = new Map();
   try {
+    // Fetch the two most recent snapshots per symbol so we can compute changePercent
+    // if the provider-supplied value is missing
     const res = await pool.query(`
-      SELECT DISTINCT ON (symbol)
-        symbol, price, created_at
-      FROM market_snapshots
-      WHERE symbol = ANY($1::text[])
-      ORDER BY symbol, created_at DESC NULLS LAST
+      SELECT symbol, price, created_at, changes_percentage, previous_close, rn
+      FROM (
+        SELECT symbol, price, created_at, changes_percentage, previous_close,
+               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY created_at DESC NULLS LAST) AS rn
+        FROM market_snapshots
+        WHERE symbol = ANY($1::text[])
+      ) ranked
+      WHERE rn <= 2
+      ORDER BY symbol, rn
     `, [symbols]);
+
+    // Group rows by symbol
+    const grouped = new Map();
     for (const row of res.rows) {
-      map.set(row.symbol, {
-        price: row.price !== null ? Number(row.price) : null,
-        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      if (!grouped.has(row.symbol)) grouped.set(row.symbol, []);
+      grouped.get(row.symbol).push(row);
+    }
+
+    for (const [symbol, rows] of grouped) {
+      const latest = rows.find(r => Number(r.rn) === 1);
+      const previous = rows.find(r => Number(r.rn) === 2);
+      if (!latest) continue;
+
+      const price = latest.price !== null ? Number(latest.price) : null;
+
+      // Determine changePercent from best available source
+      let changePercent = null;
+      let previousClose = latest.previous_close !== null ? Number(latest.previous_close) : null;
+
+      // 1. Provider-supplied changes_percentage
+      if (latest.changes_percentage !== null) {
+        const val = Number(latest.changes_percentage);
+        if (Number.isFinite(val)) {
+          changePercent = val;
+        }
+      }
+
+      // 2. Compute from price vs previous_close (if provider gave previousClose but not changePercent)
+      if (changePercent === null && price !== null && previousClose !== null && previousClose !== 0) {
+        changePercent = ((price - previousClose) / previousClose) * 100;
+      }
+
+      // 3. Compute from latest price vs second-most-recent snapshot price
+      if (changePercent === null && price !== null && previous) {
+        const prevPrice = previous.price !== null ? Number(previous.price) : null;
+        if (prevPrice !== null && prevPrice !== 0) {
+          changePercent = ((price - prevPrice) / prevPrice) * 100;
+        }
+      }
+
+      // Round to 2 decimal places for clean output
+      if (changePercent !== null) {
+        changePercent = Math.round(changePercent * 100) / 100;
+      }
+
+      map.set(symbol, {
+        price,
+        createdAt: latest.created_at ? new Date(latest.created_at).toISOString() : null,
+        changePercent,
       });
     }
   } catch (err) {
@@ -217,16 +287,31 @@ async function loadOutcomeBatch(symbols) {
    PIPELINE STATUS HELPERS
 ========================================================= */
 
+/**
+ * Pipeline status derivation.
+ *
+ * Core pipeline (determines overallStatus): snapshotOk, scoreOk, metricsOk
+ * Supplementary (reported separately):      newsOk
+ *
+ * overallStatus:
+ *   "green"  — all 3 core sources present
+ *   "yellow" — some core sources present
+ *   "red"    — no core sources present
+ *
+ * newsOk is true when at least one real news article exists for the symbol.
+ * News absence alone does NOT downgrade overallStatus.
+ */
 function derivePipelineStatus(holding) {
   const snapshotOk = holding.lastPrice !== null;
   const scoreOk = holding.hqsScore !== null;
-  const newsOk = Array.isArray(holding.latestNews) && holding.latestNews.length > 0;
   const metricsOk = holding.advancedMetrics !== null;
+  const newsOk = holding.latestNewsCount > 0;
+
+  const coreOkCount = [snapshotOk, scoreOk, metricsOk].filter(Boolean).length;
 
   let overallStatus = "green";
-  const okCount = [snapshotOk, scoreOk, newsOk, metricsOk].filter(Boolean).length;
-  if (okCount === 0) overallStatus = "red";
-  else if (okCount < 4) overallStatus = "yellow";
+  if (coreOkCount === 0) overallStatus = "red";
+  else if (coreOkCount < 3) overallStatus = "yellow";
 
   return { snapshotOk, scoreOk, newsOk, metricsOk, overallStatus };
 }
@@ -257,7 +342,8 @@ async function getAdminDemoPortfolio() {
   // --- Assemble holdings ---
   const holdings = [];
   const statusCounts = { green: 0, yellow: 0, red: 0 };
-  const bottleneckCounts = { snapshot: 0, score: 0, news: 0, metrics: 0 };
+  // Only core pipeline sources count for bottleneck tracking
+  const bottleneckCounts = { snapshot: 0, score: 0, metrics: 0 };
 
   for (const symbol of symbols) {
     try {
@@ -270,18 +356,24 @@ async function getAdminDemoPortfolio() {
       // Derive regime from best available source
       const regime = score?.regime ?? metric?.regime ?? outcome?.regime ?? null;
 
+      // changePercent: from snapshot loader (provider value → computed from previous snapshot → null)
+      const changePercent = snap?.changePercent ?? null;
+
       const holding = {
         symbol,
         companyName: COMPANY_NAMES[symbol] || symbol,
         lastSnapshotAt: snap?.createdAt ?? null,
         lastPrice: snap?.price ?? null,
-        changePercent: null, // requires two snapshots; omitted to avoid fake data
+        changePercent,
+        priceChangeAvailable: changePercent !== null,
         hqsScore: score?.hqsScore ?? null,
         confidence: outcome?.confidence ?? null,
         signal: outcome?.signal ?? null,
         regime,
         latestNews: newsArr.length > 0 ? newsArr : null,
+        latestNewsCount: newsArr.length,
         advancedMetrics: metric ?? null,
+        advancedMetricsAvailable: metric !== null,
         dataStatus: null,   // set below
         errorDetail: null,
         pipeline: null,     // set below
@@ -291,10 +383,9 @@ async function getAdminDemoPortfolio() {
       holding.pipeline = pipeline;
       holding.dataStatus = deriveDataStatus(pipeline);
 
-      // Track bottlenecks
+      // Track core bottlenecks only (news is supplementary)
       if (!pipeline.snapshotOk) bottleneckCounts.snapshot++;
       if (!pipeline.scoreOk) bottleneckCounts.score++;
-      if (!pipeline.newsOk) bottleneckCounts.news++;
       if (!pipeline.metricsOk) bottleneckCounts.metrics++;
 
       statusCounts[pipeline.overallStatus]++;
@@ -307,12 +398,15 @@ async function getAdminDemoPortfolio() {
         lastSnapshotAt: null,
         lastPrice: null,
         changePercent: null,
+        priceChangeAvailable: false,
         hqsScore: null,
         confidence: null,
         signal: null,
         regime: null,
         latestNews: null,
+        latestNewsCount: 0,
         advancedMetrics: null,
+        advancedMetricsAvailable: false,
         dataStatus: "error",
         errorDetail: err.message,
         pipeline: {
@@ -327,18 +421,16 @@ async function getAdminDemoPortfolio() {
     }
   }
 
-  // --- Derive top bottleneck ---
+  // --- Derive top bottleneck (core pipeline only) ---
   let topBottleneck = null;
   const maxMissing = Math.max(
     bottleneckCounts.snapshot,
     bottleneckCounts.score,
-    bottleneckCounts.news,
     bottleneckCounts.metrics,
   );
   if (maxMissing > 0) {
     if (bottleneckCounts.snapshot === maxMissing) topBottleneck = "snapshot";
     else if (bottleneckCounts.score === maxMissing) topBottleneck = "score";
-    else if (bottleneckCounts.news === maxMissing) topBottleneck = "news";
     else topBottleneck = "metrics";
   }
 
