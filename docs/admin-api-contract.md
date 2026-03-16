@@ -1,6 +1,6 @@
 # HQS Backend – Admin API Contract
 
-> **Version:** 2.0 (as of stability round 2)
+> **Version:** 3.0 (demo-portfolio diagnostics)
 > **Purpose:** Definitive reference for the Admin / Overview endpoints consumed by
 > `AdminControlCenterView` and any monitoring tooling.  The frontend may rely on
 > every field marked **guaranteed** without defensive null-checks.
@@ -13,9 +13,10 @@
 2. [GET /api/admin/pipeline-status](#get-apiadminpipeline-status)
 3. [GET /api/admin/table-health](#get-apiadmintable-health)
 4. [GET /api/admin/overview](#get-apiadminoverview)
-5. [Data-Status Values](#data-status-values)
-6. [Persistent vs. Runtime Data](#persistent-vs-runtime-data)
-7. [Frontend Safe-Consumption Guide](#frontend-safe-consumption-guide)
+5. [GET /api/admin/demo-portfolio](#get-apiadmindemo-portfolio)
+6. [Data-Status Values](#data-status-values)
+7. [Persistent vs. Runtime Data](#persistent-vs-runtime-data)
+8. [Frontend Safe-Consumption Guide](#frontend-safe-consumption-guide)
 
 ---
 
@@ -284,15 +285,196 @@ briefing.  Used by `AdminControlCenterView`.
 
 ---
 
+## GET /api/admin/demo-portfolio
+
+**Alias:** `GET /api/admin-demo-portfolio`
+
+**Purpose:** Curated admin diagnostic portfolio of ~20 well-known stocks.
+Provides per-holding diagnostics: data freshness, pipeline stage status,
+missing/weak sources, completeness and reliability scores.
+All data is real (no mocks), pulled from DB batch queries.
+
+### Response shape
+
+```json
+{
+  "success":        true,
+  "portfolioId":    "DEMO_ADMIN_20",
+  "portfolioName":  "Internes Admin-Prüfportfolio",
+  "symbolCount":    20,
+  "dataStatus":     "complete",
+  "holdings":       [ /* see Holding shape below */ ],
+  "partialErrors":  [],
+  "generatedAt":    "2026-01-01T00:00:00Z",
+  "summary": {
+    "total":                 20,
+    "green":                 15,
+    "yellow":                3,
+    "red":                   2,
+    "topBottleneck":         "score",
+    "topBottleneckCount":    2,
+    "byReason":              { "complete": 15, "missing_score": 2, "missing_news_only": 3 },
+    "avgCompletenessScore":  85,
+    "avgReliabilityScore":   78,
+    "missingSourceCounts":   { "snapshot": 0, "score": 2, "metrics": 1, "news": 3 },
+    "staleCounts":           { "snapshot": 1, "score": 0, "metrics": 0, "news": 2 }
+  }
+}
+```
+
+### Holding shape
+
+```json
+{
+  "symbol":                "AAPL",
+  "companyName":           "Apple Inc.",
+  "lastSnapshotAt":        "2026-01-01T00:00:00Z",
+  "lastPrice":             185.50,
+  "changePercent":         1.23,
+  "priceChangeAvailable":  true,
+  "hqsScore":              72,
+  "confidence":            0.85,
+  "signal":                "bullish",
+  "regime":                "growth",
+  "latestNews":            [ { "title": "...", "source": "...", "publishedAt": "...", "sentiment": "..." } ],
+  "latestNewsCount":       3,
+  "advancedMetrics":       { "regime": "...", "trend": 0.5, "volatilityAnnual": 0.2, "volatilityDaily": 0.01, "scenarios": null, "updatedAt": "..." },
+  "advancedMetricsAvailable": true,
+  "dataStatus":            "complete",
+  "errorDetail":           null,
+  "pipeline": {
+    "snapshotOk":    true,
+    "scoreOk":       true,
+    "metricsOk":     true,
+    "newsOk":        true,
+    "snapshotFresh": true,
+    "scoreFresh":    true,
+    "metricsFresh":  true,
+    "newsFresh":     true,
+    "failingStage":  null,
+    "overallStatus": "green"
+  },
+  "missingSources":      [],
+  "weakSources":         [],
+  "statusReason":        "complete",
+  "statusReasonLabel":   "Alle Kerndaten vollständig und aktuell",
+  "dataAgeHours": {
+    "snapshotAgeHours":  2.5,
+    "scoreAgeHours":     12.0,
+    "metricsAgeHours":   18.0,
+    "newsAgeHours":      5.0
+  },
+  "freshness": {
+    "snapshotFresh": true,
+    "scoreFresh":    true,
+    "metricsFresh":  true,
+    "newsFresh":     true
+  },
+  "completenessScore":   100,
+  "reliabilityScore":    100,
+  "sortKeys": {
+    "hqsScore":          72,
+    "confidence":        0.85,
+    "completenessScore": 100,
+    "reliabilityScore":  100,
+    "snapshotAgeHours":  2.5,
+    "problemWeight":     0
+  }
+}
+```
+
+### Guaranteed top-level fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `success` | boolean | `true` if at least partial data returned |
+| `portfolioId` | string | Always `"DEMO_ADMIN_20"` |
+| `portfolioName` | string | Always `"Internes Admin-Prüfportfolio"` |
+| `symbolCount` | number | Number of curated symbols |
+| `dataStatus` | `"complete"` \| `"partial"` \| `"missing"` \| `"error"` | Overall data status |
+| `holdings` | array | Per-symbol holdings (may be empty on error) |
+| `partialErrors` | array | Errors from individual symbols (may be empty) |
+| `generatedAt` | ISO string | Timestamp of this response |
+| `summary` | object | Aggregate counts and diagnostics |
+
+### Summary fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `total` | number | Number of holdings |
+| `green` | number | Holdings with overallStatus green |
+| `yellow` | number | Holdings with overallStatus yellow |
+| `red` | number | Holdings with overallStatus red |
+| `topBottleneck` | `"snapshot"` \| `"score"` \| `"metrics"` \| null | Most common missing core source |
+| `topBottleneckCount` | number | Count for topBottleneck |
+| `byReason` | object | Counts per statusReason key |
+| `avgCompletenessScore` | number | Average completeness (0–100) |
+| `avgReliabilityScore` | number | Average reliability (0–100) |
+| `missingSourceCounts` | object | `{ snapshot, score, metrics, news }` |
+| `staleCounts` | object | `{ snapshot, score, metrics, news }` |
+
+### `overallStatus` values (per holding)
+
+| Value | Meaning |
+|---|---|
+| `"green"` | All 3 core sources present and fresh |
+| `"yellow"` | Some core sources missing, stale, or only news missing |
+| `"red"` | No core sources or only 1 of 3 core sources present |
+
+### `dataStatus` values (per holding)
+
+| Value | Meaning |
+|---|---|
+| `"complete"` | overallStatus is green |
+| `"partial"` | overallStatus is yellow |
+| `"missing"` | overallStatus is red |
+| `"error"` | Exception during holding assembly |
+
+### `statusReason` values
+
+| Key | Meaning |
+|---|---|
+| `"complete"` | All core data complete and fresh |
+| `"missing_snapshot"` | Snapshot data missing |
+| `"missing_score"` | HQS score missing |
+| `"missing_metrics"` | Advanced metrics missing |
+| `"missing_news_only"` | Only news missing (core data ok) |
+| `"stale_snapshot"` | Snapshot present but stale |
+| `"low_confidence"` | Core present but non-snapshot source stale |
+| `"partial_multi_source"` | Multiple core sources missing |
+
+### Nullable fields
+
+The following fields may be `null`:
+
+- `lastSnapshotAt`, `lastPrice`, `changePercent`
+- `hqsScore`, `confidence`, `signal`, `regime`
+- `latestNews`, `advancedMetrics`, `errorDetail`
+- `dataAgeHours.snapshotAgeHours`, `dataAgeHours.scoreAgeHours`, `dataAgeHours.metricsAgeHours`, `dataAgeHours.newsAgeHours`
+- `pipeline.failingStage`
+- `summary.topBottleneck`
+
+### Environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DEMO_SNAPSHOT_STALE_HOURS` | 24 | Hours after which snapshot is considered stale |
+| `DEMO_SCORE_STALE_HOURS` | 48 | Hours after which HQS score is considered stale |
+| `DEMO_METRICS_STALE_HOURS` | 48 | Hours after which advanced metrics are considered stale |
+| `DEMO_NEWS_STALE_HOURS` | 72 | Hours after which news is considered stale |
+
+---
+
 ## Data-Status Values
 
-Applies to `dataStatus` in `/api/admin/overview` and `insights._meta.dataStatus`.
+Applies to `dataStatus` in `/api/admin/overview`, `insights._meta.dataStatus`,
+and `/api/admin/demo-portfolio`.
 
 | Value | Meaning | Frontend behaviour |
 |---|---|---|
-| `"full"` | All data sources returned data | Show all panels normally |
+| `"full"` / `"complete"` | All data sources returned data | Show all panels normally |
 | `"partial"` | ≥ 1 data source failed | Show available panels, highlight `partialErrors` |
-| `"empty"` | ≥ threshold of tables are empty (fresh install) | Show empty state with setup guidance |
+| `"empty"` / `"missing"` | ≥ threshold of tables are empty (fresh install) | Show empty state with setup guidance |
 | `"error"` | Top-level exception; no data available | Show global error banner |
 
 ---
@@ -356,6 +538,36 @@ response.insights.quickFacts.latestSnapshotAt
 response.insights._meta.dataStatus
 response.insights._meta.partialErrors   // array (may be empty)
 response.insights._meta.emptyFields     // array (may be empty)
+
+// From /api/admin/demo-portfolio
+response.success
+response.generatedAt
+response.portfolioId                    // "DEMO_ADMIN_20"
+response.portfolioName                  // "Internes Admin-Prüfportfolio"
+response.symbolCount                    // number
+response.dataStatus                     // "complete" | "partial" | "missing" | "error"
+response.holdings                       // array
+response.partialErrors                  // array (may be empty)
+response.summary.total
+response.summary.green
+response.summary.yellow
+response.summary.red
+response.summary.topBottleneck          // string | null
+response.summary.topBottleneckCount     // number
+response.summary.byReason              // object
+response.summary.avgCompletenessScore   // number
+response.summary.avgReliabilityScore    // number
+response.summary.missingSourceCounts    // { snapshot, score, metrics, news }
+response.summary.staleCounts            // { snapshot, score, metrics, news }
+// Per holding:
+response.holdings[i].symbol
+response.holdings[i].companyName
+response.holdings[i].pipeline.overallStatus
+response.holdings[i].statusReason
+response.holdings[i].statusReasonLabel
+response.holdings[i].completenessScore
+response.holdings[i].reliabilityScore
+response.holdings[i].sortKeys           // { hqsScore, confidence, completenessScore, reliabilityScore, snapshotAgeHours, problemWeight }
 ```
 
 ### Recommended frontend pattern
@@ -382,4 +594,4 @@ if (overview.dataStatus === "partial") {
 
 ---
 
-*Last updated: 2026-03-16. Keep this file in sync with `routes/admin.routes.js` and `services/adminInsights.service.js`.*
+*Last updated: 2026-03-16. Keep this file in sync with `routes/admin.routes.js`, `services/adminInsights.service.js`, and `services/adminDemoPortfolio.service.js`.*
