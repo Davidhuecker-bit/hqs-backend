@@ -82,6 +82,7 @@ const {
   savePipelineStage,
   loadPipelineStatus: loadPipelineStatusFromDb,
 } = require("./pipelineStatus.repository");
+const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 const { classifyDbError } = require("../utils/dbHealth");
 const {
   buildSignalContext,
@@ -109,6 +110,10 @@ const SNAPSHOT_REGION = String(process.env.SNAPSHOT_REGION || "us").toLowerCase(
 const SNAPSHOT_FAIL_FAST_THRESHOLD = Number(process.env.SNAPSHOT_FAIL_FAST_THRESHOLD || 35);
 
 const SNAPSHOT_STATE_KEY = "snapshot_watchlist_offset";
+const PRICE_DEVIATION_WARN_PCT = Number(
+  process.env.SNAPSHOT_PRICE_DEVIATION_WARN_PCT || 35
+);
+const PERCENTAGE_ROUNDING_FACTOR = 100;
 
 /* =========================================================
    PIPELINE STATUS  (Task 4 – runtime tracking)
@@ -172,6 +177,124 @@ function getPipelineStatus() {
     stages: { ...pipelineStatus },
     generatedAt: new Date().toISOString(),
   };
+}
+
+function roundPercentage(value) {
+  return (
+    Math.round(value * PERCENTAGE_ROUNDING_FACTOR) / PERCENTAGE_ROUNDING_FACTOR
+  );
+}
+
+async function loadLastFxRate(symbol) {
+  try {
+    const res = await pool.query(
+      `SELECT fx_rate FROM market_snapshots
+       WHERE symbol = $1 AND fx_rate IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [symbol]
+    );
+    if (!res.rows.length) return null;
+    const rate = Number(res.rows[0].fx_rate);
+    return Number.isFinite(rate) && rate > 0 ? rate : null;
+  } catch (err) {
+    logger.warn("snapshot: loadLastFxRate failed", { symbol, message: err.message });
+    return null;
+  }
+}
+
+async function convertSnapshotToEur(normalized, symbol) {
+  const currency = String(normalized.currency || "USD").toUpperCase();
+  let fxRate = null;
+  let priceUsd = null;
+
+  if (currency === "USD") {
+    priceUsd = normalized.price;
+    fxRate = await getUsdToEurRate();
+    if (!fxRate) {
+      fxRate = await loadLastFxRate(symbol);
+    }
+    if (!fxRate) {
+      logger.warn("snapshot: FX rate missing – storing USD price", { symbol });
+    }
+  }
+
+  const priceEur =
+    currency === "USD"
+      ? convertUsdToEur(normalized.price, fxRate) ?? normalized.price
+      : normalized.price;
+  const openEur =
+    currency === "USD"
+      ? convertUsdToEur(normalized.open, fxRate) ?? normalized.open
+      : normalized.open;
+  const highEur =
+    currency === "USD"
+      ? convertUsdToEur(normalized.high, fxRate) ?? normalized.high
+      : normalized.high;
+  const lowEur =
+    currency === "USD"
+      ? convertUsdToEur(normalized.low, fxRate) ?? normalized.low
+      : normalized.low;
+  const previousCloseEur =
+    currency === "USD"
+      ? convertUsdToEur(normalized.previousClose, fxRate) ?? normalized.previousClose
+      : normalized.previousClose;
+
+  return {
+    ...normalized,
+    price: priceEur,
+    open: openEur,
+    high: highEur,
+    low: lowEur,
+    previousClose: previousCloseEur,
+    fxRate,
+    currency: currency === "USD" && fxRate ? "EUR" : currency || "EUR",
+    priceUsd,
+  };
+}
+
+async function latestSnapshotPriceEur(symbol) {
+  try {
+    const res = await pool.query(
+      `SELECT price, currency, price_usd, fx_rate
+       FROM market_snapshots
+       WHERE symbol = $1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [symbol]
+    );
+    if (!res.rows.length) return null;
+    const row = res.rows[0];
+    const currency = String(row.currency || "USD").toUpperCase();
+    const price = row.price !== null ? Number(row.price) : null;
+    if (currency === "EUR") return price;
+
+    const fxRate = row.fx_rate !== null ? Number(row.fx_rate) : await getUsdToEurRate();
+    const base = row.price_usd !== null ? Number(row.price_usd) : price;
+    const converted = convertUsdToEur(base, fxRate);
+    if (converted === null) return null;
+    return converted;
+  } catch (err) {
+    logger.warn("snapshot: latestSnapshotPriceEur failed", { symbol, message: err.message });
+    return null;
+  }
+}
+
+async function logPlausibility(symbol, priceEur) {
+  if (!Number.isFinite(priceEur) || priceEur <= 0) return;
+  const prev = await latestSnapshotPriceEur(symbol);
+  if (!Number.isFinite(prev) || prev <= 0) return;
+
+  const diffPct = (Math.abs(priceEur - prev) / prev) * 100;
+  if (diffPct > PRICE_DEVIATION_WARN_PCT) {
+    logger.warn("snapshot: price deviation detected", {
+      symbol,
+      previousPriceEur: prev,
+      newPriceEur: priceEur,
+      deviationPct: roundPercentage(diffPct),
+      thresholdPct: PRICE_DEVIATION_WARN_PCT,
+    });
+  }
 }
 
 /**
@@ -680,11 +803,14 @@ async function ensureTablesExist() {
       id SERIAL PRIMARY KEY,
       symbol TEXT NOT NULL,
       price NUMERIC,
+      price_usd NUMERIC,
       open NUMERIC,
       high NUMERIC,
       low NUMERIC,
       volume BIGINT,
       source TEXT,
+      currency TEXT,
+      fx_rate NUMERIC,
       changes_percentage NUMERIC,
       previous_close NUMERIC,
       created_at TIMESTAMP DEFAULT NOW()
@@ -695,6 +821,9 @@ async function ensureTablesExist() {
   await pool.query(`
     ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS changes_percentage NUMERIC;
     ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS previous_close NUMERIC;
+    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS price_usd NUMERIC;
+    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS currency TEXT;
+    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS fx_rate NUMERIC;
   `);
 
   await pool.query(`
@@ -976,7 +1105,8 @@ async function buildMarketSnapshot() {
       const providerSource = String(raw?.[0]?.source || "massive").toLowerCase();
       ensureSourceBucket(summary, providerSource).total++;
 
-      const normalized = normalizeMarketData(raw[0], providerSource, "us");
+      const rawSnapshot = normalizeMarketData(raw[0], providerSource, "us");
+      const normalized = await convertSnapshotToEur(rawSnapshot, symbol);
       if (!normalized) {
         summary.skipped++;
         ensureTierBucket(summary, tier).skipped++;
@@ -1236,20 +1366,25 @@ async function buildMarketSnapshot() {
         orchestratorConfidence: orchestrator?.orchestratorConfidence,
       });
 
+      await logPlausibility(normalized.symbol, normalized.price);
+
       await pool.query(
         `
         INSERT INTO market_snapshots
-        (symbol, price, open, high, low, volume, source, changes_percentage, previous_close, created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+        (symbol, price, price_usd, open, high, low, volume, source, currency, fx_rate, changes_percentage, previous_close, created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
         `,
         [
           normalized.symbol,
           normalized.price,
+          normalized.priceUsd ?? null,
           normalized.open,
           normalized.high,
           normalized.low,
           normalized.volume,
           normalized.source,
+          normalized.currency || null,
+          normalized.fxRate ?? null,
           normalized.changesPercentage ?? null,
           normalized.previousClose ?? null,
         ]

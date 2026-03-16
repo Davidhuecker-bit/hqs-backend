@@ -293,6 +293,9 @@ briefing.  Used by `AdminControlCenterView`.
 Provides per-holding diagnostics: data freshness, pipeline stage status,
 missing/weak sources, completeness and reliability scores.
 All data is real (no mocks), pulled from DB batch queries.
+Prices are provided in **EUR** (converted from USD via USD→EUR FX); each holding
+includes `currency` and `priceSource` (e.g. `massive`, `twelve_data_fallback`).
+Primary quote source is **Massive**; **Twelve Data** is used only as a logged fallback.
 
 ### Response shape
 
@@ -330,6 +333,8 @@ All data is real (no mocks), pulled from DB batch queries.
   "companyName":           "Apple Inc.",
   "lastSnapshotAt":        "2026-01-01T00:00:00Z",
   "lastPrice":             185.50,
+  "currency":              "EUR",
+  "priceSource":           "massive",
   "changePercent":         1.23,
   "priceChangeAvailable":  true,
   "hqsScore":              72,

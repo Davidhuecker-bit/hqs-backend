@@ -37,6 +37,7 @@
 
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
+const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -105,6 +106,21 @@ const STATUS_REASON_LABELS = {
   partial_multi_source:  "Mehrere Kernquellen unvollständig",
 };
 
+/**
+ * Returns the correct base price for a snapshot row.
+ * - USD rows prefer price_usd (raw provider price), fall back to price.
+ * - EUR rows use price as-is.
+ */
+function basePrice(row) {
+  const currency = String(row?.currency || "EUR").toUpperCase();
+  const priceField = row?.price;
+  const usdPrice = row?.price_usd;
+  if (currency === "USD") {
+    return usdPrice !== null && usdPrice !== undefined ? usdPrice : priceField;
+  }
+  return priceField;
+}
+
 /* =========================================================
    BATCH LOADERS  (one query per data source, all symbols)
 ========================================================= */
@@ -122,12 +138,18 @@ const STATUS_REASON_LABELS = {
 async function loadSnapshotsBatch(symbols) {
   const map = new Map();
   try {
+    let fxRateCache = null;
+    const ensureFxRate = async () => {
+      if (fxRateCache !== null) return fxRateCache;
+      fxRateCache = await getUsdToEurRate();
+      return fxRateCache;
+    };
     // Fetch the two most recent snapshots per symbol so we can compute changePercent
     // if the provider-supplied value is missing
     const res = await pool.query(`
-      SELECT symbol, price, created_at, changes_percentage, previous_close, rn
+      SELECT symbol, price, price_usd, currency, fx_rate, source, created_at, changes_percentage, previous_close, rn
       FROM (
-        SELECT symbol, price, created_at, changes_percentage, previous_close,
+        SELECT symbol, price, price_usd, currency, fx_rate, source, created_at, changes_percentage, previous_close,
                ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY created_at DESC NULLS LAST) AS rn
         FROM market_snapshots
         WHERE symbol = ANY($1::text[])
@@ -148,11 +170,22 @@ async function loadSnapshotsBatch(symbols) {
       const previous = rows.find(r => Number(r.rn) === 2);
       if (!latest) continue;
 
-      const price = latest.price !== null ? Number(latest.price) : null;
+      const latestCurrency = String(latest.currency || "EUR").toUpperCase();
+      const latestRate =
+        latest.fx_rate !== null ? Number(latest.fx_rate) : await ensureFxRate();
+      const latestBasePrice = basePrice(latest);
+      let price = latestBasePrice !== null ? Number(latestBasePrice) : null;
+      if (latestCurrency === "USD") {
+        price = convertUsdToEur(price, latestRate) ?? price;
+      }
 
       // Determine changePercent from best available source
       let changePercent = null;
-      let previousClose = latest.previous_close !== null ? Number(latest.previous_close) : null;
+      const basePrevClose = latest.previous_close !== null ? Number(latest.previous_close) : null;
+      let previousClose = basePrevClose;
+      if (latestCurrency === "USD" && basePrevClose !== null) {
+        previousClose = convertUsdToEur(basePrevClose, latestRate) ?? basePrevClose;
+      }
 
       // 1. Provider-supplied changes_percentage
       if (latest.changes_percentage !== null) {
@@ -169,7 +202,14 @@ async function loadSnapshotsBatch(symbols) {
 
       // 3. Compute from latest price vs second-most-recent snapshot price
       if (changePercent === null && price !== null && previous) {
-        const prevPrice = previous.price !== null ? Number(previous.price) : null;
+        const prevCurrency = String(previous.currency || "EUR").toUpperCase();
+        const prevRateRow =
+          previous.fx_rate !== null ? Number(previous.fx_rate) : await ensureFxRate();
+        const prevBasePrice = basePrice(previous);
+        let prevPrice = prevBasePrice !== null ? Number(prevBasePrice) : null;
+        if (prevCurrency === "USD") {
+          prevPrice = convertUsdToEur(prevPrice, prevRateRow) ?? prevPrice;
+        }
         if (prevPrice !== null && prevPrice !== 0) {
           changePercent = ((price - prevPrice) / prevPrice) * 100;
         }
@@ -184,6 +224,8 @@ async function loadSnapshotsBatch(symbols) {
         price,
         createdAt: latest.created_at ? new Date(latest.created_at).toISOString() : null,
         changePercent,
+        currency: latestCurrency === "USD" && latestRate ? "EUR" : latestCurrency,
+        priceSource: latest.source || null,
       });
     }
   } catch (err) {
@@ -582,6 +624,8 @@ async function getAdminDemoPortfolio() {
         companyName: COMPANY_NAMES[symbol] || symbol,
         lastSnapshotAt: snap?.createdAt ?? null,
         lastPrice: snap?.price ?? null,
+        currency: snap?.currency || "EUR",
+        priceSource: snap?.priceSource || null,
         changePercent,
         priceChangeAvailable: changePercent !== null,
         hqsScore: score?.hqsScore ?? null,
@@ -661,6 +705,8 @@ async function getAdminDemoPortfolio() {
         companyName: COMPANY_NAMES[symbol] || symbol,
         lastSnapshotAt: null,
         lastPrice: null,
+        currency: "EUR",
+        priceSource: null,
         changePercent: null,
         priceChangeAvailable: false,
         hqsScore: null,

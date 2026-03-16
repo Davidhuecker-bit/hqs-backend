@@ -27,6 +27,7 @@
 const { Pool } = require("pg");
 const logger   = require("../utils/logger");
 const { getSector, calculatePositionSize } = require("./capitalAllocation.service");
+const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -47,6 +48,7 @@ async function ensureVirtualPositionsTable() {
 
       entry_price           NUMERIC(18,6) NOT NULL,
       current_price         NUMERIC(18,6),
+      currency              TEXT,
       allocated_eur         NUMERIC(14,4) NOT NULL,
       allocated_pct         NUMERIC(8,4)  NOT NULL,
 
@@ -83,6 +85,10 @@ async function ensureVirtualPositionsTable() {
     WHERE status = 'open';
   `);
 
+  await pool.query(`
+    ALTER TABLE virtual_positions ADD COLUMN IF NOT EXISTS currency TEXT;
+  `);
+
   logger.info("virtual_positions table ready");
 }
 
@@ -95,6 +101,55 @@ function safeNum(v, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+async function _ensurePositionEur(row) {
+  let entryPrice = safeNum(row.entry_price);
+  let currentPrice =
+    row.current_price !== null && row.current_price !== undefined
+      ? safeNum(row.current_price)
+      : null;
+  const rowCurrency = String(row.currency || "EUR").toUpperCase();
+
+  if (rowCurrency === "EUR") {
+    return { entryPrice, currentPrice, currency: "EUR" };
+  }
+
+  const fxRate = await getUsdToEurRate();
+  const convertedEntry = convertUsdToEur(entryPrice, fxRate);
+  const convertedCurrent =
+    currentPrice !== null ? convertUsdToEur(currentPrice, fxRate) : null;
+
+  if (convertedEntry !== null) {
+    entryPrice = convertedEntry;
+    if (convertedCurrent !== null) {
+      currentPrice = convertedCurrent;
+    }
+    try {
+      await pool.query(
+        `UPDATE virtual_positions
+         SET entry_price = $1,
+             current_price = COALESCE($2, current_price),
+             currency = 'EUR',
+             updated_at = NOW()
+         WHERE id = $3`,
+        [convertedEntry, convertedCurrent, row.id]
+      );
+    } catch (convErr) {
+      logger.warn("portfolioTwin: FX normalize failed", {
+        id: row.id,
+        symbol: row.symbol,
+        message: convErr.message,
+      });
+    }
+  } else {
+    logger.warn("portfolioTwin: missing FX rate for legacy position", {
+      id: row.id,
+      symbol: row.symbol,
+    });
+  }
+
+  return { entryPrice, currentPrice, currency: "EUR" };
+}
+
 /**
  * Fetch the latest stored price for a symbol from market_snapshots.
  * Zero external API cost – reads from data already in the DB.
@@ -102,14 +157,30 @@ function safeNum(v, fallback = 0) {
 async function _latestStoredPrice(symbol) {
   try {
     const res = await pool.query(
-      `SELECT price FROM market_snapshots
+      `SELECT price, price_usd, currency, fx_rate FROM market_snapshots
        WHERE symbol = $1
        ORDER BY created_at DESC
        LIMIT 1`,
       [String(symbol).trim().toUpperCase()]
     );
     if (!res.rows.length) return null;
-    const p = Number(res.rows[0].price);
+    const row = res.rows[0];
+    const currency = String(row.currency || "EUR").toUpperCase();
+    const fxRate = row.fx_rate !== null ? Number(row.fx_rate) : null;
+    const basePrice =
+      currency === "USD"
+        ? row.price_usd !== null
+          ? Number(row.price_usd)
+          : Number(row.price)
+        : Number(row.price);
+
+    if (currency === "USD") {
+      const rate = fxRate ?? (await getUsdToEurRate());
+      const eur = convertUsdToEur(basePrice, rate);
+      if (eur !== null && eur > 0) return eur;
+    }
+
+    const p = Number(basePrice);
     return Number.isFinite(p) && p > 0 ? p : null;
   } catch (err) {
     logger.warn("portfolioTwin: _latestStoredPrice failed", { symbol, message: err.message });
@@ -193,11 +264,11 @@ async function openVirtualPositionFromAllocation(data) {
 
   const res = await pool.query(
     `INSERT INTO virtual_positions
-       (symbol, status, entry_price, current_price,
+       (symbol, status, entry_price, current_price, currency,
         allocated_eur, allocated_pct,
         conviction_tier, risk_mode_at_entry, uncertainty_at_entry,
         source_run_id)
-     VALUES ($1, 'open', $2, $2, $3, $4, $5, $6, $7, $8)
+     VALUES ($1, 'open', $2, $2, 'EUR', $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       symbol, entryPrice,
@@ -227,7 +298,7 @@ async function openVirtualPositionFromAllocation(data) {
  */
 async function refreshOpenVirtualPositions() {
   const openRes = await pool.query(
-    `SELECT id, symbol, entry_price, allocated_eur
+    `SELECT id, symbol, entry_price, current_price, currency, allocated_eur
      FROM virtual_positions
      WHERE status = 'open'`
   );
@@ -236,12 +307,18 @@ async function refreshOpenVirtualPositions() {
   let skipped = 0;
 
   for (const row of openRes.rows) {
+    const rowCurrency = String(row.currency || "EUR").toUpperCase();
+    const { entryPrice } =
+      rowCurrency === "EUR"
+        ? { entryPrice: safeNum(row.entry_price) }
+        : await _ensurePositionEur(row);
+
     const price = await _latestStoredPrice(row.symbol);
     if (price === null) { skipped++; continue; }
 
     const { pnlEur, pnlPct } = _calcPnl(
       safeNum(row.allocated_eur),
-      safeNum(row.entry_price),
+      entryPrice,
       price
     );
 
@@ -286,13 +363,15 @@ async function closeVirtualPosition(id, reason = "manual", exitPriceOverride = n
     throw new Error(`closeVirtualPosition: position ${id} is already closed`);
   }
 
+  const { entryPrice } = await _ensurePositionEur(pos);
+
   const exitPrice = exitPriceOverride
     ? safeNum(exitPriceOverride)
-    : (await _latestStoredPrice(pos.symbol)) ?? safeNum(pos.entry_price);
+    : (await _latestStoredPrice(pos.symbol)) ?? safeNum(entryPrice);
 
   const { pnlEur, pnlPct } = _calcPnl(
     safeNum(pos.allocated_eur),
-    safeNum(pos.entry_price),
+    entryPrice,
     exitPrice
   );
 
@@ -539,6 +618,7 @@ function _formatRow(row) {
     status:              row.status,
     entryPrice:          row.entry_price   !== null ? Number(row.entry_price)   : null,
     currentPrice:        row.current_price !== null ? Number(row.current_price) : null,
+    currency:            row.currency || "EUR",
     allocatedEur:        row.allocated_eur !== null ? Number(row.allocated_eur) : null,
     allocatedPct:        row.allocated_pct !== null ? Number(row.allocated_pct) : null,
     convictionTier:      row.conviction_tier       ?? null,
