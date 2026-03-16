@@ -3,6 +3,7 @@
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
+const { Pool } = require("pg");
 require("dotenv").config();
 
 /* =========================================================
@@ -97,6 +98,7 @@ const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./ser
 const { runTechRadarJob } = require("./jobs/techRadar.job");
 const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable, saveSisSnapshot } = require("./services/sisHistory.service");
+const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
 const { getSystemIntelligenceReport } = require("./services/systemIntelligence.service");
 
 /* =========================================================
@@ -155,6 +157,14 @@ const startupState = {
   error: null,
   initErrors: null,
 };
+
+// Lightweight single-connection pool reused by the DB readiness probe
+// inside runIntegratedWarmupCycle (avoids creating a new pool on every tick).
+const _warmupProbePool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 1,
+});
 
 function isAllowedCorsOrigin(origin) {
   if (!origin) return true;
@@ -288,6 +298,7 @@ app.get("/health", async (req, res) => {
   return res.status(statusCode).json({
     success:     serverAlive,
     ready:       startupState.ready,
+    generatedAt: new Date().toISOString(),
     db:          dbOk ? "ok" : "error",
     dbReady:     dbOk,
     dbError:     dbError     || undefined,
@@ -728,11 +739,28 @@ async function runUniverseRefreshLocked() {
 }
 
 async function runIntegratedWarmupCycle() {
+  // ── DB readiness guard ────────────────────────────────────────────────────
+  // If the DB is not reachable, skip the entire warmup cycle instead of
+  // letting each step fail with hard errors.
+  const warmupDbReady = await waitForDb(_warmupProbePool, {
+    maxRetries: 2,
+    delayMs: 2000,
+    label: "warmup:dbReady",
+  });
+
+  if (!warmupDbReady) {
+    logger.warn("[warmup] DB not ready – skipping warmup cycle", {
+      skipReason: "DB_NOT_READY",
+    });
+    return;
+  }
+
   try {
     await runMarketNewsRefreshJob({ closePool: false });
   } catch (error) {
     logger.warn("Market news refresh failed inside RUN_JOBS", {
       message: error.message,
+      errorType: classifyDbError(error),
     });
   }
 
@@ -741,6 +769,7 @@ async function runIntegratedWarmupCycle() {
   } catch (error) {
     logger.warn("News lifecycle cleanup failed inside RUN_JOBS", {
       message: error.message,
+      errorType: classifyDbError(error),
     });
   }
 
@@ -749,6 +778,7 @@ async function runIntegratedWarmupCycle() {
   } catch (error) {
     logger.warn("buildMarketSnapshot failed inside warmup cycle", {
       message: error.message,
+      errorType: classifyDbError(error),
     });
   }
 
@@ -757,6 +787,7 @@ async function runIntegratedWarmupCycle() {
   } catch (error) {
     logger.warn("runForwardLearningLocked failed inside warmup cycle", {
       message: error.message,
+      errorType: classifyDbError(error),
     });
   }
 
@@ -765,6 +796,7 @@ async function runIntegratedWarmupCycle() {
   buildWorldState().catch((wsErr) => {
     logger.warn("worldState: rebuild after warmup failed", {
       message: wsErr.message,
+      errorType: classifyDbError(wsErr),
     });
   });
 
@@ -772,6 +804,7 @@ async function runIntegratedWarmupCycle() {
   getSystemIntelligenceReport().then((report) => saveSisSnapshot(report)).catch((sisErr) => {
     logger.warn("sisHistory: snapshot after warmup failed", {
       message: sisErr.message,
+      errorType: classifyDbError(sisErr),
     });
   });
 }
@@ -787,7 +820,6 @@ async function runStartupInit() {
   // ── DB readiness guard (Task 1 + Task 2) ─────────────────────────────────
   // Before touching any table, verify the DB is actually reachable.
   // Use a dedicated pool probe so we get typed error categories.
-  const { Pool } = require("pg");
   const probePool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
@@ -848,6 +880,7 @@ async function runStartupInit() {
   await safeInit("initSecEdgarTables",                    initSecEdgarTables);
   await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);
   await safeInit("ensureSisHistoryTable",                 ensureSisHistoryTable);
+  await safeInit("ensurePipelineStatusTable",             ensurePipelineStatusTable);
   await safeInit("hydrateMarketRuntimeState",             hydrateMarketRuntimeState);
   await safeInit("hydrateOpportunityRuntimeState",        hydrateOpportunityRuntimeState);
 
@@ -868,6 +901,24 @@ async function runStartupInit() {
 
   return initErrors;
 }
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────
+// Drain the module-level warmup probe pool on process termination so that
+// Railway / Docker do not see orphaned connections.
+// Note: the startup probePool (created inside runStartupInit) is already
+// drained via its own finally block before this handler is ever invoked.
+// Other module-level pools (pg) drain automatically on process exit.
+function gracefulShutdown(signal) {
+  logger.info(`[shutdown] ${signal} received – draining pools`);
+  _warmupProbePool.end().catch((err) => {
+    logger.warn("[shutdown] _warmupProbePool.end failed", { message: err.message });
+  }).finally(() => {
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
 
 app.listen(PORT, async () => {
   logger.info(`HQS Backend aktiv auf Port ${PORT}`);

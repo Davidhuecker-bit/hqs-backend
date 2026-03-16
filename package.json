@@ -30,7 +30,10 @@
     "job:news-lifecycle-cleanup:check": "node --check jobs/newsLifecycleCleanup.job.js",
 
     "job:build-entity-map": "node jobs/buildEntityMap.job.js",
-    "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js"
+    "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js",
+
+    "smoke-check": "node scripts/smoke-check.js",
+    "smoke-check:check": "node --check scripts/smoke-check.js"
   },
   "engines": {
     "node": ">=18"

@@ -239,6 +239,7 @@ router.get("/overview", async (req, res) => {
 
     return res.json({
       success: true,
+      generatedAt: new Date().toISOString(),
       dataStatus,
       partialErrors: data.insights?._meta?.partialErrors || [],
       emptyFields: data.insights?._meta?.emptyFields || [],
@@ -248,6 +249,7 @@ router.get("/overview", async (req, res) => {
     logger.error("Admin overview route error", { message: error.message });
     return res.status(500).json({
       success: false,
+      generatedAt: new Date().toISOString(),
       dataStatus: "error",
       error: error.message,
     });
@@ -1375,27 +1377,31 @@ router.get("/interface-state", async (req, res) => {
    PIPELINE STATUS  (Task 4 – data pipeline observability)
    GET /api/admin/pipeline-status
    Returns the last-known stage counts from buildMarketSnapshot().
+   Merges runtime (in-memory) data with persisted DB data so counts
+   survive Railway restarts.
 ========================================================= */
 
-const { getPipelineStatus } = require("../services/marketService");
+const { getPipelineStatus, getPipelineStatusWithPersistence } = require("../services/marketService");
 
-router.get("/pipeline-status", (req, res) => {
+router.get("/pipeline-status", async (req, res) => {
   try {
-    const raw = getPipelineStatus();
+    const raw = await getPipelineStatusWithPersistence();
     // Ensure all expected stage keys are present with safe defaults
     const stages = ["universe", "snapshot", "advancedMetrics", "hqsScoring", "outcome"];
     const status = { stages: {} };
     for (const stage of stages) {
-      const s = raw?.stages?.[stage] ?? raw?.[stage] ?? null;
+      const s = raw?.stages?.[stage] ?? null;
       status.stages[stage] = {
         inputCount:    s?.inputCount    ?? 0,
         successCount:  s?.successCount  ?? 0,
         failedCount:   s?.failedCount   ?? 0,
         skippedCount:  s?.skippedCount  ?? 0,
         lastUpdated:   s?.lastUpdated   ?? null,
+        source:        s?.source        ?? "empty",
       };
     }
-    status.statusGeneratedAt = raw?.generatedAt ?? null;
+    status.generatedAt       = raw?.generatedAt ?? null;
+    status.statusGeneratedAt = status.generatedAt; // kept for backwards-compatibility
     status.lastRunMs         = raw?.lastRunMs   ?? null;
     return res.json({ success: true, ...status });
   } catch (error) {
@@ -1422,6 +1428,7 @@ router.get("/table-health", async (req, res) => {
       yellow:        report?.yellow        ?? 0,
       red:           report?.red           ?? 0,
       tables:        Array.isArray(report?.tables) ? report.tables : [],
+      generatedAt:   report?.checkedAt     ?? new Date().toISOString(),
       checkedAt:     report?.checkedAt     ?? new Date().toISOString(),
       durationMs:    report?.durationMs    ?? 0,
     };
@@ -1430,6 +1437,7 @@ router.get("/table-health", async (req, res) => {
     logger.error("Admin table-health route error", { message: error.message });
     return res.status(500).json({
       success:       false,
+      generatedAt:   new Date().toISOString(),
       overallStatus: "red",
       green:  0,
       yellow: 0,

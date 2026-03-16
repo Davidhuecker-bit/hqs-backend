@@ -79,6 +79,11 @@ const {
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 const { initMarketNewsTable } = require("./marketNews.repository");
 const {
+  savePipelineStage,
+  loadPipelineStatus: loadPipelineStatusFromDb,
+} = require("./pipelineStatus.repository");
+const { classifyDbError } = require("../utils/dbHealth");
+const {
   buildSignalContext,
   loadOpportunityNewsContextBySymbols,
   calculateRobustnessScore,
@@ -158,12 +163,59 @@ const pipelineStatus = {
 function updatePipelineStage(stage, counts) {
   if (!pipelineStatus[stage]) return;
   Object.assign(pipelineStatus[stage], counts, { lastUpdated: new Date().toISOString() });
+  // Persist asynchronously – never block the pipeline on a DB write
+  savePipelineStage(stage, counts).catch(() => {});
 }
 
 function getPipelineStatus() {
   return {
     stages: { ...pipelineStatus },
     generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Returns runtime status merged with persisted DB data.
+ * DB values fill in zeros when the server just restarted (runtime is fresh).
+ * Runtime values always win when they are non-zero (current run in progress).
+ */
+async function getPipelineStatusWithPersistence() {
+  const runtime = getPipelineStatus();
+  let persisted = {};
+  try {
+    persisted = await loadPipelineStatusFromDb();
+  } catch (_) {
+    // fall through – return runtime only
+  }
+
+  const stages = {};
+  for (const stage of Object.keys(runtime.stages)) {
+    const rt = runtime.stages[stage];
+    const db = persisted[stage] || {};
+    // Use runtime counts when non-zero (live run), else fall back to persisted
+    const hasRuntimeData = rt.successCount > 0 || rt.failedCount > 0 || rt.inputCount > 0;
+    stages[stage] = hasRuntimeData
+      ? {
+          inputCount:   rt.inputCount,
+          successCount: rt.successCount,
+          failedCount:  rt.failedCount,
+          skippedCount: rt.skippedCount,
+          lastUpdated:  rt.lastUpdated,
+          source:       "runtime",
+        }
+      : {
+          inputCount:   db.inputCount   ?? 0,
+          successCount: db.successCount ?? 0,
+          failedCount:  db.failedCount  ?? 0,
+          skippedCount: db.skippedCount ?? 0,
+          lastUpdated:  db.lastRunAt    ?? null,
+          source:       db.lastRunAt ? "persisted" : "empty",
+        };
+  }
+
+  return {
+    stages,
+    generatedAt: runtime.generatedAt,
   };
 }
 
@@ -1341,9 +1393,10 @@ async function buildMarketSnapshot() {
       ensureTierBucket(summary, tier).failed++;
 
       logger.error(`Snapshot error for ${symbol}`, {
-        message: err.message,
+        message:   err.message,
+        errorType: classifyDbError(err),
         tier,
-        priority: candidate.priority,
+        priority:  candidate.priority,
       });
     }
   }
@@ -1492,4 +1545,5 @@ module.exports = {
   ensureTablesExist,
   pingDb,
   getPipelineStatus,
+  getPipelineStatusWithPersistence,
 };
