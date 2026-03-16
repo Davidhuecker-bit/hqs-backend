@@ -1371,4 +1371,40 @@ router.get("/interface-state", async (req, res) => {
   }
 });
 
+/* =========================================================
+   PIPELINE STATUS  (Task 4 – data pipeline observability)
+   GET /api/admin/pipeline-status
+   Returns the last-known stage counts from buildMarketSnapshot().
+========================================================= */
+
+const { getPipelineStatus } = require("../services/marketService");
+
+router.get("/pipeline-status", (req, res) => {
+  try {
+    const status = getPipelineStatus();
+    return res.json({ success: true, ...status });
+  } catch (error) {
+    logger.error("Admin pipeline-status route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   TABLE HEALTH  (Task 5 – admin table diagnostics)
+   GET /api/admin/table-health
+   Returns green/yellow/red status for the 8 admin-relevant tables.
+========================================================= */
+
+const { runTableHealthCheck } = require("../services/tableHealth.service");
+
+router.get("/table-health", async (req, res) => {
+  try {
+    const report = await runTableHealthCheck();
+    return res.json({ success: true, ...report });
+  } catch (error) {
+    logger.error("Admin table-health route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;

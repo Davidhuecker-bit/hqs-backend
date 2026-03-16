@@ -28,6 +28,7 @@ const {
   hydrateMarketRuntimeState,
   ensureTablesExist,
   pingDb,
+  getPipelineStatus,
 } = require("./services/marketService");
 
 const { buildHQSResponse } = require("./hqsEngine");
@@ -99,6 +100,18 @@ const { ensureSisHistoryTable, saveSisSnapshot } = require("./services/sisHistor
 const { getSystemIntelligenceReport } = require("./services/systemIntelligence.service");
 
 /* =========================================================
+DB HEALTH  (Task 1 – centralised DB error classification)
+========================================================= */
+
+const { waitForDb, checkDbReady, DB_ERROR_TYPES, classifyDbError } = require("./utils/dbHealth");
+
+/* =========================================================
+TABLE HEALTH  (Task 5 – admin table diagnostics)
+========================================================= */
+
+const { runTableHealthCheck } = require("./services/tableHealth.service");
+
+/* =========================================================
 NOTIFICATIONS
 ========================================================= */
 
@@ -124,6 +137,9 @@ const DEFAULT_CORS_ORIGINS = [
   /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
   "http://localhost:3000",
 ];
+
+const STARTUP_DB_MAX_RETRIES    = Number(process.env.STARTUP_DB_MAX_RETRIES    || 10);
+const STARTUP_DB_RETRY_DELAY_MS = Number(process.env.STARTUP_DB_RETRY_DELAY_MS || 3000);
 
 const RUN_JOBS =
   String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
@@ -752,48 +768,89 @@ SERVER START
 
 async function runStartupInit() {
   const initErrors = [];
+  let okCount = 0;
 
-  async function safeInit(label, fn) {
+  // ── DB readiness guard (Task 1 + Task 2) ─────────────────────────────────
+  // Before touching any table, verify the DB is actually reachable.
+  // Use a dedicated pool probe so we get typed error categories.
+  const { Pool } = require("pg");
+  const probePool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 1,
+  });
+
+  let dbReady = false;
+  try {
+    dbReady = await waitForDb(probePool, {
+      maxRetries: STARTUP_DB_MAX_RETRIES,
+      delayMs: STARTUP_DB_RETRY_DELAY_MS,
+      label: "startup:dbReady",
+    });
+  } finally {
+    probePool.end().catch(() => {});
+  }
+
+  if (!dbReady) {
+    logger.error("[startup] DB not reachable – skipping all table init steps", {
+      hint: "Check DATABASE_URL and Railway Postgres service health.",
+    });
+    return [{ label: "db_readiness_check", error: `DB not reachable after ${STARTUP_DB_MAX_RETRIES} retries`, critical: true }];
+  }
+  logger.info("[startup] DB ready – proceeding with init steps");
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  async function safeInit(label, fn, critical = false) {
+    logger.info(`[startup] ${label}: starting`);
     try {
-      logger.info(`[startup] ${label}: starting`);
       await fn();
       logger.info(`[startup] ${label}: ok`);
+      okCount++;
     } catch (err) {
-      logger.error(`[startup] ${label}: FAILED`, { message: err.message });
-      initErrors.push({ label, error: err.message });
+      logger.error(`[startup] ${label}: FAILED`, { message: err.message, critical });
+      initErrors.push({ label, error: err.message, critical });
     }
   }
 
-  // Critical: core market tables. If DATABASE_URL is wrong or DB is unreachable,
-  // this will be the first failure and the error will be visible in logs.
-  await safeInit("ensureTablesExist", ensureTablesExist);
-  await safeInit("initFactorTable", initFactorTable);
-  await safeInit("initWeightTable", initWeightTable);
-  await safeInit("initJobLocksTable", initJobLocksTable);
-  await safeInit("initDiscoveryTable", initDiscoveryTable);
-  await safeInit("initAdminSnapshotsTable", initAdminSnapshotsTable);
-  await safeInit("initAutonomyAuditTable", initAutonomyAuditTable);
-  await safeInit("initNearMissTable", initNearMissTable);
-  await safeInit("initAgentForecastTable", initAgentForecastTable);
-  await safeInit("initAgentsTable", initAgentsTable);
-  await safeInit("initDynamicWeightsTable", initDynamicWeightsTable);
-  await safeInit("initTechRadarTable", initTechRadarTable);
-  await safeInit("initSystemEvolutionProposalsTable", initSystemEvolutionProposalsTable);
-  await safeInit("initAutomationAuditTable", initAutomationAuditTable);
-  await safeInit("initNotificationTables", initNotificationTables);
-  await safeInit("seedDemoUserIfEmpty", seedDemoUserIfEmpty);
-  await safeInit("initSecEdgarTables", initSecEdgarTables);
-  await safeInit("ensureVirtualPositionsTable", ensureVirtualPositionsTable);
-  await safeInit("ensureSisHistoryTable", ensureSisHistoryTable);
-  await safeInit("hydrateMarketRuntimeState", hydrateMarketRuntimeState);
-  await safeInit("hydrateOpportunityRuntimeState", hydrateOpportunityRuntimeState);
+  // ── CRITICAL steps – core market tables ──────────────────────────────────
+  await safeInit("ensureTablesExist",   ensureTablesExist,   true);
+  await safeInit("initJobLocksTable",   initJobLocksTable,   true);
+  await safeInit("initFactorTable",     initFactorTable,     true);
+  await safeInit("initWeightTable",     initWeightTable,     true);
 
-  if (initErrors.length > 0) {
-    const failedLabels = initErrors.map((e) => e.label);
-    logger.warn(`[startup] ${initErrors.length} init step(s) failed — server continues`, {
-      failed: failedLabels,
-    });
-  }
+  // ── NON-CRITICAL steps – auxiliary tables ─────────────────────────────────
+  await safeInit("initDiscoveryTable",                    initDiscoveryTable);
+  await safeInit("initAdminSnapshotsTable",               initAdminSnapshotsTable);
+  await safeInit("initAutonomyAuditTable",                initAutonomyAuditTable);
+  await safeInit("initNearMissTable",                     initNearMissTable);
+  await safeInit("initAgentForecastTable",                initAgentForecastTable);
+  await safeInit("initAgentsTable",                       initAgentsTable);
+  await safeInit("initDynamicWeightsTable",               initDynamicWeightsTable);
+  await safeInit("initTechRadarTable",                    initTechRadarTable);
+  await safeInit("initSystemEvolutionProposalsTable",     initSystemEvolutionProposalsTable);
+  await safeInit("initAutomationAuditTable",              initAutomationAuditTable);
+  await safeInit("initNotificationTables",                initNotificationTables);
+  await safeInit("seedDemoUserIfEmpty",                   seedDemoUserIfEmpty);
+  await safeInit("initSecEdgarTables",                    initSecEdgarTables);
+  await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);
+  await safeInit("ensureSisHistoryTable",                 ensureSisHistoryTable);
+  await safeInit("hydrateMarketRuntimeState",             hydrateMarketRuntimeState);
+  await safeInit("hydrateOpportunityRuntimeState",        hydrateOpportunityRuntimeState);
+
+  // ── Startup init report (Task 2) ─────────────────────────────────────────
+  const criticalFailed = initErrors.filter((e) => e.critical);
+  const nonCriticalFailed = initErrors.filter((e) => !e.critical);
+  const finalStatus = criticalFailed.length > 0 ? "DEGRADED" : "OK";
+
+  logger.info("[startup] init report", {
+    totalSteps: okCount + initErrors.length,
+    ok: okCount,
+    failed: initErrors.length,
+    criticalFailed: criticalFailed.length,
+    nonCriticalFailed: nonCriticalFailed.length,
+    failedLabels: initErrors.map((e) => e.label),
+    finalStatus,
+  });
 
   return initErrors;
 }
@@ -857,6 +914,12 @@ app.listen(PORT, async () => {
     ? `${initErrors.length} init step(s) failed: ${failedLabels.join(", ")}`
     : null;
   logger.info("Startup completed", { initFailures: initErrors.length });
+
+  // Run a table health check after startup so the first log entry is immediately visible
+  // in Railway without needing to call the endpoint manually (Task 5).
+  runTableHealthCheck().catch((thErr) => {
+    logger.warn("[startup] tableHealth check failed", { message: thErr.message });
+  });
 });
 
 /* =========================================================
