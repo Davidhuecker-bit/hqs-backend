@@ -685,8 +685,16 @@ async function ensureTablesExist() {
       low NUMERIC,
       volume BIGINT,
       source TEXT,
+      changes_percentage NUMERIC,
+      previous_close NUMERIC,
       created_at TIMESTAMP DEFAULT NOW()
     );
+  `);
+
+  // Migration: add columns if they don't exist yet (safe for existing deployments)
+  await pool.query(`
+    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS changes_percentage NUMERIC;
+    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS previous_close NUMERIC;
   `);
 
   await pool.query(`
@@ -1231,8 +1239,8 @@ async function buildMarketSnapshot() {
       await pool.query(
         `
         INSERT INTO market_snapshots
-        (symbol, price, open, high, low, volume, source, created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+        (symbol, price, open, high, low, volume, source, changes_percentage, previous_close, created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
         `,
         [
           normalized.symbol,
@@ -1242,6 +1250,8 @@ async function buildMarketSnapshot() {
           normalized.low,
           normalized.volume,
           normalized.source,
+          normalized.changesPercentage ?? null,
+          normalized.previousClose ?? null,
         ]
       );
       summary.snapshotsSaved++;
