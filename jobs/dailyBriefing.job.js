@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const logger = require("../utils/logger");
 const { acquireLock } = require("../services/jobLock.repository");
+const { runJob } = require("../utils/jobRunner");
 const { getMarketData } = require("../services/marketService");
 
 const {
@@ -63,32 +64,31 @@ Hinweis: Keine Kauf-/Verkaufsempfehlung. Nur Analyse.
 }
 
 async function runDailyBriefing() {
-  const won = await acquireLock("daily_briefing_job", 15 * 60);
-  if (!won) {
-    logger.warn("Daily briefing skipped (lock held)");
-    return;
-  }
-
-  logger.info("Daily briefing job started");
-
-  // ✅ Discovery einmalig erzeugen (nicht pro User)
-  let hiddenWinner = null;
-  if (typeof discoverStocks === "function") {
-    try {
-      const picks = await discoverStocks(1);
-      hiddenWinner = Array.isArray(picks) && picks[0] ? picks[0] : null;
-      if (hiddenWinner) logger.info("Hidden winner pick loaded", { symbol: hiddenWinner.symbol });
-    } catch (e) {
-      logger.warn("Hidden winner pick failed (ignored)", { message: e.message });
+  return runJob("dailyBriefing", async () => {
+    const won = await acquireLock("daily_briefing_job", 15 * 60);
+    if (!won) {
+      logger.warn("[job:dailyBriefing] skipped – lock held");
+      return { processedCount: 0, skippedCount: 0 };
     }
-  }
+
+    // ✅ Discovery einmalig erzeugen (nicht pro User)
+    let hiddenWinner = null;
+    if (typeof discoverStocks === "function") {
+      try {
+        const picks = await discoverStocks(1);
+        hiddenWinner = Array.isArray(picks) && picks[0] ? picks[0] : null;
+        if (hiddenWinner) logger.info("Hidden winner pick loaded", { symbol: hiddenWinner.symbol });
+      } catch (e) {
+        logger.warn("Hidden winner pick failed (ignored)", { message: e.message });
+      }
+    }
 
   // 1) Aktive User laden
-  const users = await getActiveBriefingUsers(500);
-  if (!users.length) {
-    logger.warn("No active briefing users found");
-    return;
-  }
+    const users = await getActiveBriefingUsers(500);
+    if (!users.length) {
+      logger.warn("No active briefing users found");
+      return { processedCount: 0, skippedCount: 0 };
+    }
 
   let createdCount = 0;
   let skippedCount = 0;
@@ -161,11 +161,13 @@ async function runDailyBriefing() {
     }
   }
 
-  logger.info("Daily briefing job finished", {
+  return {
+    processedCount: createdCount,
+    skippedCount: skippedCount + alreadyToday,
     created: createdCount,
-    skipped: skippedCount,
     alreadyToday,
     users: users.length,
+  };
   });
 }
 

@@ -1371,4 +1371,73 @@ router.get("/interface-state", async (req, res) => {
   }
 });
 
+/* =========================================================
+   PIPELINE STATUS  (Task 4 – data pipeline observability)
+   GET /api/admin/pipeline-status
+   Returns the last-known stage counts from buildMarketSnapshot().
+========================================================= */
+
+const { getPipelineStatus } = require("../services/marketService");
+
+router.get("/pipeline-status", (req, res) => {
+  try {
+    const raw = getPipelineStatus();
+    // Ensure all expected stage keys are present with safe defaults
+    const stages = ["universe", "snapshot", "advancedMetrics", "hqsScoring", "outcome"];
+    const status = { stages: {} };
+    for (const stage of stages) {
+      const s = raw?.stages?.[stage] ?? raw?.[stage] ?? null;
+      status.stages[stage] = {
+        inputCount:    s?.inputCount    ?? 0,
+        successCount:  s?.successCount  ?? 0,
+        failedCount:   s?.failedCount   ?? 0,
+        skippedCount:  s?.skippedCount  ?? 0,
+        lastUpdated:   s?.lastUpdated   ?? null,
+      };
+    }
+    status.statusGeneratedAt = raw?.generatedAt ?? null;
+    status.lastRunMs         = raw?.lastRunMs   ?? null;
+    return res.json({ success: true, ...status });
+  } catch (error) {
+    logger.error("Admin pipeline-status route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   TABLE HEALTH  (Task 5 – admin table diagnostics)
+   GET /api/admin/table-health
+   Returns green/yellow/red status for the 8 admin-relevant tables.
+========================================================= */
+
+const { runTableHealthCheck } = require("../services/tableHealth.service");
+
+router.get("/table-health", async (req, res) => {
+  try {
+    const report = await runTableHealthCheck();
+    // Ensure consistent shape even on partial failure
+    const safeReport = {
+      overallStatus: report?.overallStatus ?? "red",
+      green:         report?.green         ?? 0,
+      yellow:        report?.yellow        ?? 0,
+      red:           report?.red           ?? 0,
+      tables:        Array.isArray(report?.tables) ? report.tables : [],
+      checkedAt:     report?.checkedAt     ?? new Date().toISOString(),
+      durationMs:    report?.durationMs    ?? 0,
+    };
+    return res.json({ success: true, ...safeReport });
+  } catch (error) {
+    logger.error("Admin table-health route error", { message: error.message });
+    return res.status(500).json({
+      success:       false,
+      overallStatus: "red",
+      green:  0,
+      yellow: 0,
+      red:    0,
+      tables: [],
+      error:  error.message,
+    });
+  }
+});
+
 module.exports = router;

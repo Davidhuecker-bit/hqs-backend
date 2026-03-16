@@ -17,7 +17,9 @@
 
 require("dotenv").config();
 
+const { Pool } = require("pg");
 const logger = require("../utils/logger");
+const { runJob } = require("../utils/jobRunner");
 const {
   ensureTablesExist,
   buildMarketSnapshot,
@@ -27,32 +29,45 @@ const {
   initOutcomeTrackingTable,
 } = require("../services/outcomeTracking.repository");
 
+// Shared pool for DB readiness probe inside this job process
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 1,
+});
+
 async function run() {
-  logger.info("snapshotScan job started");
+  await runJob(
+    "snapshotScan",
+    async () => {
+      await initJobLocksTable();
 
-  await initJobLocksTable();
+      logger.info("snapshotScan: initOutcomeTrackingTable start");
+      await initOutcomeTrackingTable();
+      logger.info("snapshotScan: initOutcomeTrackingTable done");
 
-  logger.info("snapshotScan: initOutcomeTrackingTable start");
-  await initOutcomeTrackingTable();
-  logger.info("snapshotScan: initOutcomeTrackingTable done");
+      logger.info("snapshotScan: ensureTablesExist start");
+      await ensureTablesExist();
+      logger.info("snapshotScan: ensureTablesExist done");
 
-  logger.info("snapshotScan: ensureTablesExist start");
-  await ensureTablesExist();
-  logger.info("snapshotScan: ensureTablesExist done");
-
-  logger.info("snapshotScan: buildMarketSnapshot start");
-  await buildMarketSnapshot();
-  logger.info("snapshotScan: buildMarketSnapshot done");
-
-  logger.info("snapshotScan job finished");
+      logger.info("snapshotScan: buildMarketSnapshot start");
+      await buildMarketSnapshot();
+      logger.info("snapshotScan: buildMarketSnapshot done");
+    },
+    { pool, dbRetries: 5, dbDelayMs: 3000 }
+  );
 }
 
 run()
-  .then(() => process.exit(0))
+  .then(() => {
+    pool.end().catch(() => {});
+    process.exit(0);
+  })
   .catch((err) => {
     logger.error("snapshotScan job failed", {
       message: err?.message || String(err),
       stack: err?.stack,
     });
+    pool.end().catch(() => {});
     process.exit(1);
   });

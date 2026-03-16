@@ -106,6 +106,68 @@ const SNAPSHOT_FAIL_FAST_THRESHOLD = Number(process.env.SNAPSHOT_FAIL_FAST_THRES
 const SNAPSHOT_STATE_KEY = "snapshot_watchlist_offset";
 
 /* =========================================================
+   PIPELINE STATUS  (Task 4 – runtime tracking)
+=========================================================
+   Tracks the last completed snapshot run so callers and admin
+   endpoints can see exactly where data flows or gets lost.
+========================================================= */
+
+const pipelineStatus = {
+  universe: {
+    stage: "universe",
+    inputCount: 0,
+    successCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    lastUpdated: null,
+  },
+  snapshot: {
+    stage: "snapshot",
+    inputCount: 0,
+    successCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    lastUpdated: null,
+  },
+  advancedMetrics: {
+    stage: "advancedMetrics",
+    inputCount: 0,
+    successCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    lastUpdated: null,
+  },
+  hqsScoring: {
+    stage: "hqsScoring",
+    inputCount: 0,
+    successCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    lastUpdated: null,
+  },
+  outcome: {
+    stage: "outcome",
+    inputCount: 0,
+    successCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    lastUpdated: null,
+  },
+};
+
+function updatePipelineStage(stage, counts) {
+  if (!pipelineStatus[stage]) return;
+  Object.assign(pipelineStatus[stage], counts, { lastUpdated: new Date().toISOString() });
+}
+
+function getPipelineStatus() {
+  return {
+    stages: { ...pipelineStatus },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/* =========================================================
    IN-MEMORY AI STORES
 ========================================================= */
 
@@ -1296,6 +1358,38 @@ async function buildMarketSnapshot() {
     health,
     recommendations,
   });
+
+  // ── Update pipeline status (Task 4) ──────────────────────────────────────
+  updatePipelineStage("universe", {
+    inputCount:   summary.totalActiveSymbols,
+    successCount: summary.symbolsTotal,
+    failedCount:  0,
+    skippedCount: 0,
+  });
+  updatePipelineStage("snapshot", {
+    inputCount:   summary.symbolsTotal,
+    successCount: summary.snapshotsSaved,
+    failedCount:  summary.failed,
+    skippedCount: summary.skipped,
+  });
+  updatePipelineStage("advancedMetrics", {
+    inputCount:   summary.quotesLoaded,
+    successCount: summary.historicalOk,
+    failedCount:  summary.quotesLoaded - summary.historicalOk - summary.skipped,
+    skippedCount: summary.skipped,
+  });
+  updatePipelineStage("hqsScoring", {
+    inputCount:   summary.normalizedOk,
+    successCount: summary.hqsSaved,
+    failedCount:  summary.failed,
+    skippedCount: summary.skipped,
+  });
+  updatePipelineStage("outcome", {
+    inputCount:   summary.hqsSaved,
+    successCount: summary.outcomeTracked,
+    failedCount:  summary.hqsSaved - summary.outcomeTracked,
+    skippedCount: 0,
+  });
 }
 
 /* =========================================================
@@ -1397,4 +1491,5 @@ module.exports = {
   hydrateMarketRuntimeState,
   ensureTablesExist,
   pingDb,
+  getPipelineStatus,
 };

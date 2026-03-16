@@ -12,27 +12,19 @@
   Scheduled from server.js via scheduleTechRadarJob().
 */
 
-const logger = require("../utils/logger");
+const { runJob } = require("../utils/jobRunner");
 const { scanTechRadar } = require("../services/techRadar.service");
 
 /**
  * Runs one Tech-Radar scan cycle.
  *
- * @returns {Promise<{ scanned: number, inserted: number, feeds: number }>}
+ * @returns {Promise<object>}  runJob result
  */
 async function runTechRadarJob() {
-  try {
+  return runJob("techRadar", async () => {
     const result = await scanTechRadar();
-    logger.info("techRadar: scan completed", {
-      feeds:    result.feeds,
-      scanned:  result.scanned,
-      inserted: result.inserted,
-    });
-    return result;
-  } catch (error) {
-    logger.warn("techRadar: job failed", { message: error.message });
-    return { scanned: 0, inserted: 0, feeds: 0 };
-  }
+    return { processedCount: result.inserted ?? 0, feeds: result.feeds, scanned: result.scanned };
+  });
 }
 
 module.exports = { runTechRadarJob };
