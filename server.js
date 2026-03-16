@@ -202,6 +202,24 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/market-news", marketNewsRoutes);
 app.use("/api/sec-edgar", secEdgarRoutes);
 
+/* Alias: /api/admin-demo-portfolio → /api/admin/demo-portfolio */
+const { getAdminDemoPortfolio } = require("./services/adminDemoPortfolio.service");
+app.get("/api/admin-demo-portfolio", async (_req, res) => {
+  try {
+    const result = await getAdminDemoPortfolio();
+    return res.json(result);
+  } catch (error) {
+    return res.json({
+      success: false,
+      dataStatus: "error",
+      holdings: [],
+      partialErrors: [{ symbol: "*", error: error.message }],
+      generatedAt: new Date().toISOString(),
+      summary: { total: 0, green: 0, yellow: 0, red: 0, topBottleneck: null },
+    });
+  }
+});
+
 /* =========================================================
 FORMATTER
 ========================================================= */
