@@ -119,8 +119,11 @@ async function loadSnapshotsBatch(symbols) {
       let previousClose = latest.previous_close !== null ? Number(latest.previous_close) : null;
 
       // 1. Provider-supplied changes_percentage
-      if (latest.changes_percentage !== null && Number.isFinite(Number(latest.changes_percentage))) {
-        changePercent = Number(latest.changes_percentage);
+      if (latest.changes_percentage !== null) {
+        const val = Number(latest.changes_percentage);
+        if (Number.isFinite(val)) {
+          changePercent = val;
+        }
       }
 
       // 2. Compute from price vs previous_close (if provider gave previousClose but not changePercent)
