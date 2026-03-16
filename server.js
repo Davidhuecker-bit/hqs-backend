@@ -87,6 +87,8 @@ DISCOVERY
 ========================================================= */
 
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
+const { discoverStocks } = require("./services/discoveryEngine.service");
+const { evaluateDiscoveries } = require("./services/discoveryLearning.service");
 const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
 const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable } = require("./services/autonomyAudit.repository");
@@ -765,6 +767,54 @@ async function runUniverseRefreshLocked() {
   logger.info("Universe refresh executed");
 }
 
+/* =========================================================
+DISCOVERY SCAN  (populates discovery_history)
+========================================================= */
+
+const DISCOVERY_SCAN_BATCH = Number(process.env.DISCOVERY_SCAN_BATCH || 15);
+
+async function runDiscoveryScanLocked() {
+  const won = await acquireLock("discovery_scan_job", 30 * 60);
+
+  if (!won) {
+    logger.warn("[discovery] scan skipped – lock held");
+    return;
+  }
+
+  try {
+    const picks = await discoverStocks(DISCOVERY_SCAN_BATCH);
+    logger.info("[discovery] scan completed", {
+      requested: DISCOVERY_SCAN_BATCH,
+      discovered: Array.isArray(picks) ? picks.length : 0,
+    });
+  } catch (err) {
+    logger.error("[discovery] scan failed", { message: err.message });
+  }
+}
+
+/* =========================================================
+DISCOVERY LEARNING  (7d / 30d return evaluation)
+========================================================= */
+
+async function runDiscoveryLearningLocked() {
+  const won = await acquireLock("discovery_learning_eval_job", 30 * 60);
+
+  if (!won) {
+    logger.warn("[discovery] learning evaluation skipped – lock held");
+    return;
+  }
+
+  try {
+    const result = await evaluateDiscoveries();
+    logger.info("[discovery] learning evaluation completed", {
+      updated7d: result?.updated7d ?? 0,
+      updated30d: result?.updated30d ?? 0,
+    });
+  } catch (err) {
+    logger.error("[discovery] learning evaluation failed", { message: err.message });
+  }
+}
+
 async function runIntegratedWarmupCycle() {
   // ── DB readiness guard ────────────────────────────────────────────────────
   // If the DB is not reachable, skip the entire warmup cycle instead of
@@ -824,6 +874,23 @@ async function runIntegratedWarmupCycle() {
     logger.warn("worldState: rebuild after warmup failed", {
       message: wsErr.message,
       errorType: classifyDbError(wsErr),
+    });
+  });
+
+  // Discovery scan: run during warmup but throttled to once every 6 hours.
+  // The lock TTL (30 min) + cooldown (7 days per symbol) prevent duplicates.
+  runDiscoveryScanLocked().catch((discErr) => {
+    logger.warn("[discovery] scan inside warmup failed", {
+      message: discErr.message,
+      errorType: classifyDbError(discErr),
+    });
+  });
+
+  // Discovery learning: evaluate pending 7d/30d returns during warmup (throttled by lock).
+  runDiscoveryLearningLocked().catch((dlErr) => {
+    logger.warn("[discovery] learning inside warmup failed", {
+      message: dlErr.message,
+      errorType: classifyDbError(dlErr),
     });
   });
 
@@ -996,6 +1063,8 @@ app.listen(PORT, async () => {
     scheduleDailyForecastVerification();
     scheduleCausalMemoryRecalibration();
     scheduleTechRadarScan();
+    scheduleDailyDiscoveryScan();
+    scheduleDailyDiscoveryLearning();
   }
 
   const failedLabels = initErrors.map((e) => e.label);
@@ -1109,6 +1178,52 @@ async function scheduleTechRadarScan() {
       logger.error("Tech-Radar scan failed", { message: err.message });
     } finally {
       scheduleTechRadarScan();
+    }
+  }, delay);
+}
+
+/* =========================================================
+   DAILY DISCOVERY SCAN  (populate discovery_history)
+========================================================= */
+
+async function scheduleDailyDiscoveryScan() {
+  // Default: run at 09:00 daily.
+  // Snapshot data refreshes every 15 min via warmup cycle, so prices are always recent.
+  const hour   = Number(process.env.DISCOVERY_SCAN_HOUR   || 9);
+  const minute = Number(process.env.DISCOVERY_SCAN_MINUTE || 0);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+
+  setTimeout(async () => {
+    try {
+      await runDiscoveryScanLocked();
+    } catch (err) {
+      logger.error("[discovery] daily scan failed", { message: err.message });
+    } finally {
+      scheduleDailyDiscoveryScan();
+    }
+  }, delay);
+}
+
+/* =========================================================
+   DAILY DISCOVERY LEARNING  (7d / 30d return evaluation)
+========================================================= */
+
+async function scheduleDailyDiscoveryLearning() {
+  // Default: run at 11:00 daily.
+  // Evaluates discoveries ≥ 7d / ≥ 30d old (independent of scan timing).
+  const hour   = Number(process.env.DISCOVERY_LEARNING_HOUR   || 11);
+  const minute = Number(process.env.DISCOVERY_LEARNING_MINUTE || 0);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+
+  setTimeout(async () => {
+    try {
+      await runDiscoveryLearningLocked();
+    } catch (err) {
+      logger.error("[discovery] daily learning evaluation failed", { message: err.message });
+    } finally {
+      scheduleDailyDiscoveryLearning();
     }
   }, delay);
 }

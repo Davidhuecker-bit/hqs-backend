@@ -105,6 +105,8 @@ async function evaluateDiscoveries() {
 
   let done7 = 0;
   let done30 = 0;
+  let skippedNoPrice7 = 0;
+  let skippedNoPrice30 = 0;
 
   // =========================
   // 7D Evaluation
@@ -115,12 +117,16 @@ async function evaluateDiscoveries() {
     try {
       const priceNow = await getCurrentPrice(row.symbol);
       const r7 = calcReturnPct(priceNow, row.price_at_discovery);
-      if (r7 === null) continue;
+      if (r7 === null) {
+        skippedNoPrice7++;
+        logger.warn("[discovery] 7d skipped – no current price", { id: row.id, symbol: row.symbol });
+        continue;
+      }
 
       await updateDiscoveryResult7d(row.id, r7);
       done7++;
     } catch (e) {
-      logger.warn("7d evaluation failed", {
+      logger.warn("[discovery] 7d evaluation failed", {
         id: row.id,
         symbol: row.symbol,
         message: e.message,
@@ -137,12 +143,16 @@ async function evaluateDiscoveries() {
     try {
       const priceNow = await getCurrentPrice(row.symbol);
       const r30 = calcReturnPct(priceNow, row.price_at_discovery);
-      if (r30 === null) continue;
+      if (r30 === null) {
+        skippedNoPrice30++;
+        logger.warn("[discovery] 30d skipped – no current price", { id: row.id, symbol: row.symbol });
+        continue;
+      }
 
       await updateDiscoveryResult30d(row.id, r30);
       done30++;
     } catch (e) {
-      logger.warn("30d evaluation failed", {
+      logger.warn("[discovery] 30d evaluation failed", {
         id: row.id,
         symbol: row.symbol,
         message: e.message,
@@ -150,9 +160,13 @@ async function evaluateDiscoveries() {
     }
   }
 
-  logger.info("Discovery evaluation finished", {
+  logger.info("[discovery] evaluation finished", {
+    pending7d: rows7.length,
     updated7d: done7,
+    skippedNoPrice7d: skippedNoPrice7,
+    pending30d: rows30.length,
     updated30d: done30,
+    skippedNoPrice30d: skippedNoPrice30,
   });
 
   return { updated7d: done7, updated30d: done30 };

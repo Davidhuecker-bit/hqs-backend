@@ -298,22 +298,29 @@ async function discoverStocks(limit = DEFAULT_LIMIT) {
 
   // Save: in discovery_history mit Preis
   let saved = 0;
+  let skippedNoPrice = 0;
   for (const d of final) {
     try {
       const priceNow = await getCurrentPrice(d.symbol);
       if (priceNow !== null) {
         await saveDiscovery(d.symbol, d.discoveryScore, priceNow);
         saved++;
+      } else {
+        skippedNoPrice++;
+        logger.warn("[discovery] skipped – no price available", { symbol: d.symbol });
       }
     } catch (e) {
-      logger.warn("saveDiscovery failed", { symbol: d.symbol, message: e.message });
+      logger.warn("[discovery] saveDiscovery failed", { symbol: d.symbol, message: e.message });
     }
   }
 
-  logger.info("discoverStocks done", {
+  logger.info("[discovery] discoverStocks done", {
     requested: lim,
+    candidates: rows.length,
+    afterFilter: filtered.length,
     returned: final.length,
     saved,
+    skippedNoPrice,
     cooldownDays: COOLDOWN_DAYS,
   });
 
