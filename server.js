@@ -137,6 +137,7 @@ const startupState = {
   startedAt: new Date().toISOString(),
   completedAt: null,
   error: null,
+  initErrors: null,
 };
 
 function isAllowedCorsOrigin(origin) {
@@ -248,17 +249,26 @@ app.get("/health", async (req, res) => {
     dbError = err.message;
   }
 
-  const ready = startupState.ready && dbOk;
-  const statusCode = ready ? 200 : 503;
+  // Railway restart loop prevention: once the listen callback has completed
+  // (on any boot), we consider the HTTP server itself "alive".
+  // Individual DB / init failures are surfaced in the response body but do
+  // NOT cause a 503 — that would trigger an infinite restart loop on Railway.
+  // A 503 is only returned during the brief startup window while the listen
+  // callback is still running.
+  const serverAlive = startupState.completedAt !== null;
+  const statusCode = serverAlive ? 200 : 503;
 
   return res.status(statusCode).json({
-    success: ready,
-    ready,
+    success: serverAlive,
+    ready: startupState.ready,
     db: dbOk ? "ok" : "error",
     dbError: dbError || undefined,
     startedAt: startupState.startedAt,
     completedAt: startupState.completedAt,
     startupError: startupState.error || undefined,
+    initErrors: Array.isArray(startupState.initErrors) && startupState.initErrors.length > 0
+      ? startupState.initErrors
+      : undefined,
     jobsEnabled: RUN_JOBS,
   });
 });
@@ -704,8 +714,21 @@ async function runIntegratedWarmupCycle() {
     });
   }
 
-  await buildMarketSnapshot();
-  await runForwardLearningLocked();
+  try {
+    await buildMarketSnapshot();
+  } catch (error) {
+    logger.warn("buildMarketSnapshot failed inside warmup cycle", {
+      message: error.message,
+    });
+  }
+
+  try {
+    await runForwardLearningLocked();
+  } catch (error) {
+    logger.warn("runForwardLearningLocked failed inside warmup cycle", {
+      message: error.message,
+    });
+  }
 
   // Rebuild world_state after each market snapshot so it reflects the latest
   // regime, volatility and cross-asset signals. Non-blocking.
@@ -727,83 +750,113 @@ async function runIntegratedWarmupCycle() {
 SERVER START
 ========================================================= */
 
+async function runStartupInit() {
+  const initErrors = [];
+
+  async function safeInit(label, fn) {
+    try {
+      logger.info(`[startup] ${label}: starting`);
+      await fn();
+      logger.info(`[startup] ${label}: ok`);
+    } catch (err) {
+      logger.error(`[startup] ${label}: FAILED`, { message: err.message });
+      initErrors.push({ label, error: err.message });
+    }
+  }
+
+  // Critical: core market tables. If DATABASE_URL is wrong or DB is unreachable,
+  // this will be the first failure and the error will be visible in logs.
+  await safeInit("ensureTablesExist", ensureTablesExist);
+  await safeInit("initFactorTable", initFactorTable);
+  await safeInit("initWeightTable", initWeightTable);
+  await safeInit("initJobLocksTable", initJobLocksTable);
+  await safeInit("initDiscoveryTable", initDiscoveryTable);
+  await safeInit("initAdminSnapshotsTable", initAdminSnapshotsTable);
+  await safeInit("initAutonomyAuditTable", initAutonomyAuditTable);
+  await safeInit("initNearMissTable", initNearMissTable);
+  await safeInit("initAgentForecastTable", initAgentForecastTable);
+  await safeInit("initAgentsTable", initAgentsTable);
+  await safeInit("initDynamicWeightsTable", initDynamicWeightsTable);
+  await safeInit("initTechRadarTable", initTechRadarTable);
+  await safeInit("initSystemEvolutionProposalsTable", initSystemEvolutionProposalsTable);
+  await safeInit("initAutomationAuditTable", initAutomationAuditTable);
+  await safeInit("initNotificationTables", initNotificationTables);
+  await safeInit("seedDemoUserIfEmpty", seedDemoUserIfEmpty);
+  await safeInit("initSecEdgarTables", initSecEdgarTables);
+  await safeInit("ensureVirtualPositionsTable", ensureVirtualPositionsTable);
+  await safeInit("ensureSisHistoryTable", ensureSisHistoryTable);
+  await safeInit("hydrateMarketRuntimeState", hydrateMarketRuntimeState);
+  await safeInit("hydrateOpportunityRuntimeState", hydrateOpportunityRuntimeState);
+
+  if (initErrors.length > 0) {
+    const failedLabels = initErrors.map((e) => e.label);
+    logger.warn(`[startup] ${initErrors.length} init step(s) failed — server continues`, {
+      failed: failedLabels,
+    });
+  }
+
+  return initErrors;
+}
+
 app.listen(PORT, async () => {
   logger.info(`HQS Backend aktiv auf Port ${PORT}`);
 
-  try {
-    await ensureTablesExist();
-    await initFactorTable();
-    await initWeightTable();
+  const initErrors = await runStartupInit();
 
-    await initJobLocksTable();
-    await initDiscoveryTable();
-    await initAdminSnapshotsTable();
-    await initAutonomyAuditTable();
-    await initNearMissTable();
-    await initAgentForecastTable();
-    await initAgentsTable();
-    await initDynamicWeightsTable();
-    await initTechRadarTable();
-    await initSystemEvolutionProposalsTable();
-    await initAutomationAuditTable();
-
-    await initNotificationTables();
-    await seedDemoUserIfEmpty();
-    await initSecEdgarTables();
-    await ensureVirtualPositionsTable();
-    await ensureSisHistoryTable();
-    await hydrateMarketRuntimeState();
-    await hydrateOpportunityRuntimeState();
-
-    // Build the initial world_state snapshot (regime + cross-asset + sector + agents)
-    // Non-blocking: errors are logged but do not abort startup.
-    buildWorldState().catch((wsErr) => {
-      logger.warn("worldState: initial build failed on startup", {
-        message: wsErr.message,
-      });
+  // Build the initial world_state snapshot (regime + cross-asset + sector + agents)
+  // Non-blocking: errors are logged but do not abort startup.
+  buildWorldState().catch((wsErr) => {
+    logger.warn("worldState: initial build failed on startup", {
+      message: wsErr.message,
     });
+  });
 
-    if (RUN_JOBS) {
-      logger.info("RUN_JOBS=true -> starting background jobs inside API server");
+  if (RUN_JOBS) {
+    logger.info("RUN_JOBS=true -> starting background jobs inside API server");
 
-      try {
-        if (process.env.FMP_API_KEY) {
-          await runUniverseRefreshLocked();
-        } else {
-          logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
-        }
-      } catch (uErr) {
-        logger.warn("Universe refresh failed on startup", {
-          message: uErr.message,
-        });
+    try {
+      if (process.env.FMP_API_KEY) {
+        await runUniverseRefreshLocked();
+      } else {
+        logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
       }
-
-      await runIntegratedWarmupCycle();
-
-      setInterval(async () => {
-        try {
-          await runIntegratedWarmupCycle();
-          logger.info("Warmup executed");
-        } catch (err) {
-          logger.error("Warmup Fehler", { message: err.message });
-        }
-      }, 15 * 60 * 1000);
-
-      scheduleDailyUniverseRefresh();
-      scheduleDailyForecastVerification();
-      scheduleCausalMemoryRecalibration();
-      scheduleTechRadarScan();
+    } catch (uErr) {
+      logger.warn("Universe refresh failed on startup", {
+        message: uErr.message,
+      });
     }
 
-    startupState.ready = true;
-    startupState.completedAt = new Date().toISOString();
-    startupState.error = null;
-    logger.info("Startup completed successfully");
-  } catch (err) {
-    startupState.ready = false;
-    startupState.error = err.message;
-    logger.error("Startup Fehler", { message: err.message });
+    try {
+      await runIntegratedWarmupCycle();
+    } catch (err) {
+      logger.warn("runIntegratedWarmupCycle failed on startup", {
+        message: err.message,
+      });
+    }
+
+    setInterval(async () => {
+      try {
+        await runIntegratedWarmupCycle();
+        logger.info("Warmup executed");
+      } catch (err) {
+        logger.error("Warmup Fehler", { message: err.message });
+      }
+    }, 15 * 60 * 1000);
+
+    scheduleDailyUniverseRefresh();
+    scheduleDailyForecastVerification();
+    scheduleCausalMemoryRecalibration();
+    scheduleTechRadarScan();
   }
+
+  const failedLabels = initErrors.map((e) => e.label);
+  startupState.ready = true;
+  startupState.completedAt = new Date().toISOString();
+  startupState.initErrors = initErrors.length > 0 ? initErrors : null;
+  startupState.error = initErrors.length > 0
+    ? `${initErrors.length} init step(s) failed: ${failedLabels.join(", ")}`
+    : null;
+  logger.info("Startup completed", { initFailures: initErrors.length });
 });
 
 /* =========================================================
