@@ -62,6 +62,7 @@ const {
   getPortfolioTwinSnapshot,
   getStage4Analysis,
   listVirtualPositions,
+  syncVirtualPositions,
 } = require("../services/portfolioTwin.service");
 const { getSystemIntelligenceReport } = require("../services/systemIntelligence.service");
 const { getOperationalReleaseStatus } = require("../services/sisReleaseControl.service");
@@ -1490,6 +1491,77 @@ router.get("/demo-portfolio", async (req, res) => {
         staleCounts: { snapshot: 0, score: 0, metrics: 0, news: 0 },
       },
     });
+  }
+});
+
+/* =========================================================
+   VIRTUAL POSITIONS – Admin Read + Manual Sync
+   ─────────────────────────────────────────────────────────
+   Dedicated endpoints for virtual_positions (paper/probe positions).
+   Separate from portfolio-twin analytics to provide a clean,
+   focused interface for admin/frontend consumption.
+
+   Relationship to Demo-Portfolio:
+     • demo-portfolio  = curated ~20 symbol diagnostic view (read-only)
+     • virtual_positions = persistent system paper positions with lifecycle
+   Both are complementary – demo-portfolio diagnoses data quality,
+   virtual_positions tracks actual simulated trades.
+========================================================= */
+
+/**
+ * GET /api/admin/virtual-positions
+ * Returns a paginated list of virtual positions with clear response shape.
+ *
+ * Query params:
+ *   ?status=open|closed  – filter by position status (default: all)
+ *   ?limit=50            – max results (1-200)
+ *   ?offset=0            – pagination offset
+ */
+router.get("/virtual-positions", async (req, res) => {
+  try {
+    const status = req.query.status || null;
+    const limit  = Math.max(1, Math.min(Number(req.query.limit)  || 50,  200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    if (status && status !== "open" && status !== "closed") {
+      return res.status(400).json({
+        success: false,
+        error: "status must be 'open' or 'closed'",
+      });
+    }
+
+    const positions = await listVirtualPositions({ status, limit, offset });
+
+    return res.json({
+      success:     true,
+      count:       positions.length,
+      filters:     { status: status || "all", limit, offset },
+      positions,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error("Admin virtual-positions route error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      error:   error.message,
+      positions: [],
+      count:   0,
+    });
+  }
+});
+
+/**
+ * POST /api/admin/virtual-positions/sync
+ * Manually triggers a sync of virtual positions from real data sources.
+ * Normally runs automatically via warmup cycle (every 15 min).
+ */
+router.post("/virtual-positions/sync", async (req, res) => {
+  try {
+    const report = await syncVirtualPositions();
+    return res.json({ success: true, syncReport: report });
+  } catch (error) {
+    logger.error("Admin virtual-positions/sync route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

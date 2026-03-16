@@ -26,7 +26,7 @@
 
 const { Pool } = require("pg");
 const logger   = require("../utils/logger");
-const { getSector } = require("./capitalAllocation.service");
+const { getSector, calculatePositionSize } = require("./capitalAllocation.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1031,6 +1031,235 @@ async function listVirtualPositions({ status = null, limit = 50, offset = 0 } = 
 }
 
 /* =========================================================
+   SYNC VIRTUAL POSITIONS (primary scheduled write path)
+   ─────────────────────────────────────────────────────────
+   Derives virtual positions from REAL data sources only:
+     • hqs_scores         → symbol universe + quality signal
+     • market_snapshots   → entry_price + current_price
+     • worldState         → risk_mode, uncertainty
+     • capitalAllocation  → conviction_tier, position sizing
+
+   Called non-blocking from warmup cycle (every 15 min).
+   Design: refresh existing open positions, then open new
+           qualifying candidates. Never deletes data.
+========================================================= */
+
+const SYNC_MIN_HQS_SCORE    = Number(process.env.SYNC_MIN_HQS_SCORE    || 50);
+const SYNC_MAX_CANDIDATES    = Number(process.env.SYNC_MAX_CANDIDATES    || 20);
+const SYNC_MAX_OPEN_POSITIONS = Number(process.env.SYNC_MAX_OPEN_POSITIONS || 10);
+const SYNC_SCORE_MAX_AGE_H   = Number(process.env.SYNC_SCORE_MAX_AGE_H   || 48);
+
+/**
+ * Primary scheduled write path for virtual_positions.
+ *
+ * 1. Refreshes all open positions' current_price + PnL from market_snapshots.
+ * 2. Queries hqs_scores for top candidates meeting minimum thresholds.
+ * 3. Opens new virtual positions for qualifying symbols not yet open.
+ * 4. Skips symbols with insufficient data and logs reasons.
+ *
+ * Duplicate prevention:
+ *   - Application-level guard via hasOpenVirtualPosition()
+ *   - DB-level guard via UNIQUE partial index (symbol) WHERE status='open'
+ *
+ * @returns {object} structured sync report
+ */
+async function syncVirtualPositions() {
+  const runId = `vp-sync-${Date.now()}`;
+  const report = {
+    runId,
+    candidatesChecked:  0,
+    positionsRefreshed: 0,
+    refreshSkipped:     0,
+    positionsOpened:     0,
+    positionsSkipped:    0,
+    skippedSymbols:     [],
+    errors:             [],
+    dataSources: {
+      priceSource: "market_snapshots",
+      scoreSource: "hqs_scores",
+      worldStateSource: "worldState.service",
+      allocationSource: "capitalAllocation.service",
+    },
+  };
+
+  try {
+    // ── Step 1: Refresh open positions (current_price + PnL) ──────────────
+    try {
+      const refreshResult = await refreshOpenVirtualPositions();
+      report.positionsRefreshed = refreshResult.updated;
+      report.refreshSkipped    = refreshResult.skipped;
+    } catch (refreshErr) {
+      logger.warn("syncVirtualPositions: refresh step failed", {
+        message: refreshErr.message, runId,
+      });
+      report.errors.push({ step: "refresh", message: refreshErr.message });
+    }
+
+    // ── Step 2: Get worldState for risk_mode + uncertainty ────────────────
+    let riskMode    = "neutral";
+    let uncertainty = 0.3;
+    try {
+      const { getWorldState } = require("./worldState.service");
+      const ws = await getWorldState();
+      if (ws) {
+        riskMode    = ws.risk_mode || "neutral";
+        uncertainty = typeof ws.uncertainty === "number" ? ws.uncertainty : 0.3;
+      }
+    } catch (wsErr) {
+      logger.warn("syncVirtualPositions: worldState unavailable – using defaults", {
+        message: wsErr.message, riskMode, uncertainty, runId,
+      });
+    }
+
+    // ── Step 3: Count existing open positions ─────────────────────────────
+    let existingOpenCount = 0;
+    try {
+      const cntRes = await pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM virtual_positions WHERE status = 'open'`
+      );
+      existingOpenCount = cntRes.rows[0]?.cnt || 0;
+    } catch (cntErr) {
+      logger.warn("syncVirtualPositions: open-count query failed", {
+        message: cntErr.message, runId,
+      });
+    }
+
+    if (existingOpenCount >= SYNC_MAX_OPEN_POSITIONS) {
+      logger.info("syncVirtualPositions: max open positions reached – skipping new opens", {
+        existingOpenCount, maxAllowed: SYNC_MAX_OPEN_POSITIONS, runId,
+      });
+      _logSyncReport(report, riskMode, uncertainty);
+      return report;
+    }
+
+    const slotsAvailable = SYNC_MAX_OPEN_POSITIONS - existingOpenCount;
+
+    // ── Step 4: Query top candidates from hqs_scores (real data only) ─────
+    let candidates = [];
+    try {
+      const hqsRes = await pool.query(`
+        SELECT DISTINCT ON (symbol)
+          symbol, hqs_score, momentum, quality, stability, regime, created_at
+        FROM hqs_scores
+        WHERE hqs_score >= $1
+          AND created_at >= NOW() - make_interval(hours => $2)
+        ORDER BY symbol, created_at DESC
+      `, [SYNC_MIN_HQS_SCORE, SYNC_SCORE_MAX_AGE_H]);
+
+      // Sort by score descending and limit to configured max
+      candidates = hqsRes.rows
+        .sort((a, b) => Number(b.hqs_score) - Number(a.hqs_score))
+        .slice(0, SYNC_MAX_CANDIDATES);
+    } catch (hqsErr) {
+      logger.warn("syncVirtualPositions: hqs_scores query failed", {
+        message: hqsErr.message, runId,
+      });
+      report.errors.push({ step: "hqs_query", message: hqsErr.message });
+      _logSyncReport(report, riskMode, uncertainty);
+      return report;
+    }
+
+    report.candidatesChecked = candidates.length;
+
+    // ── Step 5: Open new positions for qualifying candidates ──────────────
+    const totalBudgetEur = safeNum(Number(process.env.ALLOCATION_BUDGET_EUR), 10000);
+    let opened = 0;
+
+    for (const cand of candidates) {
+      if (opened >= slotsAvailable) break;
+
+      const symbol = String(cand.symbol || "").trim().toUpperCase();
+      if (!symbol) continue;
+
+      // Gate A: Already open?
+      try {
+        const alreadyOpen = await hasOpenVirtualPosition(symbol);
+        if (alreadyOpen) continue; // already refreshed in Step 1
+      } catch (guardErr) {
+        report.skippedSymbols.push({ symbol, reason: "guardCheckFailed" });
+        report.positionsSkipped++;
+        continue;
+      }
+
+      // Gate B: Latest price available?
+      const price = await _latestStoredPrice(symbol);
+      if (!price || price <= 0) {
+        report.skippedSymbols.push({ symbol, reason: "noPrice", source: "market_snapshots" });
+        report.positionsSkipped++;
+        continue;
+      }
+
+      // Gate C: Compute position size using real capital allocation logic
+      const hqsScore = safeNum(cand.hqs_score, 0);
+      const sizing = calculatePositionSize({
+        finalConviction: hqsScore,
+        riskMode,
+        uncertainty,
+        totalBudgetEur,
+      });
+
+      if (!sizing || !sizing.positionSizeEur || sizing.positionSizeEur <= 0) {
+        report.skippedSymbols.push({
+          symbol,
+          reason: "allocationZero",
+          hqsScore,
+          tier: sizing?.convictionTier,
+        });
+        report.positionsSkipped++;
+        continue;
+      }
+
+      // All gates passed – open virtual position
+      try {
+        await openVirtualPositionFromAllocation({
+          symbol,
+          entryPrice:         price,
+          allocatedEur:       sizing.positionSizeEur,
+          allocatedPct:       sizing.positionSizePct,
+          convictionTier:     sizing.convictionTier,
+          riskModeAtEntry:    riskMode,
+          uncertaintyAtEntry: uncertainty,
+          sourceRunId:        runId,
+        });
+        report.positionsOpened++;
+        opened++;
+      } catch (openErr) {
+        // Unique constraint or other DB error – log and continue
+        report.skippedSymbols.push({ symbol, reason: openErr.message });
+        report.positionsSkipped++;
+      }
+    }
+
+    _logSyncReport(report, riskMode, uncertainty);
+    return report;
+  } catch (err) {
+    logger.error("syncVirtualPositions: unexpected error", {
+      message: err.message, runId,
+    });
+    report.errors.push({ step: "global", message: err.message });
+    return report;
+  }
+}
+
+/** Structured log output for sync run */
+function _logSyncReport(report, riskMode, uncertainty) {
+  logger.info("syncVirtualPositions: completed", {
+    runId:              report.runId,
+    candidatesChecked:  report.candidatesChecked,
+    positionsRefreshed: report.positionsRefreshed,
+    refreshSkipped:     report.refreshSkipped,
+    positionsOpened:    report.positionsOpened,
+    positionsSkipped:   report.positionsSkipped,
+    skippedSymbols:    report.skippedSymbols.slice(0, 15),
+    riskMode,
+    uncertainty:       parseFloat(safeNum(uncertainty, 0).toFixed(2)),
+    priceSource:       "market_snapshots",
+    scoreSource:       "hqs_scores",
+    errorCount:        report.errors.length,
+  });
+}
+
+/* =========================================================
    EXPORTS
 ========================================================= */
 
@@ -1043,4 +1272,5 @@ module.exports = {
   getPortfolioTwinSnapshot,
   getStage4Analysis,
   listVirtualPositions,
+  syncVirtualPositions,
 };
