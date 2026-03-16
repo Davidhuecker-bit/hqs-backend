@@ -98,7 +98,7 @@ const { runForecastVerificationJob } = require("./jobs/forecastVerification.job"
 const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
 const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
 const { runTechRadarJob } = require("./jobs/techRadar.job");
-const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
+const { ensureVirtualPositionsTable, syncVirtualPositions } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable, saveSisSnapshot } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
 const { getSystemIntelligenceReport } = require("./services/systemIntelligence.service");
@@ -874,6 +874,16 @@ async function runIntegratedWarmupCycle() {
     logger.warn("worldState: rebuild after warmup failed", {
       message: wsErr.message,
       errorType: classifyDbError(wsErr),
+    });
+  });
+
+  // Sync virtual_positions: refresh open positions + open new qualifying candidates.
+  // Reads from hqs_scores + market_snapshots + worldState (all just refreshed).
+  // Non-blocking – pipeline must not crash on failure.
+  syncVirtualPositions().catch((vpErr) => {
+    logger.warn("syncVirtualPositions: warmup sync failed", {
+      message: vpErr.message,
+      errorType: classifyDbError(vpErr),
     });
   });
 
