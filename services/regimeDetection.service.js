@@ -72,9 +72,7 @@ async function loadMarketMetrics() {
       WITH latest_metrics AS (
         SELECT DISTINCT ON (symbol)
           symbol,
-          -- Multiple column-name variants exist across schema migrations;
-          -- COALESCE picks whichever column is populated for each row.
-          COALESCE(volatility, volatility_annual, vol_annual, 0) AS vol
+          COALESCE(volatility_annual, volatility_daily, 0) AS vol
         FROM market_advanced_metrics
         ORDER BY symbol, updated_at DESC
       )

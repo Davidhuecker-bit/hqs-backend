@@ -1076,12 +1076,7 @@ async function getTopOpportunities(arg = 10) {
       h.relative,
       COALESCE(h.regime, m.regime) AS regime,
 
-      COALESCE(
-        m.volatility,
-        m.volatility_annual,
-        m.vol_annual,
-        0
-      ) AS volatility,
+      COALESCE(m.volatility_annual, m.volatility_daily, 0) AS volatility,
 
       m.trend,
       m.scenarios,
