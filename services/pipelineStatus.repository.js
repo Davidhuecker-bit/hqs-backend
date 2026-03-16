@@ -28,6 +28,10 @@ try {
   logger = console;
 }
 
+// Module-level DB pool for pipelineStatus operations.
+// This pool persists for the process lifetime and is shared across all
+// calls to savePipelineStage / loadPipelineStatus.  It is intentionally
+// not closed explicitly – the pg driver drains it on process exit / SIGTERM.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -93,6 +97,14 @@ async function savePipelineStage(stage, counts) {
         Number(counts.skippedCount) || 0,
       ]
     );
+    logger.info("[pipelineStatus] stage persisted", {
+      stage,
+      lastRunAt:     new Date().toISOString(),
+      inputCount:    Number(counts.inputCount)   || 0,
+      successCount:  Number(counts.successCount) || 0,
+      failedCount:   Number(counts.failedCount)  || 0,
+      skippedCount:  Number(counts.skippedCount) || 0,
+    });
   } catch (err) {
     logger.warn("[pipelineStatus] savePipelineStage failed", {
       stage,

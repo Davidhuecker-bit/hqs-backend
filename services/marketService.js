@@ -82,6 +82,7 @@ const {
   savePipelineStage,
   loadPipelineStatus: loadPipelineStatusFromDb,
 } = require("./pipelineStatus.repository");
+const { classifyDbError } = require("../utils/dbHealth");
 const {
   buildSignalContext,
   loadOpportunityNewsContextBySymbols,
@@ -1392,9 +1393,10 @@ async function buildMarketSnapshot() {
       ensureTierBucket(summary, tier).failed++;
 
       logger.error(`Snapshot error for ${symbol}`, {
-        message: err.message,
+        message:   err.message,
+        errorType: classifyDbError(err),
         tier,
-        priority: candidate.priority,
+        priority:  candidate.priority,
       });
     }
   }

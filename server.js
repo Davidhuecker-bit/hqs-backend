@@ -298,6 +298,7 @@ app.get("/health", async (req, res) => {
   return res.status(statusCode).json({
     success:     serverAlive,
     ready:       startupState.ready,
+    generatedAt: new Date().toISOString(),
     db:          dbOk ? "ok" : "error",
     dbReady:     dbOk,
     dbError:     dbError     || undefined,
@@ -900,6 +901,24 @@ async function runStartupInit() {
 
   return initErrors;
 }
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────
+// Drain the module-level warmup probe pool on process termination so that
+// Railway / Docker do not see orphaned connections.
+// Note: the startup probePool (created inside runStartupInit) is already
+// drained via its own finally block before this handler is ever invoked.
+// Other module-level pools (pg) drain automatically on process exit.
+function gracefulShutdown(signal) {
+  logger.info(`[shutdown] ${signal} received – draining pools`);
+  _warmupProbePool.end().catch((err) => {
+    logger.warn("[shutdown] _warmupProbePool.end failed", { message: err.message });
+  }).finally(() => {
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
 
 app.listen(PORT, async () => {
   logger.info(`HQS Backend aktiv auf Port ${PORT}`);

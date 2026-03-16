@@ -239,6 +239,7 @@ router.get("/overview", async (req, res) => {
 
     return res.json({
       success: true,
+      generatedAt: new Date().toISOString(),
       dataStatus,
       partialErrors: data.insights?._meta?.partialErrors || [],
       emptyFields: data.insights?._meta?.emptyFields || [],
@@ -248,6 +249,7 @@ router.get("/overview", async (req, res) => {
     logger.error("Admin overview route error", { message: error.message });
     return res.status(500).json({
       success: false,
+      generatedAt: new Date().toISOString(),
       dataStatus: "error",
       error: error.message,
     });
@@ -1398,7 +1400,8 @@ router.get("/pipeline-status", async (req, res) => {
         source:        s?.source        ?? "empty",
       };
     }
-    status.statusGeneratedAt = raw?.generatedAt ?? null;
+    status.generatedAt       = raw?.generatedAt ?? null;
+    status.statusGeneratedAt = status.generatedAt; // kept for backwards-compatibility
     status.lastRunMs         = raw?.lastRunMs   ?? null;
     return res.json({ success: true, ...status });
   } catch (error) {
@@ -1425,6 +1428,7 @@ router.get("/table-health", async (req, res) => {
       yellow:        report?.yellow        ?? 0,
       red:           report?.red           ?? 0,
       tables:        Array.isArray(report?.tables) ? report.tables : [],
+      generatedAt:   report?.checkedAt     ?? new Date().toISOString(),
       checkedAt:     report?.checkedAt     ?? new Date().toISOString(),
       durationMs:    report?.durationMs    ?? 0,
     };
@@ -1433,6 +1437,7 @@ router.get("/table-health", async (req, res) => {
     logger.error("Admin table-health route error", { message: error.message });
     return res.status(500).json({
       success:       false,
+      generatedAt:   new Date().toISOString(),
       overallStatus: "red",
       green:  0,
       yellow: 0,

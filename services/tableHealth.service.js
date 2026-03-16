@@ -46,9 +46,11 @@ const ALLOWED_TABLES = new Set([
   "factor_history",
   "weight_history",
   "watchlist_symbols",
+  "pipeline_status",
 ]);
 const ALLOWED_TS_COLUMNS = new Set([
   "created_at", "updated_at", "evaluated_at", "checked_at",
+  "last_run_at",
 ]);
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -107,16 +109,21 @@ async function getLastTimestamp(name, candidates) {
   return null;
 }
 
-function computeStatus(exists, rowCount, lastTimestampIso) {
+function computeStatus(exists, rowCount, lastTimestampIso, opts = {}) {
+  const minGreen  = opts.minRowsGreen  ?? MIN_ROWS_GREEN;
+  // Default MIN_ROWS_YELLOW is 1, so `rowCount < 1` is equivalent to
+  // the original `rowCount === 0` check for all existing tables.
+  const minYellow = opts.minRowsYellow ?? MIN_ROWS_YELLOW;
+
   if (!exists || rowCount === -1) return "red";
-  if (rowCount === 0) return "red";
+  if (rowCount < minYellow) return "red";
 
   const isStale =
     lastTimestampIso
       ? (Date.now() - new Date(lastTimestampIso).getTime()) / 3_600_000 > STALE_HOURS
       : false; // unknown timestamp → don't penalise
 
-  if (rowCount >= MIN_ROWS_GREEN && !isStale) return "green";
+  if (rowCount >= minGreen && !isStale) return "green";
   return "yellow"; // exists + rows > 0 but sparse or stale
 }
 
@@ -155,11 +162,18 @@ const TABLE_CONFIGS = [
     name: "watchlist_symbols",
     tsColumns: ["created_at", "updated_at"],
   },
+  {
+    name: "pipeline_status",
+    // pipeline_status has 5 rows max (one per stage); green = all 5 stages written recently
+    tsColumns: ["last_run_at", "updated_at"],
+    minRowsGreen:  5,
+    minRowsYellow: 1,
+  },
 ];
 
 // ── per-table check ──────────────────────────────────────────────────────────
 
-async function checkTable({ name, tsColumns }) {
+async function checkTable({ name, tsColumns, minRowsGreen, minRowsYellow }) {
   const exists = await tableExists(name);
 
   if (!exists) {
@@ -175,7 +189,7 @@ async function checkTable({ name, tsColumns }) {
 
   const rowCount      = await getRowCount(name);
   const lastTimestamp = await getLastTimestamp(name, tsColumns);
-  const status        = computeStatus(exists, rowCount, lastTimestamp);
+  const status        = computeStatus(exists, rowCount, lastTimestamp, { minRowsGreen, minRowsYellow });
 
   let detail;
   if (status === "green")  detail = "healthy";
