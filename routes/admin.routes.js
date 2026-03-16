@@ -86,10 +86,39 @@ function createAdminState({ insights, diagnostics, validation, tuning }) {
 
 async function buildAdminStack(options = {}) {
   const { persistSnapshot = false } = options;
-  const insights = await getAdminInsights();
-  const diagnostics = buildAdminDiagnostics(insights);
-  const validation = buildAdminValidation(insights, diagnostics);
-  const tuning = buildAdminTuning(insights, diagnostics, validation);
+
+  let insights;
+  try {
+    insights = await getAdminInsights();
+  } catch (err) {
+    logger.warn("buildAdminStack: getAdminInsights failed", { message: err.message });
+    insights = {
+      generatedAt: new Date().toISOString(),
+      system: {},
+      universe: {},
+      activity: {},
+      coverage: {},
+      quickFacts: {},
+      _meta: {
+        dataStatus: "error",
+        partialErrors: [{ field: "getAdminInsights", error: err.message }],
+        emptyFields: [],
+      },
+    };
+  }
+
+  function safeEngine(name, fn, fallback = {}) {
+    try {
+      return fn();
+    } catch (err) {
+      logger.warn(`buildAdminStack: ${name} failed`, { message: err.message });
+      return fallback;
+    }
+  }
+
+  const diagnostics = safeEngine("buildAdminDiagnostics", () => buildAdminDiagnostics(insights));
+  const validation = safeEngine("buildAdminValidation", () => buildAdminValidation(insights, diagnostics));
+  const tuning = safeEngine("buildAdminTuning", () => buildAdminTuning(insights, diagnostics, validation));
 
   const currentState = createAdminState({
     insights,
@@ -98,64 +127,73 @@ async function buildAdminStack(options = {}) {
     tuning,
   });
 
+  async function safeLoadSnapshot(interval) {
+    try {
+      return await loadAdminSnapshotBefore(interval);
+    } catch (err) {
+      logger.warn(`loadAdminSnapshotBefore ${interval} failed`, { message: err.message });
+      return null;
+    }
+  }
+
   const [previous24h, previous7d, previous30d] = await Promise.all([
-    loadAdminSnapshotBefore("24 hours"),
-    loadAdminSnapshotBefore("7 days"),
-    loadAdminSnapshotBefore("30 days"),
+    safeLoadSnapshot("24 hours"),
+    safeLoadSnapshot("7 days"),
+    safeLoadSnapshot("30 days"),
   ]);
 
-  const trends = buildAdminTrends({
+  const trends = safeEngine("buildAdminTrends", () => buildAdminTrends({
     current: currentState,
     previous24h: previous24h || currentState,
     previous7d: previous7d || currentState,
     previous30d: previous30d || currentState,
-  });
+  }));
 
-  const alerts = buildAdminAlerts({
+  const alerts = safeEngine("buildAdminAlerts", () => buildAdminAlerts({
     insights,
     diagnostics,
     validation,
     tuning,
     trends,
-  });
+  }));
 
-  const priorities = buildAdminPriorities({
+  const priorities = safeEngine("buildAdminPriorities", () => buildAdminPriorities({
     insights,
     diagnostics,
     validation,
     tuning,
     alerts,
-  });
+  }));
 
-  const targets = buildAdminTargets({
+  const targets = safeEngine("buildAdminTargets", () => buildAdminTargets({
     insights,
     diagnostics,
     validation,
-  });
+  }));
 
-  const causality = buildAdminCausality({
+  const causality = safeEngine("buildAdminCausality", () => buildAdminCausality({
     insights,
     diagnostics,
     validation,
     targets,
-  });
+  }));
 
-  const release = buildAdminRelease({
+  const release = safeEngine("buildAdminRelease", () => buildAdminRelease({
     diagnostics,
     validation,
     priorities,
     targets,
     causality,
-  });
+  }));
 
-  const recommendations = buildAdminRecommendations({
+  const recommendations = safeEngine("buildAdminRecommendations", () => buildAdminRecommendations({
     insights,
     diagnostics,
     validation,
     tuning,
-  });
+  }));
 
-  const briefing = buildAdminBriefing({
+  const briefing = safeEngine("buildAdminBriefing", () => buildAdminBriefing({
     insights,
     diagnostics,
     validation,
@@ -166,7 +204,7 @@ async function buildAdminStack(options = {}) {
     targets,
     causality,
     release,
-  });
+  }));
 
   if (persistSnapshot) {
     try {
@@ -197,15 +235,20 @@ async function buildAdminStack(options = {}) {
 router.get("/overview", async (req, res) => {
   try {
     const data = await buildAdminStack({ persistSnapshot: true });
+    const dataStatus = data.insights?._meta?.dataStatus || "full";
 
     return res.json({
       success: true,
+      dataStatus,
+      partialErrors: data.insights?._meta?.partialErrors || [],
+      emptyFields: data.insights?._meta?.emptyFields || [],
       ...data,
     });
   } catch (error) {
     logger.error("Admin overview route error", { message: error.message });
     return res.status(500).json({
       success: false,
+      dataStatus: "error",
       error: error.message,
     });
   }

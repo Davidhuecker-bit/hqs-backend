@@ -20,6 +20,8 @@ const pool = new Pool({
 
 const DEFAULT_LOOKBACK_HOURS = Number(process.env.ADMIN_LOOKBACK_HOURS || 24);
 const DEFAULT_LONG_LOOKBACK_DAYS = Number(process.env.ADMIN_LONG_LOOKBACK_DAYS || 7);
+// Minimum number of empty table fields required to classify the overall data status as "empty"
+const EMPTY_STATUS_THRESHOLD = 4;
 
 function safeNum(value, fallback = 0) {
   const n = Number(value);
@@ -80,43 +82,57 @@ function pickFirstExisting(columns, candidates) {
 }
 
 async function getLatestTimestamp(tableName, candidates = ["created_at", "updated_at", "evaluated_at", "checked_at"]) {
-  const exists = await tableExists(tableName);
-  if (!exists) return null;
+  try {
+    const exists = await tableExists(tableName);
+    if (!exists) return null;
 
-  const columns = await getTableColumns(tableName);
-  const tsCol = pickFirstExisting(columns, candidates);
-  if (!tsCol) return null;
+    const columns = await getTableColumns(tableName);
+    const tsCol = pickFirstExisting(columns, candidates);
+    if (!tsCol) return null;
 
-  const res = await pool.query(`SELECT MAX(${tsCol}) AS ts FROM ${tableName}`);
-  return toIso(res.rows?.[0]?.ts);
+    const res = await pool.query(`SELECT MAX(${tsCol}) AS ts FROM ${tableName}`);
+    return toIso(res.rows?.[0]?.ts);
+  } catch (err) {
+    logger.warn(`getLatestTimestamp(${tableName}) failed`, { message: err.message });
+    return null;
+  }
 }
 
 async function getRowCount(tableName) {
-  const exists = await tableExists(tableName);
-  if (!exists) return 0;
-
-  const res = await pool.query(`SELECT COUNT(*)::int AS c FROM ${tableName}`);
-  return safeNum(res.rows?.[0]?.c, 0);
+  try {
+    const exists = await tableExists(tableName);
+    if (!exists) return 0;
+    const res = await pool.query(`SELECT COUNT(*)::int AS c FROM ${tableName}`);
+    return safeNum(res.rows?.[0]?.c, 0);
+  } catch (err) {
+    logger.warn(`getRowCount(${tableName}) failed`, { message: err.message });
+    return 0;
+  }
 }
 
 async function getRecentCount(tableName, lookbackHours = DEFAULT_LOOKBACK_HOURS) {
-  const exists = await tableExists(tableName);
-  if (!exists) return 0;
+  try {
+    const exists = await tableExists(tableName);
+    if (!exists) return 0;
 
-  const columns = await getTableColumns(tableName);
-  const tsCol = pickFirstExisting(columns, ["created_at", "updated_at", "evaluated_at", "checked_at"]);
-  if (!tsCol) return 0;
+    const columns = await getTableColumns(tableName);
+    const tsCol = pickFirstExisting(columns, ["created_at", "updated_at", "evaluated_at", "checked_at"]);
+    if (!tsCol) return 0;
 
-  const res = await pool.query(
-    `
-    SELECT COUNT(*)::int AS c
-    FROM ${tableName}
-    WHERE ${tsCol} >= NOW() - ($1 || ' hours')::interval
-    `,
-    [String(lookbackHours)]
-  );
+    const res = await pool.query(
+      `
+      SELECT COUNT(*)::int AS c
+      FROM ${tableName}
+      WHERE ${tsCol} >= NOW() - ($1 || ' hours')::interval
+      `,
+      [String(lookbackHours)]
+    );
 
-  return safeNum(res.rows?.[0]?.c, 0);
+    return safeNum(res.rows?.[0]?.c, 0);
+  } catch (err) {
+    logger.warn(`getRecentCount(${tableName}) failed`, { message: err.message });
+    return 0;
+  }
 }
 
 async function getWatchlistStats() {
@@ -557,92 +573,81 @@ async function getAdminInsights(options = {}) {
   const lookbackHours = safeNum(options.lookbackHours, DEFAULT_LOOKBACK_HOURS);
   const longLookbackDays = safeNum(options.longLookbackDays, DEFAULT_LONG_LOOKBACK_DAYS);
 
-  try {
-    const [
-      watchlist,
-      snapshotState,
-      snapshots,
-      hqs,
-      factorHistory,
-      weightHistory,
-      advancedMetrics,
-      outcomes,
-      discovery,
-      jobLocks,
-      notifications,
-    ] = await Promise.all([
-      getWatchlistStats(),
-      getSnapshotState(),
-      getMarketSnapshotStats(lookbackHours),
-      getHqsStats(lookbackHours),
-      getFactorHistoryStats(lookbackHours, longLookbackDays),
-      getWeightHistoryStats(lookbackHours),
-      getAdvancedMetricsStats(lookbackHours),
-      getOutcomeTrackingStats(lookbackHours),
-      getDiscoveryStats(lookbackHours, longLookbackDays),
-      getJobLockStats(),
-      getNotificationStats(),
-    ]);
+  const partialErrors = [];
+  const emptyFields = [];
 
-    const coverage = await getCoverageStats(
-      snapshots,
-      hqs,
-      advancedMetrics,
-      outcomes,
-      watchlist
-    );
-
-    return {
-      generatedAt: new Date().toISOString(),
-      lookbackHours,
-      longLookbackDays,
-
-      system: {
-        snapshotState,
-        jobLocks,
-        notifications,
-      },
-
-      universe: watchlist,
-
-      activity: {
-        snapshots,
-        hqs,
-        factorHistory,
-        weightHistory,
-        advancedMetrics,
-        outcomes,
-        discovery,
-      },
-
-      coverage,
-
-      quickFacts: {
-        activeUniverse: watchlist.active,
-        recentProcessedSymbols: snapshots.recentSymbols,
-        latestSnapshotAt: snapshots.latestRunAt,
-        latestFactorUpdateAt: factorHistory.latestAt,
-        latestWeightUpdateAt: weightHistory.latestAt,
-        latestDiscoveryAt: discovery.latestAt,
-        latestAdvancedMetricsAt: advancedMetrics.latestAt,
-        latestOutcomeTrackingAt: outcomes.latestAt,
-      },
-    };
-  } catch (error) {
-    logger.error("adminInsights.getAdminInsights failed", {
-      message: error.message,
-    });
-
-    return {
-      generatedAt: new Date().toISOString(),
-      error: error.message,
-      system: {},
-      universe: {},
-      activity: {},
-      coverage: {},
-      quickFacts: {},
-    };
+  async function safeCall(name, fn, fallback) {
+    try {
+      const result = await fn();
+      return result;
+    } catch (err) {
+      logger.warn(`adminInsights: ${name} failed`, { message: err.message });
+      partialErrors.push({ field: name, error: err.message });
+      return fallback;
+    }
   }
+
+  const watchlist = await safeCall("watchlist", () => getWatchlistStats(), { total: 0, active: 0, byRegion: {}, byPriorityTier: {} });
+  const snapshotState = await safeCall("snapshotState", () => getSnapshotState(), { offset: 0, updatedAt: null });
+  const snapshots = await safeCall("snapshots", () => getMarketSnapshotStats(lookbackHours), { totalRows: 0, recentRows: 0, recentSymbols: 0, latestRunAt: null, bySource: {} });
+  const hqs = await safeCall("hqs", () => getHqsStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null });
+  const factorHistory = await safeCall("factorHistory", () => getFactorHistoryStats(lookbackHours, longLookbackDays), { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0, averageHqsScore7d: null, byRegime7d: {} });
+  const weightHistory = await safeCall("weightHistory", () => getWeightHistoryStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null, regimesTracked: 0 });
+  const advancedMetrics = await safeCall("advancedMetrics", () => getAdvancedMetricsStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null });
+  const outcomes = await safeCall("outcomes", () => getOutcomeTrackingStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null, completedRows: 0, completionRate: 0 });
+  const discovery = await safeCall("discovery", () => getDiscoveryStats(lookbackHours, longLookbackDays), { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0 });
+  const jobLocks = await safeCall("jobLocks", () => getJobLockStats(), { totalLocks: 0, activeLocks: 0, lockNames: [] });
+  const notifications = await safeCall("notifications", () => getNotificationStats(), { activeUsers: 0, notificationsSent24h: 0, latestNotificationAt: null });
+
+  let coverage = { snapshotUniverseCoverage: 0, hqsCoverageVsSnapshots: 0, advancedCoverageVsSnapshots: 0, outcomeCoverageVsSnapshots: 0 };
+  try {
+    coverage = await getCoverageStats(snapshots, hqs, advancedMetrics, outcomes, watchlist);
+  } catch (err) {
+    logger.warn("adminInsights: coverage calculation failed", { message: err.message });
+    partialErrors.push({ field: "coverage", error: err.message });
+  }
+
+  if (watchlist.active === 0) emptyFields.push("watchlist_symbols");
+  if (snapshots.totalRows === 0) emptyFields.push("market_snapshots");
+  if (hqs.totalRows === 0) emptyFields.push("hqs_scores");
+  if (factorHistory.totalRows === 0) emptyFields.push("factor_history");
+  if (weightHistory.totalRows === 0) emptyFields.push("weight_history");
+  if (advancedMetrics.totalRows === 0) emptyFields.push("market_advanced_metrics");
+  if (outcomes.totalRows === 0) emptyFields.push("outcome_tracking");
+  if (discovery.totalRows === 0) emptyFields.push("discovery_history");
+
+  let dataStatus = "full";
+  if (partialErrors.length > 0) {
+    dataStatus = "partial";
+  } else if (emptyFields.length >= EMPTY_STATUS_THRESHOLD) {
+    dataStatus = "empty";
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    lookbackHours,
+    longLookbackDays,
+
+    system: { snapshotState, jobLocks, notifications },
+    universe: watchlist,
+    activity: { snapshots, hqs, factorHistory, weightHistory, advancedMetrics, outcomes, discovery },
+    coverage,
+    quickFacts: {
+      activeUniverse: watchlist.active,
+      recentProcessedSymbols: snapshots.recentSymbols,
+      latestSnapshotAt: snapshots.latestRunAt,
+      latestFactorUpdateAt: factorHistory.latestAt,
+      latestWeightUpdateAt: weightHistory.latestAt,
+      latestDiscoveryAt: discovery.latestAt,
+      latestAdvancedMetricsAt: advancedMetrics.latestAt,
+      latestOutcomeTrackingAt: outcomes.latestAt,
+    },
+    _meta: {
+      dataStatus,
+      partialErrors,
+      emptyFields,
+    },
+  };
 }
 
 module.exports = {
