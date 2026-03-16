@@ -50,6 +50,12 @@ const CHECKS = [
     assert:  (body) => body.success === true && body.dataStatus != null,
     shape: ["success", "generatedAt", "dataStatus", "insights", "diagnostics"],
   },
+  {
+    name:    "GET /api/admin/demo-portfolio",
+    path:    "/api/admin/demo-portfolio",
+    assert:  (body) => body.success === true && Array.isArray(body.holdings) && body.summary != null,
+    shape: ["success", "generatedAt", "dataStatus", "holdings", "summary", "portfolioId", "symbolCount"],
+  },
 ];
 
 function fetch(url) {
@@ -103,6 +109,11 @@ async function run() {
           if ((body.partialErrors || []).length > 0) {
             console.warn(`     ⚠️  partial errors: ${body.partialErrors.map((e) => e.field || e).join(", ")}`);
           }
+        } else if (check.path === "/api/admin/demo-portfolio") {
+          const s = body.summary || {};
+          console.log(`     total=${s.total}  green=${s.green}  yellow=${s.yellow}  red=${s.red}  topBottleneck=${s.topBottleneck || "none"}`);
+          console.log(`     avgCompleteness=${s.avgCompletenessScore ?? "?"}  avgReliability=${s.avgReliabilityScore ?? "?"}`);
+          if (s.byReason) console.log(`     byReason=${JSON.stringify(s.byReason)}`);
         }
       } else {
         console.error(`  ❌ ${check.name}  (HTTP ${status}) – assertion failed`);
