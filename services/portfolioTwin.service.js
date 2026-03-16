@@ -448,6 +448,8 @@ async function getPortfolioTwinSnapshot({ limit = 50 } = {}) {
 
   return {
     generatedAt:        new Date().toISOString(),
+    currency:           "EUR",
+    priceSource:        "market_snapshots",
     autoOpenEnabled:    process.env.PORTFOLIO_TWIN_AUTO_OPEN !== "false",
     budget,
     totalAllocatedEur:  Math.round(totalAllocatedEur  * 100) / 100,
@@ -1156,6 +1158,8 @@ async function syncVirtualPositions() {
     errors:             [],
     dataSources: {
       priceSource: "market_snapshots",
+      quoteProvider: "massive",
+      priceCurrency: "EUR",
       scoreSource: "hqs_scores",
       worldStateSource: "worldState.service",
       allocationSource: "capitalAllocation.service",

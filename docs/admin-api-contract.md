@@ -1,6 +1,6 @@
 # HQS Backend – Admin API Contract
 
-> **Version:** 3.0 (demo-portfolio diagnostics)
+> **Version:** 4.0 (price architecture: Massive primary, EUR-native)
 > **Purpose:** Definitive reference for the Admin / Overview endpoints consumed by
 > `AdminControlCenterView` and any monitoring tooling.  The frontend may rely on
 > every field marked **guaranteed** without defensive null-checks.
@@ -14,9 +14,12 @@
 3. [GET /api/admin/table-health](#get-apiadmintable-health)
 4. [GET /api/admin/overview](#get-apiadminoverview)
 5. [GET /api/admin/demo-portfolio](#get-apiadmindemo-portfolio)
-6. [Data-Status Values](#data-status-values)
-7. [Persistent vs. Runtime Data](#persistent-vs-runtime-data)
-8. [Frontend Safe-Consumption Guide](#frontend-safe-consumption-guide)
+6. [GET /api/admin/portfolio-twin](#get-apiadminportfolio-twin)
+7. [GET /api/admin/virtual-positions](#get-apiadminvirtual-positions)
+8. [Price Architecture](#price-architecture)
+9. [Data-Status Values](#data-status-values)
+10. [Persistent vs. Runtime Data](#persistent-vs-runtime-data)
+11. [Frontend Safe-Consumption Guide](#frontend-safe-consumption-guide)
 
 ---
 
@@ -305,6 +308,8 @@ Primary quote source is **Massive**; **Twelve Data** is used only as a logged fa
   "portfolioId":    "DEMO_ADMIN_20",
   "portfolioName":  "Internes Admin-Prüfportfolio",
   "symbolCount":    20,
+  "currency":       "EUR",
+  "priceSource":    "massive",
   "dataStatus":     "complete",
   "holdings":       [ /* see Holding shape below */ ],
   "partialErrors":  [],
@@ -599,4 +604,214 @@ if (overview.dataStatus === "partial") {
 
 ---
 
-*Last updated: 2026-03-16. Keep this file in sync with `routes/admin.routes.js`, `services/adminInsights.service.js`, and `services/adminDemoPortfolio.service.js`.*
+## GET /api/admin/portfolio-twin
+
+**Purpose:** Current state of the virtual portfolio twin (all virtual positions,
+aggregated PnL/metrics). All monetary values are in **EUR**.
+
+### Response shape
+
+```json
+{
+  "generatedAt":        "2026-01-01T00:00:00Z",
+  "currency":           "EUR",
+  "priceSource":        "market_snapshots",
+  "autoOpenEnabled":    true,
+  "budget":             10000,
+  "totalAllocatedEur":  4500.00,
+  "unrealizedPnlEur":   120.50,
+  "realizedPnlEur":     340.00,
+  "totalPnlEur":        460.50,
+  "openCount":          5,
+  "closedCount":        12,
+  "maxDrawdownPct":     4.2,
+  "currentDrawdownPct": 1.1,
+  "winRate":            0.67,
+  "hitRate":            66.7,
+  "avgGainEur":         80.0,
+  "avgLossEur":         -40.0,
+  "avgGainPct":         0.018,
+  "avgLossPct":         -0.009,
+  "deployedCapitalEur": 4500.0,
+  "deployedCapitalPct": 45.0,
+  "twinMaturity":       { "key": "operational", "label": "Operativ", "color": "#10b981" },
+  "openPct":            29.4,
+  "closedPct":          70.6,
+  "openPositions":      [ /* position rows */ ],
+  "closedPositions":    [ /* position rows */ ],
+  "equityCurve":        [ /* { closedAt, cumulativePnlEur } */ ]
+}
+```
+
+### Top-level guaranteed fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `currency` | `"EUR"` | All monetary values in this response are EUR |
+| `priceSource` | `"market_snapshots"` | Prices come from the snapshot pipeline |
+| `generatedAt` | ISO string | |
+| `budget` | number | `ALLOCATION_BUDGET_EUR` env var (default 10000) |
+| `openCount` | number | |
+| `closedCount` | number | |
+
+### Position row shape
+
+```json
+{
+  "id":                 1,
+  "symbol":             "AAPL",
+  "status":             "open",
+  "entryPrice":         165.20,
+  "currentPrice":       170.10,
+  "currency":           "EUR",
+  "allocatedEur":       500.00,
+  "allocatedPct":       5.0,
+  "convictionTier":     "high",
+  "riskModeAtEntry":    "neutral",
+  "uncertaintyAtEntry": 0.3,
+  "openedAt":           "2026-01-01T00:00:00Z",
+  "updatedAt":          "2026-01-02T00:00:00Z",
+  "closedAt":           null,
+  "exitPrice":          null,
+  "pnlEur":             14.85,
+  "pnlPct":             0.0297,
+  "closeReason":        null,
+  "sourceRunId":        "vp-sync-123456"
+}
+```
+
+### Environment variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `PORTFOLIO_TWIN_AUTO_OPEN` | `"true"` | Set to `"false"` to disable auto-opening positions |
+| `ALLOCATION_BUDGET_EUR` | `10000` | Total virtual budget in EUR |
+
+---
+
+## GET /api/admin/virtual-positions
+
+**Purpose:** Paginated list of virtual positions (admin read + manual trigger).
+
+### Query parameters
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `status` | (all) | `"open"` or `"closed"` to filter |
+| `limit` | `50` | Maximum rows returned (capped at 200) |
+| `offset` | `0` | Pagination offset |
+
+### POST /api/admin/virtual-positions/sync
+
+Manually triggers `syncVirtualPositions()`. The sync report includes
+`dataSources.quoteProvider = "massive"` and `dataSources.priceCurrency = "EUR"`.
+
+---
+
+## Price Architecture
+
+### Overview
+
+All price data in the HQS backend is stored and served in **EUR**.
+
+```
+[Massive API]         (primary)
+      |
+      ↓
+[TwelveData API]      (logged fallback – only used if Massive fails)
+      |
+      ↓
+[providerService]     → raw USD quote
+      |
+      ↓
+[fx.service]          → USD → EUR conversion (exchangerate.host, cached 15 min)
+      |
+      ↓
+[marketService]       → convertSnapshotToEur() stores:
+                         price (EUR), price_usd, currency, fx_rate
+      |
+      ↓
+[market_snapshots table]  (EUR-native)
+      |
+      ↓
+[portfolioTwin, adminDemoPortfolio, opportunityScanner]
+```
+
+### Quote providers
+
+| Provider | Role | Configured by |
+|---|---|---|
+| **Massive** | Primary | `MASSIVE_API_KEY` env var |
+| **Twelve Data** | Fallback (logged) | `TWELVE_DATA_API_KEY` env var |
+
+When Massive fails and Twelve Data is used, `providerService` logs:
+```
+Provider fallback success  { symbol, provider: "TWELVE_DATA" }
+```
+When Massive succeeds (normal case):
+```
+Provider primary success  { symbol, provider: "MASSIVE" }
+```
+
+### FX service (`services/fx.service.js`)
+
+| Step | Source | Notes |
+|---|---|---|
+| 1 | `exchangerate.host` (live API) | Cached for 15 minutes; primary source |
+| 2 | `FX_STATIC_USD_EUR` env var | **Optional** manual override/fallback; only used when live API fails |
+| 3 | Last stored `fx_rate` from `market_snapshots` | DB fallback (per-symbol); used when both 1 and 2 are unavailable |
+| 4 | Price stored as USD, `currency="USD"` | Last resort – logs a warning; normal when no FX source is available |
+
+> **Note:** `FX_STATIC_USD_EUR` is optional. When not set, steps 1 → 3 → 4 apply.
+> Set it as a safety net (e.g. `FX_STATIC_USD_EUR=0.92`) for environments where
+> `exchangerate.host` is unreachable.
+
+### Relevant environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MASSIVE_API_KEY` | — | Massive quote provider API key |
+| `TWELVE_DATA_API_KEY` | — | Twelve Data fallback API key |
+| `MASSIVE_RETRIES` | `3` | Max retry attempts for Massive fetches |
+| `TWELVE_DATA_RETRIES` | `2` | Max retry attempts for Twelve Data fetches |
+| `FX_USD_EUR_URL` | `https://api.exchangerate.host/latest?base=USD&symbols=EUR` | FX rate fetch URL |
+| `FX_CACHE_MS` | `900000` (15 min) | FX rate cache duration in milliseconds |
+| `FX_STATIC_USD_EUR` | — | Static fallback USD→EUR rate (e.g. `0.92`) |
+
+### Currency fields reference
+
+The target state is EUR everywhere. The `market_snapshots` table stores both
+USD (original) and EUR (converted) values; all application-layer responses use EUR.
+When the FX rate is unavailable at snapshot time, `currency="USD"` is stored with
+a warning log — this is a graceful degradation, not a crash.
+
+| Location | Field | Normal value | Degraded (no FX) |
+|---|---|---|---|
+| `market_snapshots` | `price` | EUR | USD |
+| `market_snapshots` | `price_usd` | USD (raw provider value) | USD |
+| `market_snapshots` | `currency` | `"EUR"` | `"USD"` |
+| `market_snapshots` | `fx_rate` | rate used | `NULL` |
+| `virtual_positions` | `entry_price` | EUR | EUR (converted on next FX recovery) |
+| `virtual_positions` | `current_price` | EUR | EUR |
+| `virtual_positions` | `currency` | `"EUR"` | `"EUR"` |
+| Demo portfolio holding | `lastPrice` | EUR | EUR (best effort) |
+| Demo portfolio holding | `currency` | `"EUR"` | `"EUR"` |
+| Portfolio twin position | `entryPrice` / `currentPrice` | EUR | EUR |
+| Portfolio twin position | `currency` | `"EUR"` | `"EUR"` |
+
+### Plausibility checks
+
+`marketService.logPlausibility()` warns when a new snapshot price deviates
+significantly from the previous snapshot (threshold: `PRICE_DEVIATION_WARN_PCT`).
+Railway logs to watch:
+```
+snapshot: price deviation detected  { symbol, previousPriceEur, newPriceEur, deviationPct }
+snapshot: FX rate missing – storing USD price  { symbol }
+fx: primary rate fetch failed  { message, url }
+fx: using static fallback rate  { rate }
+fx: no USD→EUR rate available (live + fallback missing)
+```
+
+---
+
+*Last updated: 2026-03-16. Keep this file in sync with `routes/admin.routes.js`, `services/adminInsights.service.js`, `services/adminDemoPortfolio.service.js`, `services/portfolioTwin.service.js`, and `services/fx.service.js`.*
