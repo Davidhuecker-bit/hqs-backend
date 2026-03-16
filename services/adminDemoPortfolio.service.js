@@ -699,7 +699,7 @@ async function getAdminDemoPortfolio() {
           completenessScore: 0,
           reliabilityScore: 0,
           snapshotAgeHours: 99999,
-          problemWeight: 160,
+          problemWeight: 165, // red(100) + 3 missing core(60) + no news(5)
         },
       });
       statusCounts.red++;
@@ -734,7 +734,9 @@ async function getAdminDemoPortfolio() {
     overallDataStatus = "partial";
   }
 
-  const holdingCount = holdings.length || 1; // avoid division by zero
+  const holdingCount = holdings.length;
+  const avgCompleteness = holdingCount > 0 ? Math.round(totalCompleteness / holdingCount) : 0;
+  const avgReliability  = holdingCount > 0 ? Math.round(totalReliability / holdingCount)  : 0;
 
   return {
     success: true,
@@ -753,8 +755,8 @@ async function getAdminDemoPortfolio() {
       topBottleneck,
       topBottleneckCount,
       byReason: reasonCounts,
-      avgCompletenessScore: Math.round(totalCompleteness / holdingCount),
-      avgReliabilityScore: Math.round(totalReliability / holdingCount),
+      avgCompletenessScore: avgCompleteness,
+      avgReliabilityScore: avgReliability,
       missingSourceCounts,
       staleCounts,
     },
