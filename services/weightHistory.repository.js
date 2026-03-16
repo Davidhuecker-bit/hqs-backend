@@ -215,7 +215,7 @@ async function computeAdaptiveWeights(regime = "neutral") {
       for (const f of factors) {
         await upsertDynamicWeight(
           `FACTOR_${f.toUpperCase()}`,
-          parseFloat(weights[f].toFixed(4)),
+          Number(weights[f].toFixed(4)),
           learningSamples
         );
         mirrored++;

@@ -241,6 +241,8 @@ async function adjustAgentWeights() {
 /**
  * Upserts a single row in `dynamic_weights`.
  * Used by factor-weight mirroring and any future writers.
+ * Note: sample_size is REPLACED (not accumulated) – callers that need
+ * cumulative tracking should handle that in their own SQL.
  *
  * @param {string} agentName  – unique key (e.g. "GROWTH_BIAS" or "FACTOR_MOMENTUM")
  * @param {number} weight     – normalised weight value
@@ -265,7 +267,7 @@ async function upsertDynamicWeight(agentName, weight, sampleSize) {
 /**
  * Returns every row in `dynamic_weights` – both agent weights and factor weights.
  *
- * @returns {Promise<Array<{ agent_name: string, weight: number, sample_size: number, last_updated: string }>>}
+ * @returns {Promise<Array<{ agent_name: string, weight: number, sample_size: number, last_updated: string, created_at: string }>>}
  */
 async function getAllDynamicWeights() {
   try {
