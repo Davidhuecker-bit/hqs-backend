@@ -7,6 +7,7 @@ require("dotenv").config();
 
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
+const { runJob } = require("../utils/jobRunner");
 
 const {
   initEntityMapTable,
@@ -227,53 +228,54 @@ async function loadWatchlistSymbols(limit = 2000) {
     .filter(Boolean);
 }
 
-async function run() {
-  try {
-    await initEntityMapTable();
+async function buildEntityMapBody() {
+  await initEntityMapTable();
 
-    const symbols = await loadWatchlistSymbols(3000);
+  const symbols = await loadWatchlistSymbols(3000);
 
-    if (!symbols.length) {
-      logger.warn("No active watchlist symbols found for entity map build");
-      return;
-    }
-
-    logger.info("Entity map build started", {
-      symbolsLoaded: symbols.length,
-    });
-
-    const entries = symbols.map((symbol) => {
-      const sector = guessSector(symbol);
-      const industry = guessIndustry(symbol, sector);
-
-      return {
-        symbol,
-        company_name: symbol,
-        sector,
-        industry,
-        themes: buildThemes(symbol, sector, industry),
-        commodities: buildCommodities(symbol, sector),
-        countries: buildCountries(symbol),
-        aliases: buildAliases(symbol),
-        is_active: true,
-      };
-    });
-
-    const result = await upsertEntityMapEntries(entries);
-
-    logger.info("Entity map build completed", {
-      symbolsLoaded: symbols.length,
-      insertedOrUpdated: result.insertedOrUpdated,
-    });
-  } catch (error) {
-    logger.error("Entity map build failed", {
-      message: error.message,
-      stack: error.stack,
-    });
-    process.exitCode = 1;
-  } finally {
-    await pool.end().catch(() => {});
+  if (!symbols.length) {
+    logger.warn("[buildEntityMap] No active watchlist symbols found – skipping");
+    return { processedCount: 0, skippedCount: 1, failedCount: 0 };
   }
+
+  logger.info("[buildEntityMap] Building entity map", {
+    symbolsLoaded: symbols.length,
+  });
+
+  const entries = symbols.map((symbol) => {
+    const sector = guessSector(symbol);
+    const industry = guessIndustry(symbol, sector);
+
+    return {
+      symbol,
+      company_name: symbol,
+      sector,
+      industry,
+      themes: buildThemes(symbol, sector, industry),
+      commodities: buildCommodities(symbol, sector),
+      countries: buildCountries(symbol),
+      aliases: buildAliases(symbol),
+      is_active: true,
+    };
+  });
+
+  const result = await upsertEntityMapEntries(entries);
+
+  return {
+    processedCount: result.insertedOrUpdated,
+    skippedCount: 0,
+    failedCount: symbols.length - (result.insertedOrUpdated || 0),
+  };
+}
+
+async function run() {
+  const jobResult = await runJob("buildEntityMap", buildEntityMapBody, { pool });
+
+  if (!jobResult.success && !jobResult.skipped) {
+    process.exitCode = 1;
+  }
+
+  await pool.end().catch(() => {});
 }
 
 run();
