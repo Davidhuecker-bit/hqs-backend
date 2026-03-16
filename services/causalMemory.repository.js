@@ -203,24 +203,88 @@ async function adjustAgentWeights() {
 
   const normalised = normaliseWeights(current);
 
-  // Persist updated weights
+  // Persist updated weights via UPSERT (defensive: creates row if missing)
+  let upserted = 0;
   try {
     for (const agent of AGENTS) {
       const sampleRow = rows.find((r) => r.agent_name === agent);
+      const sampleDelta = sampleRow ? Number(sampleRow.total) : 0;
       await pool.query(
-        `UPDATE dynamic_weights
-         SET weight       = $1,
-             sample_size  = sample_size + $2,
-             last_updated = NOW()
-         WHERE agent_name = $3`,
-        [normalised[agent], sampleRow ? Number(sampleRow.total) : 0, agent]
+        `INSERT INTO dynamic_weights (agent_name, weight, sample_size, last_updated, created_at)
+         VALUES ($1, $2, $3, NOW(), NOW())
+         ON CONFLICT (agent_name) DO UPDATE
+         SET weight       = EXCLUDED.weight,
+             sample_size  = dynamic_weights.sample_size + EXCLUDED.sample_size,
+             last_updated = NOW()`,
+        [agent, normalised[agent], sampleDelta]
       );
+      upserted++;
     }
+    logger.info("causalMemory.adjustAgentWeights: persisted", {
+      upserted,
+      adjusted,
+      source: "agent_forecasts",
+      agents: AGENTS,
+      weights: normalised,
+    });
   } catch (err) {
     logger.warn("causalMemory.adjustAgentWeights: persist failed", { message: err.message });
   }
 
   return { adjusted, weights: normalised };
+}
+
+/* =========================================================
+   UPSERT DYNAMIC WEIGHT  (central write function)
+========================================================= */
+
+/**
+ * Upserts a single row in `dynamic_weights`.
+ * Used by factor-weight mirroring and any future writers.
+ *
+ * @param {string} agentName  – unique key (e.g. "GROWTH_BIAS" or "FACTOR_MOMENTUM")
+ * @param {number} weight     – normalised weight value
+ * @param {number} sampleSize – learning basis size (replaces, does NOT accumulate)
+ */
+async function upsertDynamicWeight(agentName, weight, sampleSize) {
+  await pool.query(
+    `INSERT INTO dynamic_weights (agent_name, weight, sample_size, last_updated, created_at)
+     VALUES ($1, $2, $3, NOW(), NOW())
+     ON CONFLICT (agent_name) DO UPDATE
+     SET weight       = EXCLUDED.weight,
+         sample_size  = EXCLUDED.sample_size,
+         last_updated = NOW()`,
+    [agentName, weight, sampleSize]
+  );
+}
+
+/* =========================================================
+   GET ALL DYNAMIC WEIGHTS  (unified read)
+========================================================= */
+
+/**
+ * Returns every row in `dynamic_weights` – both agent weights and factor weights.
+ *
+ * @returns {Promise<Array<{ agent_name: string, weight: number, sample_size: number, last_updated: string }>>}
+ */
+async function getAllDynamicWeights() {
+  try {
+    const res = await pool.query(
+      `SELECT agent_name, weight, sample_size, last_updated, created_at
+       FROM dynamic_weights
+       ORDER BY agent_name`
+    );
+    return res.rows.map((r) => ({
+      agent_name: r.agent_name,
+      weight: Number(r.weight),
+      sample_size: Number(r.sample_size),
+      last_updated: r.last_updated,
+      created_at: r.created_at,
+    }));
+  } catch (err) {
+    logger.warn("causalMemory.getAllDynamicWeights: DB error", { message: err.message });
+    return [];
+  }
 }
 
 /* =========================================================
@@ -294,6 +358,8 @@ module.exports = {
   initDynamicWeightsTable,
   getAgentWeights,
   adjustAgentWeights,
+  upsertDynamicWeight,
+  getAllDynamicWeights,
   buildMetaRationale,
   AGENTS,
   DEFAULT_WEIGHT,

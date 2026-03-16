@@ -30,7 +30,7 @@ const { buildAdminActionPlan } = require("../engines/adminActionPlan.engine");
 const { getNearMisses, evaluateSavedCapital } = require("../services/autonomyAudit.repository");
 const { getInterMarketCorrelation } = require("../services/interMarketCorrelation.service");
 const { getAgentWisdomScores } = require("../services/agentForecast.repository");
-const { getAgentWeights, adjustAgentWeights } = require("../services/causalMemory.repository");
+const { getAgentWeights, adjustAgentWeights, getAllDynamicWeights } = require("../services/causalMemory.repository");
 const {
   getSharpenedSectorSnapshot,
   getSectorDefinitions,
@@ -649,6 +649,20 @@ router.post("/agent-weights/recalibrate", async (req, res) => {
     return res.json({ success: true, ...result, generatedAt: new Date().toISOString() });
   } catch (error) {
     logger.error("Admin agent-weights recalibrate error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/dynamic-weights
+ * Returns ALL rows from dynamic_weights – agent weights and factor weights.
+ */
+router.get("/dynamic-weights", async (req, res) => {
+  try {
+    const weights = await getAllDynamicWeights();
+    return res.json({ success: true, weights, count: weights.length, generatedAt: new Date().toISOString() });
+  } catch (error) {
+    logger.error("Admin dynamic-weights route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -1,6 +1,7 @@
 "use strict";
 
 const { Pool } = require("pg");
+const { upsertDynamicWeight } = require("./causalMemory.repository");
 
 // optional logger (falls vorhanden)
 let logger = null;
@@ -198,12 +199,39 @@ async function computeAdaptiveWeights(regime = "neutral") {
       relative: reinforcement.relative / sum,
     };
 
+    const learningSamples = res.rows.length;
+
     await saveWeightSnapshot(normalizedRegime, weights, {
-      learningSamples: res.rows.length,
+      learningSamples,
       mode: "reinforcement",
       updatedAt: new Date().toISOString(),
       usedRegime: normalizedRegime,
     });
+
+    // ── Mirror current factor weights to dynamic_weights (live state) ──
+    try {
+      const factors = ["momentum", "quality", "stability", "relative"];
+      let mirrored = 0;
+      for (const f of factors) {
+        await upsertDynamicWeight(
+          `FACTOR_${f.toUpperCase()}`,
+          parseFloat(weights[f].toFixed(4)),
+          learningSamples
+        );
+        mirrored++;
+      }
+      if (logger?.info) {
+        logger.info("dynamic_weights: factor weights mirrored", {
+          mirrored,
+          regime: normalizedRegime,
+          source: "factor_history",
+          sampleSize: learningSamples,
+          weights,
+        });
+      }
+    } catch (mirrorErr) {
+      if (logger?.warn) logger.warn("dynamic_weights: factor mirror failed (non-fatal)", { message: mirrorErr.message });
+    }
 
     if (logger?.info) logger.info("Adaptive weights updated", { regime: normalizedRegime, weights });
     else console.log(`🧠 Adaptive weights updated for ${normalizedRegime}:`, weights);
