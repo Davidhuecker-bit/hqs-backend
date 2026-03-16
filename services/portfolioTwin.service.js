@@ -1142,9 +1142,9 @@ async function syncVirtualPositions() {
           symbol, hqs_score, momentum, quality, stability, regime, created_at
         FROM hqs_scores
         WHERE hqs_score >= $1
-          AND created_at >= NOW() - INTERVAL '${SYNC_SCORE_MAX_AGE_H} hours'
+          AND created_at >= NOW() - make_interval(hours => $2)
         ORDER BY symbol, created_at DESC
-      `, [SYNC_MIN_HQS_SCORE]);
+      `, [SYNC_MIN_HQS_SCORE, SYNC_SCORE_MAX_AGE_H]);
 
       // Sort by score descending and limit to configured max
       candidates = hqsRes.rows
@@ -1252,7 +1252,7 @@ function _logSyncReport(report, riskMode, uncertainty) {
     positionsSkipped:   report.positionsSkipped,
     skippedSymbols:    report.skippedSymbols.slice(0, 15),
     riskMode,
-    uncertainty:       Number(Number(uncertainty).toFixed(2)),
+    uncertainty:       parseFloat(safeNum(uncertainty, 0).toFixed(2)),
     priceSource:       "market_snapshots",
     scoreSource:       "hqs_scores",
     errorCount:        report.errors.length,
