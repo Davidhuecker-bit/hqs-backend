@@ -102,6 +102,7 @@ function normalizeMassiveData(raw, symbolFallback) {
     changesPercentage,
     volume: num(raw?.v, null),
     source: "MASSIVE",
+    currency: "USD",
     timestamp: Date.now(),
   };
 }
@@ -132,6 +133,7 @@ function normalizeTwelveData(raw, symbolFallback) {
     changesPercentage,
     volume: num(raw?.volume, null),
     source: "TWELVE_DATA",
+    currency: "USD",
     timestamp: Date.now(),
   };
 }
@@ -285,6 +287,11 @@ async function fetchQuote(symbol) {
 
       if (lastError && logger?.info) {
         logger.info("Provider fallback success", {
+          symbol: sym,
+          provider: provider.name,
+        });
+      } else if (logger?.info) {
+        logger.info("Provider primary success", {
           symbol: sym,
           provider: provider.name,
         });
