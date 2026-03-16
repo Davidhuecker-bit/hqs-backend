@@ -10,6 +10,7 @@ const {
   getAuditFeed,
   getPortfolioAuditHistory,
 } = require("../services/mockPortfolio.service");
+const { getAdminDemoPortfolio } = require("../services/adminDemoPortfolio.service");
 const {
   saveAdminSnapshot,
   loadAdminSnapshotBefore,
@@ -1444,6 +1445,27 @@ router.get("/table-health", async (req, res) => {
       red:    0,
       tables: [],
       error:  error.message,
+    });
+  }
+});
+
+/* =========================================================
+   ADMIN DEMO PORTFOLIO  (real DB data, no mocks)
+========================================================= */
+
+router.get("/demo-portfolio", async (req, res) => {
+  try {
+    const result = await getAdminDemoPortfolio();
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin demo-portfolio route error", { message: error.message });
+    return res.json({
+      success: false,
+      dataStatus: "error",
+      holdings: [],
+      partialErrors: [{ symbol: "*", error: error.message }],
+      generatedAt: new Date().toISOString(),
+      summary: { total: 0, green: 0, yellow: 0, red: 0, topBottleneck: null },
     });
   }
 });
