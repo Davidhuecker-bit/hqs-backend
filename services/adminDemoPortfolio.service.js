@@ -208,7 +208,7 @@ async function loadSnapshotsBatch(symbols) {
             fxReason = row.fx_rate ? "row_fx_rate" : (rateToUse ? "fx_service_or_cache" : "none");
           } else if (Number.isFinite(rateToUse)) {
             fxReason = "conversion_failed";
-            priceEur = null; // avoid leaking USD
+            priceEur = null; // avoid returning an unconverted USD price when EUR conversion fails
           } else {
             fxReason = "fx_missing";
             priceEur = null;
@@ -251,6 +251,7 @@ async function loadSnapshotsBatch(symbols) {
       if (!primary) continue;
 
       let changePercent = null;
+      let changePercentSource = null;
       const basePrevClose = primary.row.previous_close !== null ? Number(primary.row.previous_close) : null;
       let previousClose = basePrevClose;
       if (primary.rowCurrency === "USD" && basePrevClose !== null) {
@@ -262,6 +263,7 @@ async function loadSnapshotsBatch(symbols) {
         const val = Number(primary.row.changes_percentage);
         if (Number.isFinite(val)) {
           changePercent = val;
+          changePercentSource = "provider";
           selectionLog.push("changePercent from provider changes_percentage");
         }
       }
@@ -269,6 +271,7 @@ async function loadSnapshotsBatch(symbols) {
       // 2. Compute from price vs previous_close (if provider gave previousClose but not changePercent)
       if (changePercent === null && primary.priceEur !== null && previousClose !== null && previousClose !== 0) {
         changePercent = ((primary.priceEur - previousClose) / previousClose) * 100;
+        changePercentSource = "previous_close";
         selectionLog.push("changePercent computed from previous_close");
       }
 
@@ -277,6 +280,7 @@ async function loadSnapshotsBatch(symbols) {
         const prevPrice = secondary.priceEur;
         if (prevPrice !== 0) {
           changePercent = ((primary.priceEur - prevPrice) / prevPrice) * 100;
+          changePercentSource = "secondary_snapshot";
           selectionLog.push("changePercent computed from secondary snapshot");
         }
       }
@@ -314,6 +318,7 @@ async function loadSnapshotsBatch(symbols) {
           hardStale: primary.isHardStale,
           fxRate: primary.rateToUse ?? null,
           secondaryUsed: Boolean(secondary),
+          changePercentSource,
         },
       });
 
@@ -338,7 +343,7 @@ async function loadSnapshotsBatch(symbols) {
           currency: primary.rowCurrency,
           fxApplied: primary.fxApplied,
           fxSource: primary.fxReason,
-          changePercentSource: selectionLog.find((s) => s.startsWith("changePercent")) || null,
+          changePercentSource: changePercentSource,
           priceSource: primary.row.source || null,
         });
       }
