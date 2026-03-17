@@ -789,6 +789,8 @@ async function getAdminDemoPortfolio() {
     portfolioId: "DEMO_ADMIN_20",
     portfolioName: "Internes Admin-Prüfportfolio",
     symbolCount: symbols.length,
+    currency: "EUR",
+    priceSource: "massive",
     dataStatus: overallDataStatus,
     holdings,
     partialErrors: partialErrors.length > 0 ? partialErrors : [],
