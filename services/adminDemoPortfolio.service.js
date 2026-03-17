@@ -175,8 +175,20 @@ async function loadSnapshotsBatch(symbols) {
         latest.fx_rate !== null ? Number(latest.fx_rate) : await ensureFxRate();
       const latestBasePrice = basePrice(latest);
       let price = latestBasePrice !== null ? Number(latestBasePrice) : null;
+      let fxApplied = false;
       if (latestCurrency === "USD") {
-        price = convertUsdToEur(price, latestRate) ?? price;
+        const converted = convertUsdToEur(price, latestRate);
+        if (converted !== null) {
+          price = converted;
+          fxApplied = true;
+        }
+        if (!latestRate) {
+          logger.warn("adminDemoPortfolio: FX rate unavailable for symbol", {
+            symbol,
+            currency: latestCurrency,
+            priceSource: latest.source || null,
+          });
+        }
       }
 
       // Determine changePercent from best available source
@@ -226,6 +238,8 @@ async function loadSnapshotsBatch(symbols) {
         changePercent,
         currency: latestCurrency === "USD" && latestRate ? "EUR" : latestCurrency,
         priceSource: latest.source || null,
+        fxApplied,
+        originalCurrency: fxApplied ? "USD" : null,
       });
     }
   } catch (err) {
@@ -626,6 +640,8 @@ async function getAdminDemoPortfolio() {
         lastPrice: snap?.price ?? null,
         currency: snap?.currency || "EUR",
         priceSource: snap?.priceSource || null,
+        fxApplied: snap?.fxApplied ?? null,
+        originalCurrency: snap?.originalCurrency ?? null,
         changePercent,
         priceChangeAvailable: changePercent !== null,
         hqsScore: score?.hqsScore ?? null,
