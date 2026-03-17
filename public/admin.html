@@ -1315,6 +1315,7 @@
       <div id="opsTwinMetrics" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
         <div style="color:var(--text-muted);font-size:12px">Wird geladen…</div>
       </div>
+      <div id="opsTwinMeta" style="font-size:12px;color:var(--text-muted);margin-top:6px">–</div>
     </div>
 
     <!-- Biggest Blockers + Next Step -->
@@ -1433,6 +1434,7 @@ let portfolioData   = [];
 let auditFeedData   = [];
 let activeFilter    = 'all';
 const API_BASE      = '/api/admin';
+const DEFAULT_CURRENCY = 'EUR';
 
 // Cache per-symbol audit history so we don't re-fetch on every toggle
 const historyCache  = {};
@@ -1440,6 +1442,37 @@ const HISTORY_LIMIT = 3;
 
 // Current deep-dive level (1=Fokus, 2=Mehr Kontext, 3=Technische Tiefe)
 let currentDeepDiveLevel = 1;
+
+/* ═══════════════════ CURRENCY / NUMBER HELPERS ═══════════════════ */
+function normalizeCurrency(currencyInput) {
+  const normalized = String(currencyInput || '').trim().toUpperCase();
+  return normalized.length > 0 ? normalized : DEFAULT_CURRENCY;
+}
+
+function formatCurrency(value, currency, opts = {}) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '–';
+  const currencyCode = normalizeCurrency(currency);
+  const minimumFractionDigits = opts.minimumFractionDigits ?? 2;
+  const maximumFractionDigits = opts.maximumFractionDigits ?? 2;
+  try {
+    return new Intl.NumberFormat('de-DE', {
+      style: 'currency',
+      currency: currencyCode,
+      minimumFractionDigits,
+      maximumFractionDigits,
+    }).format(num);
+  } catch (_) {
+    const prefix = currencyCode === 'EUR' ? '€' : `${currencyCode} `;
+    return prefix + num.toLocaleString('de-DE', { minimumFractionDigits, maximumFractionDigits });
+  }
+}
+
+function formatPercent(value, fractionDigits = 1) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '–';
+  return num.toLocaleString('de-DE', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits }) + '%';
+}
 
 /* ═══════════════════ DEEP DIVE ═══════════════════ */
 function setDeepDive(level) {
@@ -1959,9 +1992,10 @@ async function loadSavedCapital() {
 
     const el = document.getElementById('statSavedCapital');
     if (el) {
-      const total = Number(data.totalSavedCapital) || 0;
-      el.textContent = total > 0
-        ? `€ ${total.toLocaleString('de-DE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+      const currency = data.currency || data.priceCurrency || DEFAULT_CURRENCY;
+      const total = Number(data.totalSavedCapital);
+      el.textContent = Number.isFinite(total) && total > 0
+        ? formatCurrency(total, currency, { minimumFractionDigits: 0, maximumFractionDigits: 0 })
         : `${data.blockedSignalsCount || 0} Blocks`;
     }
   } catch (_) {
@@ -2357,21 +2391,30 @@ async function loadOperationalStatus() {
     if (twinEl) {
       const mat    = twin.twinMaturity || {};
       const matCol = mat.color || 'var(--text-muted)';
-      const fmt = (v, suffix='') => v !== null && v !== undefined ? `${v}${suffix}` : '–';
+      const twinCurrency = twin.currency || twin.priceCurrency || DEFAULT_CURRENCY;
+      const fmtCount = (v) => (v === 0 || Number.isFinite(Number(v))) ? Number(v) : '–';
+      const fmtCur   = (v, opts) => formatCurrency(v, twinCurrency, opts);
       twinEl.innerHTML = [
         { label: 'Reife',          val: `<span style="color:${matCol};font-weight:700">${esc(mat.label || '–')}</span>` },
-        { label: 'Offen / Geschl.', val: `${fmt(twin.openCount)} / ${fmt(twin.closedCount)}` },
-        { label: 'Win-Rate',       val: fmt(twin.hitRate, ' %') },
-        { label: 'Ø Gewinn',       val: twin.avgGainEur !== null ? `€ ${twin.avgGainEur}` : '–' },
-        { label: 'Ø Verlust',      val: twin.avgLossEur !== null ? `€ ${twin.avgLossEur}` : '–' },
-        { label: 'Deployed',       val: twin.deployedCapitalPct !== null ? `${twin.deployedCapitalPct} %` : '–' },
-        { label: 'Drawdown',       val: fmt(twin.maxDrawdownPct, ' %') },
-        { label: 'Gesamt PnL',     val: twin.totalPnlEur !== null ? `€ ${twin.totalPnlEur}` : '–' },
+        { label: 'Offen / Geschl.', val: `${fmtCount(twin.openCount)} / ${fmtCount(twin.closedCount)}` },
+        { label: 'Win-Rate',       val: formatPercent(twin.hitRate, 1) },
+        { label: 'Ø Gewinn',       val: fmtCur(twin.avgGainEur) },
+        { label: 'Ø Verlust',      val: fmtCur(twin.avgLossEur) },
+        { label: 'Deployed',       val: formatPercent(twin.deployedCapitalPct, 1) },
+        { label: 'Drawdown',       val: formatPercent(twin.maxDrawdownPct, 1) },
+        { label: 'Gesamt PnL',     val: fmtCur(twin.totalPnlEur) },
       ].map(m => `
 <div style="background:var(--bg-card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;text-align:center">
   <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px">${esc(m.label)}</div>
   <div style="font-size:13px;font-weight:700;color:var(--text)">${m.val}</div>
 </div>`).join('');
+    }
+
+    const twinMetaEl = document.getElementById('opsTwinMeta');
+    if (twinMetaEl) {
+      const priceSource = twin.priceSource || twin.price_source || 'market_snapshots';
+      const priceCurrency = normalizeCurrency(twin.priceCurrency || twin.currency || DEFAULT_CURRENCY);
+      twinMetaEl.textContent = `Quelle: ${priceSource} – Währung: ${priceCurrency}`;
     }
 
     // ── Blockers ───────────────────────────────────────────────────────────
@@ -2407,6 +2450,7 @@ async function loadTwin4() {
     const data = await res.json();
     if (!data.success) return;
     const s4 = data.stage4 || {};
+    const currency = s4.currency || s4.priceCurrency || DEFAULT_CURRENCY;
 
     // Risk mode badge
     const rmEl = document.getElementById('twin4RiskMode');
@@ -2420,8 +2464,8 @@ async function loadTwin4() {
     // ── Metrics row ─────────────────────────────────────────────────────
     const metricsEl = document.getElementById('twin4Metrics');
     if (metricsEl) {
-      const fmtPct = (v) => v !== null && v !== undefined ? `${v} %` : '–';
-      const fmtEur = (v) => v !== null && v !== undefined ? `€ ${v}` : '–';
+      const fmtPct = (v) => formatPercent(v, 1);
+      const fmtEur = (v) => formatCurrency(v, currency);
       const metricData = [
         { label: 'Offen', val: s4.openPositionsCount ?? '–' },
         { label: 'Unrealized PnL', val: fmtEur(s4.unrealizedPnlEur) },
