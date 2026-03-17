@@ -53,7 +53,15 @@ const CHECKS = [
   {
     name:    "GET /api/admin/demo-portfolio",
     path:    "/api/admin/demo-portfolio",
-    assert:  (body) => body.success === true && Array.isArray(body.holdings) && body.summary != null && body.currency === "EUR",
+    assert:  (body) => {
+      const holdings = body.holdings || [];
+      const allEur = holdings.every((h) => (h?.currency || "EUR") === "EUR");
+      const noStaleSnapshot = holdings.every((h) => {
+        const age = h?.dataAgeHours?.snapshotAgeHours;
+        return age == null || age <= (process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS ? Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) : 72);
+      });
+      return body.success === true && Array.isArray(holdings) && body.summary != null && body.currency === "EUR" && allEur && noStaleSnapshot;
+    },
     shape: ["success", "generatedAt", "dataStatus", "holdings", "summary", "portfolioId", "symbolCount", "currency", "priceSource"],
   },
   {
@@ -120,6 +128,11 @@ async function run() {
           console.log(`     currency=${body.currency ?? "?"}  priceSource=${body.priceSource ?? "?"}  total=${s.total}  green=${s.green}  yellow=${s.yellow}  red=${s.red}  topBottleneck=${s.topBottleneck ?? "none"}`);
           console.log(`     avgCompleteness=${s.avgCompletenessScore ?? "?"}  avgReliability=${s.avgReliabilityScore ?? "?"}`);
           if (s.byReason) console.log(`     byReason=${JSON.stringify(s.byReason)}`);
+          const holdings = body.holdings || [];
+          const nonEur = holdings.filter((h) => (h.currency || "EUR") !== "EUR");
+          const staleSnapshots = holdings.filter((h) => (h.dataAgeHours?.snapshotAgeHours ?? 0) > (process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS ? Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) : 72));
+          const missingNews = holdings.filter((h) => (h.latestNewsCount || 0) === 0);
+          console.log(`     mixedCurrency=${nonEur.length} staleSnapshots>${process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS || 72}h=${staleSnapshots.length} holdingsMissingNews=${missingNews.length}`);
           // Currency/FX diagnostics on first holding
           const firstHolding = (body.holdings || [])[0];
           if (firstHolding) {
