@@ -189,7 +189,7 @@ async function loadSnapshotsBatch(symbols) {
           cachedValidFxRate = rateToUse;
         } else {
           rateToUse = await ensureFxRate();
-          if ((!rateToUse || !(Number.isFinite(rateToUse) && rateToUse > 0)) && cachedValidFxRate) {
+          if (((!Number.isFinite(rateToUse)) || rateToUse <= 0) && cachedValidFxRate) {
             selectionLog.push(`using cachedValidFxRate for ${symbol}`);
             rateToUse = cachedValidFxRate;
           }
@@ -325,7 +325,7 @@ async function loadSnapshotsBatch(symbols) {
         });
       }
       if (primary.isHardStale) {
-        logger.warn("adminDemoPortfolio: hard-stale snapshot skipped", {
+        logger.warn("adminDemoPortfolio: hard-stale snapshot selected; price dropped", {
           symbol,
           createdAt: primary.createdAtIso,
           ageHours: primary.ageHours,
