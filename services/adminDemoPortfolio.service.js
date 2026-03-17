@@ -150,8 +150,8 @@ async function loadSnapshotsBatch(symbols) {
       return fxRateCache;
     };
 
-    // Fetch several recent snapshots per symbol so we can choose the best EUR-normalized row
-    // and still compute changePercent even if the latest row is stale or invalid.
+    // Fetch several recent snapshots per symbol (limit 4) so we can choose the best EUR-normalized row
+    // and still compute changePercent even if the latest rows are stale or missing prices.
     const res = await pool.query(`
       SELECT symbol, price, price_usd, currency, fx_rate, source, created_at, changes_percentage, previous_close, rn
       FROM (
@@ -301,9 +301,16 @@ async function loadSnapshotsBatch(symbols) {
       const selectionStatus = primary.isHardStale
         ? hardStaleReason
         : (primary.hasPrice ? "ok" : "no-price");
-      selectionLog.push(
-        `selected snapshot ${primary.rowCurrency} createdAt=${primary.createdAtIso} ageH=${primary.ageHours} fxApplied=${primary.fxApplied} fxSource=${primary.fxReason || "n/a"} source=${primary.row.source || "?"} status=${selectionStatus}`
-      );
+      selectionLog.push({
+        event: "selected_snapshot",
+        currency: primary.rowCurrency,
+        createdAt: primary.createdAtIso,
+        ageHours: primary.ageHours,
+        fxApplied: primary.fxApplied,
+        fxSource: primary.fxReason || "n/a",
+        priceSource: primary.row.source || null,
+        status: selectionStatus,
+      });
 
       const finalPrice = primary.isHardStale ? null : primary.priceEur;
       const finalChangePercent = finalPrice === null ? null : changePercent;
