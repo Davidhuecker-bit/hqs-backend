@@ -22,6 +22,7 @@ const https = require("https");
 const http  = require("http");
 
 const BASE_URL = (process.argv[2] || process.env.SMOKE_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const DEMO_SNAPSHOT_HARD_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS || 72);
 
 const REQUEST_TIMEOUT_MS = 10000;
 
@@ -58,7 +59,7 @@ const CHECKS = [
       const allEur = holdings.every((h) => (h?.currency || "EUR") === "EUR");
       const noStaleSnapshot = holdings.every((h) => {
         const age = h?.dataAgeHours?.snapshotAgeHours;
-        return age == null || age <= (process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS ? Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) : 72);
+        return age == null || age <= DEMO_SNAPSHOT_HARD_STALE_HOURS;
       });
       return body.success === true && Array.isArray(holdings) && body.summary != null && body.currency === "EUR" && allEur && noStaleSnapshot;
     },
@@ -130,9 +131,9 @@ async function run() {
           if (s.byReason) console.log(`     byReason=${JSON.stringify(s.byReason)}`);
           const holdings = body.holdings || [];
           const nonEur = holdings.filter((h) => (h.currency || "EUR") !== "EUR");
-          const staleSnapshots = holdings.filter((h) => (h.dataAgeHours?.snapshotAgeHours ?? 0) > (process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS ? Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) : 72));
+          const staleSnapshots = holdings.filter((h) => (h.dataAgeHours?.snapshotAgeHours ?? 0) > DEMO_SNAPSHOT_HARD_STALE_HOURS);
           const missingNews = holdings.filter((h) => (h.latestNewsCount || 0) === 0);
-          console.log(`     mixedCurrency=${nonEur.length} staleSnapshots>${process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS || 72}h=${staleSnapshots.length} holdingsMissingNews=${missingNews.length}`);
+          console.log(`     mixedCurrency=${nonEur.length} staleSnapshots>${DEMO_SNAPSHOT_HARD_STALE_HOURS}h=${staleSnapshots.length} holdingsMissingNews=${missingNews.length}`);
           // Currency/FX diagnostics on first holding
           const firstHolding = (body.holdings || [])[0];
           if (firstHolding) {

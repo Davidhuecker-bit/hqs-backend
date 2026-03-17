@@ -140,12 +140,12 @@ async function loadSnapshotsBatch(symbols) {
   const map = new Map();
   try {
     let fxRateCache = null;
-    let lastKnownFxRate = null;
+    let cachedValidFxRate = null;
     const ensureFxRate = async () => {
       if (fxRateCache !== null) return fxRateCache;
       fxRateCache = await getUsdToEurRate();
       if (Number.isFinite(fxRateCache) && fxRateCache > 0) {
-        lastKnownFxRate = fxRateCache;
+        cachedValidFxRate = fxRateCache;
       }
       return fxRateCache;
     };
@@ -186,12 +186,12 @@ async function loadSnapshotsBatch(symbols) {
         let rateToUse = null;
         if (row.fx_rate !== null && Number.isFinite(Number(row.fx_rate)) && Number(row.fx_rate) > 0) {
           rateToUse = Number(row.fx_rate);
-          lastKnownFxRate = rateToUse;
+          cachedValidFxRate = rateToUse;
         } else {
           rateToUse = await ensureFxRate();
-          if ((!rateToUse || !(Number.isFinite(rateToUse) && rateToUse > 0)) && lastKnownFxRate) {
-            selectionLog.push(`using lastKnownFxRate for ${symbol}`);
-            rateToUse = lastKnownFxRate;
+          if ((!rateToUse || !(Number.isFinite(rateToUse) && rateToUse > 0)) && cachedValidFxRate) {
+            selectionLog.push(`using cachedValidFxRate for ${symbol}`);
+            rateToUse = cachedValidFxRate;
           }
         }
 
@@ -290,23 +290,20 @@ async function loadSnapshotsBatch(symbols) {
 
       const selectedCurrency = "EUR";
       const hardStaleReason = primary.isHardStale ? `hard-stale>${DEMO_SNAPSHOT_HARD_STALE_HOURS}h` : null;
-      if (primary.isHardStale || !primary.hasPrice) {
-        selectionLog.push(`primary snapshot unusable (${hardStaleReason || "no-price"})`);
-      }
+      const selectionStatus = primary.isHardStale
+        ? hardStaleReason
+        : (primary.hasPrice ? "ok" : "no-price");
       selectionLog.push(
-        `selected snapshot ${primary.rowCurrency} createdAt=${primary.createdAtIso} ageH=${primary.ageHours} fxApplied=${primary.fxApplied} fxSource=${primary.fxReason || "n/a"} source=${primary.row.source || "?"}`
+        `selected snapshot ${primary.rowCurrency} createdAt=${primary.createdAtIso} ageH=${primary.ageHours} fxApplied=${primary.fxApplied} fxSource=${primary.fxReason || "n/a"} source=${primary.row.source || "?"} status=${selectionStatus}`
       );
 
-      if (primary.isHardStale) {
-        // Null out extremely stale prices to avoid presenting as current
-        primary.priceEur = null;
-        changePercent = null;
-      }
+      const finalPrice = primary.isHardStale ? null : primary.priceEur;
+      const finalChangePercent = finalPrice === null ? null : changePercent;
 
       map.set(symbol, {
-        price: primary.priceEur,
+        price: finalPrice,
         createdAt: primary.createdAtIso,
-        changePercent,
+        changePercent: finalChangePercent,
         currency: selectedCurrency,
         priceSource: primary.row.source || null,
         fxApplied: primary.fxApplied,
@@ -320,7 +317,7 @@ async function loadSnapshotsBatch(symbols) {
         },
       });
 
-      if (primary.rowCurrency === "USD" && primary.priceEur === null) {
+      if (primary.rowCurrency === "USD" && finalPrice === null) {
         logger.warn("adminDemoPortfolio: USD snapshot could not be converted; dropping price", {
           symbol,
           createdAt: primary.createdAtIso,
@@ -738,7 +735,7 @@ async function getAdminDemoPortfolio() {
         news:     newsArr.length > 0 ? newsArr[0].publishedAt : null,
       };
 
-      if (snap?.price === null || snap?.price === undefined || snap?.snapshotDebug?.hardStale) {
+      if (snap?.price == null || snap?.snapshotDebug?.hardStale) {
         logger.info("adminDemoPortfolio: snapshot missing or stale for symbol", {
           symbol,
           reason: snap?.snapshotDebug?.hardStale ? "hard-stale-snapshot" : "no-price",
