@@ -174,7 +174,7 @@ async function loadSnapshotsBatch(symbols) {
     for (const [symbol, rows] of grouped) {
       if (!rows?.length) continue;
 
-      const selectionLog = [];
+      const selectionEvents = [];
       const candidates = [];
 
       for (const row of rows) {
@@ -193,7 +193,7 @@ async function loadSnapshotsBatch(symbols) {
           rateToUse = await ensureFxRate();
           rateSource = "fx_service";
           if (((!Number.isFinite(rateToUse)) || rateToUse <= 0) && cachedValidFxRate) {
-            selectionLog.push(`using cachedValidFxRate for ${symbol}`);
+            selectionEvents.push(`using cachedValidFxRate for ${symbol}`);
             rateToUse = cachedValidFxRate;
             rateSource = "cached_valid_fx_rate";
           }
@@ -268,7 +268,7 @@ async function loadSnapshotsBatch(symbols) {
         if (Number.isFinite(val)) {
           changePercent = val;
           changePercentSource = "provider";
-          selectionLog.push("changePercent from provider changes_percentage");
+          selectionEvents.push("changePercent from provider changes_percentage");
         }
       }
 
@@ -276,7 +276,7 @@ async function loadSnapshotsBatch(symbols) {
       if (changePercent === null && primary.priceEur !== null && previousClose !== null && previousClose !== 0) {
         changePercent = ((primary.priceEur - previousClose) / previousClose) * 100;
         changePercentSource = "previous_close";
-        selectionLog.push("changePercent computed from previous_close");
+        selectionEvents.push("changePercent computed from previous_close");
       }
 
       // 3. Compute from latest price vs second-most-recent usable snapshot price
@@ -285,7 +285,7 @@ async function loadSnapshotsBatch(symbols) {
         if (prevPrice !== 0) {
           changePercent = ((primary.priceEur - prevPrice) / prevPrice) * 100;
           changePercentSource = "secondary_snapshot";
-          selectionLog.push("changePercent computed from secondary snapshot");
+          selectionEvents.push("changePercent computed from secondary snapshot");
         }
       }
 
@@ -297,11 +297,11 @@ async function loadSnapshotsBatch(symbols) {
       }
 
       const selectedCurrency = "EUR";
-      const hardStaleReason = primary.isHardStale ? `hard-stale>${DEMO_SNAPSHOT_HARD_STALE_HOURS}h` : null;
+      const hardStaleStatus = primary.isHardStale ? `hard-stale>${DEMO_SNAPSHOT_HARD_STALE_HOURS}h` : null;
       const selectionStatus = primary.isHardStale
-        ? hardStaleReason
+        ? hardStaleStatus
         : (primary.hasPrice ? "ok" : "no-price");
-      selectionLog.push({
+      selectionEvents.push({
         event: "selected_snapshot",
         currency: primary.rowCurrency,
         createdAt: primary.createdAtIso,
@@ -324,7 +324,7 @@ async function loadSnapshotsBatch(symbols) {
         fxApplied: primary.fxApplied,
         originalCurrency: primary.rowCurrency === "EUR" ? null : primary.rowCurrency,
         snapshotDebug: {
-          selectionLog,
+          selectionEvents,
           ageHours: primary.ageHours,
           hardStale: primary.isHardStale,
           fxRate: primary.rateToUse ?? null,
@@ -554,7 +554,7 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   const scoreFresh    = scoreOk    && isFresh(scoreAgeHours, DEMO_SCORE_STALE_HOURS);
   const metricsFresh  = metricsOk  && isFresh(metricsAgeHours, DEMO_METRICS_STALE_HOURS);
   const newsFresh     = newsPresent && isFresh(newsAgeHours, DEMO_NEWS_STALE_HOURS);
-  const newsOk        = newsPresent && newsFresh;
+  const newsOk        = newsFresh;
 
   // --- Missing / weak sources ---
   const missingSources = [];
