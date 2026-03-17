@@ -207,15 +207,28 @@ async function convertSnapshotToEur(normalized, symbol) {
   const currency = String(normalized.currency || "USD").toUpperCase();
   let fxRate = null;
   let priceUsd = null;
+  let fxApplied = false;
+  const originalCurrency = currency;
 
   if (currency === "USD") {
     priceUsd = normalized.price;
     fxRate = await getUsdToEurRate();
     if (!fxRate) {
       fxRate = await loadLastFxRate(symbol);
+      if (fxRate) {
+        logger.info("snapshot: EUR conversion using last known FX rate", {
+          symbol,
+          fxRate,
+          source: normalized.source,
+        });
+      }
     }
     if (!fxRate) {
-      logger.warn("snapshot: FX rate missing – storing USD price", { symbol });
+      logger.warn("snapshot: FX rate unavailable – price stored in USD", {
+        symbol,
+        source: normalized.source,
+        fxApplied: false,
+      });
     }
   }
 
@@ -240,6 +253,27 @@ async function convertSnapshotToEur(normalized, symbol) {
       ? convertUsdToEur(normalized.previousClose, fxRate) ?? normalized.previousClose
       : normalized.previousClose;
 
+  // Convert absolute price change to EUR using the same FX rate applied to all other price fields
+  let changeEur = normalized.change;
+  if (currency === "USD" && fxRate) {
+    const c = convertUsdToEur(normalized.change, fxRate);
+    if (c !== null) changeEur = c;
+  }
+
+  fxApplied = currency === "USD" && fxRate !== null;
+  const outputCurrency = currency === "USD" && fxRate ? "EUR" : currency || "EUR";
+
+  if (currency === "USD" && fxRate) {
+    logger.info("snapshot: EUR conversion applied", {
+      symbol,
+      fxRate,
+      priceEur,
+      priceUsd,
+      source: normalized.source,
+      fxApplied: true,
+    });
+  }
+
   return {
     ...normalized,
     price: priceEur,
@@ -247,8 +281,11 @@ async function convertSnapshotToEur(normalized, symbol) {
     high: highEur,
     low: lowEur,
     previousClose: previousCloseEur,
+    change: changeEur,
     fxRate,
-    currency: currency === "USD" && fxRate ? "EUR" : currency || "EUR",
+    fxApplied,
+    currency: outputCurrency,
+    originalCurrency: fxApplied ? originalCurrency : null,
     priceUsd,
   };
 }
@@ -1601,11 +1638,16 @@ async function loadLatestSnapshot(symbol) {
       SELECT
         symbol,
         price,
+        price_usd,
         open,
         high,
         low,
         volume,
         source,
+        currency,
+        fx_rate,
+        changes_percentage,
+        previous_close,
         created_at AS timestamp
       FROM market_snapshots
       WHERE symbol = $1
@@ -1618,15 +1660,27 @@ async function loadLatestSnapshot(symbol) {
     if (!res.rows.length) return null;
 
     const row = res.rows[0];
+    const rowCurrency = String(row.currency || "EUR").toUpperCase();
+    const fxRate = row.fx_rate !== null ? Number(row.fx_rate) : null;
+    // FX was applied if the record has a stored USD price alongside a EUR-converted price
+    const fxApplied = row.price_usd !== null && rowCurrency === "EUR";
 
     return {
       symbol: row.symbol,
       price: row.price !== null ? Number(row.price) : null,
+      priceUsd: row.price_usd !== null ? Number(row.price_usd) : null,
       open: row.open !== null ? Number(row.open) : null,
       high: row.high !== null ? Number(row.high) : null,
       low: row.low !== null ? Number(row.low) : null,
+      previousClose: row.previous_close !== null ? Number(row.previous_close) : null,
+      changesPercentage: row.changes_percentage !== null ? Number(row.changes_percentage) : null,
       volume: row.volume !== null ? Number(row.volume) : null,
       source: row.source ?? null,
+      priceSource: row.source ?? null,
+      currency: rowCurrency,
+      originalCurrency: fxApplied ? "USD" : null,
+      fxRate,
+      fxApplied,
       timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
     };
   } catch (err) {

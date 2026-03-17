@@ -285,15 +285,21 @@ async function fetchQuote(symbol) {
     try {
       const data = await provider.fetcher(sym);
 
-      if (lastError && logger?.info) {
-        logger.info("Provider fallback success", {
+      const isFallback = lastError !== null;
+      if (logger?.info) {
+        logger.info("provider: quote success", {
           symbol: sym,
-          provider: provider.name,
+          priceSource: provider.name.toLowerCase(),
+          isFallback,
+          providerUsed: provider.name,
         });
-      } else if (logger?.info) {
-        logger.info("Provider primary success", {
+      }
+      if (isFallback && logger?.warn) {
+        logger.warn("provider: fallback provider used – primary unavailable", {
           symbol: sym,
-          provider: provider.name,
+          priceSource: provider.name.toLowerCase(),
+          fallbackProvider: provider.name,
+          fallbackReason: lastError?.message || "primary_failed",
         });
       }
 
@@ -301,19 +307,36 @@ async function fetchQuote(symbol) {
     } catch (providerError) {
       lastError = providerError;
       providerErrors.push(`${provider.name}=${providerError.message}`);
-      const providerMsg = `${provider.name} failed for ${sym}: ${providerError.message}`;
 
-      if (logger?.warn) logger.warn(providerMsg);
-      else console.warn("⚠️ " + providerMsg);
-
-      if (index === providers.length - 1) {
+      if (index < providers.length - 1) {
+        // More providers to try – log as warning with fallback intent
+        if (logger?.warn) {
+          logger.warn("provider: primary failed – trying fallback", {
+            symbol: sym,
+            failedProvider: provider.name,
+            nextProvider: providers[index + 1]?.name || "none",
+            message: providerError.message,
+          });
+        } else {
+          console.warn(`⚠️ ${provider.name} failed for ${sym}: ${providerError.message}`);
+        }
+      } else {
+        // Last provider – log as error
         const finalMsg =
           providers.length > 1
             ? `All providers failed for ${sym}: ${providerErrors.join("; ")}`
-            : providerMsg;
+            : `${provider.name} failed for ${sym}: ${providerError.message}`;
 
-        if (logger?.error) logger.error(finalMsg);
-        else console.error("❌ " + finalMsg);
+        if (logger?.error) {
+          logger.error("provider: all providers failed", {
+            symbol: sym,
+            providers: providers.map((p) => p.name),
+            errors: providerErrors,
+            message: finalMsg,
+          });
+        } else {
+          console.error("❌ " + finalMsg);
+        }
       }
     }
   }

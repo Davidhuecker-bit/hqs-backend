@@ -89,6 +89,10 @@ async function ensureVirtualPositionsTable() {
     ALTER TABLE virtual_positions ADD COLUMN IF NOT EXISTS currency TEXT;
   `);
 
+  await pool.query(`
+    ALTER TABLE virtual_positions ADD COLUMN IF NOT EXISTS price_source TEXT;
+  `);
+
   logger.info("virtual_positions table ready");
 }
 
@@ -264,11 +268,11 @@ async function openVirtualPositionFromAllocation(data) {
 
   const res = await pool.query(
     `INSERT INTO virtual_positions
-       (symbol, status, entry_price, current_price, currency,
+       (symbol, status, entry_price, current_price, currency, price_source,
         allocated_eur, allocated_pct,
         conviction_tier, risk_mode_at_entry, uncertainty_at_entry,
         source_run_id)
-     VALUES ($1, 'open', $2, $2, 'EUR', $3, $4, $5, $6, $7, $8)
+     VALUES ($1, 'open', $2, $2, 'EUR', 'market_snapshots', $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       symbol, entryPrice,
@@ -621,6 +625,7 @@ function _formatRow(row) {
     entryPrice:          row.entry_price   !== null ? Number(row.entry_price)   : null,
     currentPrice:        row.current_price !== null ? Number(row.current_price) : null,
     currency:            row.currency || "EUR",
+    priceSource:         row.price_source || "market_snapshots",
     allocatedEur:        row.allocated_eur !== null ? Number(row.allocated_eur) : null,
     allocatedPct:        row.allocated_pct !== null ? Number(row.allocated_pct) : null,
     convictionTier:      row.conviction_tier       ?? null,

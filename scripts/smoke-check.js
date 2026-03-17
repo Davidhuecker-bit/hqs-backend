@@ -53,8 +53,14 @@ const CHECKS = [
   {
     name:    "GET /api/admin/demo-portfolio",
     path:    "/api/admin/demo-portfolio",
-    assert:  (body) => body.success === true && Array.isArray(body.holdings) && body.summary != null,
-    shape: ["success", "generatedAt", "dataStatus", "holdings", "summary", "portfolioId", "symbolCount"],
+    assert:  (body) => body.success === true && Array.isArray(body.holdings) && body.summary != null && body.currency === "EUR",
+    shape: ["success", "generatedAt", "dataStatus", "holdings", "summary", "portfolioId", "symbolCount", "currency", "priceSource"],
+  },
+  {
+    name:    "GET /api/admin/portfolio-twin",
+    path:    "/api/admin/portfolio-twin",
+    assert:  (body) => body.success === true && body.portfolioTwin?.currency === "EUR",
+    shape: ["success", "portfolioTwin"],
   },
 ];
 
@@ -111,9 +117,21 @@ async function run() {
           }
         } else if (check.path === "/api/admin/demo-portfolio") {
           const s = body.summary || {};
-          console.log(`     total=${s.total}  green=${s.green}  yellow=${s.yellow}  red=${s.red}  topBottleneck=${s.topBottleneck || "none"}`);
+          console.log(`     currency=${body.currency ?? "?"}  priceSource=${body.priceSource ?? "?"}  total=${s.total}  green=${s.green}  yellow=${s.yellow}  red=${s.red}  topBottleneck=${s.topBottleneck ?? "none"}`);
           console.log(`     avgCompleteness=${s.avgCompletenessScore ?? "?"}  avgReliability=${s.avgReliabilityScore ?? "?"}`);
           if (s.byReason) console.log(`     byReason=${JSON.stringify(s.byReason)}`);
+          // Currency/FX diagnostics on first holding
+          const firstHolding = (body.holdings || [])[0];
+          if (firstHolding) {
+            console.log(`     sample[${firstHolding.symbol}]: currency=${firstHolding.currency ?? "?"}  priceSource=${firstHolding.priceSource ?? "?"}  fxApplied=${firstHolding.fxApplied ?? "?"}`);
+          }
+        } else if (check.path === "/api/admin/portfolio-twin") {
+          const twin = body.portfolioTwin || {};
+          console.log(`     currency=${twin.currency ?? "?"}  priceSource=${twin.priceSource ?? "?"}  openCount=${twin.openCount ?? "?"}  closedCount=${twin.closedCount ?? "?"}`);
+          const firstPos = (twin.openPositions || [])[0];
+          if (firstPos) {
+            console.log(`     sample open pos[${firstPos.symbol}]: currency=${firstPos.currency ?? "?"}  priceSource=${firstPos.priceSource ?? "?"}`);
+          }
         }
       } else {
         console.error(`  ❌ ${check.name}  (HTTP ${status}) – assertion failed`);
