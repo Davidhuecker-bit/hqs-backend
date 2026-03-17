@@ -184,14 +184,18 @@ async function loadSnapshotsBatch(symbols) {
         const rowCurrency = String(row.currency || "EUR").toUpperCase();
 
         let rateToUse = null;
+        let rateSource = null;
         if (row.fx_rate !== null && Number.isFinite(Number(row.fx_rate)) && Number(row.fx_rate) > 0) {
           rateToUse = Number(row.fx_rate);
           cachedValidFxRate = rateToUse;
+          rateSource = "snapshot_fx_rate";
         } else {
           rateToUse = await ensureFxRate();
+          rateSource = "fx_service";
           if (((!Number.isFinite(rateToUse)) || rateToUse <= 0) && cachedValidFxRate) {
             selectionLog.push(`using cachedValidFxRate for ${symbol}`);
             rateToUse = cachedValidFxRate;
+            rateSource = "cached_valid_fx_rate";
           }
         }
 
@@ -205,7 +209,7 @@ async function loadSnapshotsBatch(symbols) {
           if (converted !== null) {
             priceEur = converted;
             fxApplied = true;
-            fxReason = row.fx_rate ? "row_fx_rate" : (rateToUse ? "fx_service_or_cache" : "none");
+            fxReason = rateSource || "unknown";
           } else if (Number.isFinite(rateToUse)) {
             fxReason = "conversion_failed";
             priceEur = null; // avoid returning an unconverted USD price when EUR conversion fails
