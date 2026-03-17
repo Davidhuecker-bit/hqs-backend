@@ -196,19 +196,14 @@ async function convertSnapshotToEur(normalized, symbol) {
     priceUsd = normalized.price;
     fxRate = await getUsdToEurRate();
     if (!fxRate) {
-      logger.warn("snapshot: skipped because no FX available", {
+      logger.warn("snapshot: skipped because no FX available; mixed currency prevented", {
         symbol,
         source: normalized.source,
         providerCurrency: currency,
         priceUsd,
-        action: "skip_snapshot",
-      });
-      logger.warn("snapshot: wrote mixed currency prevented", {
-        symbol,
-        source: normalized.source,
-        providerCurrency: currency,
         attemptedPrice: normalized.price,
-        action: "prevent_mixed_currency_write",
+        action: "skip_snapshot",
+        mixedCurrencyPrevented: true,
       });
       return null;
     }
@@ -243,7 +238,7 @@ async function convertSnapshotToEur(normalized, symbol) {
   }
 
   fxApplied = currency === "USD" && fxRate !== null;
-  const outputCurrency = currency === "USD" ? "EUR" : currency || "EUR";
+  const outputCurrency = fxApplied ? "EUR" : currency || "EUR";
 
   if (currency === "USD" && fxRate) {
     logger.info("snapshot: converted to EUR", {
