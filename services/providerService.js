@@ -289,9 +289,13 @@ async function fetchQuote(symbol) {
       if (logger?.info) {
         logger.info("provider: quote success", {
           symbol: sym,
+          normalizedSymbol: data?.[0]?.symbol || sym,
           priceSource: provider.name.toLowerCase(),
           isFallback,
           providerUsed: provider.name,
+          providerCurrency: data?.[0]?.currency || null,
+          providerPrice: data?.[0]?.price ?? null,
+          providerPreviousClose: data?.[0]?.previousClose ?? null,
         });
       }
       if (isFallback && logger?.warn) {

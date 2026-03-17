@@ -8,6 +8,7 @@
  */
 
 const axios = require("axios");
+const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
 const FX_URL =
@@ -28,6 +29,12 @@ if (process.env.FX_STATIC_USD_EUR !== undefined && !isValidRate(FX_FALLBACK_STAT
 
 let cachedRate = null;
 let cachedAt = 0;
+let cachedSource = null;
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
 
 function isValidRate(rate) {
   return Number.isFinite(rate) && rate > 0;
@@ -38,6 +45,40 @@ function convertUsdToEur(amount, rate) {
   if (!Number.isFinite(n)) return null;
   if (!isValidRate(rate)) return null;
   return Math.round(n * rate * PRICE_PRECISION_FACTOR) / PRICE_PRECISION_FACTOR;
+}
+
+function storeCachedRate(rate, source) {
+  cachedRate = rate;
+  cachedAt = Date.now();
+  cachedSource = source || null;
+}
+
+async function loadLastStoredUsdEurRate() {
+  try {
+    const res = await pool.query(
+      `SELECT fx_rate, created_at
+       FROM market_snapshots
+       WHERE fx_rate IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 1`
+    );
+    if (!res.rows.length) return null;
+
+    const rate = Number(res.rows[0].fx_rate);
+    if (!isValidRate(rate)) return null;
+
+    return {
+      rate,
+      createdAt: res.rows[0].created_at
+        ? new Date(res.rows[0].created_at).toISOString()
+        : null,
+    };
+  } catch (err) {
+    logger.warn("fx: stored rate lookup failed", {
+      message: err.message,
+    });
+    return null;
+  }
 }
 
 async function fetchUsdEurRate() {
@@ -64,13 +105,22 @@ async function fetchUsdEurRate() {
 async function getUsdToEurRate({ forceRefresh = false } = {}) {
   const now = Date.now();
   if (!forceRefresh && cachedRate && now - cachedAt < FX_CACHE_MS) {
+    logger.info("fx: source used", {
+      source: "cache",
+      cachedFrom: cachedSource || "unknown",
+      rate: cachedRate,
+      ageMs: now - cachedAt,
+    });
     return cachedRate;
   }
 
   const liveRate = await fetchUsdEurRate();
   if (isValidRate(liveRate)) {
-    cachedRate = liveRate;
-    cachedAt = now;
+    storeCachedRate(liveRate, "live");
+    logger.info("fx: source used", {
+      source: "live",
+      rate: liveRate,
+    });
     return liveRate;
   }
 
@@ -78,21 +128,30 @@ async function getUsdToEurRate({ forceRefresh = false } = {}) {
     logger.warn("fx: using static fallback rate", {
       rate: FX_FALLBACK_STATIC,
     });
-    cachedRate = FX_FALLBACK_STATIC;
-    cachedAt = now;
+    storeCachedRate(FX_FALLBACK_STATIC, "static_fallback");
+    logger.info("fx: source used", {
+      source: "static_fallback",
+      rate: FX_FALLBACK_STATIC,
+    });
     return FX_FALLBACK_STATIC;
   }
 
-  // If live + static fallback failed, fall back to last known cached rate (even if stale)
-  if (isValidRate(cachedRate)) {
-    logger.warn("fx: falling back to last known cached rate", {
-      rate: cachedRate,
-      ageMs: now - cachedAt,
+  const storedRate = await loadLastStoredUsdEurRate();
+  if (isValidRate(storedRate?.rate)) {
+    logger.warn("fx: using last stored market snapshot rate", {
+      rate: storedRate.rate,
+      createdAt: storedRate.createdAt,
     });
-    return cachedRate;
+    storeCachedRate(storedRate.rate, "last_stored_market_snapshot");
+    logger.info("fx: source used", {
+      source: "last_stored_market_snapshot",
+      rate: storedRate.rate,
+      createdAt: storedRate.createdAt,
+    });
+    return storedRate.rate;
   }
 
-  logger.warn("fx: no USD→EUR rate available (live + fallback missing)");
+  logger.warn("fx: no USD→EUR rate available (live + static + stored missing)");
   return null;
 }
 
