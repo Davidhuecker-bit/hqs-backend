@@ -286,10 +286,10 @@ async function loadSnapshotsBatch(symbols) {
       }
 
       // Round to 2 decimal places for clean output
-      if (primary.priceEur === null) {
-        changePercent = null;
-      } else if (changePercent !== null) {
+      if (primary.priceEur !== null && changePercent !== null) {
         changePercent = Math.round(changePercent * 100) / 100;
+      } else if (primary.priceEur === null) {
+        changePercent = null;
       }
 
       const selectedCurrency = "EUR";

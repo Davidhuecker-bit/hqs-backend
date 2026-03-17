@@ -57,11 +57,11 @@ const CHECKS = [
     assert:  (body) => {
       const holdings = body.holdings || [];
       const allEur = holdings.every((h) => (h?.currency || "EUR") === "EUR");
-      const allSnapshotsNonStale = holdings.every((h) => {
+      const allSnapshotsFresh = holdings.every((h) => {
         const age = h?.dataAgeHours?.snapshotAgeHours;
         return age == null || age <= DEMO_SNAPSHOT_HARD_STALE_HOURS;
       });
-      return body.success === true && Array.isArray(holdings) && body.summary != null && body.currency === "EUR" && allEur && allSnapshotsNonStale;
+      return body.success === true && Array.isArray(holdings) && body.summary != null && body.currency === "EUR" && allEur && allSnapshotsFresh;
     },
     shape: ["success", "generatedAt", "dataStatus", "holdings", "summary", "portfolioId", "symbolCount", "currency", "priceSource"],
   },
