@@ -185,24 +185,6 @@ function roundPercentage(value) {
   );
 }
 
-async function loadLastFxRate(symbol) {
-  try {
-    const res = await pool.query(
-      `SELECT fx_rate FROM market_snapshots
-       WHERE symbol = $1 AND fx_rate IS NOT NULL
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [symbol]
-    );
-    if (!res.rows.length) return null;
-    const rate = Number(res.rows[0].fx_rate);
-    return Number.isFinite(rate) && rate > 0 ? rate : null;
-  } catch (err) {
-    logger.warn("snapshot: loadLastFxRate failed", { symbol, message: err.message });
-    return null;
-  }
-}
-
 async function convertSnapshotToEur(normalized, symbol) {
   const currency = String(normalized.currency || "USD").toUpperCase();
   let fxRate = null;
@@ -214,21 +196,21 @@ async function convertSnapshotToEur(normalized, symbol) {
     priceUsd = normalized.price;
     fxRate = await getUsdToEurRate();
     if (!fxRate) {
-      fxRate = await loadLastFxRate(symbol);
-      if (fxRate) {
-        logger.info("snapshot: EUR conversion using last known FX rate", {
-          symbol,
-          fxRate,
-          source: normalized.source,
-        });
-      }
-    }
-    if (!fxRate) {
-      logger.warn("snapshot: FX rate unavailable – price stored in USD", {
+      logger.warn("snapshot: skipped because no FX available", {
         symbol,
         source: normalized.source,
-        fxApplied: false,
+        providerCurrency: currency,
+        priceUsd,
+        action: "skip_snapshot",
       });
+      logger.warn("snapshot: wrote mixed currency prevented", {
+        symbol,
+        source: normalized.source,
+        providerCurrency: currency,
+        attemptedPrice: normalized.price,
+        action: "prevent_mixed_currency_write",
+      });
+      return null;
     }
   }
 
@@ -261,16 +243,18 @@ async function convertSnapshotToEur(normalized, symbol) {
   }
 
   fxApplied = currency === "USD" && fxRate !== null;
-  const outputCurrency = currency === "USD" && fxRate ? "EUR" : currency || "EUR";
+  const outputCurrency = currency === "USD" ? "EUR" : currency || "EUR";
 
   if (currency === "USD" && fxRate) {
-    logger.info("snapshot: EUR conversion applied", {
+    logger.info("snapshot: converted to EUR", {
       symbol,
       fxRate,
       priceEur,
       priceUsd,
       source: normalized.source,
-      fxApplied: true,
+      originalCurrency,
+      currency: outputCurrency,
+      fxApplied,
     });
   }
 
@@ -1147,6 +1131,7 @@ async function buildMarketSnapshot() {
       if (!normalized) {
         summary.skipped++;
         ensureTierBucket(summary, tier).skipped++;
+        ensureSourceBucket(summary, providerSource).skipped++;
         continue;
       }
 
@@ -1426,6 +1411,15 @@ async function buildMarketSnapshot() {
           normalized.previousClose ?? null,
         ]
       );
+      logger.info("snapshot: market snapshot stored", {
+        symbol: normalized.symbol,
+        source: normalized.source,
+        currency: normalized.currency || null,
+        price: normalized.price ?? null,
+        priceUsd: normalized.priceUsd ?? null,
+        fxRate: normalized.fxRate ?? null,
+        fxApplied: normalized.fxApplied === true,
+      });
       summary.snapshotsSaved++;
       ensureTierBucket(summary, tier).snapshotsSaved++;
       ensureSourceBucket(summary, providerSource).snapshotsSaved++;
