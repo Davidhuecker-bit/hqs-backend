@@ -83,6 +83,15 @@ async function getUsdToEurRate({ forceRefresh = false } = {}) {
     return FX_FALLBACK_STATIC;
   }
 
+  // If live + static fallback failed, fall back to last known cached rate (even if stale)
+  if (isValidRate(cachedRate)) {
+    logger.warn("fx: falling back to last known cached rate", {
+      rate: cachedRate,
+      ageMs: now - cachedAt,
+    });
+    return cachedRate;
+  }
+
   logger.warn("fx: no USD→EUR rate available (live + fallback missing)");
   return null;
 }

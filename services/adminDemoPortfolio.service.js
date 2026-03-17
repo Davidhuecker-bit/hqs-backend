@@ -90,6 +90,7 @@ const DEMO_SNAPSHOT_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_STALE_HOURS) 
 const DEMO_SCORE_STALE_HOURS    = Number(process.env.DEMO_SCORE_STALE_HOURS)    || 48;
 const DEMO_METRICS_STALE_HOURS  = Number(process.env.DEMO_METRICS_STALE_HOURS)  || 48;
 const DEMO_NEWS_STALE_HOURS     = Number(process.env.DEMO_NEWS_STALE_HOURS)     || 72;
+const DEMO_SNAPSHOT_HARD_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) || 72;
 
 /* =========================================================
    STATUS REASON LABELS  (stable keys → german labels)
@@ -139,13 +140,18 @@ async function loadSnapshotsBatch(symbols) {
   const map = new Map();
   try {
     let fxRateCache = null;
+    let cachedValidFxRate = null;
     const ensureFxRate = async () => {
       if (fxRateCache !== null) return fxRateCache;
       fxRateCache = await getUsdToEurRate();
+      if (Number.isFinite(fxRateCache) && fxRateCache > 0) {
+        cachedValidFxRate = fxRateCache;
+      }
       return fxRateCache;
     };
-    // Fetch the two most recent snapshots per symbol so we can compute changePercent
-    // if the provider-supplied value is missing
+
+    // Fetch several recent snapshots per symbol (limit 4) so we can choose the best EUR-normalized row
+    // and still compute changePercent even if the latest rows are stale or missing prices.
     const res = await pool.query(`
       SELECT symbol, price, price_usd, currency, fx_rate, source, created_at, changes_percentage, previous_close, rn
       FROM (
@@ -154,7 +160,7 @@ async function loadSnapshotsBatch(symbols) {
         FROM market_snapshots
         WHERE symbol = ANY($1::text[])
       ) ranked
-      WHERE rn <= 2
+      WHERE rn <= 4
       ORDER BY symbol, rn
     `, [symbols]);
 
@@ -166,81 +172,192 @@ async function loadSnapshotsBatch(symbols) {
     }
 
     for (const [symbol, rows] of grouped) {
-      const latest = rows.find(r => Number(r.rn) === 1);
-      const previous = rows.find(r => Number(r.rn) === 2);
-      if (!latest) continue;
+      if (!rows?.length) continue;
 
-      const latestCurrency = String(latest.currency || "EUR").toUpperCase();
-      const latestRate =
-        latest.fx_rate !== null ? Number(latest.fx_rate) : await ensureFxRate();
-      const latestBasePrice = basePrice(latest);
-      let price = latestBasePrice !== null ? Number(latestBasePrice) : null;
-      let fxApplied = false;
-      if (latestCurrency === "USD") {
-        const converted = convertUsdToEur(price, latestRate);
-        if (converted !== null) {
-          price = converted;
-          fxApplied = true;
+      const selectionEvents = [];
+      const candidates = [];
+
+      for (const row of rows) {
+        const createdAtIso = row.created_at ? new Date(row.created_at).toISOString() : null;
+        const ageHours = safeAgeHours(createdAtIso);
+        const isHardStale = ageHours !== null && ageHours > DEMO_SNAPSHOT_HARD_STALE_HOURS;
+        const rowCurrency = String(row.currency || "EUR").toUpperCase();
+
+        let rateToUse = null;
+        let rateSource = null;
+        if (row.fx_rate !== null && Number.isFinite(Number(row.fx_rate)) && Number(row.fx_rate) > 0) {
+          rateToUse = Number(row.fx_rate);
+          cachedValidFxRate = rateToUse;
+          rateSource = "snapshot_fx_rate";
+        } else {
+          rateToUse = await ensureFxRate();
+          rateSource = "fx_service";
+          if (((!Number.isFinite(rateToUse)) || rateToUse <= 0) && cachedValidFxRate) {
+            selectionEvents.push(`using cachedValidFxRate for ${symbol}`);
+            rateToUse = cachedValidFxRate;
+            rateSource = "cached_valid_fx_rate";
+          }
         }
-        if (!latestRate) {
-          logger.warn("adminDemoPortfolio: FX rate unavailable for symbol", {
-            symbol,
-            currency: latestCurrency,
-            priceSource: latest.source || null,
-          });
+
+        const base = basePrice(row);
+        let priceEur = base !== null ? Number(base) : null;
+        let fxApplied = false;
+        let fxReason = null;
+
+        if (rowCurrency === "USD") {
+          const converted = convertUsdToEur(priceEur, rateToUse);
+          if (converted !== null) {
+            priceEur = converted;
+            fxApplied = true;
+            fxReason = rateSource || "unknown";
+          } else if (Number.isFinite(rateToUse)) {
+            fxReason = "conversion_failed";
+            priceEur = null; // avoid returning an unconverted USD price when EUR conversion fails
+          } else {
+            fxReason = "fx_missing";
+            priceEur = null;
+          }
         }
+
+        const hasPrice = priceEur !== null && Number.isFinite(priceEur);
+        candidates.push({
+          row,
+          createdAtIso,
+          ageHours,
+          isHardStale,
+          rowCurrency,
+          rateToUse,
+          priceEur: hasPrice ? priceEur : null,
+          fxApplied,
+          fxReason,
+          hasPrice,
+        });
       }
 
-      // Determine changePercent from best available source
+      // Rank candidates: prefer non-hard-stale, freshest age, has price, EUR-native
+      candidates.sort((a, b) => {
+        const aHard = a.isHardStale ? 1 : 0;
+        const bHard = b.isHardStale ? 1 : 0;
+        if (aHard !== bHard) return aHard - bHard;
+        const aAge = a.ageHours ?? Number.POSITIVE_INFINITY;
+        const bAge = b.ageHours ?? Number.POSITIVE_INFINITY;
+        if (aAge !== bAge) return aAge - bAge;
+        if (a.hasPrice !== b.hasPrice) return a.hasPrice ? -1 : 1;
+        const aEurNative = a.rowCurrency === "EUR" ? 1 : 0;
+        const bEurNative = b.rowCurrency === "EUR" ? 1 : 0;
+        if (aEurNative !== bEurNative) return bEurNative - aEurNative;
+        return 0;
+      });
+
+      const primary = candidates[0];
+      const secondary = candidates.find((c) => c !== primary && c.priceEur !== null);
+
+      if (!primary) continue;
+
       let changePercent = null;
-      const basePrevClose = latest.previous_close !== null ? Number(latest.previous_close) : null;
+      let changePercentSource = null;
+      const basePrevClose = primary.row.previous_close !== null ? Number(primary.row.previous_close) : null;
       let previousClose = basePrevClose;
-      if (latestCurrency === "USD" && basePrevClose !== null) {
-        previousClose = convertUsdToEur(basePrevClose, latestRate) ?? basePrevClose;
+      if (primary.rowCurrency === "USD" && basePrevClose !== null) {
+        previousClose = convertUsdToEur(basePrevClose, primary.rateToUse) ?? basePrevClose;
       }
 
       // 1. Provider-supplied changes_percentage
-      if (latest.changes_percentage !== null) {
-        const val = Number(latest.changes_percentage);
+      if (primary.row.changes_percentage !== null) {
+        const val = Number(primary.row.changes_percentage);
         if (Number.isFinite(val)) {
           changePercent = val;
+          changePercentSource = "provider";
+          selectionEvents.push("changePercent from provider changes_percentage");
         }
       }
 
       // 2. Compute from price vs previous_close (if provider gave previousClose but not changePercent)
-      if (changePercent === null && price !== null && previousClose !== null && previousClose !== 0) {
-        changePercent = ((price - previousClose) / previousClose) * 100;
+      if (changePercent === null && primary.priceEur !== null && previousClose !== null && previousClose !== 0) {
+        changePercent = ((primary.priceEur - previousClose) / previousClose) * 100;
+        changePercentSource = "previous_close";
+        selectionEvents.push("changePercent computed from previous_close");
       }
 
-      // 3. Compute from latest price vs second-most-recent snapshot price
-      if (changePercent === null && price !== null && previous) {
-        const prevCurrency = String(previous.currency || "EUR").toUpperCase();
-        const prevRateRow =
-          previous.fx_rate !== null ? Number(previous.fx_rate) : await ensureFxRate();
-        const prevBasePrice = basePrice(previous);
-        let prevPrice = prevBasePrice !== null ? Number(prevBasePrice) : null;
-        if (prevCurrency === "USD") {
-          prevPrice = convertUsdToEur(prevPrice, prevRateRow) ?? prevPrice;
-        }
-        if (prevPrice !== null && prevPrice !== 0) {
-          changePercent = ((price - prevPrice) / prevPrice) * 100;
+      // 3. Compute from latest price vs second-most-recent usable snapshot price
+      if (changePercent === null && primary.priceEur !== null && secondary && secondary.priceEur !== null) {
+        const prevPrice = secondary.priceEur;
+        if (prevPrice !== 0) {
+          changePercent = ((primary.priceEur - prevPrice) / prevPrice) * 100;
+          changePercentSource = "secondary_snapshot";
+          selectionEvents.push("changePercent computed from secondary snapshot");
         }
       }
 
       // Round to 2 decimal places for clean output
-      if (changePercent !== null) {
+      if (primary.priceEur !== null && changePercent !== null) {
         changePercent = Math.round(changePercent * 100) / 100;
+      } else if (primary.priceEur === null) {
+        changePercent = null;
       }
 
-      map.set(symbol, {
-        price,
-        createdAt: latest.created_at ? new Date(latest.created_at).toISOString() : null,
-        changePercent,
-        currency: latestCurrency === "USD" && latestRate ? "EUR" : latestCurrency,
-        priceSource: latest.source || null,
-        fxApplied,
-        originalCurrency: fxApplied ? "USD" : null,
+      const selectedCurrency = "EUR";
+      const hardStaleStatus = primary.isHardStale ? `hard-stale>${DEMO_SNAPSHOT_HARD_STALE_HOURS}h` : null;
+      const selectionStatus = primary.isHardStale
+        ? hardStaleStatus
+        : (primary.hasPrice ? "ok" : "no-price");
+      selectionEvents.push({
+        event: "selected_snapshot",
+        currency: primary.rowCurrency,
+        createdAt: primary.createdAtIso,
+        ageHours: primary.ageHours,
+        fxApplied: primary.fxApplied,
+        fxSource: primary.fxReason || "n/a",
+        priceSource: primary.row.source || null,
+        status: selectionStatus,
       });
+
+      const finalPrice = primary.isHardStale ? null : primary.priceEur;
+      const finalChangePercent = finalPrice === null ? null : changePercent;
+
+      map.set(symbol, {
+        price: finalPrice,
+        createdAt: primary.createdAtIso,
+        changePercent: finalChangePercent,
+        currency: selectedCurrency,
+        priceSource: primary.row.source || null,
+        fxApplied: primary.fxApplied,
+        originalCurrency: primary.rowCurrency === "EUR" ? null : primary.rowCurrency,
+        snapshotDebug: {
+          selectionEvents,
+          ageHours: primary.ageHours,
+          hardStale: primary.isHardStale,
+          fxRate: primary.rateToUse ?? null,
+          secondaryUsed: Boolean(secondary),
+          changePercentSource,
+        },
+      });
+
+      if (primary.rowCurrency === "USD" && finalPrice === null) {
+        logger.warn("adminDemoPortfolio: USD snapshot could not be converted; dropping price", {
+          symbol,
+          createdAt: primary.createdAtIso,
+          fxSource: primary.fxReason,
+        });
+      }
+      if (primary.isHardStale) {
+        logger.warn("adminDemoPortfolio: hard-stale snapshot selected; price dropped", {
+          symbol,
+          createdAt: primary.createdAtIso,
+          ageHours: primary.ageHours,
+        });
+      } else {
+        logger.info("adminDemoPortfolio: snapshot selected", {
+          symbol,
+          createdAt: primary.createdAtIso,
+          ageHours: primary.ageHours,
+          currency: primary.rowCurrency,
+          fxApplied: primary.fxApplied,
+          fxSource: primary.fxReason,
+          changePercentSource: changePercentSource,
+          priceSource: primary.row.source || null,
+        });
+      }
     }
   } catch (err) {
     logger.warn("adminDemoPortfolio: snapshot batch failed", { message: err.message });
@@ -424,7 +541,7 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   const snapshotOk = holding.lastPrice !== null;
   const scoreOk    = holding.hqsScore !== null;
   const metricsOk  = holding.advancedMetrics !== null;
-  const newsOk     = holding.latestNewsCount > 0;
+  const newsPresent = holding.latestNewsCount > 0;
 
   // --- Data age ---
   const snapshotAgeHours = safeAgeHours(timestamps.snapshot);
@@ -436,7 +553,8 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   const snapshotFresh = snapshotOk && isFresh(snapshotAgeHours, DEMO_SNAPSHOT_STALE_HOURS);
   const scoreFresh    = scoreOk    && isFresh(scoreAgeHours, DEMO_SCORE_STALE_HOURS);
   const metricsFresh  = metricsOk  && isFresh(metricsAgeHours, DEMO_METRICS_STALE_HOURS);
-  const newsFresh     = newsOk     && isFresh(newsAgeHours, DEMO_NEWS_STALE_HOURS);
+  const newsFresh     = newsPresent && isFresh(newsAgeHours, DEMO_NEWS_STALE_HOURS);
+  const newsOk        = newsFresh;
 
   // --- Missing / weak sources ---
   const missingSources = [];
@@ -451,7 +569,7 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   if (!metricsOk) missingSources.push("advancedMetrics");
   else if (!metricsFresh) weakSources.push("advancedMetrics");
 
-  if (!newsOk) missingSources.push("news");
+  if (!newsPresent) missingSources.push("news");
   else if (!newsFresh) weakSources.push("news");
 
   // --- Failing stage (primary) ---
@@ -633,6 +751,22 @@ async function getAdminDemoPortfolio() {
         news:     newsArr.length > 0 ? newsArr[0].publishedAt : null,
       };
 
+      if (snap?.price == null || snap?.snapshotDebug?.hardStale) {
+        logger.info("adminDemoPortfolio: snapshot missing or stale for symbol", {
+          symbol,
+          reason: snap?.snapshotDebug?.hardStale ? "hard-stale-snapshot" : "no-price",
+        });
+      }
+      if (newsArr.length === 0) {
+        logger.info("adminDemoPortfolio: no news for symbol", { symbol });
+      } else if (!isFresh(safeAgeHours(timestamps.news), DEMO_NEWS_STALE_HOURS)) {
+        logger.info("adminDemoPortfolio: stale news for symbol", {
+          symbol,
+          latestNewsAt: timestamps.news,
+          ageHours: safeAgeHours(timestamps.news),
+        });
+      }
+
       const holding = {
         symbol,
         companyName: COMPANY_NAMES[symbol] || symbol,
@@ -704,7 +838,7 @@ async function getAdminDemoPortfolio() {
       if (diag.pipeline.snapshotOk && !diag.pipeline.snapshotFresh) staleCounts.snapshot++;
       if (diag.pipeline.scoreOk    && !diag.pipeline.scoreFresh)    staleCounts.score++;
       if (diag.pipeline.metricsOk  && !diag.pipeline.metricsFresh)  staleCounts.metrics++;
-      if (diag.pipeline.newsOk     && !diag.pipeline.newsFresh)     staleCounts.news++;
+      if (holding.latestNewsCount > 0 && !diag.pipeline.newsFresh)  staleCounts.news++;
 
       // Track reason counts
       reasonCounts[diag.statusReason] = (reasonCounts[diag.statusReason] || 0) + 1;
