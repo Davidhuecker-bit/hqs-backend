@@ -65,17 +65,17 @@ async function initAgentForecastTable() {
 }
 
 async function initAgentsTable() {
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires AccessExclusiveLock even with IF NOT EXISTS.
+  // All columns MUST be in the CREATE TABLE statement.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agents (
-      id         SERIAL PRIMARY KEY,
-      name       TEXT NOT NULL UNIQUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id           SERIAL PRIMARY KEY,
+      name         TEXT NOT NULL UNIQUE,
+      wisdom_score FLOAT DEFAULT 0.0,
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-
-  await pool.query(
-    `ALTER TABLE agents ADD COLUMN IF NOT EXISTS wisdom_score FLOAT DEFAULT 0.0;`
-  );
 
   if (logger?.info) logger.info("agents table ready");
 }
