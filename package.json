@@ -36,7 +36,9 @@
     "smoke-check:check": "node --check scripts/smoke-check.js",
 
     "db:health": "node scripts/database-health-check.js",
-    "db:health:check": "node --check scripts/database-health-check.js"
+    "db:health:check": "node --check scripts/database-health-check.js",
+    "db:chains": "node scripts/data-chain-health.js",
+    "db:chains:fix": "node scripts/data-chain-health.js --fix"
   },
   "engines": {
     "node": ">=18"
