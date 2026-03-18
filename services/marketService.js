@@ -82,7 +82,7 @@ const {
   savePipelineStage,
   loadPipelineStatus: loadPipelineStatusFromDb,
 } = require("./pipelineStatus.repository");
-const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
+const { getUsdToEurRate, convertUsdToEur, ensureFxRatesTable } = require("./fx.service");
 const { classifyDbError } = require("../utils/dbHealth");
 const {
   buildSignalContext,
@@ -866,6 +866,7 @@ async function ensureTablesExist() {
   await initSnapshotStateTable();
   await initMarketNewsTable();
   await initUniverseTables();
+  await ensureFxRatesTable();
 
   logger.info("Tables ensured");
 }
