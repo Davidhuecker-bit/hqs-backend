@@ -33,7 +33,10 @@
     "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js",
 
     "smoke-check": "node scripts/smoke-check.js",
-    "smoke-check:check": "node --check scripts/smoke-check.js"
+    "smoke-check:check": "node --check scripts/smoke-check.js",
+
+    "db:health": "node scripts/database-health-check.js",
+    "db:health:check": "node --check scripts/database-health-check.js"
   },
   "engines": {
     "node": ">=18"
