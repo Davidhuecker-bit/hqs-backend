@@ -17,6 +17,7 @@
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { updateForwardReturns } = require("./factorHistory.repository");
+const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -49,10 +50,40 @@ function toIso(dt) {
   }
 }
 
+/**
+ * Resolves the EUR price from a market_snapshots row.
+ * New snapshots already store EUR; legacy USD rows are converted using the
+ * stored fx_rate (audit trail) or the current live rate as fallback.
+ *
+ * For legacy rows: price_usd is NULL (old write path never set it), so
+ * we use price as the USD base — that IS the original USD value for those rows.
+ */
+async function _resolveEurPrice(row) {
+  if (!row) return null;
+  const currency = String(row.currency || "EUR").toUpperCase();
+  if (currency !== "USD") {
+    const p = Number(row.price);
+    return Number.isFinite(p) && p > 0 ? p : null;
+  }
+  // Legacy USD snapshot: price_usd holds the original USD value on new rows;
+  // on pre-fix rows price_usd is NULL and price IS the USD value.
+  const priceUsdField = row.price_usd !== null ? Number(row.price_usd) : null;
+  const base = priceUsdField !== null && Number.isFinite(priceUsdField)
+    ? priceUsdField
+    : Number(row.price); // pre-fix legacy: price field contains USD
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const storedRate = row.fx_rate !== null ? Number(row.fx_rate) : null;
+  const rate = (storedRate !== null && Number.isFinite(storedRate) && storedRate > 0)
+    ? storedRate
+    : await getUsdToEurRate().catch(() => null);
+  const eur = convertUsdToEur(base, rate);
+  return eur !== null && eur > 0 ? eur : null;
+}
+
 async function findFirstSnapshotAtOrAfter(symbol, isoTime) {
   const res = await pool.query(
     `
-    SELECT price, created_at
+    SELECT price, price_usd, currency, fx_rate, created_at
     FROM market_snapshots
     WHERE symbol = $1
       AND created_at >= $2
@@ -105,11 +136,11 @@ async function runForwardLearning() {
       const baseSnap = await findFirstSnapshotAtOrAfter(symbol, baseMinIso);
       if (!baseSnap) continue;
 
-      const basePrice = Number(baseSnap.price);
+      const basePrice = await _resolveEurPrice(baseSnap);
       const baseSnapTime = new Date(baseSnap.created_at);
       const baseSnapMs = baseSnapTime.getTime();
 
-      if (!Number.isFinite(basePrice) || basePrice <= 0) continue;
+      if (basePrice === null || !Number.isFinite(basePrice) || basePrice <= 0) continue;
       if (!Number.isFinite(baseSnapMs)) continue;
 
       // 3) Targets ab BASIS-SNAPSHOT (wichtig!)
@@ -120,8 +151,11 @@ async function runForwardLearning() {
       const snap1d = await findFirstSnapshotAtOrAfter(symbol, t1dIso);
       const snap3d = await findFirstSnapshotAtOrAfter(symbol, t3dIso);
 
-      const ret1d = snap1d ? percentChange(basePrice, Number(snap1d.price)) : null;
-      const ret3d = snap3d ? percentChange(basePrice, Number(snap3d.price)) : null;
+      const price1d = snap1d ? await _resolveEurPrice(snap1d) : null;
+      const price3d = snap3d ? await _resolveEurPrice(snap3d) : null;
+
+      const ret1d = price1d !== null ? percentChange(basePrice, price1d) : null;
+      const ret3d = price3d !== null ? percentChange(basePrice, price3d) : null;
 
       // 4) Nur speichern wenn wir überhaupt was berechnen konnten
       if (ret1d === null && ret3d === null) continue;
