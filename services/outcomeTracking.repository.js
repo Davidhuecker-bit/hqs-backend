@@ -262,6 +262,18 @@ async function getDue7dVerifications(limit = 50) {
 ========================================================= */
 
 async function initOutcomeTrackingTable() {
+  // ── outcome_tracking ──────────────────────────────────────────────────────
+  // All required columns (including raw_input_snapshot, analysis_rationale,
+  // performance_24h, performance_7d, pattern_key, pattern_context) are defined
+  // inline in CREATE TABLE so that ALTER TABLE ADD COLUMN migrations are never
+  // needed at runtime.
+  //
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+  // column already exists (IF NOT EXISTS only skips the write, not the lock).
+  // Running these on every startup causes lock-contention hangs when
+  // HQS-Backend and hqs-scraping-service start concurrently.
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: CREATE TABLE start");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outcome_tracking (
       id SERIAL PRIMARY KEY,
@@ -299,47 +311,44 @@ async function initOutcomeTrackingTable() {
       pattern_context JSONB
     );
   `);
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: CREATE TABLE ok");
 
-  await pool.query(`
-    ALTER TABLE outcome_tracking
-      -- These ADD COLUMN IF NOT EXISTS statements migrate existing deployments that were
-      -- created before the intelligence columns were introduced. The columns are also
-      -- declared inside CREATE TABLE above so that brand-new installations get them in
-      -- a single CREATE statement without requiring a subsequent migration run.
-      ADD COLUMN IF NOT EXISTS raw_input_snapshot JSONB,
-      ADD COLUMN IF NOT EXISTS analysis_rationale TEXT,
-      ADD COLUMN IF NOT EXISTS performance_24h JSONB,
-      ADD COLUMN IF NOT EXISTS performance_7d JSONB,
-      ADD COLUMN IF NOT EXISTS pattern_key TEXT,
-      ADD COLUMN IF NOT EXISTS pattern_context JSONB;
-  `);
-
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_symbol_due start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_outcome_tracking_symbol_due
     ON outcome_tracking(symbol, evaluation_due_at);
   `);
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_symbol_due ok");
 
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_eval start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_outcome_tracking_eval
     ON outcome_tracking(is_evaluated, evaluation_due_at);
   `);
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_eval ok");
 
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_setup_signature start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_outcome_tracking_setup_signature
     ON outcome_tracking(setup_signature);
   `);
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_setup_signature ok");
 
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_predicted_at start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_outcome_tracking_predicted_at
     ON outcome_tracking(predicted_at DESC);
   `);
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_predicted_at ok");
 
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_pattern_key start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_outcome_tracking_pattern_key
     ON outcome_tracking(pattern_key);
   `);
+  logger.info("[outcomeTracking] initOutcomeTrackingTable: INDEX idx_outcome_tracking_pattern_key ok");
 
-  logger.info("Outcome tracking table ensured");
+  logger.info("[outcomeTracking] Outcome tracking table ensured");
 }
 
 /* =========================================================

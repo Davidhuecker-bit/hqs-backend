@@ -31,7 +31,17 @@ function safeJson(value) {
 }
 
 async function initAdvancedMetricsTable() {
-  // 1) Basis-Tabelle
+  // ── market_advanced_metrics ───────────────────────────────────────────────
+  // All required columns (regime, trend, volatility_annual, volatility_daily,
+  // scenarios, updated_at) are defined inline in CREATE TABLE so that
+  // ALTER TABLE ADD COLUMN migrations are never needed at runtime.
+  //
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+  // column already exists (IF NOT EXISTS only skips the write, not the lock).
+  // Running these on every startup causes lock-contention hangs when
+  // HQS-Backend and hqs-scraping-service start concurrently.
+  if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: CREATE TABLE start");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_advanced_metrics (
       id SERIAL PRIMARY KEY,
@@ -44,20 +54,15 @@ async function initAdvancedMetricsTable() {
       updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
-
-  // 2) Migration-safe Upgrades (falls Tabelle alt ist)
-  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS regime TEXT;`);
-  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS trend FLOAT;`);
-  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS volatility_annual FLOAT;`);
-  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS volatility_daily FLOAT;`);
-  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS scenarios JSONB;`);
-  await pool.query(`ALTER TABLE market_advanced_metrics ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();`);
+  if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: CREATE TABLE ok");
 
   // Index (optional, aber hilft)
+  if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: INDEX start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_market_advanced_metrics_symbol
     ON market_advanced_metrics(symbol);
   `);
+  if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: INDEX ok");
 
   if (logger?.info) logger.info("market_advanced_metrics ready");
 }

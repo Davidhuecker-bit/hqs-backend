@@ -132,6 +132,19 @@ function normalizeNewsItem(item) {
 
 async function initMarketNewsTable() {
   try {
+    // ── market_news ───────────────────────────────────────────────────────────
+    // All required columns (including summary_raw, sentiment_raw, category,
+    // updated_at, source_type, entity_hint, raw_payload, intelligence,
+    // retention_class, expires_at, is_active_for_scoring, lifecycle_state)
+    // are defined inline in CREATE TABLE so that ALTER TABLE ADD COLUMN
+    // migrations are never needed at runtime.
+    //
+    // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+    // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+    // column already exists (IF NOT EXISTS only skips the write, not the lock).
+    // Running these on every startup causes lock-contention hangs when
+    // HQS-Backend and hqs-scraping-service start concurrently.
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: CREATE TABLE start");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS market_news (
         id SERIAL PRIMARY KEY,
@@ -147,73 +160,19 @@ async function initMarketNewsTable() {
         entity_hint JSONB DEFAULT '{}'::jsonb,
         raw_payload JSONB DEFAULT '{}'::jsonb,
         intelligence JSONB DEFAULT '{}'::jsonb,
+        retention_class TEXT DEFAULT 'standard',
+        expires_at TIMESTAMP NULL,
+        is_active_for_scoring BOOLEAN DEFAULT TRUE,
+        lifecycle_state TEXT DEFAULT 'active',
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS summary_raw TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS sentiment_raw TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS category TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS source_type TEXT;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS entity_hint JSONB DEFAULT '{}'::jsonb;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS raw_payload JSONB DEFAULT '{}'::jsonb;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS intelligence JSONB DEFAULT '{}'::jsonb;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS retention_class TEXT DEFAULT 'standard';
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS is_active_for_scoring BOOLEAN DEFAULT TRUE;
-    `);
-
-    await pool.query(`
-      ALTER TABLE market_news
-      ADD COLUMN IF NOT EXISTS lifecycle_state TEXT DEFAULT 'active';
-    `);
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: CREATE TABLE ok");
 
     // Legacy refresh jobs used `summary`; current repository logic stores raw text in `summary_raw`.
     // The old column is intentionally left in place for backwards compatibility with older deployments.
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: data migration (summary) start");
     await pool.query(`
       DO $$
       BEGIN
@@ -233,16 +192,20 @@ async function initMarketNewsTable() {
       END
       $$;
     `);
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: data migration (summary) ok");
 
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: data migration (updated_at) start");
     await pool.query(`
       UPDATE market_news
       SET updated_at = COALESCE(updated_at, created_at, NOW())
       WHERE updated_at IS NULL;
     `);
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: data migration (updated_at) ok");
 
     // Legacy jobs also enforced URL-only uniqueness. We now keep uniqueness scoped to (symbol, url)
     // and recreate that guarantee below via market_news_symbol_url_key so the repository can safely
     // store the same article for multiple mapped symbols without breaking existing rows.
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: drop legacy index start");
     await pool.query(`
       DO $$
       BEGIN
@@ -257,7 +220,9 @@ async function initMarketNewsTable() {
       END
       $$;
     `);
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: drop legacy index ok");
 
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: add constraint start");
     await pool.query(`
       DO $$
       BEGIN
@@ -272,7 +237,9 @@ async function initMarketNewsTable() {
       END
       $$;
     `);
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: add constraint ok");
 
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: indexes start");
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_market_news_symbol_published_at
       ON market_news (symbol, published_at DESC);
@@ -292,6 +259,7 @@ async function initMarketNewsTable() {
       CREATE INDEX IF NOT EXISTS idx_market_news_scoring_active
       ON market_news (symbol, is_active_for_scoring, published_at DESC);
     `);
+    if (logger?.info) logger.info("[marketNews] initMarketNewsTable: indexes ok");
 
     if (logger?.info) logger.info("market_news ready");
   } catch (error) {

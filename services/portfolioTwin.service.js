@@ -39,6 +39,17 @@ const pool = new Pool({
 ========================================================= */
 
 async function ensureVirtualPositionsTable() {
+  // ── virtual_positions ─────────────────────────────────────────────────────
+  // All required columns (including currency, price_source) are defined
+  // inline in CREATE TABLE so that ALTER TABLE ADD COLUMN migrations are
+  // never needed at runtime.
+  //
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+  // column already exists (IF NOT EXISTS only skips the write, not the lock).
+  // Running these on every startup causes lock-contention hangs when
+  // HQS-Backend and hqs-scraping-service start concurrently.
+  logger.info("[portfolioTwin] ensureVirtualPositionsTable: CREATE TABLE start");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS virtual_positions (
       id                    BIGSERIAL    PRIMARY KEY,
@@ -49,6 +60,7 @@ async function ensureVirtualPositionsTable() {
       entry_price           NUMERIC(18,6) NOT NULL,
       current_price         NUMERIC(18,6),
       currency              TEXT,
+      price_source          TEXT,
       allocated_eur         NUMERIC(14,4) NOT NULL,
       allocated_pct         NUMERIC(8,4)  NOT NULL,
 
@@ -66,7 +78,9 @@ async function ensureVirtualPositionsTable() {
       source_run_id         TEXT
     );
   `);
+  logger.info("[portfolioTwin] ensureVirtualPositionsTable: CREATE TABLE ok");
 
+  logger.info("[portfolioTwin] ensureVirtualPositionsTable: indexes start");
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_virtual_positions_symbol
     ON virtual_positions (symbol, status, opened_at DESC);
@@ -84,14 +98,7 @@ async function ensureVirtualPositionsTable() {
     ON virtual_positions (symbol)
     WHERE status = 'open';
   `);
-
-  await pool.query(`
-    ALTER TABLE virtual_positions ADD COLUMN IF NOT EXISTS currency TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE virtual_positions ADD COLUMN IF NOT EXISTS price_source TEXT;
-  `);
+  logger.info("[portfolioTwin] ensureVirtualPositionsTable: indexes ok");
 
   logger.info("virtual_positions table ready");
 }
