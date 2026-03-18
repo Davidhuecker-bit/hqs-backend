@@ -1151,6 +1151,11 @@ async function buildMarketSnapshot() {
       if (!raw || !raw.length) {
         summary.skipped++;
         ensureTierBucket(summary, tier).skipped++;
+        logger.warn(`Quote unavailable for ${symbol}`, {
+          tier,
+          reason: "no_quote_from_provider",
+          recommendation: "Symbol may be delisted, check provider API or universe filters",
+        });
         continue;
       }
 
@@ -1166,6 +1171,13 @@ async function buildMarketSnapshot() {
         summary.skipped++;
         ensureTierBucket(summary, tier).skipped++;
         ensureSourceBucket(summary, providerSource).skipped++;
+        // Log skipped snapshot for visibility (most common reason: FX unavailable for USD quotes)
+        logger.warn(`Snapshot skipped for ${symbol}`, {
+          tier,
+          currency: rawSnapshot?.currency || "unknown",
+          reason: "FX_conversion_failed_or_null_price",
+          recommendation: "Ensure FX_STATIC_USD_EUR is set in env for USD quotes",
+        });
         continue;
       }
 
@@ -1616,13 +1628,55 @@ async function buildMarketSnapshot() {
   const health = buildSystemHealth(summary);
   const recommendations = buildRunRecommendations(summary, health);
 
+  // ── Data Chain Diagnostics ──────────────────────────────────────────────
+  // Log key bottlenecks to make data loss visible
+  const diagnostics = {
+    universe_to_batch_loss: summary.totalActiveSymbols - summary.symbolsTotal,
+    batch_to_quote_loss: summary.symbolsTotal - summary.quotesLoaded,
+    quote_to_snapshot_loss: summary.quotesLoaded - summary.snapshotsSaved,
+    quote_to_hqs_loss: summary.quotesLoaded - summary.hqsSaved,
+    skipped_total: summary.skipped,
+    failed_total: summary.failed,
+    fx_dependent_symbols: summary.symbolsTotal, // All USD symbols need FX
+  };
+
   logger.info("Snapshot complete", {
     summary,
     health,
     recommendations,
+    diagnostics,
   });
 
+  // Log actionable warnings if major data loss detected
+  if (diagnostics.skipped_total > summary.symbolsTotal * 0.3) {
+    logger.warn("HIGH SKIP RATE DETECTED - Data chain bottleneck", {
+      skipRate: `${Math.round((diagnostics.skipped_total / summary.symbolsTotal) * 100)}%`,
+      likelyCause: "FX conversion failure for USD quotes",
+      action: "Set FX_STATIC_USD_EUR env var (e.g., 0.92) as emergency fallback",
+      docsLink: "Check logs above for 'FX_conversion_failed' entries",
+    });
+  }
+
+  if (diagnostics.universe_to_batch_loss > summary.totalActiveSymbols * 0.5) {
+    logger.warn("UNIVERSE BATCH BOTTLENECK DETECTED", {
+      totalActive: summary.totalActiveSymbols,
+      batchSize: summary.symbolsTotal,
+      lossPercent: `${Math.round((diagnostics.universe_to_batch_loss / summary.totalActiveSymbols) * 100)}%`,
+      likelyCause: "SNAPSHOT_BATCH_SIZE too small or region filter too strict",
+      action: "Increase SNAPSHOT_BATCH_SIZE env var or review SNAPSHOT_REGION setting",
+    });
+  }
+
   // ── Update pipeline status (Task 4) ──────────────────────────────────────
+  // Pipeline stages explanation:
+  // - universe: Total active symbols available → symbols selected for this batch
+  // - snapshot: Symbols attempted → snapshots successfully saved to market_snapshots
+  // - advancedMetrics: Quotes loaded → historical metrics computed
+  // - hqsScoring: Normalized snapshots → HQS scores saved to hqs_scores table
+  // - outcome: Snapshots saved → outcome tracking entries created
+  //
+  // NOTE: market_snapshots and hqs_scores are SEPARATE tables.
+  // Both are written during the same scan, but JOIN is needed when reading both together.
   updatePipelineStage("universe", {
     inputCount:   summary.totalActiveSymbols,
     successCount: summary.symbolsTotal,
