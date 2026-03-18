@@ -55,18 +55,18 @@ async function initAutonomyAuditTable() {
 }
 
 async function initAutomationAuditTable() {
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires AccessExclusiveLock even with IF NOT EXISTS.
+  // All columns MUST be in the CREATE TABLE statement.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS automation_audit (
-      id         SERIAL PRIMARY KEY,
-      symbol     TEXT,
-      action     TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id                       SERIAL PRIMARY KEY,
+      symbol                   TEXT,
+      action                   TEXT,
+      saved_capital_potential  FLOAT DEFAULT 0.0,
+      created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-
-  await pool.query(
-    `ALTER TABLE automation_audit ADD COLUMN IF NOT EXISTS saved_capital_potential FLOAT DEFAULT 0.0;`
-  );
 
   if (logger?.info) logger.info("automation_audit table ready");
 }

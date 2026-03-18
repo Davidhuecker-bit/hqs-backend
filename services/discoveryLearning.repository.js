@@ -17,7 +17,9 @@ const RUNTIME_STATE_META_LEARNING_KEY = "meta_learning_store";
  * - legt Indexe an
  */
 async function initDiscoveryTable() {
-  // 1) Basis-Tabelle (neu)
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires AccessExclusiveLock even with IF NOT EXISTS.
+  // All columns MUST be in the CREATE TABLE statement.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS discovery_history (
       id SERIAL PRIMARY KEY,
@@ -33,30 +35,6 @@ async function initDiscoveryTable() {
       return_30d NUMERIC
     );
   `);
-
-  // 2) Migration, falls deine alte Tabelle schon existiert (mit checked, ohne checked_7d/30d)
-  await pool.query(`
-    ALTER TABLE discovery_history
-      ADD COLUMN IF NOT EXISTS checked_7d BOOLEAN DEFAULT FALSE;
-  `);
-
-  await pool.query(`
-    ALTER TABLE discovery_history
-      ADD COLUMN IF NOT EXISTS checked_30d BOOLEAN DEFAULT FALSE;
-  `);
-
-  await pool.query(`
-    ALTER TABLE discovery_history
-      ADD COLUMN IF NOT EXISTS return_7d NUMERIC;
-  `);
-
-  await pool.query(`
-    ALTER TABLE discovery_history
-      ADD COLUMN IF NOT EXISTS return_30d NUMERIC;
-  `);
-
-  // Falls du früher "checked" hattest: wir lassen die Spalte optional existieren, aber nutzen sie nicht mehr aktiv.
-  // (Nicht droppen, damit nichts kaputtgeht.)
 
   // 3) Indexe (Performance)
   await pool.query(`

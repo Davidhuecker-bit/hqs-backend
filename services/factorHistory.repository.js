@@ -42,7 +42,15 @@ const pool = new Pool({
 ========================================================= */
 
 async function initFactorTable() {
-  // Basis-Tabelle erstellen falls nicht vorhanden
+  //
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+  // column already exists (IF NOT EXISTS only skips the write, not the lock).
+  // Running these on every startup causes lock-contention hangs when
+  // HQS-Backend and hqs-scraping-service start concurrently.
+  //
+  // All columns must be defined in the CREATE TABLE IF NOT EXISTS statement below.
+  
   await pool.query(`
     CREATE TABLE IF NOT EXISTS factor_history (
       id SERIAL PRIMARY KEY,
@@ -69,22 +77,6 @@ async function initFactorTable() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
-
-  // Schema safe upgrade (idempotent)
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS momentum FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS quality FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS stability FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS relative FLOAT;`);
-
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS market_average FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS volatility FLOAT;`);
-
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS forward_return_1h FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS forward_return_1d FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS forward_return_3d FLOAT;`);
-
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS portfolio_return FLOAT;`);
-  await pool.query(`ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS factors JSONB;`);
 
   if (logger?.info) logger.info("factor_history ready (FULL QUANT MODE)");
   else console.log("✅ factor_history ready (FULL QUANT MODE)");
