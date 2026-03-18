@@ -45,16 +45,45 @@ const pool = new Pool({
 });
 
 /* =========================================================
-   CURATED SYMBOL SET  (~20 well-known, diversified stocks)
-   Exported as DEMO_ADMIN_SYMBOLS for external consumers.
+   DEMO SYMBOL SET
+   Default: 20 well-known stocks (USA)
+   Can be overridden via DEMO_ADMIN_SYMBOLS env var (comma-separated)
+   Examples:
+     DEMO_ADMIN_SYMBOLS="AAPL,MSFT,NVDA,SAP.DE,VOW3.DE"
+     DEMO_ADMIN_SYMBOLS="use_universe"  (loads from universe_symbols)
 ========================================================= */
 
-const DEMO_ADMIN_SYMBOLS = [
+const DEFAULT_DEMO_SYMBOLS = [
   "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
   "META", "TSLA", "JPM", "BAC", "GS",
   "XOM", "CVX", "JNJ", "PFE", "UNH",
   "WMT", "COST", "CAT", "V", "MA",
 ];
+
+let DEMO_ADMIN_SYMBOLS = DEFAULT_DEMO_SYMBOLS;
+
+// Check if overridden by environment
+const envSymbols = process.env.DEMO_ADMIN_SYMBOLS;
+if (envSymbols && envSymbols.trim()) {
+  const trimmed = envSymbols.trim();
+  if (trimmed.toLowerCase() === "use_universe") {
+    // Will be loaded dynamically from universe_symbols in getAdminDemoPortfolio
+    DEMO_ADMIN_SYMBOLS = "use_universe";
+    logger.info("adminDemoPortfolio: using universe symbols", {
+      mode: "dynamic",
+    });
+  } else {
+    // Parse comma-separated list
+    DEMO_ADMIN_SYMBOLS = trimmed
+      .split(",")
+      .map(s => s.trim().toUpperCase())
+      .filter(s => s.length > 0);
+    logger.info("adminDemoPortfolio: using custom symbols", {
+      count: DEMO_ADMIN_SYMBOLS.length,
+      symbols: DEMO_ADMIN_SYMBOLS,
+    });
+  }
+}
 
 // Backwards-compatible alias
 const CURATED_SYMBOLS = DEMO_ADMIN_SYMBOLS;
@@ -257,9 +286,12 @@ async function loadSnapshotsBatch(symbols) {
       let changePercent = null;
       let changePercentSource = null;
       const basePrevClose = primary.row.previous_close !== null ? Number(primary.row.previous_close) : null;
+      
+      // Don't fall back to USD price - convert properly or use null
       let previousClose = basePrevClose;
       if (primary.rowCurrency === "USD" && basePrevClose !== null) {
-        previousClose = convertUsdToEur(basePrevClose, primary.rateToUse) ?? basePrevClose;
+        previousClose = convertUsdToEur(basePrevClose, primary.rateToUse);
+        // If conversion fails (null), keep as null - don't mix currencies
       }
 
       // 1. Provider-supplied changes_percentage
@@ -312,8 +344,9 @@ async function loadSnapshotsBatch(symbols) {
         status: selectionStatus,
       });
 
-      const finalPrice = primary.isHardStale ? null : primary.priceEur;
-      const finalChangePercent = finalPrice === null ? null : changePercent;
+      // Keep price even if hard-stale (aged but valid) - just flag it
+      const finalPrice = primary.priceEur;
+      const finalChangePercent = changePercent;
 
       map.set(symbol, {
         price: finalPrice,
@@ -439,6 +472,8 @@ async function loadNewsBatch(symbols) {
                ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY published_at DESC NULLS LAST, id DESC) AS rn
         FROM market_news
         WHERE symbol = ANY($1::text[])
+          AND COALESCE(is_active_for_scoring, TRUE) = TRUE
+          AND COALESCE(lifecycle_state, 'active') = 'active'
       ) ranked
       WHERE rn <= 3
       ORDER BY symbol, published_at DESC NULLS LAST
@@ -706,7 +741,35 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
 ========================================================= */
 
 async function getAdminDemoPortfolio() {
-  const symbols = [...CURATED_SYMBOLS];
+  // Dynamic symbol loading if configured
+  let symbols = [];
+  if (DEMO_ADMIN_SYMBOLS === "use_universe") {
+    try {
+      const res = await pool.query(`
+        SELECT symbol FROM universe_symbols
+        WHERE is_active = TRUE
+        ORDER BY priority ASC, symbol ASC
+        LIMIT 20
+      `);
+      symbols = res.rows.map(r => r.symbol);
+      if (!symbols.length) {
+        logger.warn("adminDemoPortfolio: universe_symbols empty, using defaults");
+        symbols = [...DEFAULT_DEMO_SYMBOLS];
+      } else {
+        logger.info("adminDemoPortfolio: loaded from universe", {
+          count: symbols.length,
+        });
+      }
+    } catch (err) {
+      logger.warn("adminDemoPortfolio: failed to load universe, using defaults", {
+        message: err.message,
+      });
+      symbols = [...DEFAULT_DEMO_SYMBOLS];
+    }
+  } else {
+    symbols = [...DEMO_ADMIN_SYMBOLS];
+  }
+  
   const partialErrors = [];
 
   // --- Batch-load all data sources in parallel ---

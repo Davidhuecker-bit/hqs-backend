@@ -190,7 +190,16 @@ async function loadTargetSymbols(limit = SYMBOL_LIMIT) {
     return entitySymbols;
   }
 
-  return [];
+  // ERROR instead of silent empty - makes job failures visible
+  logger.error("marketNewsRefresh: No symbols available from any source", {
+    universe: 0,
+    watchlist: 0,
+    entityMap: 0,
+    region: TARGET_REGION,
+    action: "job_failed",
+    recommendation: "run universe refresh or populate watchlist_symbols",
+  });
+  throw new Error("No symbols available for news collection");
 }
 
 function normalizeCollectedNewsItem(rawItem, fallbackSymbol, intelligence = {}) {
