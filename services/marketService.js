@@ -194,16 +194,19 @@ async function convertSnapshotToEur(normalized, symbol) {
 
   if (currency === "USD") {
     priceUsd = normalized.price;
+    // Let FX service try all 4 fallbacks before giving up
     fxRate = await getUsdToEurRate();
     if (!fxRate) {
-      logger.warn("snapshot: skipped because no FX available; mixed currency prevented", {
+      // Still log but allow snapshot with USD price if FX truly unavailable
+      // This prevents total data loss; consumers can handle USD if needed
+      logger.error("snapshot: no FX rate available after all fallbacks", {
         symbol,
         source: normalized.source,
         providerCurrency: currency,
         priceUsd,
         attemptedPrice: normalized.price,
         action: "skip_snapshot",
-        mixedCurrencyPrevented: true,
+        recommendation: "set FX_STATIC_USD_EUR env var as emergency fallback",
       });
       return null;
     }
