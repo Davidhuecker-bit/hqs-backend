@@ -1439,7 +1439,7 @@ async function buildMarketSnapshot() {
           normalized.low,
           normalized.volume,
           normalized.source,
-          normalized.currency || null,
+          normalized.fxApplied ? "EUR" : (normalized.currency || "USD"), // Explicit currency
           normalized.fxRate ?? null,
           normalized.changesPercentage ?? null,
           normalized.previousClose ?? null,

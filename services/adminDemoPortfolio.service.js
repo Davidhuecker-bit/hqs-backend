@@ -286,9 +286,12 @@ async function loadSnapshotsBatch(symbols) {
       let changePercent = null;
       let changePercentSource = null;
       const basePrevClose = primary.row.previous_close !== null ? Number(primary.row.previous_close) : null;
+      
+      // Don't fall back to USD price - convert properly or use null
       let previousClose = basePrevClose;
       if (primary.rowCurrency === "USD" && basePrevClose !== null) {
-        previousClose = convertUsdToEur(basePrevClose, primary.rateToUse) ?? basePrevClose;
+        previousClose = convertUsdToEur(basePrevClose, primary.rateToUse);
+        // If conversion fails (null), keep as null - don't mix currencies
       }
 
       // 1. Provider-supplied changes_percentage
