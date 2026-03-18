@@ -197,18 +197,26 @@ async function convertSnapshotToEur(normalized, symbol) {
     // Let FX service try all 4 fallbacks before giving up
     fxRate = await getUsdToEurRate();
     if (!fxRate) {
-      // Still log but allow snapshot with USD price if FX truly unavailable
-      // This prevents total data loss; consumers can handle USD if needed
-      logger.error("snapshot: no FX rate available after all fallbacks", {
+      // Preserve snapshot in USD instead of dropping it entirely.
+      // Downstream code already stores the currency column, so consumers
+      // can handle USD-denominated rows gracefully.
+      logger.warn("snapshot: no FX rate available — preserving as USD", {
         symbol,
         source: normalized.source,
         providerCurrency: currency,
         priceUsd,
-        attemptedPrice: normalized.price,
-        action: "skip_snapshot",
+        action: "keep_as_usd",
         recommendation: "set FX_STATIC_USD_EUR env var as emergency fallback",
       });
-      return null;
+      return {
+        ...normalized,
+        price: normalized.price,
+        fxRate: null,
+        fxApplied: false,
+        currency: "USD",
+        originalCurrency: "USD",
+        priceUsd: normalized.price,
+      };
     }
   }
 
@@ -689,6 +697,9 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
       tierMix,
     });
 
+    // Cursor is managed by getUniverseBatch() via universe_scan_state.
+    // Do NOT also write to snapshot_scan_state here — that table is
+    // exclusively for the watchlist-fallback path.
     return {
       totalActive: safeNum(universeBatch?.totalActive, candidates.length),
       batchSize,
@@ -696,6 +707,7 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
       nextOffset: safeNum(universeBatch?.nextCursor, 0),
       wrapped: Boolean(universeBatch?.wrapped),
       candidates,
+      source: "universe",
     };
   }
 
@@ -787,6 +799,10 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
       ? (offset + candidates.length) % totalActive
       : 0;
 
+  // Persist watchlist offset immediately — this is the sole owner of
+  // snapshot_scan_state so it must save before returning.
+  await saveSnapshotOffset(nextOffset);
+
   const tierMix = candidates.reduce((acc, item) => {
     acc[item.tier] = (acc[item.tier] || 0) + 1;
     return acc;
@@ -811,6 +827,7 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
     nextOffset,
     wrapped,
     candidates,
+    source: "watchlist",
   };
 }
 
@@ -1140,6 +1157,20 @@ async function buildMarketSnapshot() {
     logger.warn("Social signals load failed", { message: error.message });
   }
 
+  // ── Per-batch weight cache ──────────────────────────────────────────────
+  // computeAdaptiveWeights() writes to weight_history + mirrors to
+  // dynamic_weights on every call.  Within a single batch the factor_history
+  // data is identical for a given regime, so caching avoids N×80 redundant
+  // DB writes and ensures exactly one weight_history entry per regime.
+  const _weightCache = {};
+
+  async function cachedAdaptiveWeights(regime) {
+    if (_weightCache[regime] !== undefined) return _weightCache[regime];
+    const w = await computeAdaptiveWeights(regime);
+    _weightCache[regime] = w;           // cache even null
+    return w;
+  }
+
   for (const candidate of batch.candidates) {
     const symbol = candidate.symbol;
     const tier = candidate.tier;
@@ -1189,7 +1220,7 @@ async function buildMarketSnapshot() {
       let scenarios = null;
 
       let regime = "neutral";
-      let adaptiveWeights = await computeAdaptiveWeights(regime);
+      let adaptiveWeights = null;
 
       try {
         const historical = await getHistoricalPrices(symbol, HIST_PERIOD);
@@ -1208,8 +1239,6 @@ async function buildMarketSnapshot() {
             trendData.trend,
             trendData.volatilityAnnual
           );
-
-          adaptiveWeights = await computeAdaptiveWeights(regime);
 
           scenarios = buildMultiHorizonScenarios(
             prices[0],
@@ -1240,6 +1269,11 @@ async function buildMarketSnapshot() {
           tier,
         });
       }
+
+      // Compute (or retrieve cached) adaptive weights for the detected regime.
+      // Exactly one computeAdaptiveWeights() call per unique regime per batch
+      // → exactly one saveWeightSnapshot + dynamic_weights mirror per regime.
+      adaptiveWeights = await cachedAdaptiveWeights(regime);
 
       const hqs = await buildHQSResponse(
         normalized,
@@ -1623,7 +1657,11 @@ async function buildMarketSnapshot() {
     }
   }
 
-  await saveSnapshotOffset(batch.nextOffset);
+  // Offset persistence is now handled inside getSnapshotCandidates():
+  //  • universe path  → universe_scan_state  (managed by getUniverseBatch)
+  //  • watchlist path → snapshot_scan_state   (managed by watchlist fallback)
+  // No additional save here — avoids writing universe offsets into the
+  // watchlist cursor table, which was the root cause of the competing-state bug.
 
   const health = buildSystemHealth(summary);
   const recommendations = buildRunRecommendations(summary, health);
