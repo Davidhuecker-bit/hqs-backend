@@ -21,6 +21,7 @@
 
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
+const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -275,10 +276,13 @@ async function getSignalHistoryAll({ symbol = null, limit = 50, offset = 0 } = {
         ot.performance_24h,
         ot.performance_7d,
         ms.price                   AS current_price,
+        ms.price_usd               AS current_price_usd,
+        ms.currency                AS current_currency,
+        ms.fx_rate                 AS current_fx_rate,
         ms.created_at              AS price_updated_at
       FROM outcome_tracking ot
       LEFT JOIN LATERAL (
-        SELECT price, created_at
+        SELECT price, price_usd, currency, fx_rate, created_at
         FROM   market_snapshots
         WHERE  symbol = ot.symbol
           AND  price  > 0
@@ -294,7 +298,16 @@ async function getSignalHistoryAll({ symbol = null, limit = 50, offset = 0 } = {
     const res = await pool.query(sql, params);
     const rows = res.rows || [];
 
-    const signals = rows.map((r) => _buildSignalRow(r));
+    // Fetch FX rate once for all rows (avoid per-row async calls)
+    let fxRateForLegacy = null;
+    const hasLegacyUsd = rows.some(
+      (r) => r.current_currency && String(r.current_currency).toUpperCase() === "USD"
+    );
+    if (hasLegacyUsd) {
+      fxRateForLegacy = await getUsdToEurRate().catch(() => null);
+    }
+
+    const signals = rows.map((r) => _buildSignalRow(r, fxRateForLegacy));
 
     const totalRes = await pool.query(
       `SELECT COUNT(*) AS cnt FROM outcome_tracking${sym ? " WHERE symbol = $1" : ""}`,
@@ -330,9 +343,28 @@ async function getSignalHistoryBySymbol(symbol, limit = 50) {
   return getSignalHistoryAll({ symbol, limit, offset: 0 });
 }
 
-function _buildSignalRow(r) {
+function _buildSignalRow(r, legacyFxRate) {
   const entryPrice   = safe(r.entry_price);
-  const currentPrice = r.current_price ? safe(r.current_price) : null;
+
+  // Resolve current price to EUR.  New snapshots store price in EUR directly.
+  // Legacy USD snapshots (currency='USD', fx_rate stored or legacyFxRate available)
+  // are converted on-the-fly so displayed prices are always in EUR.
+  let currentPrice = r.current_price ? safe(r.current_price) : null;
+  const rowCurrency = String(r.current_currency || "EUR").toUpperCase();
+  if (rowCurrency === "USD" && currentPrice !== null) {
+    const snapshotFxRate =
+      r.current_fx_rate !== null && Number.isFinite(Number(r.current_fx_rate)) && Number(r.current_fx_rate) > 0
+        ? Number(r.current_fx_rate)
+        : null;
+    const rateToUse = snapshotFxRate ?? legacyFxRate ?? null;
+    const converted = convertUsdToEur(currentPrice, rateToUse);
+    if (converted !== null) {
+      currentPrice = converted;
+    } else {
+      // No valid rate: suppress price rather than show a USD value as EUR
+      currentPrice = null;
+    }
+  }
 
   let changeSinceSignalPct = null;
   if (entryPrice > 0 && currentPrice && currentPrice > 0) {

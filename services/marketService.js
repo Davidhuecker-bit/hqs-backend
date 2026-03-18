@@ -209,25 +209,27 @@ async function convertSnapshotToEur(normalized, symbol) {
     }
   }
 
+  // Convert all price fields.  If convertUsdToEur returns null (invalid input)
+  // we store null rather than leaking the unconverted USD value.
   const priceEur =
     currency === "USD"
-      ? convertUsdToEur(normalized.price, fxRate) ?? normalized.price
+      ? convertUsdToEur(normalized.price, fxRate) ?? null
       : normalized.price;
   const openEur =
     currency === "USD"
-      ? convertUsdToEur(normalized.open, fxRate) ?? normalized.open
+      ? convertUsdToEur(normalized.open, fxRate) ?? null
       : normalized.open;
   const highEur =
     currency === "USD"
-      ? convertUsdToEur(normalized.high, fxRate) ?? normalized.high
+      ? convertUsdToEur(normalized.high, fxRate) ?? null
       : normalized.high;
   const lowEur =
     currency === "USD"
-      ? convertUsdToEur(normalized.low, fxRate) ?? normalized.low
+      ? convertUsdToEur(normalized.low, fxRate) ?? null
       : normalized.low;
   const previousCloseEur =
     currency === "USD"
-      ? convertUsdToEur(normalized.previousClose, fxRate) ?? normalized.previousClose
+      ? convertUsdToEur(normalized.previousClose, fxRate) ?? null
       : normalized.previousClose;
 
   // Convert absolute price change to EUR using the same FX rate applied to all other price fields

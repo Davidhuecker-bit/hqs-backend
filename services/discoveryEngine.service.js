@@ -5,6 +5,7 @@ const logger = require("../utils/logger");
 
 // ✅ nutzt dein neues Learning-System (7d/30d kompatibel)
 const { saveDiscovery } = require("./discoveryLearning.service");
+const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -167,7 +168,7 @@ async function getCurrentPrice(symbol) {
 
   const res = await pool.query(
     `
-    SELECT price
+    SELECT price, price_usd, currency, fx_rate
     FROM market_snapshots
     WHERE symbol = $1
     ORDER BY created_at DESC
@@ -178,8 +179,27 @@ async function getCurrentPrice(symbol) {
 
   if (!res.rows.length) return null;
 
-  const p = Number(res.rows[0].price);
-  return Number.isFinite(p) ? p : null;
+  const row = res.rows[0];
+  const currency = String(row.currency || "EUR").toUpperCase();
+
+  if (currency !== "USD") {
+    const p = Number(row.price);
+    return Number.isFinite(p) ? p : null;
+  }
+
+  // Legacy USD snapshot: price_usd holds the original USD value on new rows;
+  // on pre-fix rows price_usd is NULL and price IS the USD value.
+  const priceUsdField = row.price_usd !== null ? Number(row.price_usd) : null;
+  const base = priceUsdField !== null && Number.isFinite(priceUsdField)
+    ? priceUsdField
+    : Number(row.price); // pre-fix legacy: price field contains USD
+  if (!Number.isFinite(base) || base <= 0) return null;
+  const storedRate = row.fx_rate !== null ? Number(row.fx_rate) : null;
+  const rate = (storedRate !== null && Number.isFinite(storedRate) && storedRate > 0)
+    ? storedRate
+    : await getUsdToEurRate().catch(() => null);
+  const eur = convertUsdToEur(base, rate);
+  return eur !== null && Number.isFinite(eur) ? eur : null;
 }
 
 /**

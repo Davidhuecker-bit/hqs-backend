@@ -41,6 +41,9 @@ function isValidRate(rate) {
 }
 
 function convertUsdToEur(amount, rate) {
+  // Explicit null/undefined guard: Number(null)=0 and Number(undefined)=NaN,
+  // so we must reject null/undefined before converting to avoid storing 0 as EUR price.
+  if (amount === null || amount === undefined) return null;
   const n = Number(amount);
   if (!Number.isFinite(n)) return null;
   if (!isValidRate(rate)) return null;
