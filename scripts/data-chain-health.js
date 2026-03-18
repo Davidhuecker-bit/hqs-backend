@@ -184,8 +184,8 @@ async function check2_FxRatesHealth() {
   
   log("\n  Currency distribution (24h):", "reset");
   currencyDist.rows.forEach(row => {
-    const pct = row.avg_fx_rate ? ` (avg FX: ${parseFloat(row.avg_fx_rate).toFixed(4)})` : "";
-    log(`    ${row.currency || 'NULL'}: ${row.count}${pct}`, "dim");
+    const avgFx = row.avg_fx_rate ? ` (avg FX: ${Number(row.avg_fx_rate).toFixed(4)})` : "";
+    log(`    ${row.currency || 'NULL'}: ${row.count}${avgFx}`, "dim");
   });
   
   const eurCount = currencyDist.rows.find(r => r.currency === "EUR")?.count || 0;
