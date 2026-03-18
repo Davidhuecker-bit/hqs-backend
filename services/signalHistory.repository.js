@@ -1,9 +1,52 @@
 async function getSignalKPIs({ windowDays = 90 } = {}) {
   const safeDays = Math.max(7, Math.min(Number(windowDays) || 90, 365));
 
+  const toPct = (value) => {
+    if (value === null || value === undefined) return null;
+    const num = Number(value);
+    if (!Number.isFinite(num)) return null;
+    return Number((num * 100).toFixed(2));
+  };
+
+  const detectTimingBucket = (row) => {
+    try {
+      const entryPrice = Number(row?.entry_price);
+      const perf24Raw = row?.performance_24h;
+      const perf7dRaw = row?.performance_7d;
+
+      const perf24 =
+        perf24Raw && typeof perf24Raw === "object"
+          ? Number(perf24Raw.price_delta ?? perf24Raw.return ?? null)
+          : null;
+
+      const perf7d =
+        perf7dRaw && typeof perf7dRaw === "object"
+          ? Number(perf7dRaw.price_delta ?? perf7dRaw.return ?? null)
+          : null;
+
+      if (!Number.isFinite(entryPrice)) return "unklar";
+
+      const has24 = Number.isFinite(perf24);
+      const has7 = Number.isFinite(perf7d);
+
+      if (!has24 && !has7) return "unklar";
+
+      if (has24 && perf24 > 0.03) return "passend";
+      if (has24 && perf24 < -0.03) return "zu früh";
+
+      if (has7 && perf7d > 0.03) return "zu spät";
+      if (has7 && perf7d < -0.03) return "zu früh";
+
+      return "unklar";
+    } catch (_) {
+      return "unklar";
+    }
+  };
+
   try {
     const [outcomeRes, timingRes, agentRes, nearMissRes] = await Promise.all([
-      pool.query(`
+      pool.query(
+        `
         SELECT
           COUNT(*) AS total,
           COUNT(*) FILTER (WHERE is_evaluated = TRUE) AS evaluated,
@@ -47,18 +90,24 @@ async function getSignalKPIs({ windowDays = 90 } = {}) {
 
         FROM outcome_tracking
         WHERE predicted_at >= NOW() - INTERVAL '1 day' * $1
-      `, [safeDays]),
+        `,
+        [safeDays]
+      ),
 
-      pool.query(`
+      pool.query(
+        `
         SELECT
           entry_price,
           performance_24h,
           performance_7d
         FROM outcome_tracking
         WHERE predicted_at >= NOW() - INTERVAL '1 day' * $1
-      `, [safeDays]),
+        `,
+        [safeDays]
+      ),
 
-      pool.query(`
+      pool.query(
+        `
         SELECT
           COUNT(*) AS total_verified,
           COUNT(*) FILTER (WHERE was_correct = TRUE) AS correct,
@@ -66,19 +115,26 @@ async function getSignalKPIs({ windowDays = 90 } = {}) {
         FROM agent_forecasts
         WHERE verified_at IS NOT NULL
           AND forecasted_at >= NOW() - INTERVAL '1 day' * $1
-      `, [safeDays]),
+        `,
+        [safeDays]
+      ),
 
-      pool.query(`
-        SELECT AVG(saved_capital) AS avg_saved
-        FROM guardian_near_miss
-        WHERE saved_capital IS NOT NULL
-          AND created_at >= NOW() - INTERVAL '1 day' * $1
-      `, [safeDays]).catch(() => ({ rows: [{ avg_saved: null }] })),
+      pool
+        .query(
+          `
+          SELECT AVG(saved_capital) AS avg_saved
+          FROM guardian_near_miss
+          WHERE saved_capital IS NOT NULL
+            AND created_at >= NOW() - INTERVAL '1 day' * $1
+          `,
+          [safeDays]
+        )
+        .catch(() => ({ rows: [{ avg_saved: null }] })),
     ]);
 
-    const ov = outcomeRes.rows[0] || {};
-    const ag = agentRes.rows[0] || {};
-    const nm = nearMissRes.rows[0] || {};
+    const ov = outcomeRes?.rows?.[0] || {};
+    const ag = agentRes?.rows?.[0] || {};
+    const nm = nearMissRes?.rows?.[0] || {};
 
     const timingDist = {
       passend: 0,
@@ -87,18 +143,13 @@ async function getSignalKPIs({ windowDays = 90 } = {}) {
       unklar: 0,
     };
 
-    for (const row of timingRes.rows || []) {
-      const timing = computeTimingQuality(row, null);
+    for (const row of timingRes?.rows || []) {
+      const bucket = detectTimingBucket(row);
 
-      if (timing.quality === "passend") {
-        timingDist.passend++;
-      } else if (timing.quality === "zu früh") {
-        timingDist.zuFrueh++;
-      } else if (timing.quality === "zu spät") {
-        timingDist.zuSpaet++;
-      } else {
-        timingDist.unklar++;
-      }
+      if (bucket === "passend") timingDist.passend++;
+      else if (bucket === "zu früh") timingDist.zuFrueh++;
+      else if (bucket === "zu spät") timingDist.zuSpaet++;
+      else timingDist.unklar++;
     }
 
     const total = Number(ov.total || 0);
@@ -134,8 +185,8 @@ async function getSignalKPIs({ windowDays = 90 } = {}) {
         hitRate7dPct: has7d > 0 ? Math.round((correct7d / has7d) * 100) : null,
         hitRate30dPct: evaluated > 0 ? Math.round((correctEvaluated / evaluated) * 100) : null,
 
-        avgReturn7dPct: ov.avg_return_7d !== null ? pct(ov.avg_return_7d) : null,
-        avgReturn30dPct: ov.avg_return_evaluated !== null ? pct(ov.avg_return_evaluated) : null,
+        avgReturn7dPct: toPct(ov.avg_return_7d),
+        avgReturn30dPct: toPct(ov.avg_return_evaluated),
 
         avgMaxUpsidePct: null,
         avgMaxDrawdownPct: null,
@@ -155,7 +206,17 @@ async function getSignalKPIs({ windowDays = 90 } = {}) {
       },
     };
   } catch (err) {
-    logger.error("signalHistory.getSignalKPIs error", { message: err.message });
-    return _errorShape("getSignalKPIs", err.message);
+    try {
+      logger.error("signalHistory.getSignalKPIs error", {
+        message: err.message,
+      });
+    } catch (_) {}
+
+    return {
+      success: false,
+      error: "getSignalKPIs_failed",
+      message: err.message,
+      kpis: null,
+    };
   }
 }
