@@ -1565,4 +1565,155 @@ router.post("/virtual-positions/sync", async (req, res) => {
   }
 });
 
+/* =========================================================
+   STEP 3 – OUTCOME / TIMING / PROOF ENDPOINTS
+   ─────────────────────────────────────────────────────────
+   All endpoints are read-only, purely derived from existing
+   tables (outcome_tracking, market_snapshots, agent_forecasts,
+   guardian_near_miss).  No mock data.  All responses carry
+   a _meta block with dataStatus (full|partial|empty).
+========================================================= */
+
+const {
+  getSignalHistoryAll,
+  getSignalHistoryBySymbol,
+  getOutcomeAnalysis,
+  getTimingQuality,
+  getForecastVsOutcome,
+  getSignalKPIs,
+} = require("../services/signalHistory.repository");
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/signal-history
+ * Returns paginated list of all signals with current price
+ * context and completeness indicators.
+ *
+ * Query params:
+ *   ?limit=50     – max results (1–200)
+ *   ?offset=0     – pagination offset
+ * ───────────────────────────────────────────────────────── */
+router.get("/signal-history", async (req, res) => {
+  try {
+    const limit  = Math.max(1, Math.min(Number(req.query.limit)  || 50,  200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const result = await getSignalHistoryAll({ limit, offset });
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin signal-history route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/signal-history/:symbol
+ * Returns signal history for a single symbol.
+ *
+ * Query params:
+ *   ?limit=50  – max results (1–200)
+ * ───────────────────────────────────────────────────────── */
+router.get("/signal-history/:symbol", async (req, res) => {
+  try {
+    const symbol = String(req.params.symbol || "").trim().toUpperCase();
+    if (!symbol) {
+      return res.status(400).json({ success: false, error: "symbol is required" });
+    }
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const result = await getSignalHistoryBySymbol(symbol, limit);
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin signal-history/:symbol route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/outcome-analysis
+ * Returns 7d / 30d outcome evaluation per signal including
+ * max-upside and max-drawdown from stored market snapshots.
+ *
+ * Query params:
+ *   ?symbol=AAPL – filter to one symbol (optional)
+ *   ?limit=50
+ *   ?offset=0
+ * ───────────────────────────────────────────────────────── */
+router.get("/outcome-analysis", async (req, res) => {
+  try {
+    const symbol = req.query.symbol ? String(req.query.symbol).trim().toUpperCase() : null;
+    const limit  = Math.max(1, Math.min(Number(req.query.limit)  || 50,  200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const result = await getOutcomeAnalysis({ symbol, limit, offset });
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin outcome-analysis route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/timing-quality
+ * Returns timing assessment per signal (zu früh / passend /
+ * zu spät / unklar) with a human-readable reason string.
+ *
+ * Query params:
+ *   ?symbol=AAPL – filter to one symbol (optional)
+ *   ?limit=50
+ *   ?offset=0
+ * ───────────────────────────────────────────────────────── */
+router.get("/timing-quality", async (req, res) => {
+  try {
+    const symbol = req.query.symbol ? String(req.query.symbol).trim().toUpperCase() : null;
+    const limit  = Math.max(1, Math.min(Number(req.query.limit)  || 50,  200));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    const result = await getTimingQuality({ symbol, limit, offset });
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin timing-quality route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/forecast-vs-outcome
+ * Compares agent forecast directions (agent_forecasts) with
+ * actual 24h and 7d outcomes.  Only verified forecasts shown.
+ *
+ * Query params:
+ *   ?symbol=AAPL       – filter to one symbol (optional)
+ *   ?limit=50
+ *   ?offset=0
+ *   ?windowDays=30     – look-back window in days (1–365)
+ * ───────────────────────────────────────────────────────── */
+router.get("/forecast-vs-outcome", async (req, res) => {
+  try {
+    const symbol     = req.query.symbol ? String(req.query.symbol).trim().toUpperCase() : null;
+    const limit      = Math.max(1, Math.min(Number(req.query.limit)      || 50,  200));
+    const offset     = Math.max(0, Number(req.query.offset) || 0);
+    const windowDays = Math.max(1, Math.min(Number(req.query.windowDays) || 30,  365));
+    const result = await getForecastVsOutcome({ symbol, limit, offset, windowDays });
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin forecast-vs-outcome route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/signal-kpis
+ * Aggregated KPI dashboard: hit rates, avg returns, timing
+ * distribution, agent accuracy.
+ *
+ * Query params:
+ *   ?windowDays=90  – aggregation window in days (7–365)
+ * ───────────────────────────────────────────────────────── */
+router.get("/signal-kpis", async (req, res) => {
+  try {
+    const windowDays = Math.max(7, Math.min(Number(req.query.windowDays) || 90, 365));
+    const result = await getSignalKPIs({ windowDays });
+    return res.json(result);
+  } catch (error) {
+    logger.error("Admin signal-kpis route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
 module.exports = router;
