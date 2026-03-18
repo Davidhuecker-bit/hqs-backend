@@ -816,6 +816,17 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
 ========================================================= */
 
 async function ensureTablesExist() {
+  // ── market_snapshots ──────────────────────────────────────────────────────
+  // All required columns (changes_percentage, previous_close, price_usd,
+  // currency, fx_rate) are defined inline in CREATE TABLE so that ALTER TABLE
+  // ADD COLUMN migrations are never needed at runtime.
+  //
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+  // column already exists (IF NOT EXISTS only skips the write, not the lock).
+  // Running these on every startup caused lock-contention deadlocks when
+  // HQS-Backend and hqs-scraping-service started concurrently.
+  logger.info("[startup] ensureTablesExist.market_snapshots: start");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_snapshots (
       id SERIAL PRIMARY KEY,
@@ -834,16 +845,10 @@ async function ensureTablesExist() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  logger.info("[startup] ensureTablesExist.market_snapshots: ok");
 
-  // Migration: add columns if they don't exist yet (safe for existing deployments)
-  await pool.query(`
-    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS changes_percentage NUMERIC;
-    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS previous_close NUMERIC;
-    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS price_usd NUMERIC;
-    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS currency TEXT;
-    ALTER TABLE market_snapshots ADD COLUMN IF NOT EXISTS fx_rate NUMERIC;
-  `);
-
+  // ── hqs_scores ────────────────────────────────────────────────────────────
+  logger.info("[startup] ensureTablesExist.hqs_scores: start");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS hqs_scores (
       id SERIAL PRIMARY KEY,
@@ -857,18 +862,46 @@ async function ensureTablesExist() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  logger.info("[startup] ensureTablesExist.hqs_scores: ok");
 
+  // ── auxiliary tables ──────────────────────────────────────────────────────
+  logger.info("[startup] ensureTablesExist.initAdvancedMetricsTable: start");
   await initAdvancedMetricsTable();
-  await initJobLocksTable();
-  await initWatchlistTable();
-  await seedDefaultWatchlist();
-  await initOutcomeTrackingTable();
-  await initSnapshotStateTable();
-  await initMarketNewsTable();
-  await initUniverseTables();
-  await ensureFxRatesTable();
+  logger.info("[startup] ensureTablesExist.initAdvancedMetricsTable: ok");
 
-  logger.info("Tables ensured");
+  logger.info("[startup] ensureTablesExist.initJobLocksTable: start");
+  await initJobLocksTable();
+  logger.info("[startup] ensureTablesExist.initJobLocksTable: ok");
+
+  logger.info("[startup] ensureTablesExist.initWatchlistTable: start");
+  await initWatchlistTable();
+  logger.info("[startup] ensureTablesExist.initWatchlistTable: ok");
+
+  logger.info("[startup] ensureTablesExist.seedDefaultWatchlist: start");
+  await seedDefaultWatchlist();
+  logger.info("[startup] ensureTablesExist.seedDefaultWatchlist: ok");
+
+  logger.info("[startup] ensureTablesExist.initOutcomeTrackingTable: start");
+  await initOutcomeTrackingTable();
+  logger.info("[startup] ensureTablesExist.initOutcomeTrackingTable: ok");
+
+  logger.info("[startup] ensureTablesExist.initSnapshotStateTable: start");
+  await initSnapshotStateTable();
+  logger.info("[startup] ensureTablesExist.initSnapshotStateTable: ok");
+
+  logger.info("[startup] ensureTablesExist.initMarketNewsTable: start");
+  await initMarketNewsTable();
+  logger.info("[startup] ensureTablesExist.initMarketNewsTable: ok");
+
+  logger.info("[startup] ensureTablesExist.initUniverseTables: start");
+  await initUniverseTables();
+  logger.info("[startup] ensureTablesExist.initUniverseTables: ok");
+
+  logger.info("[startup] ensureTablesExist.ensureFxRatesTable: start");
+  await ensureFxRatesTable();
+  logger.info("[startup] ensureTablesExist.ensureFxRatesTable: ok");
+
+  logger.info("[startup] ensureTablesExist: all tables ensured");
 }
 
 /* =========================================================
