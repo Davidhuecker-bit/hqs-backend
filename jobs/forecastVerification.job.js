@@ -20,6 +20,10 @@ const {
   getDue7dVerifications,
   verifyPerformance,
 } = require("../services/outcomeTracking.repository");
+const {
+  acquireLock,
+  initJobLocksTable,
+} = require("../services/jobLock.repository");
 
 /**
  * Verifies all pending agent forecasts that are ≥24 hours old,
@@ -30,6 +34,14 @@ const {
  */
 async function runForecastVerificationJob() {
   return runJob("forecastVerification", async () => {
+    await initJobLocksTable();
+
+    const won = await acquireLock("forecast_verification_job", 30 * 60);
+    if (!won) {
+      logger.warn("Forecast verification skipped (lock held)");
+      return { verified24h: 0, verified7d: 0, failedCount: 0, processedCount: 0 };
+    }
+
     let verified24h = 0;
     let verified7d  = 0;
     let failedCount = 0;
