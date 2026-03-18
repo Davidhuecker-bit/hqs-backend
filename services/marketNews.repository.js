@@ -132,18 +132,6 @@ function normalizeNewsItem(item) {
 
 async function initMarketNewsTable() {
   try {
-    // ── market_news ───────────────────────────────────────────────────────────
-    // All required columns (including summary_raw, sentiment_raw, category,
-    // updated_at, source_type, entity_hint, raw_payload, intelligence,
-    // retention_class, expires_at, is_active_for_scoring, lifecycle_state)
-    // are defined inline in CREATE TABLE so that ALTER TABLE ADD COLUMN
-    // migrations are never needed at runtime.
-    //
-    // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
-    // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
-    // column already exists (IF NOT EXISTS only skips the write, not the lock).
-    // Running these on every startup causes lock-contention hangs when
-    // HQS-Backend and hqs-scraping-service start concurrently.
     if (logger?.info) logger.info("[marketNews] initMarketNewsTable: CREATE TABLE start");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS market_news (
@@ -170,8 +158,6 @@ async function initMarketNewsTable() {
     `);
     if (logger?.info) logger.info("[marketNews] initMarketNewsTable: CREATE TABLE ok");
 
-    // Legacy refresh jobs used `summary`; current repository logic stores raw text in `summary_raw`.
-    // The old column is intentionally left in place for backwards compatibility with older deployments.
     if (logger?.info) logger.info("[marketNews] initMarketNewsTable: data migration (summary) start");
     await pool.query(`
       DO $$
@@ -202,9 +188,6 @@ async function initMarketNewsTable() {
     `);
     if (logger?.info) logger.info("[marketNews] initMarketNewsTable: data migration (updated_at) ok");
 
-    // Legacy jobs also enforced URL-only uniqueness. We now keep uniqueness scoped to (symbol, url)
-    // and recreate that guarantee below via market_news_symbol_url_key so the repository can safely
-    // store the same article for multiple mapped symbols without breaking existing rows.
     if (logger?.info) logger.info("[marketNews] initMarketNewsTable: drop legacy index start");
     await pool.query(`
       DO $$
@@ -377,19 +360,14 @@ async function loadLatestMarketNewsBySymbols(symbols, limitPerSymbol = 5, option
 
     const limit = Math.max(1, Math.min(Number(limitPerSymbol) || 5, 100));
     const onlyScoringActive = options?.onlyScoringActive === true;
-    const coolingIntervalCaseSql = buildRetentionIntervalCaseSql({
-      columnName: "retention_class",
-      extendedInterval: SQL_INTERVAL_COOLING_EXTENDED,
-      standardInterval: SQL_INTERVAL_COOLING_STANDARD,
-      shortInterval: SQL_INTERVAL_COOLING_SHORT,
-    });
+
     const whereActiveClause = onlyScoringActive
       ? `
           AND COALESCE(is_active_for_scoring, TRUE) = TRUE
           AND COALESCE(lifecycle_state, 'active') = 'active'
           AND (
             expires_at IS NULL
-            OR expires_at > NOW() + ${coolingIntervalCaseSql}
+            OR expires_at > NOW()
           )
         `
       : "";
@@ -582,28 +560,11 @@ async function cleanupExpiredMarketNews() {
   }
 }
 
-// ── Global news aggregate thresholds ────────────────────────────────────────
-const NEWS_AGGREGATE_MIN_HOURS      = 1;   // minimum allowed look-back window
-const NEWS_AGGREGATE_MAX_HOURS      = 168; // maximum: 1 week
-const NEWS_AGGREGATE_BULLISH_THRESHOLD = 0.1;  // directionScore ≥ threshold → bullish
-const NEWS_AGGREGATE_BEARISH_THRESHOLD = -0.1; // directionScore ≤ threshold → bearish
+const NEWS_AGGREGATE_MIN_HOURS = 1;
+const NEWS_AGGREGATE_MAX_HOURS = 168;
+const NEWS_AGGREGATE_BULLISH_THRESHOLD = 0.1;
+const NEWS_AGGREGATE_BEARISH_THRESHOLD = -0.1;
 
-/**
- * Returns a lightweight global news aggregate for the last `hours` hours.
- * Scans all scoring-active news items regardless of symbol and returns:
- *   - totalActive: count of scoring-active items
- *   - bullish / bearish / neutral: direction counts
- *   - direction: dominant direction ("bullish"|"bearish"|"neutral")
- *   - directionScore: -1..1 composite score (positive = bullish)
- *   - capturedAt: ISO timestamp of the query
- *
- * This is intentionally lightweight (single aggregation query) and is used by
- * worldState.service.js to build the global `news_pulse` without symbol-specific
- * context.
- *
- * @param {number} hours  Look-back window in hours (default 24)
- * @returns {Promise<object>}
- */
 async function getGlobalNewsAggregate(hours = 24) {
   try {
     await initMarketNewsTable();
@@ -616,15 +577,15 @@ async function getGlobalNewsAggregate(hours = 24) {
     const result = await pool.query(
       `
       SELECT
-        COUNT(*) FILTER (WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE)  AS total_active,
+        COUNT(*) FILTER (WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE) AS total_active,
         COUNT(*) FILTER (
           WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE
             AND (intelligence->>'direction') = 'bullish'
-        )                                                                      AS bullish_count,
+        ) AS bullish_count,
         COUNT(*) FILTER (
           WHERE COALESCE(is_active_for_scoring, TRUE) = TRUE
             AND (intelligence->>'direction') = 'bearish'
-        )                                                                      AS bearish_count
+        ) AS bearish_count
       FROM market_news
       WHERE published_at >= NOW() - ($1 || ' hours')::INTERVAL
         AND COALESCE(lifecycle_state, 'active') NOT IN ('expired', 'cooling')
@@ -644,9 +605,11 @@ async function getGlobalNewsAggregate(hours = 24) {
     }
 
     const direction =
-      directionScore >= NEWS_AGGREGATE_BULLISH_THRESHOLD  ? "bullish"
-        : directionScore <= NEWS_AGGREGATE_BEARISH_THRESHOLD ? "bearish"
-        : "neutral";
+      directionScore >= NEWS_AGGREGATE_BULLISH_THRESHOLD
+        ? "bullish"
+        : directionScore <= NEWS_AGGREGATE_BEARISH_THRESHOLD
+          ? "bearish"
+          : "neutral";
 
     return {
       totalActive,
