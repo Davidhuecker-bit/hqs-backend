@@ -1162,12 +1162,14 @@ async function buildMarketSnapshot() {
   // dynamic_weights on every call.  Within a single batch the factor_history
   // data is identical for a given regime, so caching avoids N×80 redundant
   // DB writes and ensures exactly one weight_history entry per regime.
-  const _weightCache = {};
+  const weightCache = {};
 
   async function cachedAdaptiveWeights(regime) {
-    if (_weightCache[regime] !== undefined) return _weightCache[regime];
+    if (weightCache[regime] !== undefined) return weightCache[regime];
     const w = await computeAdaptiveWeights(regime);
-    _weightCache[regime] = w;           // cache even null
+    // Cache null too — factor_history won't change mid-batch, so retrying
+    // the same regime would produce the same null and waste a DB round-trip.
+    weightCache[regime] = w;
     return w;
   }
 
