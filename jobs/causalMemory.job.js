@@ -11,6 +11,17 @@
 
 const { runJob } = require("../utils/jobRunner");
 const { adjustAgentWeights } = require("../services/causalMemory.repository");
+const {
+  acquireLock,
+  initJobLocksTable,
+} = require("../services/jobLock.repository");
+
+let logger = null;
+try {
+  logger = require("../utils/logger");
+} catch (_) {
+  logger = console;
+}
 
 /**
  * Runs one adjustment cycle.
@@ -19,6 +30,16 @@ const { adjustAgentWeights } = require("../services/causalMemory.repository");
  */
 async function runCausalMemoryJob() {
   return runJob("causalMemory", async () => {
+    await initJobLocksTable();
+
+    const won = await acquireLock("causal_memory_job", 30 * 60);
+    if (!won) {
+      if (logger?.warn) {
+        logger.warn("Causal memory recalibration skipped (lock held)");
+      }
+      return { processedCount: 0 };
+    }
+
     const result = await adjustAgentWeights();
     return { processedCount: result.adjusted ?? 0, weights: result.weights };
   });
