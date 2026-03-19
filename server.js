@@ -658,8 +658,21 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
       segment,
       provider: segmentData.provider,
       fallbackUsed: segmentData.fallbackUsed,
-      marketDa
-    /* =========================================================
+      marketData: segmentData,
+    });
+
+    return res.json({ success: true, analysis: guardianResult });
+  } catch (error) {
+    logger.error("Guardian route error", { message: error.message });
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
 SERVER START
 ========================================================= */
 
