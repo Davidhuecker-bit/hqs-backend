@@ -625,6 +625,53 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 });
 
 /* =========================================================
+PORTFOLIO ROUTE
+========================================================= */
+
+app.post("/api/portfolio", async (req, res) => {
+  try {
+    const portfolio = Array.isArray(req.body?.portfolio) ? req.body.portfolio : [];
+
+    if (!portfolio.length) {
+      return badRequest(res, "portfolio is required and must be a non-empty array");
+    }
+
+    const result = await calculatePortfolioHQS(portfolio);
+
+    if (result.error) {
+      return res.json({
+        success: false,
+        ...result,
+        optimizedAllocation: [],
+      });
+    }
+
+    // Use breakdown (the DB-first output field) – never the old positions field
+    const breakdown = Array.isArray(result.breakdown) ? result.breakdown : [];
+    const availableForOptimization = breakdown.filter((p) => p.available === true);
+
+    const optimizedAllocation =
+      availableForOptimization.length > 0
+        ? optimizePortfolio(availableForOptimization)
+        : [];
+
+    return res.json({
+      success: true,
+      ...result,
+      optimizedAllocation,
+    });
+  } catch (error) {
+    logger.error("Portfolio route error", { message: error.message });
+
+    return res.status(500).json({
+      success: false,
+      message: "Portfolio-Analyse fehlgeschlagen",
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
 SERVER START
 ========================================================= */
 
