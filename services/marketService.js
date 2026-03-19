@@ -109,7 +109,6 @@ const SNAPSHOT_BATCH_SIZE = Number(process.env.SNAPSHOT_BATCH_SIZE || 80);
 const SNAPSHOT_REGION = String(process.env.SNAPSHOT_REGION || "us").toLowerCase().trim();
 const SNAPSHOT_FAIL_FAST_THRESHOLD = Number(process.env.SNAPSHOT_FAIL_FAST_THRESHOLD || 35);
 
-const SNAPSHOT_STATE_KEY = "snapshot_watchlist_offset";
 const PRICE_DEVIATION_WARN_PCT = Number(
   process.env.SNAPSHOT_PRICE_DEVIATION_WARN_PCT || 35
 );
@@ -586,61 +585,6 @@ function buildRunRecommendations(summary, health) {
   return recommendations;
 }
 
-/* =========================================================
-   SNAPSHOT STATE TABLE
-========================================================= */
-
-async function initSnapshotStateTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS snapshot_scan_state (
-      key TEXT PRIMARY KEY,
-      offset_value INTEGER DEFAULT 0,
-      updated_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-}
-
-async function loadSnapshotOffset() {
-  try {
-    const res = await pool.query(
-      `
-      SELECT offset_value
-      FROM snapshot_scan_state
-      WHERE key = $1
-      LIMIT 1
-      `,
-      [SNAPSHOT_STATE_KEY]
-    );
-
-    if (!res.rows.length) return 0;
-
-    return clamp(safeNum(res.rows[0].offset_value, 0), 0, 1000000);
-  } catch (err) {
-    logger.error("loadSnapshotOffset error", { message: err.message });
-    return 0;
-  }
-}
-
-async function saveSnapshotOffset(offsetValue) {
-  const val = clamp(safeNum(offsetValue, 0), 0, 1000000);
-
-  try {
-    await pool.query(
-      `
-      INSERT INTO snapshot_scan_state (key, offset_value, updated_at)
-      VALUES ($1, $2, NOW())
-      ON CONFLICT (key)
-      DO UPDATE SET
-        offset_value = EXCLUDED.offset_value,
-        updated_at = NOW()
-      `,
-      [SNAPSHOT_STATE_KEY, val]
-    );
-  } catch (err) {
-    logger.error("saveSnapshotOffset failed", { offset: val, message: err.message });
-  }
-}
-
 async function countActiveSnapshotSymbols(region = SNAPSHOT_REGION) {
   const res = await pool.query(
     `
@@ -799,10 +743,6 @@ async function ensureTablesExist() {
   logger.info("[startup] ensureTablesExist.initOutcomeTrackingTable: start");
   await initOutcomeTrackingTable();
   logger.info("[startup] ensureTablesExist.initOutcomeTrackingTable: ok");
-
-  logger.info("[startup] ensureTablesExist.initSnapshotStateTable: start");
-  await initSnapshotStateTable();
-  logger.info("[startup] ensureTablesExist.initSnapshotStateTable: ok");
 
   logger.info("[startup] ensureTablesExist.initMarketNewsTable: start");
   await initMarketNewsTable();
