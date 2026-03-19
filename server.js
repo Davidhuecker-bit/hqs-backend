@@ -380,7 +380,7 @@ app.get("/api/market", async (req, res) => {
 SNAPSHOT ROUTE
 ========================================================= */
 
-app.post("/api/snapshot", async (_req, res) => {
+app.post("/api/admin/snapshot", async (_req, res) => {
   try {
     const result = await buildMarketSnapshot();
 
