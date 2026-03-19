@@ -1647,38 +1647,56 @@ async function loadLatestSnapshot(symbol) {
    MARKET DATA (API / UI)
 ========================================================= */
 
+async function getStoredMarketDataBySymbol(symbol) {
+  const normalizedSymbol = String(symbol || "").trim().toUpperCase();
+  if (!normalizedSymbol) return null;
+
+  const [snapshot, hqs, adv] = await Promise.all([
+    loadLatestSnapshot(normalizedSymbol),
+    loadLatestHqsScore(normalizedSymbol),
+    loadAdvancedMetrics(normalizedSymbol),
+  ]);
+
+  if (!snapshot) return null;
+
+  const entry = { ...snapshot };
+
+  if (hqs) Object.assign(entry, hqs);
+
+  if (adv) {
+    entry.regime = entry.regime ?? adv.regime ?? null;
+    entry.trend = adv.trend ?? null;
+    entry.volatility = adv.volatility ?? null;
+    entry.scenarios = adv.scenarios ?? null;
+    entry.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
+  }
+
+  return entry;
+}
+
+async function getStoredMarketList({ limit } = {}) {
+  const safeLimit = clamp(Number(limit) || 250, 1, 2000);
+  const symbols = await listActiveUniverseSymbols(safeLimit, {
+    country: SNAPSHOT_REGION,
+  });
+  const results = [];
+
+  for (const symbol of symbols) {
+    const entry = await getStoredMarketDataBySymbol(symbol);
+    if (entry) results.push(entry);
+  }
+
+  return results;
+}
+
 async function getMarketData(symbol, { limit } = {}) {
   try {
-    const cap = (!symbol && Number.isFinite(limit) && limit > 0) ? limit : 250;
-    const symbols = symbol
-      ? [String(symbol).trim().toUpperCase()]
-      : await loadPrimaryMarketSymbols(cap);
-
-    const results = [];
-
-    for (const s of symbols) {
-      const snapshot = await loadLatestSnapshot(s);
-      if (!snapshot) continue;
-
-      const entry = { ...snapshot };
-
-      const hqs = await loadLatestHqsScore(s);
-      if (hqs) Object.assign(entry, hqs);
-
-      const adv = await loadAdvancedMetrics(s);
-
-      if (adv) {
-        entry.regime = entry.regime ?? adv.regime ?? null;
-        entry.trend = adv.trend ?? null;
-        entry.volatility = adv.volatility ?? null;
-        entry.scenarios = adv.scenarios ?? null;
-        entry.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
-      }
-
-      results.push(entry);
+    if (symbol) {
+      const entry = await getStoredMarketDataBySymbol(symbol);
+      return entry ? [entry] : [];
     }
 
-    return results;
+    return await getStoredMarketList({ limit });
   } catch (error) {
     logger.error("MarketData Error", {
       message: error.message,
