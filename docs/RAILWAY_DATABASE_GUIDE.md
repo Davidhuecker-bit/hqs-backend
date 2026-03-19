@@ -13,9 +13,9 @@ Your HQS backend is **properly configured** for Railway deployment:
 
 ---
 
-## 📋 All 35 Database Tables
+## 📋 All 34 Database Tables
 
-Your backend manages **35 tables** across 6 functional categories:
+Your backend manages **34 tables** across 7 functional categories:
 
 ### 1. Market Data Tables (6 tables)
 - `market_snapshots` - Real-time price/volume snapshots
@@ -44,9 +44,8 @@ Your backend manages **35 tables** across 6 functional categories:
 - `weight_history` - Portfolio weight history
 - `admin_snapshots` - Admin historical snapshots
 
-### 5. System & Infrastructure Tables (7 tables)
+### 5. System & Infrastructure Tables (6 tables)
 - `job_locks` - Job coordination locks
-- `snapshot_scan_state` - Snapshot scanning state
 - `universe_scan_state` - Universe scan state
 - `universe_symbols` - Trading universe
 - `pipeline_status` - Data pipeline tracking
@@ -179,7 +178,7 @@ npm run db:health
 
 This checks:
 - ✅ DATABASE_URL connection
-- ✅ All 35 tables exist
+- ✅ All 34 tables exist
 - ✅ Tables are reachable
 - ✅ Row counts per table
 - ✅ Last activity timestamp
@@ -217,7 +216,7 @@ This approach is:
 - ✅ **Idempotent**: Safe to run multiple times
 - ✅ **Concurrent-safe**: No ALTER TABLE lock contention
 - ✅ **Zero-downtime**: New deployments don't block
-- ✅ **Production-ready**: Used by all 35 tables
+- ✅ **Production-ready**: Used by all 34 tables
 
 ### Initialization Sequence
 
@@ -441,7 +440,7 @@ After deployment:
 
 Your HQS backend is **production-ready** for Railway:
 
-- ✅ **35 tables** properly defined and initialized
+- ✅ **34 tables** properly defined and initialized
 - ✅ **Railway configuration** correct (railway.toml)
 - ✅ **Health checks** configured and working
 - ✅ **SSL** properly configured

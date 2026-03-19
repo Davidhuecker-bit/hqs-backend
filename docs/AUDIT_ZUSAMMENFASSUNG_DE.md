@@ -13,7 +13,7 @@ Dein HQS Backend ist **vollständig und korrekt mit Railway verbunden** und alle
 ### Was wurde überprüft?
 
 1. ✅ Railway Verbindungskonfiguration
-2. ✅ Alle 35 Datenbanktabellen
+2. ✅ Alle 34 Datenbanktabellen
 3. ✅ Tabellen-Initialisierungscode
 4. ✅ Datenbefüllung-Mechanismen
 5. ✅ Code-Qualität und Syntax
@@ -25,7 +25,7 @@ Dein HQS Backend ist **vollständig und korrekt mit Railway verbunden** und alle
 - **Keine fehlerhaften Dateien** - Alle Dateien syntaktisch korrekt
 - **Keine falschen Codes** - Kein fehlerhafter Code gefunden
 - **Perfekte Railway Verbindung** - Database URL, SSL, Health Checks alles konfiguriert
-- **Alle Tabellen harmonieren** - 35 Tabellen perfekt definiert und vernetzt
+- **Alle Tabellen harmonieren** - 34 Tabellen perfekt definiert und vernetzt
 
 ---
 
@@ -41,9 +41,9 @@ Dein Backend ist korrekt für Railway konfiguriert:
 - **Restart Policy**: Bei Fehler mit 3 Versuchen ✅
 - **Railway Config**: `railway.toml` ist korrekt ✅
 
-### ✅ Alle 35 Tabellen: VERIFIZIERT
+### ✅ Alle 34 Tabellen: VERIFIZIERT
 
-Alle **35 Datenbanktabellen** sind:
+Alle **34 Datenbanktabellen** sind:
 - ✅ Korrekt definiert mit `CREATE TABLE IF NOT EXISTS`
 - ✅ Enthalten ALLE notwendigen Spalten
 - ✅ Haben korrekte Indizes
@@ -64,7 +64,7 @@ Alle **35 Datenbanktabellen** sind:
 
 ## 📊 Vollständige Tabellenübersicht
 
-### Alle 35 Tabellen nach Kategorie
+### Alle 34 Tabellen nach Kategorie
 
 #### 1. Marktdaten-Tabellen (6 Tabellen)
 - `market_snapshots` - Echtzeit Preis/Volumen Daten
@@ -93,11 +93,10 @@ Alle **35 Datenbanktabellen** sind:
 - `weight_history` - Portfolio Gewichtsverlauf
 - `admin_snapshots` - Admin historische Snapshots
 
-#### 5. System & Infrastruktur-Tabellen (7 Tabellen)
+#### 5. System & Infrastruktur-Tabellen (6 Tabellen)
 - `job_locks` - Job-Koordinations-Locks
-- `snapshot_scan_state` - Snapshot-Scan-Zustand
-- `universe_scan_state` - Universe-Scan-Zustand
-- `universe_symbols` - Trading Universe
+- `universe_scan_state` - Universe scan state
+- `universe_symbols` - Trading universe
 - `pipeline_status` - Daten-Pipeline-Tracking
 - `sis_history` - System Intelligence Snapshots
 - `entity_map` - Symbol-zu-Entity Mapping
@@ -181,7 +180,7 @@ watchlist_symbols     → Bei Watchlist-Erstellung
 
 **Features:**
 - ✅ Verifiziert DATABASE_URL Verbindung
-- ✅ Prüft, ob alle 35 Tabellen existieren
+- ✅ Prüft, ob alle 34 Tabellen existieren
 - ✅ Fragt jede Tabelle nach Zeilenanzahl ab
 - ✅ Findet letzten Aktivitäts-Zeitstempel
 - ✅ Berechnet Health Score (0-100%)
@@ -210,7 +209,7 @@ npm run db:health
 - [x] `railway.toml` konfiguriert
 - [x] Health Endpoint `/health` implementiert
 - [x] SSL für PostgreSQL konfiguriert
-- [x] Alle 35 Tabellen korrekt initialisiert
+- [x] Alle 34 Tabellen korrekt initialisiert
 - [x] Umgebungsvariablen dokumentiert
 - [x] Keine Syntaxfehler
 
@@ -280,11 +279,11 @@ npm run db:health
 ...
 
 📊 ZUSAMMENFASSUNG
-Gesamttabellen:     35
-✅ Vorhanden:       35 / 35
-✅ Erreichbar:      35 / 35
-✅ Befüllt:         28 / 35
-⚪ Leer:            7
+Gesamttabellen:     34
+✅ Vorhanden:       34 / 34
+✅ Erreichbar:      34 / 34
+✅ Befüllt:         28 / 34
+⚪ Leer:            6
 
 🏥 Health Score: 92,5% / 100%
    Status: AUSGEZEICHNET ✅
@@ -319,7 +318,7 @@ Gesamttabellen:     35
 ✅ Alle 2 Config-Dateien validiert
 ✅ Alle 3 Script-Dateien validiert
 
-✅ Alle 35 Tabellen verifiziert
+✅ Alle 34 Tabellen verifiziert
 ✅ Alle CREATE TABLE Statements korrekt
 ✅ Alle Indizes korrekt definiert
 ✅ Kein ALTER TABLE im Startup-Code
@@ -335,7 +334,7 @@ Gesamttabellen:     35
 | Kategorie | Status |
 |-----------|--------|
 | Railway Verbindung | ✅ Perfekt |
-| Datenbanktabellen | ✅ Alle 35 verifiziert |
+| Datenbanktabellen | ✅ Alle 34 verifiziert |
 | Code-Qualität | ✅ Null Fehler |
 | Dokumentation | ✅ Umfassend |
 | Sicherheit | ✅ Best Practices |
@@ -350,7 +349,7 @@ Gesamttabellen:     35
 
 > "desweiteren ob alle Tabellen sauber erreicht und befüllt werden"
 
-**Antwort:** ✅ **JA**, alle 35 Tabellen sind sauber definiert und werden korrekt befüllt (siehe Datenbefüllung-Mechanismen oben).
+**Antwort:** ✅ **JA**, alle 34 Tabellen sind sauber definiert und werden korrekt befüllt (siehe Datenbefüllung-Mechanismen oben).
 
 > "ob es noch Dataien gibt die falsch sind ob Codes falsch sind"
 
