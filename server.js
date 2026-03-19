@@ -370,7 +370,7 @@ app.get("/api/market", async (req, res) => {
     const symbol = symbolResult.value;
     const limit = limitResult.value;
 
-    const raw = await getMarketData(symbol || undefined);
+    const raw = await getMarketData(symbol || undefined, { limit });
 
     let stocks = Array.isArray(raw)
       ? raw.map(formatMarketItem).filter(Boolean)

@@ -1815,11 +1815,12 @@ async function loadLatestSnapshot(symbol) {
    MARKET DATA (API / UI)
 ========================================================= */
 
-async function getMarketData(symbol) {
+async function getMarketData(symbol, { limit } = {}) {
   try {
+    const cap = (!symbol && Number.isFinite(limit) && limit > 0) ? limit : 250;
     const symbols = symbol
       ? [String(symbol).trim().toUpperCase()]
-      : await loadPrimaryMarketSymbols(250);
+      : await loadPrimaryMarketSymbols(cap);
 
     const results = [];
 
