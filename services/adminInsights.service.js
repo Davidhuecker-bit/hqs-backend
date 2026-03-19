@@ -201,6 +201,67 @@ async function getWatchlistStats() {
   };
 }
 
+async function getUniverseStats() {
+  const exists = await tableExists("universe_symbols");
+  if (!exists) {
+    return {
+      total: 0,
+      active: 0,
+      byRegion: {},
+    };
+  }
+
+  const columns = await getTableColumns("universe_symbols");
+  const hasIsActive = columns.includes("is_active");
+  const hasRegion = columns.includes("region");
+
+  const totalRes = await pool.query(`
+    SELECT COUNT(*)::int AS c
+    FROM universe_symbols
+  `);
+
+  const total = safeNum(totalRes.rows?.[0]?.c, 0);
+  let active = 0;
+  if (hasIsActive) {
+    const activeRes = await pool.query(`
+      SELECT COUNT(*)::int AS c
+      FROM universe_symbols
+      WHERE is_active = TRUE
+    `);
+    active = safeNum(activeRes.rows?.[0]?.c, 0);
+  } else {
+    active = total;
+  }
+
+  const byRegion = {};
+  if (hasRegion) {
+    const regionRes = hasIsActive
+      ? await pool.query(`
+          SELECT LOWER(COALESCE(region, 'unknown')) AS region, COUNT(*)::int AS c
+          FROM universe_symbols
+          WHERE is_active = TRUE
+          GROUP BY 1
+          ORDER BY 2 DESC
+        `)
+      : await pool.query(`
+          SELECT LOWER(COALESCE(region, 'unknown')) AS region, COUNT(*)::int AS c
+          FROM universe_symbols
+          GROUP BY 1
+          ORDER BY 2 DESC
+        `);
+
+    for (const row of regionRes.rows || []) {
+      byRegion[row.region] = safeNum(row.c, 0);
+    }
+  }
+
+  return {
+    total,
+    active,
+    byRegion,
+  };
+}
+
 async function getMarketSnapshotStats(lookbackHours = DEFAULT_LOOKBACK_HOURS) {
   const exists = await tableExists("market_snapshots");
   if (!exists) {
@@ -579,6 +640,12 @@ async function getAdminInsights(options = {}) {
     }
   }
 
+  const universeStats = await safeCall(
+    "universe",
+    () => getUniverseStats(),
+    { total: 0, active: 0, byRegion: {} }
+  );
+
   const watchlist = await safeCall(
     "watchlist",
     () => getWatchlistStats(),
@@ -654,12 +721,13 @@ async function getAdminInsights(options = {}) {
   };
 
   try {
-    coverage = await getCoverageStats(snapshots, hqs, advancedMetrics, outcomes, watchlist);
+    coverage = await getCoverageStats(snapshots, hqs, advancedMetrics, outcomes, universeStats);
   } catch (err) {
     logger.warn("adminInsights: coverage calculation failed", { message: err.message });
     partialErrors.push({ field: "coverage", error: err.message });
   }
 
+  if (universeStats.active === 0) emptyFields.push("universe_symbols");
   if (watchlist.active === 0) emptyFields.push("watchlist_symbols");
   if (snapshots.totalRows === 0) emptyFields.push("market_snapshots");
   if (hqs.totalRows === 0) emptyFields.push("hqs_scores");
@@ -685,7 +753,8 @@ async function getAdminInsights(options = {}) {
       jobLocks,
       notifications,
     },
-    universe: watchlist,
+    universe: universeStats,
+    watchlist,
     activity: {
       snapshots,
       hqs,
@@ -697,7 +766,7 @@ async function getAdminInsights(options = {}) {
     },
     coverage,
     quickFacts: {
-      activeUniverse: watchlist.active,
+      activeUniverse: universeStats.active,
       recentProcessedSymbols: snapshots.recentSymbols,
       latestSnapshotAt: snapshots.latestRunAt,
       latestFactorUpdateAt: factorHistory.latestAt,
