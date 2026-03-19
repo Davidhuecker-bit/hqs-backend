@@ -58,11 +58,11 @@ function SystemIntelligence({ data }) {
       <div className="sis-maturity">{maturity.label || "–"}</div>
       {Array.isArray(data.layers) && (
         <div className="sis-layers">
-          {data.layers.map((l, i) => (
-            <div key={i} className={`sis-layer status-${l.status}`}>
-              <span className="layer-icon">{l.icon}</span>
-              <span className="layer-label">{l.label}</span>
-              <span className="layer-score">{l.score}/{l.max}</span>
+          {data.layers.map((layer, i) => (
+            <div key={i} className={`sis-layer status-${layer.status}`}>
+              <span className="layer-icon">{layer.icon}</span>
+              <span className="layer-label">{layer.label}</span>
+              <span className="layer-score">{layer.score}/{layer.max}</span>
             </div>
           ))}
         </div>
@@ -81,11 +81,11 @@ function AgentWisdom({ data }) {
         {data.consensus ? "✅ Konsens erreicht" : "⚠️ Kein Konsens"}
       </div>
       <div className="agent-list">
-        {agents.map((a, i) => (
+        {agents.map((agent, i) => (
           <div key={i} className="agent-card">
-            <span className="agent-name">{a.name}</span>
+            <span className="agent-name">{agent.name}</span>
             <span className="agent-accuracy">
-              {a.accuracy != null ? formatPercent(a.accuracy) : "–"}
+              {agent.accuracy != null ? formatPercent(agent.accuracy) : "–"}
             </span>
           </div>
         ))}
@@ -101,10 +101,10 @@ function AgentWeights({ data }) {
     <div className="panel">
       <h3>⚖️ Agentengewichte</h3>
       <div className="weights-list">
-        {weights.map((w, i) => (
+        {weights.map((weight, i) => (
           <div key={i} className="weight-row">
-            <span>{w.agent || w.name}</span>
-            <span>{w.weight != null ? w.weight.toFixed(3) : "–"}</span>
+            <span>{weight.agent || weight.name}</span>
+            <span>{weight.weight != null ? weight.weight.toFixed(3) : "–"}</span>
           </div>
         ))}
       </div>
@@ -119,10 +119,10 @@ function DynamicWeights({ data }) {
     <div className="panel">
       <h3>📊 Dynamische Gewichte</h3>
       <div className="weights-list">
-        {entries.map((e, i) => (
+        {entries.map((entry, i) => (
           <div key={i} className="weight-row">
-            <span>{e.name || e.factor}</span>
-            <span>{e.value != null ? e.value.toFixed(3) : "–"}</span>
+            <span>{entry.name || entry.factor}</span>
+            <span>{entry.value != null ? entry.value.toFixed(3) : "–"}</span>
           </div>
         ))}
       </div>
@@ -188,10 +188,10 @@ function NearMisses({ data }) {
         {misses.length} Beinahe-Treffer
       </div>
       <div className="near-miss-list">
-        {misses.slice(0, 10).map((m, i) => (
+        {misses.slice(0, 10).map((miss, i) => (
           <div key={i} className="near-miss-row">
-            <span>{m.symbol || "–"}</span>
-            <span>{m.reason || m.trigger || "–"}</span>
+            <span>{miss.symbol || "–"}</span>
+            <span>{miss.reason || miss.trigger || "–"}</span>
           </div>
         ))}
       </div>
@@ -242,11 +242,11 @@ function VirtualPositions({ data }) {
       <h3>📋 Virtuelle Positionen</h3>
       <div className="vp-count">{positions.length} Positionen</div>
       <div className="vp-list">
-        {positions.slice(0, 20).map((p, i) => (
+        {positions.slice(0, 20).map((position, i) => (
           <div key={i} className="vp-row">
-            <span className="vp-symbol">{p.symbol}</span>
-            <span className="vp-status">{p.status}</span>
-            <span className="vp-score">{p.hqs_score ?? "–"}</span>
+            <span className="vp-symbol">{position.symbol}</span>
+            <span className="vp-status">{position.status}</span>
+            <span className="vp-score">{position.hqs_score ?? "–"}</span>
           </div>
         ))}
       </div>
@@ -272,35 +272,39 @@ function DashboardIntegrated() {
 
   const loadAll = useCallback(async () => {
     setError(null);
-    try {
-      const results = await Promise.allSettled([
-        safeFetch(backendUrls.systemIntelligence),
-        safeFetch(backendUrls.agentWisdom),
-        safeFetch(backendUrls.agentWeights),
-        safeFetch(backendUrls.dynamicWeights),
-        safeFetch(backendUrls.worldState),
-        safeFetch(backendUrls.operationalStatus),
-        safeFetch(backendUrls.interfaceState),
-        safeFetch(backendUrls.nearMisses),
-        safeFetch(backendUrls.savedCapital),
-        safeFetch(backendUrls.portfolioTwin),
-        safeFetch(backendUrls.virtualPositions),
-      ]);
 
-      const val = (i) => results[i].status === "fulfilled" ? results[i].value : null;
-      setSystemIntelligence(val(0));
-      setAgentWisdom(val(1));
-      setAgentWeights(val(2));
-      setDynamicWeights(val(3));
-      setWorldState(val(4));
-      setOperationalStatus(val(5));
-      setInterfaceState(val(6));
-      setNearMisses(val(7));
-      setSavedCapital(val(8));
-      setPortfolioTwin(val(9));
-      setVirtualPositions(val(10));
-    } catch (err) {
-      setError(err.message);
+    const results = await Promise.allSettled([
+      safeFetch(backendUrls.systemIntelligence),
+      safeFetch(backendUrls.agentWisdom),
+      safeFetch(backendUrls.agentWeights),
+      safeFetch(backendUrls.dynamicWeights),
+      safeFetch(backendUrls.worldState),
+      safeFetch(backendUrls.operationalStatus),
+      safeFetch(backendUrls.interfaceState),
+      safeFetch(backendUrls.nearMisses),
+      safeFetch(backendUrls.savedCapital),
+      safeFetch(backendUrls.portfolioTwin),
+      safeFetch(backendUrls.virtualPositions),
+    ]);
+
+    const val = (i) => results[i].status === "fulfilled" ? results[i].value : null;
+    setSystemIntelligence(val(0));
+    setAgentWisdom(val(1));
+    setAgentWeights(val(2));
+    setDynamicWeights(val(3));
+    setWorldState(val(4));
+    setOperationalStatus(val(5));
+    setInterfaceState(val(6));
+    setNearMisses(val(7));
+    setSavedCapital(val(8));
+    setPortfolioTwin(val(9));
+    setVirtualPositions(val(10));
+
+    const failures = results
+      .map((r, i) => r.status === "rejected" ? r.reason?.message || String(r.reason) : null)
+      .filter(Boolean);
+    if (failures.length) {
+      setError(`${failures.length} Endpunkt(e) fehlgeschlagen`);
     }
   }, []);
 
