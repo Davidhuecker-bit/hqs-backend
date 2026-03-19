@@ -698,8 +698,6 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
     });
 
     // Cursor is managed by getUniverseBatch() via universe_scan_state.
-    // Do NOT also write to snapshot_scan_state here — that table is
-    // exclusively for the watchlist-fallback path.
     return {
       totalActive: safeNum(universeBatch?.totalActive, candidates.length),
       batchSize,
@@ -711,123 +709,20 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
     };
   }
 
-  const totalActive = await countActiveSnapshotSymbols(SNAPSHOT_REGION);
-
-  if (!totalActive) {
-    logger.warn("No snapshot candidates found in watchlist_symbols", {
-      region: SNAPSHOT_REGION,
-      limit: batchSize,
-    });
-
-    return {
-      totalActive: 0,
-      batchSize,
-      offsetUsed: 0,
-      nextOffset: 0,
-      wrapped: false,
-      candidates: [],
-    };
-  }
-
-  let offset = await loadSnapshotOffset();
-  if (offset >= totalActive) {
-    offset = 0;
-    await saveSnapshotOffset(0);
-  }
-
-  let wrapped = false;
-
-  let res = await pool.query(
-    `
-    SELECT
-      symbol,
-      priority,
-      region
-    FROM watchlist_symbols
-    WHERE is_active = TRUE
-      AND LOWER(COALESCE(region, 'us')) = $1
-    ORDER BY priority ASC, symbol ASC
-    OFFSET $2
-    LIMIT $3
-    `,
-    [SNAPSHOT_REGION, offset, batchSize]
-  );
-
-  let rows = Array.isArray(res.rows) ? res.rows : [];
-
-  if (!rows.length && totalActive > 0) {
-    wrapped = true;
-    offset = 0;
-
-    res = await pool.query(
-      `
-      SELECT
-        symbol,
-        priority,
-        region
-      FROM watchlist_symbols
-      WHERE is_active = TRUE
-        AND LOWER(COALESCE(region, 'us')) = $1
-      ORDER BY priority ASC, symbol ASC
-      OFFSET 0
-      LIMIT $2
-      `,
-      [SNAPSHOT_REGION, batchSize]
-    );
-
-    rows = Array.isArray(res.rows) ? res.rows : [];
-  }
-
-  const candidates = rows
-    .map((row) => {
-      const symbol = String(row.symbol || "").trim().toUpperCase();
-      const priority = normalizePriority(row.priority);
-      const region = String(row.region || "us").toLowerCase();
-      const tier = classifyPriorityTier(priority);
-
-      return {
-        symbol,
-        priority,
-        tier,
-        region,
-      };
-    })
-    .filter((row) => row.symbol);
-
-  const nextOffset =
-    totalActive > 0
-      ? (offset + candidates.length) % totalActive
-      : 0;
-
-  // Persist watchlist offset immediately — this is the sole owner of
-  // snapshot_scan_state so it must save before returning.
-  await saveSnapshotOffset(nextOffset);
-
-  const tierMix = candidates.reduce((acc, item) => {
-    acc[item.tier] = (acc[item.tier] || 0) + 1;
-    return acc;
-  }, {});
-
-  logger.info("Snapshot candidates loaded", {
-    count: candidates.length,
-    batchSize,
-    totalActive,
-    offsetUsed: offset,
-    nextOffset,
-    wrapped,
+  // No universe symbols available — return empty batch.
+  logger.warn("No universe symbols found for snapshot scan", {
     region: SNAPSHOT_REGION,
-    source: "watchlist_symbols_fallback",
-    tierMix,
+    limit: batchSize,
   });
 
   return {
-    totalActive,
+    totalActive: 0,
     batchSize,
-    offsetUsed: offset,
-    nextOffset,
-    wrapped,
-    candidates,
-    source: "watchlist",
+    offsetUsed: 0,
+    nextOffset: 0,
+    wrapped: false,
+    candidates: [],
+    source: "universe",
   };
 }
 
@@ -1659,11 +1554,8 @@ async function buildMarketSnapshot() {
     }
   }
 
-  // Offset persistence is now handled inside getSnapshotCandidates():
-  //  • universe path  → universe_scan_state  (managed by getUniverseBatch)
-  //  • watchlist path → snapshot_scan_state   (managed by watchlist fallback)
-  // No additional save here — avoids writing universe offsets into the
-  // watchlist cursor table, which was the root cause of the competing-state bug.
+  // Offset persistence is handled inside getUniverseBatch() via universe_scan_state.
+  // No additional save here.
 
   const health = buildSystemHealth(summary);
   const recommendations = buildRunRecommendations(summary, health);
