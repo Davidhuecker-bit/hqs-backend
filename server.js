@@ -97,8 +97,6 @@ const { runTechRadarJob } = require("./jobs/techRadar.job");
 const { ensureVirtualPositionsTable, syncVirtualPositions } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable, saveSisSnapshot } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
-const { getSystemIntelligenceReport } = require("./services/systemIntelligence.service");
-
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
@@ -440,27 +438,6 @@ app.post("/api/admin/market-news/collect", async (req, res) => {
 });
 
 /* =========================================================
-PIPELINE STATUS
-========================================================= */
-
-app.get("/api/pipeline-status", async (_req, res) => {
-  try {
-    const pipeline = await getPipelineStatus();
-    return res.json({
-      success: true,
-      pipeline,
-      generatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    logger.error("Pipeline-status route error", { message: error.message });
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
 TABLE HEALTH
 ========================================================= */
 
@@ -470,23 +447,6 @@ app.get("/api/admin/table-health", async (_req, res) => {
     return res.json(result);
   } catch (error) {
     logger.error("Table health route error", { message: error.message });
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-SYSTEM INTELLIGENCE
-========================================================= */
-
-app.get("/api/system-intelligence", async (_req, res) => {
-  try {
-    const report = await getSystemIntelligenceReport();
-    return res.json(report);
-  } catch (error) {
-    logger.error("System intelligence route error", { message: error.message });
     return res.status(500).json({
       success: false,
       error: error.message,
