@@ -13,7 +13,6 @@ LOGGER
 const logger = require("./utils/logger");
 const {
   badRequest,
-  parseEnum,
   parseInteger,
   parseNumber,
   parseSymbol,
@@ -33,7 +32,6 @@ const {
 } = require("./services/marketService");
 
 const { analyzeStockWithGuardian } = require("./services/guardianService");
-const { getMarketDataBySegment } = require("./services/aggregator.service");
 
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 const { optimizePortfolio } = require("./services/portfolioOptimizer");
@@ -128,10 +126,6 @@ APP INIT
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const SUPPORTED_SEGMENTS = ["usa", "europe", "china", "japan", "india"];
-const SEGMENT_ALIASES = {
-  us: "usa",
-};
 const DEFAULT_CORS_ORIGINS = [
   "https://dhsystemhqs.de",
   "https://www.dhsystemhqs.de",
@@ -273,11 +267,6 @@ function formatMarketItem(item) {
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
   };
-}
-
-function normalizeSegmentInput(value) {
-  const normalized = String(value || "").trim().toLowerCase();
-  return SEGMENT_ALIASES[normalized] || normalized;
 }
 
 /* =========================================================
@@ -568,43 +557,6 @@ app.get("/api/hqs", async (req, res) => {
 });
 
 /* =========================================================
-SEGMENT ROUTE
-========================================================= */
-
-app.get("/api/segment", async (req, res) => {
-  try {
-    const segmentResult = parseEnum(normalizeSegmentInput(req.query.segment), SUPPORTED_SEGMENTS, {
-      required: true,
-      label: "segment",
-    });
-    if (segmentResult.error) {
-      return badRequest(res, segmentResult.error);
-    }
-
-    const symbolResult = parseSymbol(req.query.symbol, {
-      required: true,
-      label: "symbol",
-    });
-    if (symbolResult.error) {
-      return badRequest(res, symbolResult.error);
-    }
-
-    const segment = segmentResult.value;
-    const symbol = symbolResult.value;
-    const result = await getMarketDataBySegment({ segment, symbol });
-
-    return res.json(result);
-  } catch (error) {
-    logger.error("Segment route error", { message: error.message });
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
 GUARDIAN ROUTE
 ========================================================= */
 
@@ -618,34 +570,27 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
       return badRequest(res, tickerResult.error);
     }
 
-    const segmentResult = parseEnum(normalizeSegmentInput(req.query.segment), SUPPORTED_SEGMENTS, {
-      defaultValue: "usa",
-      label: "segment",
-    });
-    if (segmentResult.error) {
-      return badRequest(res, segmentResult.error);
-    }
-
     const ticker = tickerResult.value;
-    const segment = segmentResult.value;
-    const segmentData = await getMarketDataBySegment({
-      segment,
-      symbol: ticker,
-    });
+    const marketData = await getMarketData(ticker);
 
-    if (!segmentData.success) {
+    if (!marketData.length) {
       return res.status(404).json({
         success: false,
-        message: "Segmentdaten nicht verfügbar.",
+        message: "Für dieses Symbol sind noch keine gespeicherten Daten vorhanden.",
       });
     }
 
+    const storedMarketData = formatMarketItem(marketData[0]);
+
     const guardianResult = await analyzeStockWithGuardian({
       symbol: ticker,
-      segment,
-      provider: segmentData.provider,
-      fallbackUsed: segmentData.fallbackUsed,
-      marketData: segmentData,
+      segment: null,
+      provider: null,
+      fallbackUsed: false,
+      marketData: {
+        ...storedMarketData,
+        source: "database",
+      },
     });
 
     return res.json({ success: true, analysis: guardianResult });
