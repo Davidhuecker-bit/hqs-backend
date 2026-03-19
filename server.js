@@ -271,30 +271,16 @@ function formatMarketItem(item) {
 STARTUP / HEALTH ROUTES
 ========================================================= */
 
-app.get("/health", async (_req, res) => {
-  try {
-    const db = await pingDb();
-    const pipeline = await getPipelineStatus().catch(() => null);
-
-    return res.json({
-      success: true,
-      ready: startupState.ready,
-      startedAt: startupState.startedAt,
-      completedAt: startupState.completedAt,
-      initErrors: startupState.initErrors,
-      db,
-      pipeline,
-      now: new Date().toISOString(),
-    });
-  } catch (error) {
-    return res.status(500).json({
-      success: false,
-      ready: startupState.ready,
-      error: error.message,
-      initErrors: startupState.initErrors,
-      now: new Date().toISOString(),
-    });
-  }
+app.get("/health", (_req, res) => {
+  return res.json({
+    success: true,
+    alive: true,
+    ready: startupState.ready,
+    startedAt: startupState.startedAt,
+    completedAt: startupState.completedAt,
+    initErrors: startupState.initErrors,
+    now: new Date().toISOString(),
+  });
 });
 
 app.get("/api/health", async (_req, res) => {
@@ -519,6 +505,77 @@ app.get("/api/hqs", async (req, res) => {
 /* =========================================================
 GUARDIAN ROUTE
 ========================================================= */
+
+app.get("/api/guardian/dashboard", async (req, res) => {
+  try {
+    const rawSymbols = Array.isArray(req.query.symbols)
+      ? req.query.symbols.join(",")
+      : req.query.symbols || req.query.symbol;
+
+    const requestedSymbols = String(rawSymbols || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    if (!requestedSymbols.length) {
+      return badRequest(res, "symbols is required");
+    }
+
+    const symbols = [];
+
+    for (const requestedSymbol of requestedSymbols) {
+      const symbolResult = parseSymbol(requestedSymbol, {
+        required: true,
+        label: "symbols",
+      });
+      if (symbolResult.error) {
+        return badRequest(res, symbolResult.error);
+      }
+
+      if (!symbols.includes(symbolResult.value)) {
+        symbols.push(symbolResult.value);
+      }
+
+      if (symbols.length >= 8) {
+        break;
+      }
+    }
+
+    const marketData = await Promise.all(symbols.map((symbol) => getMarketData(symbol)));
+    const stocks = marketData
+      .map((entries) => formatMarketItem(entries[0]))
+      .filter(Boolean);
+
+    if (!stocks.length) {
+      return res.status(404).json({
+        success: false,
+        message: "Für dieses Dashboard sind noch keine gespeicherten Daten vorhanden.",
+      });
+    }
+
+    const generatedAt =
+      stocks
+        .map((stock) => stock.timestamp || stock.advancedUpdatedAt || stock.hqsCreatedAt)
+        .find(Boolean) || new Date().toISOString();
+
+    const payload = buildGuardianPayload(stocks, { generatedAt });
+
+    return res.json({
+      ...payload,
+      engineStatus: {
+        ...(payload.engineStatus || {}),
+        source: "database",
+      },
+    });
+  } catch (error) {
+    logger.error("Guardian dashboard route error", { message: error.message });
+
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
 
 app.get("/api/guardian/analyze/:ticker", async (req, res) => {
   try {
