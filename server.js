@@ -32,8 +32,6 @@ const {
   getPipelineStatus,
 } = require("./services/marketService");
 
-const { buildHQSResponse } = require("./hqsEngine");
-
 const { analyzeStockWithGuardian } = require("./services/guardianService");
 const { getMarketDataBySegment } = require("./services/aggregator.service");
 
@@ -552,22 +550,11 @@ app.get("/api/hqs", async (req, res) => {
       });
     }
 
-    const fullMarket = await getMarketData();
-    const changes = Array.isArray(fullMarket)
-      ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
-      : [];
-
-    const marketAverage =
-      changes.length ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
-
-    const hqs = await buildHQSResponse(marketData[0], marketAverage);
-
     return res.json({
       success: true,
       symbol,
-      hqs,
-      source: "live",
-      marketAverage: Number(marketAverage.toFixed(4)),
+      message: "Für dieses Symbol ist noch kein gespeicherter HQS vorhanden.",
+      source: "database",
     });
   } catch (error) {
     logger.error("HQS route error", { message: error.message });
