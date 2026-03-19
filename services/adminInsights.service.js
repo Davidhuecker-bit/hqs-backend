@@ -81,7 +81,10 @@ function pickFirstExisting(columns, candidates) {
   return null;
 }
 
-async function getLatestTimestamp(tableName, candidates = ["created_at", "updated_at", "evaluated_at", "checked_at"]) {
+async function getLatestTimestamp(
+  tableName,
+  candidates = ["created_at", "updated_at", "evaluated_at", "checked_at"]
+) {
   try {
     const exists = await tableExists(tableName);
     if (!exists) return null;
@@ -146,12 +149,17 @@ async function getWatchlistStats() {
     };
   }
 
-  const totalRes = await pool.query(
-    `SELECT COUNT(*)::int AS c FROM watchlist_symbols`
-  );
-  const activeRes = await pool.query(
-    `SELECT COUNT(*)::int AS c FROM watchlist_symbols WHERE is_active = TRUE`
-  );
+  const totalRes = await pool.query(`
+    SELECT COUNT(*)::int AS c
+    FROM watchlist_symbols
+  `);
+
+  const activeRes = await pool.query(`
+    SELECT COUNT(*)::int AS c
+    FROM watchlist_symbols
+    WHERE is_active = TRUE
+  `);
+
   const regionRes = await pool.query(`
     SELECT LOWER(COALESCE(region, 'us')) AS region, COUNT(*)::int AS c
     FROM watchlist_symbols
@@ -190,28 +198,6 @@ async function getWatchlistStats() {
     active: safeNum(activeRes.rows?.[0]?.c, 0),
     byRegion,
     byPriorityTier,
-  };
-}
-
-async function getSnapshotState() {
-  const exists = await tableExists("snapshot_scan_state");
-  if (!exists) {
-    return {
-      offset: 0,
-      updatedAt: null,
-    };
-  }
-
-  const res = await pool.query(`
-    SELECT offset_value, updated_at
-    FROM snapshot_scan_state
-    WHERE key = 'snapshot_watchlist_offset'
-    LIMIT 1
-  `);
-
-  return {
-    offset: safeNum(res.rows?.[0]?.offset_value, 0),
-    updatedAt: toIso(res.rows?.[0]?.updated_at),
   };
 }
 
@@ -282,7 +268,10 @@ async function getHqsStats(lookbackHours = DEFAULT_LOOKBACK_HOURS) {
   };
 }
 
-async function getFactorHistoryStats(lookbackHours = DEFAULT_LOOKBACK_HOURS, longLookbackDays = DEFAULT_LONG_LOOKBACK_DAYS) {
+async function getFactorHistoryStats(
+  lookbackHours = DEFAULT_LOOKBACK_HOURS,
+  longLookbackDays = DEFAULT_LONG_LOOKBACK_DAYS
+) {
   const exists = await tableExists("factor_history");
   if (!exists) {
     return {
@@ -446,7 +435,10 @@ async function getOutcomeTrackingStats(lookbackHours = DEFAULT_LOOKBACK_HOURS) {
   };
 }
 
-async function getDiscoveryStats(lookbackHours = DEFAULT_LOOKBACK_HOURS, longLookbackDays = DEFAULT_LONG_LOOKBACK_DAYS) {
+async function getDiscoveryStats(
+  lookbackHours = DEFAULT_LOOKBACK_HOURS,
+  longLookbackDays = DEFAULT_LONG_LOOKBACK_DAYS
+) {
   const exists = await tableExists("discovery_history");
   if (!exists) {
     return {
@@ -587,19 +579,80 @@ async function getAdminInsights(options = {}) {
     }
   }
 
-  const watchlist = await safeCall("watchlist", () => getWatchlistStats(), { total: 0, active: 0, byRegion: {}, byPriorityTier: {} });
-  const snapshotState = await safeCall("snapshotState", () => getSnapshotState(), { offset: 0, updatedAt: null });
-  const snapshots = await safeCall("snapshots", () => getMarketSnapshotStats(lookbackHours), { totalRows: 0, recentRows: 0, recentSymbols: 0, latestRunAt: null, bySource: {} });
-  const hqs = await safeCall("hqs", () => getHqsStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null });
-  const factorHistory = await safeCall("factorHistory", () => getFactorHistoryStats(lookbackHours, longLookbackDays), { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0, averageHqsScore7d: null, byRegime7d: {} });
-  const weightHistory = await safeCall("weightHistory", () => getWeightHistoryStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null, regimesTracked: 0 });
-  const advancedMetrics = await safeCall("advancedMetrics", () => getAdvancedMetricsStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null });
-  const outcomes = await safeCall("outcomes", () => getOutcomeTrackingStats(lookbackHours), { totalRows: 0, recentRows: 0, latestAt: null, completedRows: 0, completionRate: 0 });
-  const discovery = await safeCall("discovery", () => getDiscoveryStats(lookbackHours, longLookbackDays), { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0 });
-  const jobLocks = await safeCall("jobLocks", () => getJobLockStats(), { totalLocks: 0, activeLocks: 0, lockNames: [] });
-  const notifications = await safeCall("notifications", () => getNotificationStats(), { activeUsers: 0, notificationsSent24h: 0, latestNotificationAt: null });
+  const watchlist = await safeCall(
+    "watchlist",
+    () => getWatchlistStats(),
+    { total: 0, active: 0, byRegion: {}, byPriorityTier: {} }
+  );
 
-  let coverage = { snapshotUniverseCoverage: 0, hqsCoverageVsSnapshots: 0, advancedCoverageVsSnapshots: 0, outcomeCoverageVsSnapshots: 0 };
+  const snapshots = await safeCall(
+    "snapshots",
+    () => getMarketSnapshotStats(lookbackHours),
+    { totalRows: 0, recentRows: 0, recentSymbols: 0, latestRunAt: null, bySource: {} }
+  );
+
+  const hqs = await safeCall(
+    "hqs",
+    () => getHqsStats(lookbackHours),
+    { totalRows: 0, recentRows: 0, latestAt: null }
+  );
+
+  const factorHistory = await safeCall(
+    "factorHistory",
+    () => getFactorHistoryStats(lookbackHours, longLookbackDays),
+    {
+      totalRows: 0,
+      recentRows: 0,
+      latestAt: null,
+      recentUniqueSymbols: 0,
+      averageHqsScore7d: null,
+      byRegime7d: {},
+    }
+  );
+
+  const weightHistory = await safeCall(
+    "weightHistory",
+    () => getWeightHistoryStats(lookbackHours),
+    { totalRows: 0, recentRows: 0, latestAt: null, regimesTracked: 0 }
+  );
+
+  const advancedMetrics = await safeCall(
+    "advancedMetrics",
+    () => getAdvancedMetricsStats(lookbackHours),
+    { totalRows: 0, recentRows: 0, latestAt: null }
+  );
+
+  const outcomes = await safeCall(
+    "outcomes",
+    () => getOutcomeTrackingStats(lookbackHours),
+    { totalRows: 0, recentRows: 0, latestAt: null, completedRows: 0, completionRate: 0 }
+  );
+
+  const discovery = await safeCall(
+    "discovery",
+    () => getDiscoveryStats(lookbackHours, longLookbackDays),
+    { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0 }
+  );
+
+  const jobLocks = await safeCall(
+    "jobLocks",
+    () => getJobLockStats(),
+    { totalLocks: 0, activeLocks: 0, lockNames: [] }
+  );
+
+  const notifications = await safeCall(
+    "notifications",
+    () => getNotificationStats(),
+    { activeUsers: 0, notificationsSent24h: 0, latestNotificationAt: null }
+  );
+
+  let coverage = {
+    snapshotUniverseCoverage: 0,
+    hqsCoverageVsSnapshots: 0,
+    advancedCoverageVsSnapshots: 0,
+    outcomeCoverageVsSnapshots: 0,
+  };
+
   try {
     coverage = await getCoverageStats(snapshots, hqs, advancedMetrics, outcomes, watchlist);
   } catch (err) {
@@ -628,9 +681,20 @@ async function getAdminInsights(options = {}) {
     lookbackHours,
     longLookbackDays,
 
-    system: { snapshotState, jobLocks, notifications },
+    system: {
+      jobLocks,
+      notifications,
+    },
     universe: watchlist,
-    activity: { snapshots, hqs, factorHistory, weightHistory, advancedMetrics, outcomes, discovery },
+    activity: {
+      snapshots,
+      hqs,
+      factorHistory,
+      weightHistory,
+      advancedMetrics,
+      outcomes,
+      discovery,
+    },
     coverage,
     quickFacts: {
       activeUniverse: watchlist.active,
