@@ -593,15 +593,12 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
       });
     }
 
-    const storedMarketData = formatMarketItem(marketData[0]) || {
-      symbol: ticker,
-      source: "database",
-    };
+    const storedMarketData = formatMarketItem(marketData[0]);
 
     const guardianResult = await analyzeStockWithGuardian({
       symbol: ticker,
-      segment: "stored-data",
-      provider: "database",
+      segment: null,
+      provider: null,
       fallbackUsed: false,
       marketData: {
         ...storedMarketData,
