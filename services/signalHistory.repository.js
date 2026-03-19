@@ -220,3 +220,12 @@ async function getSignalKPIs({ windowDays = 90 } = {}) {
     };
   }
 }
+
+module.exports = {
+  getSignalHistoryAll,
+  getSignalHistoryBySymbol,
+  getOutcomeAnalysis,
+  getTimingQuality,
+  getForecastVsOutcome,
+  getSignalKPIs,
+};
