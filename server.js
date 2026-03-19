@@ -357,13 +357,28 @@ app.get("/api/market", async (req, res) => {
       return badRequest(res, symbolResult.error);
     }
 
+    const limitResult = parseInteger(req.query.limit, {
+      defaultValue: 25,
+      min: 1,
+      max: 100,
+      label: "limit",
+    });
+    if (limitResult.error) {
+      return badRequest(res, limitResult.error);
+    }
+
     const symbol = symbolResult.value;
+    const limit = limitResult.value;
 
     const raw = await getMarketData(symbol || undefined);
 
-    const stocks = Array.isArray(raw)
+    let stocks = Array.isArray(raw)
       ? raw.map(formatMarketItem).filter(Boolean)
       : [];
+
+    if (!symbol) {
+      stocks = stocks.slice(0, limit);
+    }
 
     return res.json({
       success: true,
