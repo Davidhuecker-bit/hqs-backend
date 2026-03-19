@@ -1,17 +1,16 @@
 "use strict";
 
 /*
-  HQS PORTFOLIO ENGINE – FAST + CLEAN (DB-first)
-  ---------------------------------------------
-  - Pro Aktie: erst gespeicherten hqsScore aus getMarketData() (kommt aus hqs_scores)
-  - Fallback: live buildHQSResponse(), wenn hqsScore fehlt
-  - Portfolio Score = gewichteter Schnitt
-  - Risk metrics / Exposure / Rebalancing bleiben wie bisher
+  HQS PORTFOLIO ENGINE – CLEAN DB-FIRST
+  ------------------------------------
+  - Pro Aktie: nur gespeicherten hqsScore aus getMarketData()
+  - Keine Live-Neuberechnung im Kunden-Request
+  - Keine Gesamtmarkt-Ladung für marketAverage
+  - Fehlende Scores werden als pending/missing gekennzeichnet
+  - Portfolio Score = gewichteter Schnitt nur aus verfügbaren gespeicherten Scores
 */
 
 const { getMarketData } = require("./marketService");
-// ✅ FIX: eine Ebene nach oben, da hqsEngine.js im Root liegt
-const { buildHQSResponse } = require("../hqsEngine");
 
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
@@ -20,6 +19,11 @@ function clamp(v, min, max) {
 function safe(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function safeNullable(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 function deriveRating(score) {
@@ -37,16 +41,8 @@ async function calculatePortfolioHQS(portfolio = []) {
     return { error: "Empty portfolio" };
   }
 
-  // ✅ marketAverage einmal berechnen (Konsistenz mit Snapshot/Server HQS Route)
-  const fullMarket = await getMarketData();
-  const changes = Array.isArray(fullMarket)
-    ? fullMarket.map((s) => Number(s?.changesPercentage) || 0)
-    : [];
-  const marketAverage =
-    changes.length > 0 ? changes.reduce((a, b) => a + b, 0) / changes.length : 0;
-
   /* =========================================
-     1) Einzelaktien (DB-first, Live fallback)
+     1) Einzelaktien (nur DB-first, kein Live fallback)
   ========================================= */
 
   const enriched = [];
@@ -63,79 +59,111 @@ async function calculatePortfolioHQS(portfolio = []) {
         ? { ...position.marketData, symbol }
         : null;
 
-    // 2) Sonst DB/Provider über getMarketData holen (liefert hqsScore aus hqs_scores)
+    // 2) Sonst gespeicherte Daten über getMarketData(symbol) holen
     if (!marketItem) {
       const md = await getMarketData(symbol);
       if (Array.isArray(md) && md.length) marketItem = md[0];
     }
 
-    // 3) Wenn wir einen gespeicherten Score haben -> nutzen (keine Live-Berechnung)
     const cachedScore =
       marketItem && marketItem.hqsScore !== null && marketItem.hqsScore !== undefined
-        ? safe(marketItem.hqsScore, null)
+        ? safeNullable(marketItem.hqsScore)
         : null;
 
     if (cachedScore !== null) {
       enriched.push({
         symbol,
         weight,
+        available: true,
         hqsScore: clamp(Math.round(cachedScore), 0, 100),
-
-        // ✅ FIX: stability kommt (wenn vorhanden) aus hqsBreakdown
-        stability: safe(marketItem?.hqsBreakdown?.stability, 55),
-
+        stability: safeNullable(marketItem?.hqsBreakdown?.stability),
         rating: deriveRating(cachedScore),
         decision: deriveDecision(cachedScore),
-
         source: "database",
       });
-
       continue;
     }
 
-    // 4) Live fallback: Score wirklich berechnen (mit marketAverage)
-    const hqs = await buildHQSResponse(marketItem || { symbol }, marketAverage);
-
+    // Kein gespeicherter HQS vorhanden -> nur als pending/missing markieren
     enriched.push({
       symbol,
       weight,
-      hqsScore: safe(hqs.hqsScore, 0),
-      stability: safe(hqs.breakdown?.stability, 55),
-      rating: hqs.rating || deriveRating(hqs.hqsScore),
-      decision: hqs.decision || deriveDecision(hqs.hqsScore),
-      source: "live",
+      available: false,
+      hqsScore: null,
+      stability: safeNullable(marketItem?.hqsBreakdown?.stability),
+      rating: "Pending",
+      decision: "NO_DATA",
+      source: "database",
+      message: "Für dieses Symbol ist noch kein gespeicherter HQS vorhanden.",
     });
   }
 
   if (!enriched.length) {
-    return { error: "No valid HQS results" };
+    return { error: "No valid portfolio positions" };
+  }
+
+  const availablePositions = enriched.filter((p) => p.available === true);
+  const missingPositions = enriched.filter((p) => p.available !== true);
+
+  if (!availablePositions.length) {
+    return {
+      error: "No stored HQS results available yet",
+      message: "Für die Portfolio-Positionen sind noch keine gespeicherten HQS-Werte vorhanden.",
+      breakdown: enriched,
+      exposure: {
+        strongBuy: 0,
+        buy: 0,
+        hold: 0,
+        risk: 0,
+        pending: missingPositions.length,
+      },
+      rebalancing: enriched.map((p) => ({
+        symbol: p.symbol,
+        action: "Warten auf gespeicherten HQS",
+      })),
+      meta: {
+        symbolCount: enriched.length,
+        availableCount: availablePositions.length,
+        missingCount: missingPositions.length,
+      },
+      timestamp: new Date().toISOString(),
+    };
   }
 
   /* =========================================
      2) Portfolio Score (gewichteter Schnitt)
+     Nur aus verfügbaren gespeicherten Werten
   ========================================= */
 
-  const totalWeight = enriched.reduce((s, p) => s + safe(p.weight, 0), 0) || 1;
+  const totalAvailableWeight =
+    availablePositions.reduce((sum, p) => sum + safe(p.weight, 0), 0) || 1;
 
   let weightedScore = 0;
   let weightedStability = 0;
+  let stabilityWeight = 0;
 
-  for (const p of enriched) {
-    const w = safe(p.weight, 0) / totalWeight;
+  for (const p of availablePositions) {
+    const w = safe(p.weight, 0) / totalAvailableWeight;
     weightedScore += safe(p.hqsScore, 0) * w;
-    weightedStability += safe(p.stability, 55) * w;
+
+    if (p.stability !== null) {
+      weightedStability += safe(p.stability, 0) * w;
+      stabilityWeight += w;
+    }
   }
 
   const portfolioScore = clamp(Math.round(weightedScore), 0, 100);
-  const portfolioStability = clamp(Math.round(weightedStability), 0, 100);
+  const portfolioStability =
+    stabilityWeight > 0 ? clamp(Math.round(weightedStability), 0, 100) : null;
 
   /* =========================================
      3) Risikoanalyse
+     Nur aus verfügbaren gespeicherten Werten
   ========================================= */
 
-  const highRiskPositions = enriched.filter((p) => safe(p.hqsScore, 0) < 50);
+  const highRiskPositions = availablePositions.filter((p) => safe(p.hqsScore, 0) < 50);
   const highRiskWeight =
-    highRiskPositions.reduce((s, p) => s + safe(p.weight, 0), 0) / totalWeight;
+    highRiskPositions.reduce((sum, p) => sum + safe(p.weight, 0), 0) / totalAvailableWeight;
 
   const riskLevel =
     portfolioScore >= 75 ? "LOW" : portfolioScore >= 60 ? "MEDIUM" : "HIGH";
@@ -145,16 +173,17 @@ async function calculatePortfolioHQS(portfolio = []) {
   ========================================= */
 
   const exposure = {
-    strongBuy: enriched.filter((p) => safe(p.hqsScore, 0) >= 85).length,
-    buy: enriched.filter((p) => {
+    strongBuy: availablePositions.filter((p) => safe(p.hqsScore, 0) >= 85).length,
+    buy: availablePositions.filter((p) => {
       const s = safe(p.hqsScore, 0);
       return s >= 70 && s < 85;
     }).length,
-    hold: enriched.filter((p) => {
+    hold: availablePositions.filter((p) => {
       const s = safe(p.hqsScore, 0);
       return s >= 50 && s < 70;
     }).length,
-    risk: enriched.filter((p) => safe(p.hqsScore, 0) < 50).length,
+    risk: availablePositions.filter((p) => safe(p.hqsScore, 0) < 50).length,
+    pending: missingPositions.length,
   };
 
   /* =========================================
@@ -162,6 +191,10 @@ async function calculatePortfolioHQS(portfolio = []) {
   ========================================= */
 
   const rebalancing = enriched.map((p) => {
+    if (!p.available) {
+      return { symbol: p.symbol, action: "Warten auf gespeicherten HQS" };
+    }
+
     const s = safe(p.hqsScore, 0);
 
     if (s >= 80) return { symbol: p.symbol, action: "Gewicht erhöhen" };
@@ -190,8 +223,9 @@ async function calculatePortfolioHQS(portfolio = []) {
         ? "Neutral"
         : "Defensive",
     meta: {
-      marketAverage: Number(marketAverage.toFixed(4)),
       symbolCount: enriched.length,
+      availableCount: availablePositions.length,
+      missingCount: missingPositions.length,
     },
     timestamp: new Date().toISOString(),
   };
