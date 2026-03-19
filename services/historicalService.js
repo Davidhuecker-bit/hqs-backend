@@ -1,9 +1,8 @@
 "use strict";
 
-const axios = require("axios");
-const cache = require("../config/cache");
+const { Pool } = require("pg");
 
-// optional logger
+// optional logger (falls vorhanden)
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -11,371 +10,300 @@ try {
   logger = null;
 }
 
-const HISTORICAL_CACHE_TTL_SECONDS = Number(
-  process.env.HISTORICAL_CACHE_TTL_SECONDS || 6 * 60 * 60
-);
-
-const MASSIVE_API_KEY = process.env.MASSIVE_API_KEY;
-const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || "";
-const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || "";
-
-if (!MASSIVE_API_KEY && !TWELVE_DATA_API_KEY && !FINNHUB_API_KEY) {
-  const msg =
-    "No historical data provider is configured. Set MASSIVE_API_KEY, TWELVE_DATA_API_KEY, or FINNHUB_API_KEY.";
-  if (logger?.warn) logger.warn(msg);
-  else console.warn("⚠️ " + msg);
+// Regime Normalisierung (wichtig für RL / Queries)
+let normalizeRegime = null;
+try {
+  ({ normalizeRegime } = require("./weightHistory.repository"));
+} catch (_) {
+  normalizeRegime = null;
 }
 
-const http = axios.create({
-  timeout: 20000,
-  headers: {
-    "User-Agent": "HQS-Backend/1.0",
-    Accept: "application/json",
-  },
+function normalizeRegimeLocal(regime) {
+  const r = String(regime || "").trim().toLowerCase();
+  if (r === "bullish") return "bull";
+  if (r === "bearish") return "bear";
+  if (r === "neutral") return "neutral";
+  if (["expansion", "bull", "bear", "crash", "neutral"].includes(r)) return r;
+  return "neutral";
+}
+
+function normRegime(regime) {
+  if (typeof normalizeRegime === "function") return normalizeRegime(regime);
+  return normalizeRegimeLocal(regime);
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 });
 
-function periodToDays(period) {
-  const p = String(period || "1y").toLowerCase().trim();
+/* =========================================================
+   INIT TABLE (FULL QUANT + SAFE UPGRADE)
+========================================================= */
 
-  if (p === "1m") return 35;
-  if (p === "3m") return 110;
-  if (p === "6m") return 220;
-  if (p === "1y" || p === "1year" || p === "12m") return 400;
-  if (p === "5y" || p === "5years") return 3650;
-  if (p === "max") return 3650;
+async function initFactorTable() {
+  //
+  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
+  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
+  // column already exists (IF NOT EXISTS only skips the write, not the lock).
+  // Running these on every startup causes lock-contention hangs when
+  // HQS-Backend and hqs-scraping-service start concurrently.
+  //
+  // All columns must be defined in the CREATE TABLE IF NOT EXISTS statement below.
+  //
 
-  return 400;
-}
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS factor_history (
+      id SERIAL PRIMARY KEY,
+      symbol TEXT NOT NULL,
+      hqs_score FLOAT NOT NULL,
 
-function periodToTwelveInterval(period) {
-  const p = String(period || "1y").toLowerCase().trim();
+      momentum FLOAT,
+      quality FLOAT,
+      stability FLOAT,
+      relative FLOAT,
 
-  if (p === "1m") return { interval: "1day", outputsize: 35 };
-  if (p === "3m") return { interval: "1day", outputsize: 110 };
-  if (p === "6m") return { interval: "1day", outputsize: 220 };
-  if (p === "1y" || p === "1year" || p === "12m") return { interval: "1day", outputsize: 400 };
-  if (p === "5y" || p === "5years" || p === "max") return { interval: "1day", outputsize: 5000 };
+      regime TEXT NOT NULL,
 
-  return { interval: "1day", outputsize: 400 };
-}
+      market_average FLOAT,
+      volatility FLOAT,
 
-function fmtDate(d) {
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
+      forward_return_1h FLOAT,
+      forward_return_1d FLOAT,
+      forward_return_3d FLOAT,
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+      portfolio_return FLOAT,
+      factors JSONB,
 
-function safeUrlWithoutKey(url) {
-  return String(url || "")
-    .replace(/apiKey=[^&]+/gi, "apiKey=***")
-    .replace(/apikey=[^&]+/gi, "apikey=***");
-}
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
 
-function normalizeMassiveHistorical(results = []) {
-  return results
-    .map((r) => {
-      const close = Number(r?.c);
-      if (!Number.isFinite(close) || close <= 0) return null;
-
-      let date = null;
-      if (Number.isFinite(Number(r?.t))) {
-        date = new Date(Number(r.t)).toISOString().slice(0, 10);
-      }
-
-      return { date, close };
-    })
-    .filter(Boolean);
-}
-
-function normalizeTwelveHistorical(values = []) {
-  return (Array.isArray(values) ? values : [])
-    .map((r) => {
-      const close = Number(r?.close);
-      if (!Number.isFinite(close) || close <= 0) return null;
-
-      const date = r?.datetime ? String(r.datetime).slice(0, 10) : null;
-
-      return { date, close };
-    })
-    .filter(Boolean)
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (logger?.info) logger.info("factor_history ready (FULL QUANT MODE)");
+  else console.log("✅ factor_history ready (FULL QUANT MODE)");
 }
 
 /* =========================================================
-   MASSIVE HISTORICAL
+   SAVE SINGLE STOCK SNAPSHOT
 ========================================================= */
 
-async function fetchHistoricalFromMassive(sym, per) {
-  if (!MASSIVE_API_KEY) {
-    throw new Error("Missing MASSIVE_API_KEY");
+async function saveScoreSnapshot({
+  symbol,
+  hqsScore,
+  momentum,
+  quality,
+  stability,
+  relative,
+  regime,
+  marketAverage,
+  volatility,
+}) {
+  try {
+    const normalizedRegime = normRegime(regime);
+
+    await pool.query(
+      `
+      INSERT INTO factor_history
+      (symbol, hqs_score, momentum, quality, stability, relative, regime,
+       market_average, volatility)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `,
+      [
+        String(symbol || "").trim().toUpperCase(),
+        Number(hqsScore),
+        momentum ?? null,
+        quality ?? null,
+        stability ?? null,
+        relative ?? null,
+        normalizedRegime,
+        marketAverage ?? null,
+        volatility ?? null,
+      ]
+    );
+  } catch (err) {
+    if (logger?.error) logger.error("saveScoreSnapshot error", { message: err.message });
+    else console.error("❌ saveScoreSnapshot error:", err.message);
   }
+}
 
-  const days = periodToDays(per);
-  const to = new Date();
-  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+/* =========================================================
+   SAVE PORTFOLIO SNAPSHOT (Learning)
+========================================================= */
 
-  const url =
-    `https://api.massive.com/v2/aggs/ticker/${encodeURIComponent(sym)}` +
-    `/range/1/day/${fmtDate(from)}/${fmtDate(to)}` +
-    `?adjusted=true&sort=asc&limit=5000&apiKey=${MASSIVE_API_KEY}`;
+async function saveFactorSnapshot(regime, portfolioReturn, factors) {
+  try {
+    const normalizedRegime = normRegime(regime);
 
-  const maxTries = Number(process.env.MASSIVE_RETRIES || 3);
+    await pool.query(
+      `
+      INSERT INTO factor_history
+      (symbol, hqs_score, regime, portfolio_return, factors)
+      VALUES ($1,$2,$3,$4,$5)
+      `,
+      ["PORTFOLIO", 0, normalizedRegime, portfolioReturn ?? null, factors ?? null]
+    );
+  } catch (err) {
+    if (logger?.error) logger.error("saveFactorSnapshot error", { message: err.message });
+    else console.error("❌ saveFactorSnapshot error:", err.message);
+  }
+}
 
-  for (let attempt = 1; attempt <= maxTries; attempt++) {
-    try {
-      const res = await http.get(url);
-      const data = res?.data;
-      const status = String(data?.status || "").toUpperCase();
+/* =========================================================
+   UPDATE FORWARD RETURNS (LABELING)
+   ✅ BACKWARD + FORWARD COMPATIBLE
 
-      if (status !== "OK" && status !== "DELAYED") {
-        throw new Error(`Massive historical not OK (${data?.status || "no status"})`);
+   ALT:
+     updateForwardReturns(symbol, hoursAhead, percentChange)
+
+   NEU:
+     updateForwardReturns(rowId, forward1d, forward3d)
+========================================================= */
+
+async function updateForwardReturns(a, b, c) {
+  try {
+    // NEW MODE: (rowId, forward1d, forward3d)
+    if (Number.isFinite(Number(a)) && typeof b === "number") {
+      const rowId = Number(a);
+      const forward1d = b;
+      const forward3d = c;
+
+      const sets = [];
+      const values = [];
+      let idx = 1;
+
+      if (forward1d !== null && forward1d !== undefined) {
+        sets.push(`forward_return_1d = $${idx++}`);
+        values.push(Number(forward1d));
       }
 
-      const results = Array.isArray(data?.results) ? data.results : [];
-
-      if (!results.length && status === "DELAYED" && attempt < maxTries) {
-        if (logger?.warn) {
-          logger.warn("Massive historical delayed; retrying", {
-            sym,
-            attempt,
-            period: per,
-          });
-        }
-        await sleep(700 * attempt);
-        continue;
+      if (forward3d !== null && forward3d !== undefined) {
+        sets.push(`forward_return_3d = $${idx++}`);
+        values.push(Number(forward3d));
       }
 
-      if (!results.length) {
-        if (logger?.warn) {
-          logger.warn("Massive historical returned no results", {
-            sym,
-            status,
-            period: per,
-            url: safeUrlWithoutKey(url),
-          });
-        }
-        return [];
-      }
+      if (!sets.length) return;
 
-      if (logger?.info && results.length >= 5000) {
-        logger.info("Historical hit limit=5000 (may be truncated)", {
-          sym,
-          period: per,
-        });
-      }
+      values.push(rowId);
 
-      return normalizeMassiveHistorical(results);
-    } catch (err) {
-      if (attempt < maxTries) {
-        if (logger?.warn) {
-          logger.warn("Massive historical fetch failed; retrying", {
-            sym,
-            attempt,
-            period: per,
-            message: err.message,
-            url: safeUrlWithoutKey(url),
-          });
-        }
-        await sleep(700 * attempt);
-        continue;
-      }
+      await pool.query(
+        `
+        UPDATE factor_history
+        SET ${sets.join(", ")}
+        WHERE id = $${idx}
+        `,
+        values
+      );
 
-      throw err;
+      return;
     }
-  }
 
-  return [];
+    // OLD MODE: (symbol, hoursAhead, percentChange)
+    const symbol = String(a || "").trim().toUpperCase();
+    const hoursAhead = Number(b);
+    const percentChange = c;
+
+    if (!symbol || !Number.isFinite(hoursAhead)) return;
+
+    let column;
+    if (hoursAhead === 1) column = "forward_return_1h";
+    else if (hoursAhead === 24) column = "forward_return_1d";
+    else column = "forward_return_3d";
+
+    await pool.query(
+      `
+      UPDATE factor_history
+      SET ${column} = $1
+      WHERE symbol = $2
+        AND ${column} IS NULL
+      `,
+      [percentChange, symbol]
+    );
+  } catch (err) {
+    if (logger?.error) logger.error("updateForwardReturns error", { message: err.message });
+    else console.error("❌ updateForwardReturns error:", err.message);
+  }
 }
 
 /* =========================================================
-   TWELVE DATA HISTORICAL FALLBACK
+   LOAD HISTORY (für Calibration / Reinforcement)
 ========================================================= */
 
-async function fetchHistoricalFromTwelveData(sym, per) {
-  if (!TWELVE_DATA_API_KEY) {
-    throw new Error("Missing TWELVE_DATA_API_KEY");
-  }
+async function loadFactorHistory(limit = 500) {
+  try {
+    const res = await pool.query(
+      `
+      SELECT *
+      FROM factor_history
+      ORDER BY created_at ASC
+      LIMIT $1
+      `,
+      [limit]
+    );
 
-  const cfg = periodToTwelveInterval(per);
-
-  const url =
-    `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(sym)}` +
-    `&interval=${cfg.interval}` +
-    `&outputsize=${cfg.outputsize}` +
-    `&apikey=${TWELVE_DATA_API_KEY}`;
-
-  const maxTries = Number(process.env.TWELVE_DATA_RETRIES || 2);
-
-  for (let attempt = 1; attempt <= maxTries; attempt++) {
-    try {
-      const res = await http.get(url);
-      const data = res?.data || {};
-
-      if (data?.status === "error") {
-        throw new Error(data?.message || "Twelve Data historical error");
-      }
-
-      const values = Array.isArray(data?.values) ? data.values : [];
-
-      if (!values.length) {
-        if (logger?.warn) {
-          logger.warn("Twelve Data historical returned no results", {
-            sym,
-            period: per,
-            url: safeUrlWithoutKey(url),
-          });
-        }
-        return [];
-      }
-
-      return normalizeTwelveHistorical(values);
-    } catch (err) {
-      if (attempt < maxTries) {
-        if (logger?.warn) {
-          logger.warn("Twelve Data historical fetch failed; retrying", {
-            sym,
-            attempt,
-            period: per,
-            message: err.message,
-            url: safeUrlWithoutKey(url),
-          });
-        }
-        await sleep(700 * attempt);
-        continue;
-      }
-
-      throw err;
-    }
-  }
-
-  return [];
-}
-
-/* =========================================================
-   FINNHUB HISTORICAL (candle endpoint)
-========================================================= */
-
-async function fetchHistoricalFromFinnhub(sym, per) {
-  if (!FINNHUB_API_KEY) throw new Error("Missing FINNHUB_API_KEY");
-
-  const days = periodToDays(per);
-  const to = Math.floor(Date.now() / 1000);
-  const from = to - days * 24 * 60 * 60;
-
-  const url =
-    `https://finnhub.io/api/v1/stock/candle?symbol=${encodeURIComponent(sym)}` +
-    `&resolution=D&from=${from}&to=${to}&token=${FINNHUB_API_KEY}`;
-
-  const res = await http.get(url);
-  const data = res?.data;
-
-  if (!data || data.s !== "ok" || !Array.isArray(data.t) || !data.t.length) {
+    return res.rows;
+  } catch (err) {
+    if (logger?.error) logger.error("loadFactorHistory error", { message: err.message });
+    else console.error("❌ loadFactorHistory error:", err.message);
     return [];
   }
-
-  return data.t
-    .map((t, i) => {
-      const close = Number(data.c?.[i]);
-      if (!Number.isFinite(close) || close <= 0) return null;
-      return {
-        date: new Date(t * 1000).toISOString().slice(0, 10),
-        close,
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
 
 /* =========================================================
-   MAIN HISTORICAL API
+   BACKTEST HISTORY (DB-first, deterministic snapshot match)
 ========================================================= */
 
-async function getHistoricalPrices(symbol, period = "1y") {
+async function getBacktestHistory(symbol, limit = 200) {
   const sym = String(symbol || "").trim().toUpperCase();
-  if (!sym) throw new Error("Symbol is required");
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1000));
 
-  const per = String(period || "1y").toLowerCase().trim();
-  const isLongRangePeriod =
-    per === "max" || per === "5y" || per === "5years";
-  const cacheKey = `historical_${sym}_${per}`;
+  if (!sym) return [];
 
-  const cached = await cache.get(cacheKey);
-  if (cached !== undefined) return cached;
+  try {
+    const res = await pool.query(
+      `
+      SELECT
+        fh.hqs_score AS "hqsScore",
+        ms.price AS "price",
+        fh.created_at AS "factorCreatedAt",
+        ms.created_at AS "snapshotCreatedAt"
+      FROM factor_history fh
+      LEFT JOIN LATERAL (
+        SELECT price, created_at
+        FROM market_snapshots
+        WHERE symbol = fh.symbol
+          AND price IS NOT NULL
+          AND created_at BETWEEN fh.created_at - INTERVAL '30 minutes'
+                              AND fh.created_at + INTERVAL '30 minutes'
+        ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - fh.created_at))) ASC
+        LIMIT 1
+      ) ms ON true
+      WHERE fh.symbol = $1
+        AND fh.hqs_score IS NOT NULL
+        AND ms.price IS NOT NULL
+      ORDER BY fh.created_at ASC
+      LIMIT $2
+      `,
+      [sym, safeLimit]
+    );
 
-  const providers = [];
-  if (MASSIVE_API_KEY) {
-    providers.push({ name: "MASSIVE", fetcher: fetchHistoricalFromMassive });
-  }
-  if (TWELVE_DATA_API_KEY) {
-    providers.push({
-      name: "TWELVE_DATA",
-      fetcher: fetchHistoricalFromTwelveData,
-    });
-  }
-  if (FINNHUB_API_KEY) {
-    providers.push({
-      name: "FINNHUB",
-      fetcher: fetchHistoricalFromFinnhub,
-    });
-  }
-
-  if (!providers.length) {
-    await cache.set(cacheKey, [], HISTORICAL_CACHE_TTL_SECONDS);
+    return res.rows.map((row) => ({
+      hqsScore: Number(row.hqsScore),
+      price: Number(row.price),
+      factorCreatedAt: row.factorCreatedAt,
+      snapshotCreatedAt: row.snapshotCreatedAt,
+    }));
+  } catch (err) {
+    if (logger?.error) logger.error("getBacktestHistory error", { message: err.message });
+    else console.error("❌ getBacktestHistory error:", err.message);
     return [];
   }
-
-  for (let index = 0; index < providers.length; index++) {
-    const provider = providers[index];
-
-    try {
-      const data = await provider.fetcher(sym, per);
-
-      if (data.length) {
-        await cache.set(cacheKey, data, HISTORICAL_CACHE_TTL_SECONDS);
-
-        if (index > 0 && logger?.info) {
-          logger.info("Historical fallback success", {
-            symbol: sym,
-            provider: provider.name,
-            period: per,
-          });
-        }
-
-        return data;
-      }
-
-      if (isLongRangePeriod && per !== "1y") {
-        if (logger?.warn) {
-          logger.warn(
-            `Historical fallback to 1y after empty ${provider.name} result`,
-            { sym, from: per }
-          );
-        }
-        const fallbackData = await getHistoricalPrices(sym, "1y");
-        await cache.set(cacheKey, fallbackData, HISTORICAL_CACHE_TTL_SECONDS);
-        return fallbackData;
-      }
-    } catch (err) {
-      const msg = `${provider.name} historical failed for ${sym}: ${err.message}`;
-      if (logger?.warn) logger.warn(msg);
-      else console.warn("⚠️ " + msg);
-    }
-  }
-
-  if (isLongRangePeriod && per !== "1y") {
-    if (logger?.warn) logger.warn("Historical fallback to 1y after provider errors", { sym, from: per });
-    const fallbackData = await getHistoricalPrices(sym, "1y");
-    await cache.set(cacheKey, fallbackData, HISTORICAL_CACHE_TTL_SECONDS);
-    return fallbackData;
-  }
-
-  await cache.set(cacheKey, [], HISTORICAL_CACHE_TTL_SECONDS);
-  return [];
 }
 
-module.exports = { getHistoricalPrices };
+module.exports = {
+  initFactorTable,
+  saveScoreSnapshot,
+  saveFactorSnapshot,
+  loadFactorHistory,
+  updateForwardReturns,
+  getBacktestHistory,
+};
