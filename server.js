@@ -403,7 +403,7 @@ app.post("/api/admin/snapshot", async (_req, res) => {
 MARKET-NEWS ROUTES
 ========================================================= */
 
-app.post("/api/market-news/collect", async (req, res) => {
+app.post("/api/admin/market-news/collect", async (req, res) => {
   try {
     const limitResult = parseInteger(req.body?.limit, {
       defaultValue: 10,
