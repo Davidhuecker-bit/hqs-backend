@@ -543,7 +543,13 @@ app.get("/api/guardian/dashboard", async (req, res) => {
 
     const marketData = await Promise.all(symbols.map((symbol) => getMarketData(symbol)));
     const stocks = marketData
-      .map((entries) => formatMarketItem(entries[0]))
+      .map((entries) => {
+        if (!Array.isArray(entries) || !entries.length) {
+          return null;
+        }
+
+        return formatMarketItem(entries[0]);
+      })
       .filter(Boolean);
 
     if (!stocks.length) {
@@ -553,12 +559,9 @@ app.get("/api/guardian/dashboard", async (req, res) => {
       });
     }
 
-    const generatedAt =
-      stocks
-        .map((stock) => stock.timestamp || stock.advancedUpdatedAt || stock.hqsCreatedAt)
-        .find(Boolean) || new Date().toISOString();
-
-    const payload = buildGuardianPayload(stocks, { generatedAt });
+    const payload = buildGuardianPayload(stocks, {
+      generatedAt: new Date().toISOString(),
+    });
 
     return res.json({
       ...payload,
