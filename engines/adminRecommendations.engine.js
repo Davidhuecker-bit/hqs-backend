@@ -3,6 +3,35 @@
 // engines/adminRecommendations.engine.js
 // Macht aus Insights, Diagnostics, Validation und Tuning
 // verständliche Admin-Empfehlungen.
+//
+// Die vier resolveXxxText-Helfer sind als gemeinsame Wahrheitsquelle
+// exportiert und werden auch von adminBriefing.engine.js genutzt.
+
+function resolveSystemStatusText(healthBand) {
+  if (healthBand === "excellent") return "Das System läuft aktuell sehr stark und stabil.";
+  if (healthBand === "good") return "Das System läuft aktuell stabil.";
+  if (healthBand === "critical") return "Das System läuft aktuell kritisch und braucht sofort Aufmerksamkeit.";
+  return "Das System läuft in einem mittleren Zustand.";
+}
+
+function resolveTrustStatusText(trustBand) {
+  if (trustBand === "trusted") return "Die wichtigsten Berechnungen wirken aktuell belastbar.";
+  if (trustBand === "usable") return "Die wichtigsten Berechnungen sind brauchbar, aber noch nicht maximal abgesichert.";
+  if (trustBand === "unreliable") return "Die wichtigsten Berechnungen sind aktuell noch nicht verlässlich genug.";
+  return "Die wichtigsten Berechnungen sind aktuell nur teilweise belastbar.";
+}
+
+function resolveScalingStatusText(scale600Allowed, scale450Allowed) {
+  if (scale600Allowed) return "Das System wirkt bereit für einen Ausbau auf 600 Aktien.";
+  if (scale450Allowed) return "Ein Ausbau auf 450 Aktien ist testbar, 600 aber noch nicht.";
+  return "Das aktuelle Niveau sollte erst stabilisiert werden, bevor weiter skaliert wird.";
+}
+
+function resolveExpansionStatusText(nextBestExpansion) {
+  if (nextBestExpansion === "china") return "China wird als nächster sinnvoller Ausbau erkannt.";
+  if (nextBestExpansion === "europe") return "Europa wird als nächster sinnvoller Ausbau erkannt.";
+  return "US zuerst weiter ausbauen.";
+}
 
 function buildAdminRecommendations({
   insights = {},
@@ -17,24 +46,10 @@ function buildAdminRecommendations({
   const nextBestExpansion = diagnostics?.summary?.nextBestExpansion || "us_broader_universe";
   const trustBand = validation?.trust?.overallTrustBand || "thin";
 
-  let systemSummary = "Das System läuft in einem mittleren Zustand.";
-  if (healthBand === "excellent") systemSummary = "Das System läuft aktuell sehr stark und stabil.";
-  else if (healthBand === "good") systemSummary = "Das System läuft aktuell stabil.";
-  else if (healthBand === "critical") systemSummary = "Das System läuft aktuell kritisch und braucht Aufmerksamkeit.";
-
-  let trustSummary = "Die Berechnungen sind aktuell nur teilweise belastbar.";
-  if (trustBand === "trusted") trustSummary = "Die wichtigsten Berechnungen wirken aktuell belastbar.";
-  else if (trustBand === "usable") trustSummary = "Die Berechnungen sind brauchbar, aber noch nicht maximal abgesichert.";
-  else if (trustBand === "unreliable") trustSummary = "Die Berechnungen sind aktuell noch nicht verlässlich genug.";
-
-  let scalingSummary = "Noch keine saubere Skalierungsfreigabe.";
-  if (scale600Allowed) scalingSummary = "Das System wirkt bereit für einen Ausbau auf 600 Aktien.";
-  else if (scale450Allowed) scalingSummary = "Ein Ausbau auf 450 Aktien ist testbar, 600 aber noch nicht.";
-  else scalingSummary = "Das aktuelle Niveau sollte erst stabilisiert werden, bevor weiter skaliert wird.";
-
-  let expansionSummary = "US zuerst weiter ausbauen.";
-  if (nextBestExpansion === "china") expansionSummary = "China wird als nächster sinnvoller Ausbau erkannt.";
-  else if (nextBestExpansion === "europe") expansionSummary = "Europa wird als nächster sinnvoller Ausbau erkannt.";
+  const systemSummary = resolveSystemStatusText(healthBand);
+  const trustSummary = resolveTrustStatusText(trustBand);
+  const scalingSummary = resolveScalingStatusText(scale600Allowed, scale450Allowed);
+  const expansionSummary = resolveExpansionStatusText(nextBestExpansion);
 
   const nextActions = [];
   const tuningTargets = tuning?.topTuningTargets || [];
@@ -79,4 +94,8 @@ function buildAdminRecommendations({
 
 module.exports = {
   buildAdminRecommendations,
+  resolveSystemStatusText,
+  resolveTrustStatusText,
+  resolveScalingStatusText,
+  resolveExpansionStatusText,
 };

@@ -128,6 +128,10 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
   const volatility = clamp(toFiniteNumber(stock?.volatility, inferVolatility(changePercent)), 0.005, 0.08);
   const marketCap = classifyMarketCap(stock?.marketCap, symbol);
 
+  // Prefer finalConviction (integrationEngine output) as effective score for
+  // allocation/recommendation inferences when available; fall back to hqsScore.
+  const effectiveScore = toFiniteNumber(stock?.finalConviction, null) ?? hqsScore;
+
   const volatilityScore = clamp(Math.round(volatility * 1400), 0, 100);
   const correlationScore = clamp(Math.round(35 + (symbol.charCodeAt(0) % 30) + index * 4), 0, 100);
   const sentimentScore = clamp(Math.round(55 - changePercent * 4), 0, 100);
@@ -160,9 +164,10 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     type: String(stock?.type || meta.type || "Aktie"),
     category: String(stock?.category || meta.category || "Unkategorisiert"),
     marketCap,
-    allocation: String(stock?.allocation || inferAllocation(hqsScore)),
+    allocation: String(stock?.allocation || inferAllocation(effectiveScore)),
     trend: String(stock?.trend || inferTrend(changePercent)),
-    recommendation: String(stock?.recommendation || inferRecommendation(hqsScore)),
+    // Prefer stored recommendation → integrationEngine finalRating → inferred from effectiveScore.
+    recommendation: String(stock?.recommendation || stock?.finalRating || inferRecommendation(effectiveScore)),
     price: toFiniteNumber(stock?.price, 0),
     changePercent,
     hqsScore,
