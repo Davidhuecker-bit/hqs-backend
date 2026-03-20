@@ -347,6 +347,66 @@ async function discoverStocks(limit = DEFAULT_LIMIT) {
   return final;
 }
 
+/**
+ * Reads the most recent discovery picks stored in discovery_history,
+ * enriching them with regime/metrics from market_advanced_metrics + hqs_scores.
+ * Consumers (e.g. dailyBriefing) should call this instead of re-running discoverStocks.
+ *
+ * @param {number} limit - max results (1–25)
+ * @returns {Promise<Array<{symbol,regime,hqsScore,discoveryScore,confidence,reason}>>}
+ */
+async function getLatestDiscoveryPick(limit = 1) {
+  const lim = clamp(Number(limit) || 1, 1, 25);
+  try {
+    const res = await pool.query(
+      `
+      SELECT
+        dh.symbol,
+        dh.discovery_score,
+        dh.created_at,
+        m.regime,
+        m.trend,
+        m.volatility_annual AS volatility,
+        h.hqs_score,
+        h.momentum,
+        h.quality,
+        h.stability,
+        h.relative
+      FROM discovery_history dh
+      LEFT JOIN market_advanced_metrics m ON m.symbol = dh.symbol
+        AND m.updated_at > NOW() - INTERVAL '7 days'
+      LEFT JOIN LATERAL (
+        SELECT hqs_score, momentum, quality, stability, relative
+        FROM hqs_scores
+        WHERE symbol = dh.symbol
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) h ON TRUE
+      WHERE dh.created_at > NOW() - INTERVAL '48 hours'
+      ORDER BY dh.created_at DESC, dh.discovery_score DESC
+      LIMIT $1
+      `,
+      [lim]
+    );
+
+    return (res.rows || []).map((row) => {
+      const discoveryScore = safeNum(row.discovery_score, 0);
+      return {
+        symbol: String(row.symbol || "").toUpperCase(),
+        regime: row.regime ?? null,
+        hqsScore: safeNum(row.hqs_score, 0),
+        discoveryScore,
+        confidence: buildConfidence(row, discoveryScore),
+        reason: generateReason(row),
+      };
+    });
+  } catch (err) {
+    logger.warn("[discovery] getLatestDiscoveryPick failed", { message: err.message });
+    return [];
+  }
+}
+
 module.exports = {
   discoverStocks,
+  getLatestDiscoveryPick,
 };

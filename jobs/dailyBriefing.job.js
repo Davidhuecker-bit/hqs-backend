@@ -16,12 +16,12 @@ const {
 // ✅ OpenAI
 const { generateBriefingText } = require("../services/openai.service");
 
-// ✅ NEW: Discovery (Hidden Winner)
-let discoverStocks = null;
+// Read stored discovery picks (written by discoveryNotify job) – no re-scoring
+let getLatestDiscoveryPick = null;
 try {
-  ({ discoverStocks } = require("../services/discoveryEngine.service"));
+  ({ getLatestDiscoveryPick } = require("../services/discoveryEngine.service"));
 } catch (_) {
-  discoverStocks = null;
+  getLatestDiscoveryPick = null;
 }
 
 function buildFactsFromMarket(stocks) {
@@ -71,11 +71,11 @@ async function runDailyBriefing() {
       return { processedCount: 0, skippedCount: 0 };
     }
 
-    // ✅ Discovery einmalig erzeugen (nicht pro User)
+    // Load stored discovery pick (produced by discoveryNotify job) – DB-first, no re-scoring
     let hiddenWinner = null;
-    if (typeof discoverStocks === "function") {
+    if (typeof getLatestDiscoveryPick === "function") {
       try {
-        const picks = await discoverStocks(1);
+        const picks = await getLatestDiscoveryPick(1);
         hiddenWinner = Array.isArray(picks) && picks[0] ? picks[0] : null;
         if (hiddenWinner) logger.info("Hidden winner pick loaded", { symbol: hiddenWinner.symbol });
       } catch (e) {

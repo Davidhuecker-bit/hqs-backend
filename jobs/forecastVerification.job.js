@@ -12,6 +12,7 @@
   Called from server.js via scheduleDailyForecastVerification().
 */
 
+const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { verifyAgentForecasts } = require("../services/agentForecast.repository");
@@ -24,6 +25,56 @@ const {
   acquireLock,
   initJobLocksTable,
 } = require("../services/jobLock.repository");
+
+// Module-level pool for DB-first price lookups (avoids live API calls when
+// a recent market_snapshots entry is available).
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 2,
+});
+
+/**
+ * Reads the most recent price for a symbol from market_snapshots (last 4 hours).
+ * Returns { price } on success, null when no recent snapshot exists.
+ *
+ * @param {string} symbol
+ * @returns {Promise<{price:number}|null>}
+ */
+async function fetchStoredPrice(symbol) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  if (!sym) return null;
+  try {
+    const res = await pool.query(
+      `SELECT price
+       FROM market_snapshots
+       WHERE symbol = $1
+         AND created_at > NOW() - INTERVAL '4 hours'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [sym]
+    );
+    if (!res.rows.length) return null;
+    const p = Number(res.rows[0].price);
+    return Number.isFinite(p) && p > 0 ? { price: p } : null;
+  } catch (err) {
+    logger.warn("[forecastVerification] fetchStoredPrice failed", { symbol, message: err.message });
+    return null;
+  }
+}
+
+/**
+ * DB-first price lookup: tries market_snapshots first, falls back to live fetchQuote.
+ * Satisfies the DB-first architecture while keeping live fallback for cold starts.
+ *
+ * @param {string} symbol
+ * @returns {Promise<object|null>}
+ */
+async function fetchPriceDbFirst(symbol) {
+  const stored = await fetchStoredPrice(symbol);
+  if (stored) return stored;
+  return fetchQuote(symbol);
+}
 
 /**
  * Verifies all pending agent forecasts that are ≥24 hours old,
@@ -48,7 +99,7 @@ async function runForecastVerificationJob() {
 
     // ── 24-hour agent forecast verification ──────────────────────────────────
     try {
-      verified24h = await verifyAgentForecasts(fetchQuote);
+      verified24h = await verifyAgentForecasts(fetchPriceDbFirst);
       logger.info("forecastVerification: 24h pass done", { verified24h });
     } catch (error) {
       failedCount++;
@@ -61,7 +112,7 @@ async function runForecastVerificationJob() {
       if (due7d.length > 0) {
         for (const row of due7d) {
           try {
-            const quote = await fetchQuote(row.symbol);
+            const quote = await fetchPriceDbFirst(row.symbol);
             const currentPrice =
               quote?.price ??
               quote?.regularMarketPrice ??
