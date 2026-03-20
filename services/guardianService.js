@@ -19,9 +19,6 @@ function getClient() {
 async function analyzeStockWithGuardian(context) {
   const {
     symbol,
-    segment,
-    provider,
-    fallbackUsed,
     marketData,
   } = context;
 
@@ -69,19 +66,16 @@ async function analyzeStockWithGuardian(context) {
   const prompt = `
 Du bist Guardian AI – ein professionelles Finanz-Analyse-System, das auf dem HQS-Framework aufbaut.
 
-Analysiere folgende Marktdaten:
+Erkläre die folgenden finalen Marktdaten:
 
 Symbol: ${symbol}
-Segment: ${segment}
-Provider: ${provider}
-Fallback verwendet: ${fallbackUsed ? "Ja" : "Nein"}
 
 ${contextLines}
 
 Vollständige Rohdaten:
 ${JSON.stringify(marketData, null, 2)}
 
-Erstelle eine strukturierte Analyse mit:
+Erstelle eine strukturierte Erklärung mit:
 
 1. Bewertung: Bullish / Neutral / Bearish (konsistent mit Regime und HQS-Score)
 2. Risiko-Level: Niedrig / Mittel / Hoch

@@ -1,8 +1,8 @@
 "use strict";
 
 // engines/adminRecommendations.engine.js
-// Macht aus Insights, Diagnostics, Validation und Tuning
-// verständliche Admin-Empfehlungen.
+// Konkrete Empfehlungen, Next Actions und Maßnahmen für den Admin.
+// Die breite Executive Summary liegt bei adminBriefing.engine.js.
 //
 // Die vier resolveXxxText-Helfer sind als gemeinsame Wahrheitsquelle
 // exportiert und werden auch von adminBriefing.engine.js genutzt.
@@ -39,18 +39,6 @@ function buildAdminRecommendations({
   validation = {},
   tuning = {},
 } = {}) {
-  const healthBand = diagnostics?.health?.systemHealthBand || "warning";
-  const topBottleneckTitle = diagnostics?.summary?.topBottleneckTitle || "Kein klarer Engpass erkannt";
-  const scale450Allowed = Boolean(diagnostics?.summary?.scale450Allowed);
-  const scale600Allowed = Boolean(diagnostics?.summary?.scale600Allowed);
-  const nextBestExpansion = diagnostics?.summary?.nextBestExpansion || "us_broader_universe";
-  const trustBand = validation?.trust?.overallTrustBand || "thin";
-
-  const systemSummary = resolveSystemStatusText(healthBand);
-  const trustSummary = resolveTrustStatusText(trustBand);
-  const scalingSummary = resolveScalingStatusText(scale600Allowed, scale450Allowed);
-  const expansionSummary = resolveExpansionStatusText(nextBestExpansion);
-
   const nextActions = [];
   const tuningTargets = tuning?.topTuningTargets || [];
   for (const item of tuningTargets.slice(0, 3)) {
@@ -69,23 +57,7 @@ function buildAdminRecommendations({
 
   return {
     generatedAt: new Date().toISOString(),
-
-    executiveSummary: {
-      systemSummary,
-      trustSummary,
-      scalingSummary,
-      expansionSummary,
-      topBottleneckTitle,
-    },
-
-    adminText: [
-      systemSummary,
-      `Der größte aktuelle Engpass ist: ${topBottleneckTitle}.`,
-      trustSummary,
-      scalingSummary,
-      expansionSummary,
-    ].join(" "),
-
+    topBottleneckTitle: diagnostics?.summary?.topBottleneckTitle || "Kein klarer Engpass erkannt",
     nextActions,
     warnings,
     opportunities,
