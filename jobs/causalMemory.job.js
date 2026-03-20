@@ -6,7 +6,7 @@
   Runs periodically to evaluate 48-h-old verified forecasts and adjust
   the dynamic agent weights via causalMemory.repository.adjustAgentWeights().
 
-  Scheduled from server.js via scheduleCausalMemoryJob().
+  Scheduled from server.js via scheduleCausalMemoryRecalibration().
 */
 
 const { runJob } = require("../utils/jobRunner");

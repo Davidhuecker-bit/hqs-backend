@@ -3,7 +3,7 @@
 require("dotenv").config();
 
 const logger = require("../utils/logger");
-const { acquireLock } = require("../services/jobLock.repository");
+const { acquireLock, initJobLocksTable } = require("../services/jobLock.repository");
 const { runJob } = require("../utils/jobRunner");
 const { getMarketData } = require("../services/marketService");
 
@@ -65,6 +65,8 @@ Hinweis: Keine Kauf-/Verkaufsempfehlung. Nur Analyse.
 
 async function runDailyBriefing() {
   return runJob("dailyBriefing", async () => {
+    await initJobLocksTable();
+
     const won = await acquireLock("daily_briefing_job", 15 * 60);
     if (!won) {
       logger.warn("[job:dailyBriefing] skipped – lock held");
