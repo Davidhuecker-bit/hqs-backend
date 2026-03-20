@@ -2,20 +2,30 @@
 
 /*
   Global Market Intelligence Layer
-  Detects market-wide state, sector leadership, and capital flow bias
+
+  Canonical role: Composer / Wrapper
+  - Delegates breadth calculation to capitalFlowEngine (canonical source)
+  - Delegates sector flow detection to capitalFlowEngine (canonical source)
+  - Provides global regime classification (risk_on / risk_off / panic / neutral)
+    using index trend + breadth + volatility — distinct from marketRegimeEngine's
+    per-symbol expansion/bull/neutral/bear/crash vocabulary.
 */
+
+const {
+  calculateMarketBreadth,
+  detectSectorFlows
+} = require("./capitalFlowEngine");
 
 function safe(n, fallback = 0) {
   const v = Number(n);
   return Number.isFinite(v) ? v : fallback;
 }
 
-function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
-}
-
 /* ===============================
-   MARKET REGIME
+   GLOBAL REGIME
+   (risk_on / risk_off / panic / neutral)
+   Distinct from marketRegimeEngine which
+   classifies per-symbol trend regimes.
 ================================ */
 
 function detectGlobalRegime(marketData = {}) {
@@ -51,87 +61,16 @@ function detectGlobalRegime(marketData = {}) {
 }
 
 /* ===============================
-   SECTOR LEADERSHIP
-================================ */
-
-function detectSectorLeadership(sectorData = []) {
-  if (!Array.isArray(sectorData) || !sectorData.length) {
-    return {
-      leaders: [],
-      laggards: []
-    };
-  }
-
-  const sorted = [...sectorData].sort(
-    (a, b) => safe(b.trendStrength) - safe(a.trendStrength)
-  );
-
-  const leaders = sorted.slice(0, 3).map((s) => ({
-    sector: s.sector,
-    trendStrength: safe(s.trendStrength),
-    relativePerformance: safe(s.relativePerformance)
-  }));
-
-  const laggards = sorted.slice(-3).map((s) => ({
-    sector: s.sector,
-    trendStrength: safe(s.trendStrength),
-    relativePerformance: safe(s.relativePerformance)
-  }));
-
-  return {
-    leaders,
-    laggards
-  };
-}
-
-/* ===============================
-   CAPITAL FLOW BIAS
-================================ */
-
-function detectCapitalFlowBias(marketData = {}) {
-  const growthFlow = safe(marketData.growthFlow);
-  const defensiveFlow = safe(marketData.defensiveFlow);
-  const energyFlow = safe(marketData.energyFlow);
-  const techFlow = safe(marketData.techFlow);
-
-  const flows = [
-    { type: "growth", value: growthFlow },
-    { type: "defensive", value: defensiveFlow },
-    { type: "energy", value: energyFlow },
-    { type: "technology", value: techFlow }
-  ].sort((a, b) => b.value - a.value);
-
-  const strongest = flows[0];
-
-  return {
-    bias: strongest?.type || "neutral",
-    strength: clamp(safe(strongest?.value), 0, 1)
-  };
-}
-
-/* ===============================
-   MARKET BREADTH SCORE
-================================ */
-
-function calculateBreadthScore(advancers, decliners) {
-  const a = safe(advancers);
-  const d = safe(decliners);
-
-  const total = a + d;
-  if (!total) return 0.5;
-
-  return clamp(a / total, 0, 1);
-}
-
-/* ===============================
-   INTELLIGENCE SUMMARY
+   INTELLIGENCE SUMMARY (composer)
 ================================ */
 
 function buildGlobalMarketIntelligence({
   marketData = {},
   sectorData = []
 } = {}) {
-  const breadthScore = calculateBreadthScore(
+
+  // Delegate breadth to canonical capitalFlowEngine
+  const breadthScore = calculateMarketBreadth(
     marketData.advancers,
     marketData.decliners
   );
@@ -141,19 +80,18 @@ function buildGlobalMarketIntelligence({
     marketBreadth: breadthScore
   });
 
-  const sectorLeadership = detectSectorLeadership(sectorData);
-
-  const capitalFlow = detectCapitalFlowBias(marketData);
+  // Delegate sector flows to canonical capitalFlowEngine
+  const sectorFlows = detectSectorFlows(sectorData);
 
   return {
     regime: regime.regime,
     regimeLabel: regime.label,
     breadthScore,
-    sectorLeadership,
-    capitalFlow
+    sectorFlows
   };
 }
 
 module.exports = {
   buildGlobalMarketIntelligence
 };
+
