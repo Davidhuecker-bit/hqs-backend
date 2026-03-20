@@ -220,6 +220,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     _degraded: !hasCanonicalFields(stock),
     // Step 4: Personalized portfolio/watchlist context (pass-through from opportunityScanner).
     portfolioContext: stock?.portfolioContext ?? null,
+    // Step 4b: Delta/change context (pass-through from opportunityScanner).
+    deltaContext: stock?.deltaContext ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -232,6 +234,14 @@ function average(values, fallback = 0) {
 }
 
 function buildTopSignals(stocks) {
+  const DELTA_CHANGE_BADGES = {
+    new_signal:               "Neu",
+    gaining_relevance:        "↑ Relevanz",
+    risk_increased:           "⚠ Risiko",
+    losing_conviction:        "↓ Conviction",
+    portfolio_impact_changed: "Portfolio-Impact",
+  };
+
   return stocks
     .slice()
     .sort((left, right) => {
@@ -242,16 +252,21 @@ function buildTopSignals(stocks) {
     })
     .slice(0, 3)
     .map((stock) => {
-      const ctx = stock.portfolioContext ?? null;
-      // Append portfolio-context badge and intelligence label to the signal summary.
-      const ctxBadge = ctx?.portfolioContextLabel ? ` · ${ctx.portfolioContextLabel}` : "";
+      const ctx   = stock.portfolioContext ?? null;
+      const delta = stock.deltaContext     ?? null;
+      // Append portfolio-context badge, intelligence label, and delta badge to summary.
+      const ctxBadge         = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
+      const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
+        ? ` · ${DELTA_CHANGE_BADGES[delta.changeType] || "Änderung"}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}`,
         portfolioContext: ctx,
+        deltaContext: delta,
       };
     });
 }
@@ -310,13 +325,24 @@ function buildPortfolioIntelligenceSummary(stocks) {
     && s.portfolioContext.portfolioRole !== "unknown");
   if (withCtx.length === 0) return null;
 
+  // Delta counts: how many signals changed state since last engine run.
+  const deltaElevated = stocks.filter((s) => s.deltaContext?.deltaPriority === "elevated").length;
+  const deltaCaution  = stocks.filter((s) => s.deltaContext?.deltaPriority === "caution").length;
+  const deltaDegraded = stocks.filter((s) => s.deltaContext?.deltaPriority === "degraded").length;
+
   return {
-    diversifiers:         withCtx.filter((s) => s.portfolioContext.portfolioRole === "diversifier").length,
-    redundant:            withCtx.filter((s) => s.portfolioContext.portfolioRole === "redundant").length,
-    additive:             withCtx.filter((s) => s.portfolioContext.portfolioRole === "additive").length,
-    complement:           withCtx.filter((s) => s.portfolioContext.portfolioRole === "complement").length,
+    diversifiers:          withCtx.filter((s) => s.portfolioContext.portfolioRole === "diversifier").length,
+    redundant:             withCtx.filter((s) => s.portfolioContext.portfolioRole === "redundant").length,
+    additive:              withCtx.filter((s) => s.portfolioContext.portfolioRole === "additive").length,
+    complement:            withCtx.filter((s) => s.portfolioContext.portfolioRole === "complement").length,
     highConcentrationRisk: withCtx.filter((s) => s.portfolioContext.concentrationRisk === "high").length,
-    total:                withCtx.length,
+    total:                 withCtx.length,
+    // Delta summary: count of signals that changed relevance/risk since last run.
+    delta: {
+      elevated: deltaElevated,
+      caution:  deltaCaution,
+      degraded: deltaDegraded,
+    },
   };
 }
 

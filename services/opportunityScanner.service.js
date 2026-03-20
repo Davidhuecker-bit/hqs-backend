@@ -130,6 +130,99 @@ function _portfolioIntelligenceBonus(ctx) {
   return bonus;
 }
 
+// ── Delta/Change Context ──────────────────────────────────────────────────────
+// Small sort-score adjustment based on delta priority.
+// Elevated signals get a gentle nudge up; degraded signals get a nudge down.
+// Kept small (±3) so conviction/portfolio bonuses stay dominant.
+const DELTA_ELEVATED_BONUS   =  2;
+const DELTA_DEGRADED_PENALTY = -3;
+
+function _deltaPriorityBonus(deltaCtx) {
+  if (!deltaCtx) return 0;
+  if (deltaCtx.deltaPriority === "elevated") return DELTA_ELEVATED_BONUS;
+  if (deltaCtx.deltaPriority === "degraded") return DELTA_DEGRADED_PENALTY;
+  return 0;
+}
+
+/**
+ * Compute delta/change context for an opportunity.
+ *
+ * Compares the freshly computed raw market score (_rawScore, from current
+ * market snapshot data) to the last stored conviction value (from
+ * outcome_tracking).  Uses only already-loaded data – no extra DB calls.
+ *
+ * @param {object}      opp     – enriched opportunity (portfolioContext present)
+ * @param {object|null} tracked – persisted outcome record for this symbol
+ * @returns {object}  deltaContext
+ */
+function computeDeltaContext(opp, tracked) {
+  const rawScore      = safeNum(opp._rawScore, safeNum(opp.hqsScore, 0));
+  const prevConviction = tracked ? safeNum(tracked.finalConviction, 0) : null;
+  const hasHistory    = prevConviction !== null && prevConviction > 0;
+  const convictionDelta = hasHistory ? rawScore - prevConviction : 0;
+
+  const portfolioRole      = opp.portfolioContext?.portfolioRole      || "unknown";
+  const concentrationRisk  = opp.portfolioContext?.concentrationRisk  || "none";
+  const robustness         = safeNum(opp.robustnessScore, 0);
+  const signalDir          = opp.signalContext?.signalDirection        || "neutral";
+  const earlySignal        = opp.signalContext?.earlySignalType        || null;
+
+  // NEW: first appearance in the scanner (no prior outcome_tracking record).
+  // Use _rawScore consistently (same source as the convictionDelta comparison).
+  const newToWatch = !hasHistory && rawScore >= 50;
+
+  // GAINING RELEVANCE: raw market score noticeably above last stored conviction,
+  // or bullish signal with early-signal indicator when no prior history.
+  const becameMoreRelevant = hasHistory
+    ? convictionDelta >= 5
+    : (signalDir === "bullish" && earlySignal != null);
+
+  // LOST CONVICTION: raw score fell below stored conviction, or bearish signal.
+  const lostConviction = hasHistory
+    ? convictionDelta <= -5
+    : signalDir === "bearish";
+
+  // BECAME RISKIER: concentration already critical, or score dropped + low robustness.
+  const becameRiskier = concentrationRisk === "high" ||
+    (hasHistory && convictionDelta <= -3 && robustness < 0.45);
+
+  // PORTFOLIO IMPACT CHANGED: watchlist symbol now showing meaningful momentum.
+  // Uses a lower threshold (3 vs 5) than becameMoreRelevant because complement
+  // symbols need less lift to warrant attention.  changeType priority (line 195)
+  // ensures becameMoreRelevant wins when both flags fire simultaneously.
+  const portfolioImpactChanged = portfolioRole === "complement" &&
+    (hasHistory ? convictionDelta >= 3 : signalDir === "bullish");
+
+  // ── changeType: single most important signal ─────────────────────────────
+  let changeType = "stable";
+  if      (newToWatch)            changeType = "new_signal";
+  else if (becameMoreRelevant)    changeType = "gaining_relevance";
+  else if (becameRiskier)         changeType = "risk_increased";
+  else if (lostConviction)        changeType = "losing_conviction";
+  else if (portfolioImpactChanged) changeType = "portfolio_impact_changed";
+
+  // ── deltaPriority: frontend badge tier ───────────────────────────────────
+  let deltaPriority = "stable";
+  if (changeType === "new_signal" || changeType === "gaining_relevance" || changeType === "portfolio_impact_changed") {
+    deltaPriority = "elevated";
+  } else if (changeType === "risk_increased") {
+    deltaPriority = "caution";
+  } else if (changeType === "losing_conviction") {
+    deltaPriority = "degraded";
+  }
+
+  return {
+    changeType,
+    deltaPriority,
+    becameMoreRelevant,
+    becameRiskier,
+    newToWatch,
+    lostConviction,
+    portfolioImpactChanged,
+    _convictionDelta: hasHistory ? Number(convictionDelta.toFixed(1)) : null,
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -788,6 +881,10 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
     robustnessScore,
     antifragile: robustnessScore > STRESS_ANTIFRAGILE_THRESHOLD,
 
+    // _rawScore: fresh market-data score used by computeDeltaContext to derive
+    // conviction delta vs the stored (integrationEngine chain) finalConviction.
+    _rawScore: calculateOpportunityScore(row),
+
     advancedUpdatedAt: row?.advanced_updated_at
       ? new Date(row.advanced_updated_at).toISOString()
       : null,
@@ -892,6 +989,10 @@ function buildFallbackOpportunity(row, tracked = null) {
 
     robustnessScore,
     antifragile: robustnessScore > STRESS_ANTIFRAGILE_THRESHOLD,
+
+    // _rawScore: fresh market-data score (same as opportunityScore here since
+    // fallback always recomputes from row). Used by computeDeltaContext.
+    _rawScore: calculateOpportunityScore(row),
 
     advancedUpdatedAt: row?.advanced_updated_at
       ? new Date(row.advanced_updated_at).toISOString()
@@ -1225,14 +1326,26 @@ async function getTopOpportunities(arg = 10) {
     enrichWithPortfolioContext(o, portfolioCtxMap)
   );
 
-  // Portfolio-intelligence-aware re-sort: diversifiers and low-concentration-risk
-  // candidates get a gentle nudge up; high-concentration-risk candidates get a
-  // gentle nudge down.  Conviction/confidence still dominate; bonus is ±3–5 pts.
-  opportunitiesWithCtx.sort((a, b) => {
+  // ── Step 4b: Delta/Change Context ───────────────────────────────────────
+  // Compute per-symbol change signals using already-loaded outcome_tracking data
+  // (persistedOutcomeBySymbol) and the fresh raw market score (_rawScore).
+  // No extra DB calls. Attaches deltaContext to each opportunity.
+  const opportunitiesWithDelta = opportunitiesWithCtx.map((o) => {
+    const tracked = persistedOutcomeBySymbol?.[o.symbol] || null;
+    return { ...o, deltaContext: computeDeltaContext(o, tracked) };
+  });
+
+  // Portfolio-intelligence + delta-aware re-sort:
+  // diversifiers / elevated delta get gentle nudge up;
+  // high-concentration / degraded delta get gentle nudge down.
+  // Conviction/confidence still dominate; combined bonus is ±3–8 pts.
+  opportunitiesWithDelta.sort((a, b) => {
     const aAdj = safeNum(a.finalConviction, safeNum(a.hqsScore, 0))
-      + _portfolioIntelligenceBonus(a.portfolioContext);
+      + _portfolioIntelligenceBonus(a.portfolioContext)
+      + _deltaPriorityBonus(a.deltaContext);
     const bAdj = safeNum(b.finalConviction, safeNum(b.hqsScore, 0))
-      + _portfolioIntelligenceBonus(b.portfolioContext);
+      + _portfolioIntelligenceBonus(b.portfolioContext)
+      + _deltaPriorityBonus(b.deltaContext);
     if (bAdj !== aAdj) return bAdj - aAdj;
     if (b.finalConfidence !== a.finalConfidence) return b.finalConfidence - a.finalConfidence;
     return safeNum(b.hqsScore, 0) - safeNum(a.hqsScore, 0);
@@ -1312,7 +1425,7 @@ async function getTopOpportunities(arg = 10) {
   // ── Agentic Debate + Guardian Protocol + Insight building ───────────────
   let suppressedCount = 0;
   let debateBlockedCount = 0;
-  const withInsights = await Promise.all(opportunitiesWithCtx.map(async (opp) => {
+  const withInsights = await Promise.all(opportunitiesWithDelta.map(async (opp) => {
     // 1. Meta-Rationale: historical context for this symbol
     let metaRationale = null;
     try {
