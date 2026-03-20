@@ -31,6 +31,9 @@ try {
 // ── Attention level ordering ─────────────────────────────────────────────────
 const ATTENTION_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
+// Step 7 Block 1: Action-Readiness ordering for briefing sort (lower = higher priority).
+const ACTION_READINESS_RANK = { review_required: 0, proposal_ready: 1, monitor_only: 2, insufficient_confidence: 3 };
+
 // Thresholds for stock attention classification based on daily price change and HQS score.
 // A significant DROP (≤ -5%) on a scored stock (≥ 55) triggers a high-attention risk alert.
 // A significant GAIN (≥ +5%) on a strong-score stock (≥ 65) triggers a medium/high alert.
@@ -125,6 +128,25 @@ function _buildOrchLabel(orch) {
   return `, Behandlung: ${orch.deliveryMode}${followUp}`;
 }
 
+/**
+ * Step 7 Block 1: Derive a brief action-readiness tier for a briefing stock from its
+ * already-computed orchestration and attention level. No extra DB calls.
+ *
+ * "review_required" → critical/high escalation signals
+ * "proposal_ready"  → medium escalation + notification-mode delivery
+ * "monitor_only"    → passive/none delivery (default for routine stocks)
+ */
+function _deriveBriefingActionReadiness(stock) {
+  const orch  = stock._orchestration || {};
+  const level = stock._attentionLevel || "low";
+  if (level === "critical" || orch.escalationLevel === "high") return "review_required";
+  if (orch.escalationLevel === "medium" &&
+      (orch.deliveryMode === "briefing_and_notification" || orch.deliveryMode === "notification")) {
+    return "proposal_ready";
+  }
+  return "monitor_only";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -194,8 +216,13 @@ function buildFactsFromMarket(stocks) {
     // Step 5 Follow-up/Reminder: mark review-due follow-up stocks with a brief note
     const followUpLabel = s._orchestration?.followUpNeeded ? " · Wiedervorlage" : "";
 
+    // Step 7 Block 1: include action-readiness when it signals review or proposal (not routine)
+    const arLabel = (s._actionReadiness === "review_required" || s._actionReadiness === "proposal_ready")
+      ? `, Aktionsbereitschaft: ${s._actionReadiness}`
+      : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}.`
     );
   }
   return lines.join("\n");
@@ -301,13 +328,18 @@ async function runDailyBriefing() {
         s._attentionReason = attn.reason;
         // Derive minimal orchestration from attention level for briefing ordering
         s._orchestration = _deriveBriefingOrchestration(s);
+        // Step 7 Block 1: derive action-readiness tier from orchestration + attention
+        s._actionReadiness = _deriveBriefingActionReadiness(s);
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
-      // Secondary sort: attention level rank (critical → high → medium → low)
-      // Tertiary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
+      // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)
+      // Tertiary sort: attention level rank (critical → high → medium → low)
+      // Quaternary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
       stocks.sort((a, b) => {
         const orchDiff = _briefingOrchestrationRank(a, userHasOpenFollowUps) - _briefingOrchestrationRank(b, userHasOpenFollowUps);
         if (orchDiff !== 0) return orchDiff;
+        const arDiff = (ACTION_READINESS_RANK[a._actionReadiness] ?? 3) - (ACTION_READINESS_RANK[b._actionReadiness] ?? 3);
+        if (arDiff !== 0) return arDiff;
         const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
         if (attnDiff !== 0) return attnDiff;
         return _adaptiveBriefingBoost(a, userPreferenceHints) - _adaptiveBriefingBoost(b, userPreferenceHints);
