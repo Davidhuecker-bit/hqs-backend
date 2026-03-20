@@ -755,35 +755,35 @@ router.post("/sector-coherence/notify", (req, res) => {
 router.get("/stress-test", async (req, res) => {
   try {
     const portfolio = await getMockPortfolio();
-    const rows = Array.isArray(portfolio) ? portfolio : (portfolio?.items || []);
+    const rows = Array.isArray(portfolio) ? portfolio : [];
 
     const ranked = rankPortfolioAntifragility(
       rows.map((item) => ({
         symbol: item.symbol,
         snapshot: {
-          hqsScore:    item.hqs_score    ?? item.hqsScore    ?? 0,
-          entryPrice:  item.entry_price  ?? item.entryPrice  ?? 0,
+          hqsScore:    item.hqs_score ?? 0,
+          entryPrice:  item.entry_price ?? 0,
           features: {
             momentum:       item.momentum       ?? 0,
             quality:        item.quality        ?? 0,
             stability:      item.stability      ?? 0,
             relative:       item.relative       ?? 0,
             volatility:     item.volatility     ?? 0,
-            trendStrength:  item.trend_strength ?? item.trendStrength  ?? 0,
-            relativeVolume: item.relative_volume ?? item.relativeVolume ?? 0,
-            liquidityScore: item.liquidity_score ?? item.liquidityScore ?? 0,
+            trendStrength:  item.trend_strength ?? 0,
+            relativeVolume: item.relative_volume ?? 0,
+            liquidityScore: item.liquidity_score ?? 0,
           },
           signalContext: {
-            signalStrength:       item.signal_strength       ?? item.signalStrength       ?? 0,
-            trendScore:           item.trend_score           ?? item.trendScore           ?? 0,
-            signalDirectionScore: item.signal_direction_score ?? item.signalDirectionScore ?? 0,
-            signalConfidence:     item.signal_confidence     ?? item.signalConfidence     ?? 0,
-            buzzScore:            item.buzz_score            ?? item.buzzScore            ?? 50,
-            sentimentScore:       item.sentiment_score       ?? item.sentimentScore       ?? 0,
+            signalStrength:       item.signal_strength       ?? 0,
+            trendScore:           item.trend_score           ?? 0,
+            signalDirectionScore: item.signal_direction_score ?? 0,
+            signalConfidence:     item.signal_confidence     ?? 0,
+            buzzScore:            item.buzz_score            ?? 50,
+            sentimentScore:       item.sentiment_score       ?? 0,
           },
           orchestrator: {
-            opportunityStrength:    item.opportunity_strength    ?? item.opportunityStrength    ?? 0,
-            orchestratorConfidence: item.orchestrator_confidence ?? item.orchestratorConfidence ?? 0,
+            opportunityStrength:    item.opportunity_strength    ?? 0,
+            orchestratorConfidence: item.orchestrator_confidence ?? 0,
           },
         },
       }))

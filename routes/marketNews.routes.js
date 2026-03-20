@@ -219,44 +219,9 @@ router.get("/", async (req, res) => {
       });
     }
 
-    const structured = await getStructuredMarketNewsBySymbols(symbols, limit, {
-      minRelevance,
-      directions,
-    });
+    const payload = await buildNewsResponse(symbols, limit, minRelevance, directions);
 
-    const newsBySymbol = {};
-    let count = 0;
-
-    for (const symbol of symbols) {
-      const bucket = structured?.[symbol] || { items: [], summary: {} };
-      const items = Array.isArray(bucket.items)
-        ? bucket.items
-            .map(formatNewsItem)
-            .sort((a, b) => {
-              const relevanceDiff = extractRelevanceScore(b) - extractRelevanceScore(a);
-              if (relevanceDiff !== 0) return relevanceDiff;
-              return extractPublishedTimestamp(b) - extractPublishedTimestamp(a);
-            })
-        : [];
-      const summary = formatSummary(bucket.summary);
-
-      newsBySymbol[symbol] = {
-        summary,
-        items,
-      };
-
-      count += items.length;
-    }
-
-    return res.json({
-      success: true,
-      symbols,
-      limit,
-      minRelevance,
-      directions,
-      count,
-      newsBySymbol,
-    });
+    return res.json({ success: true, ...payload });
   } catch (error) {
     logger.error("Market news route error", {
       message: error.message,
