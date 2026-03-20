@@ -7,6 +7,9 @@ const {
   listNotifications,
   unreadCount,
   markRead,
+  markSeen,
+  markActed,
+  markDismissed,
   saveDeviceToken,
 } = require("../services/notifications.repository");
 const {
@@ -151,6 +154,68 @@ router.post("/register-device", async (req, res) => {
     }
 
     await saveDeviceToken(userIdResult.value, token, deviceTypeResult.value);
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
+ * ✅ Step 5: Feedback – Mark seen
+ * POST /api/notifications/mark-seen
+ * body: { userId, notificationId }
+ */
+router.post("/mark-seen", async (req, res) => {
+  try {
+    const userIdResult = parseInteger(req.body?.userId, { required: true, min: 1, label: "userId" });
+    if (userIdResult.error) return badRequest(res, userIdResult.error);
+
+    const notificationIdResult = parseInteger(req.body?.notificationId, { required: true, min: 1, label: "notificationId" });
+    if (notificationIdResult.error) return badRequest(res, notificationIdResult.error);
+
+    await markSeen(userIdResult.value, notificationIdResult.value);
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
+ * ✅ Step 5: Feedback – Mark acted
+ * POST /api/notifications/mark-acted
+ * body: { userId, notificationId, responseType? }
+ */
+router.post("/mark-acted", async (req, res) => {
+  try {
+    const userIdResult = parseInteger(req.body?.userId, { required: true, min: 1, label: "userId" });
+    if (userIdResult.error) return badRequest(res, userIdResult.error);
+
+    const notificationIdResult = parseInteger(req.body?.notificationId, { required: true, min: 1, label: "notificationId" });
+    if (notificationIdResult.error) return badRequest(res, notificationIdResult.error);
+
+    const responseType = String(req.body?.responseType || "acted").trim().slice(0, 64) || "acted";
+
+    await markActed(userIdResult.value, notificationIdResult.value, responseType);
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
+ * ✅ Step 5: Feedback – Mark dismissed
+ * POST /api/notifications/mark-dismissed
+ * body: { userId, notificationId }
+ */
+router.post("/mark-dismissed", async (req, res) => {
+  try {
+    const userIdResult = parseInteger(req.body?.userId, { required: true, min: 1, label: "userId" });
+    if (userIdResult.error) return badRequest(res, userIdResult.error);
+
+    const notificationIdResult = parseInteger(req.body?.notificationId, { required: true, min: 1, label: "notificationId" });
+    if (notificationIdResult.error) return badRequest(res, notificationIdResult.error);
+
+    await markDismissed(userIdResult.value, notificationIdResult.value);
     return res.json({ success: true });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });

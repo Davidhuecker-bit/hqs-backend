@@ -87,6 +87,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 5b: read action-orchestration if present (computed by opportunityScanner).
   const actionOrchestration = marketData?.actionOrchestration ?? context?.actionOrchestration ?? null;
 
+  // Step 5: read feedback/reaction context if present (from notification reaction loop).
+  const feedbackContext = marketData?.feedbackContext ?? context?.feedbackContext ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -208,7 +211,43 @@ async function analyzeStockWithGuardian(context) {
   }
   const actionOrchestrationBlock = buildActionOrchestrationBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock]
+  // Step 5: feedback context block – surfaces user reaction signals from the notification loop.
+  // Only added when a concrete reaction is present (acted or dismissed).
+  const FEEDBACK_SIGNAL_LABELS = {
+    positive: "Nutzer hat positiv reagiert (Aktion ausgeführt)",
+    negative: "Nutzer hat Hinweis ignoriert oder abgelehnt",
+    neutral:  "Nutzer hat den Hinweis gesehen, aber nicht reagiert",
+  };
+  const RESPONSE_TYPE_LABELS = {
+    acted:             "Nutzer hat Maßnahme ergriffen",
+    dismissed:         "Nutzer hat Hinweis verworfen",
+    starter_position:  "Nutzer hat Einstiegsposition eröffnet",
+    watchlist_added:   "Nutzer hat Symbol auf Watchlist gesetzt",
+    rebalanced:        "Nutzer hat Rebalancing vorgenommen",
+  };
+  function buildFeedbackBlock() {
+    if (!feedbackContext) return "";
+    const parts = [];
+    if (feedbackContext.feedbackSignal) {
+      parts.push(`Nutzer-Feedback: ${FEEDBACK_SIGNAL_LABELS[feedbackContext.feedbackSignal] || feedbackContext.feedbackSignal}`);
+    }
+    if (feedbackContext.responseType) {
+      parts.push(`Reaktionstyp: ${RESPONSE_TYPE_LABELS[feedbackContext.responseType] || feedbackContext.responseType}`);
+    }
+    if (feedbackContext.actedAt) {
+      parts.push(`Maßnahme am: ${feedbackContext.actedAt}`);
+    }
+    if (feedbackContext.dismissedAt) {
+      parts.push(`Verworfen am: ${feedbackContext.dismissedAt}`);
+    }
+    if (feedbackContext.followUpOutcome) {
+      parts.push(`Follow-up-Outcome: ${feedbackContext.followUpOutcome}`);
+    }
+    return parts.length ? parts.join(" · ") : "";
+  }
+  const feedbackBlock = buildFeedbackBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -261,6 +300,12 @@ Erstelle eine strukturierte Erklärung mit:
    - deliveryMode="passive_briefing" oder "none": erkläre, warum kein aktiver Hinweis nötig ist und nur Beobachtung empfohlen wird
    - followUpNeeded=true: nenne konkret den empfohlenen Nachfolgeschritt und den Zeithorizont
    Wenn keine Action-Orchestration vorhanden, diesen Punkt weglassen.
+9. Nutzer-Reaktion: Falls ein Feedback-Kontext vorhanden ist, erkläre kurz was die Nutzerreaktion bedeutet –
+   - feedbackSignal="positive": Der Nutzer hat auf das Signal reagiert – bewerte ob die Reaktion zum aktuellen Marktbild passt
+   - feedbackSignal="negative": Der Nutzer hat das Signal abgelehnt – prüfe ob die Ablehnung berechtigt war oder ob das Signal trotzdem relevant bleibt
+   - responseType="dismissed": Hinweis wurde verworfen – erkläre, ob das Signal weiterhin beachtet werden sollte
+   - responseType="acted": Nutzer hat Maßnahme ergriffen – bestätige oder korrigiere den Schritt auf Basis aktueller Daten
+   Wenn kein Feedback-Kontext vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

@@ -45,21 +45,36 @@ async function initNotificationTables() {
       reason TEXT,
       action_type TEXT,
       delivery_mode TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
+      created_at TIMESTAMP DEFAULT NOW(),
+      delivered_at TIMESTAMP,
+      seen_at TIMESTAMP,
+      acted_at TIMESTAMP,
+      dismissed_at TIMESTAMP,
+      response_type TEXT,
+      feedback_signal TEXT,
+      follow_up_outcome TEXT
     );
   `);
 
-  // One-time migration: add priority/reason columns to existing notifications tables.
+  // One-time migrations: add columns to existing notifications tables.
   // Safe to re-run – ADD COLUMN IF NOT EXISTS is idempotent on PostgreSQL 9.6+.
   try {
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'normal'`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS reason TEXT`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_type TEXT`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS delivery_mode TEXT`);
+    // Step 5: feedback/reaction columns
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS seen_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS acted_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS dismissed_at TIMESTAMP`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS response_type TEXT`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS feedback_signal TEXT`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS follow_up_outcome TEXT`);
   } catch (migErr) {
     // Warn but continue – migration may fail if columns already exist in some PG versions
     // or due to transient lock issues; table is still usable without these columns.
-    if (logger?.warn) logger.warn("notifications priority columns migration skipped", { message: migErr.message });
+    if (logger?.warn) logger.warn("notifications columns migration skipped", { message: migErr.message });
   }
 
   // tokens für Web Push / spätere App Push
@@ -151,15 +166,16 @@ async function getUserWatchlistSymbols(userId, limit = 200) {
 async function createNotification({ userId, title, body, kind = "daily_briefing", priority = "normal", reason = null, actionType = null, deliveryMode = null }) {
   const res = await pool.query(
     `
-    INSERT INTO notifications(user_id, title, body, kind, priority, reason, action_type, delivery_mode)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-    RETURNING id, created_at
+    INSERT INTO notifications(user_id, title, body, kind, priority, reason, action_type, delivery_mode, delivered_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+    RETURNING id, created_at, delivered_at
     `,
     [userId, title, body, kind, String(priority || "normal"), reason || null, actionType || null, deliveryMode || null]
   );
   return {
     id: res.rows[0].id,
     createdAt: new Date(res.rows[0].created_at).toISOString(),
+    deliveredAt: res.rows[0].delivered_at ? new Date(res.rows[0].delivered_at).toISOString() : null,
   };
 }
 
@@ -374,7 +390,8 @@ async function getUserIdsWithSymbolOnWatchlist(symbol) {
 async function listNotifications(userId, limit = 50) {
   const res = await pool.query(
     `
-    SELECT id, title, body, kind, is_read, priority, reason, action_type, delivery_mode, created_at
+    SELECT id, title, body, kind, is_read, priority, reason, action_type, delivery_mode, created_at,
+           delivered_at, seen_at, acted_at, dismissed_at, response_type, feedback_signal, follow_up_outcome
     FROM notifications
     WHERE user_id = $1
     ORDER BY created_at DESC
@@ -394,6 +411,13 @@ async function listNotifications(userId, limit = 50) {
     actionType: r.action_type || null,
     deliveryMode: r.delivery_mode || null,
     createdAt: new Date(r.created_at).toISOString(),
+    deliveredAt: r.delivered_at ? new Date(r.delivered_at).toISOString() : null,
+    seenAt: r.seen_at ? new Date(r.seen_at).toISOString() : null,
+    actedAt: r.acted_at ? new Date(r.acted_at).toISOString() : null,
+    dismissedAt: r.dismissed_at ? new Date(r.dismissed_at).toISOString() : null,
+    responseType: r.response_type || null,
+    feedbackSignal: r.feedback_signal || null,
+    followUpOutcome: r.follow_up_outcome || null,
   }));
 }
 
@@ -441,6 +465,137 @@ async function getActiveDeviceTokens(userId, limit = 20) {
   return res.rows.map(r => r.fcm_token);
 }
 
+/**
+ * Step 5: Feedback/Reaction layer
+ * markSeen – records when a user first sees/opens a notification.
+ * Also sets is_read=TRUE (seeing implies reading).
+ */
+async function markSeen(userId, notificationId) {
+  const uid = Number(userId);
+  const nid = Number(notificationId);
+  if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(nid) || nid <= 0) return false;
+
+  await pool.query(
+    `UPDATE notifications
+     SET seen_at = COALESCE(seen_at, NOW()), is_read = TRUE
+     WHERE user_id = $1 AND id = $2`,
+    [uid, nid]
+  );
+  return true;
+}
+
+/**
+ * Step 5: Feedback/Reaction layer
+ * markActed – records that the user acted on the notification (positive feedback signal).
+ * responseType: 'acted' | 'starter_position' | 'watchlist_added' | 'rebalanced' (caller-defined)
+ */
+async function markActed(userId, notificationId, responseType = "acted") {
+  const uid = Number(userId);
+  const nid = Number(notificationId);
+  if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(nid) || nid <= 0) return false;
+
+  const rt = String(responseType || "acted").trim().slice(0, 64) || "acted";
+
+  await pool.query(
+    `UPDATE notifications
+     SET acted_at = COALESCE(acted_at, NOW()),
+         response_type = $3,
+         feedback_signal = 'positive',
+         seen_at = COALESCE(seen_at, NOW()),
+         is_read = TRUE
+     WHERE user_id = $1 AND id = $2`,
+    [uid, nid, rt]
+  );
+  return true;
+}
+
+/**
+ * Step 5: Feedback/Reaction layer
+ * markDismissed – records that the user dismissed the notification (negative/neutral feedback signal).
+ */
+async function markDismissed(userId, notificationId) {
+  const uid = Number(userId);
+  const nid = Number(notificationId);
+  if (!Number.isFinite(uid) || uid <= 0 || !Number.isFinite(nid) || nid <= 0) return false;
+
+  await pool.query(
+    `UPDATE notifications
+     SET dismissed_at = COALESCE(dismissed_at, NOW()),
+         response_type = COALESCE(response_type, 'dismissed'),
+         feedback_signal = COALESCE(feedback_signal, 'negative'),
+         seen_at = COALESCE(seen_at, NOW()),
+         is_read = TRUE
+     WHERE user_id = $1 AND id = $2`,
+    [uid, nid]
+  );
+  return true;
+}
+
+/**
+ * Step 5: Feedback/Reaction layer
+ * linkFollowUpOutcome – stores a reference to an outcome_tracking id or result label
+ * so the notification can be connected to its measurable outcome later.
+ */
+async function linkFollowUpOutcome(notificationId, followUpOutcome) {
+  const nid = Number(notificationId);
+  if (!Number.isFinite(nid) || nid <= 0) return false;
+  const outcome = String(followUpOutcome || "").trim().slice(0, 255);
+  if (!outcome) return false;
+
+  await pool.query(
+    `UPDATE notifications SET follow_up_outcome = $2 WHERE id = $1`,
+    [nid, outcome]
+  );
+  return true;
+}
+
+/**
+ * Step 5: Feedback/Reaction layer
+ * getRecentFeedbackSignals – returns aggregated feedback signal counts for a user,
+ * optionally filtered by kind. Used to understand how well a user responds to
+ * different notification types.
+ *
+ * @param {number} userId
+ * @param {object} [opts]
+ * @param {string} [opts.kind]  - filter by notification kind
+ * @param {number} [opts.days=30] - how far back to look
+ * @returns {Promise<{ positive: number, negative: number, neutral: number, noResponse: number, total: number }>}
+ */
+async function getRecentFeedbackSignals(userId, { kind = null, days = 30 } = {}) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return { positive: 0, negative: 0, neutral: 0, noResponse: 0, total: 0 };
+
+  const d = Math.min(Math.max(Number(days) || 30, 1), 365);
+
+  const kindClause = kind ? `AND kind = $3` : "";
+  const params = kind ? [uid, d, String(kind)] : [uid, d];
+
+  const res = await pool.query(
+    `SELECT
+       COUNT(*) AS total,
+       COUNT(CASE WHEN feedback_signal = 'positive' THEN 1 END) AS positive,
+       COUNT(CASE WHEN feedback_signal = 'negative' THEN 1 END) AS negative,
+       COUNT(CASE WHEN feedback_signal = 'neutral'  THEN 1 END) AS neutral,
+       COUNT(CASE WHEN feedback_signal IS NULL AND seen_at IS NOT NULL THEN 1 END) AS seen_no_signal,
+       COUNT(CASE WHEN seen_at IS NULL THEN 1 END) AS unseen
+     FROM notifications
+     WHERE user_id = $1
+       AND created_at >= NOW() - ($2 || ' days')::interval
+       ${kindClause}`,
+    params
+  );
+
+  const row = res.rows?.[0] || {};
+  const total = Number(row.total || 0);
+  const positive = Number(row.positive || 0);
+  const negative = Number(row.negative || 0);
+  const neutral = Number(row.neutral || 0);
+  // noResponse = notifications where no feedback_signal was recorded (seen or unseen)
+  const noResponse = Number(row.seen_no_signal || 0) + Number(row.unseen || 0);
+
+  return { positive, negative, neutral, noResponse, total };
+}
+
 module.exports = {
   initNotificationTables,
   seedDemoUserIfEmpty,
@@ -458,6 +613,12 @@ module.exports = {
   listNotifications,
   unreadCount,
   markRead,
+  markSeen,                              // ✅ Step 5: reaction – seen/opened
+  markActed,                             // ✅ Step 5: reaction – user acted (positive)
+  markDismissed,                         // ✅ Step 5: reaction – user dismissed (negative)
+  linkFollowUpOutcome,                   // ✅ Step 5: link notification to outcome_tracking result
+  getRecentFeedbackSignals,              // ✅ Step 5: aggregate feedback signals per user/kind
+
   saveDeviceToken,
   getActiveDeviceTokens,
 };
