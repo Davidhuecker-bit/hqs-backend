@@ -12,6 +12,7 @@ const {
   getUserWatchlistSymbols,
   createNotificationOncePerDay, // ✅ NEW (anti spam)
   computeUserAttentionLevel,    // ✅ Step 5: attention-level priority
+  computeUserState,             // ✅ Step 5 User-State: consolidated state for briefing prioritization
 } = require("../services/notifications.repository");
 
 // ✅ OpenAI
@@ -111,6 +112,20 @@ function _buildOrchLabel(orch) {
   return `, Behandlung: ${orch.deliveryMode}${followUp}`;
 }
 
+// ── Urgency/priority resolution ─────────────────────────────────────────────
+const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/**
+ * Resolves the effective briefing priority by taking the more urgent of the
+ * stock-level attention and the user-state briefing urgency.
+ * Lower rank = higher urgency.
+ */
+function _resolveEffectivePriority(stateBriefingUrgency, stockAttentionLevel) {
+  const stateRank = URGENCY_RANK[stateBriefingUrgency] ?? 3;
+  const stockRank = URGENCY_RANK[stockAttentionLevel] ?? 3;
+  return stateRank <= stockRank ? stateBriefingUrgency : stockAttentionLevel;
+}
+
 function buildFactsFromMarket(stocks) {
   const lines = [];
   for (const s of stocks) {
@@ -195,6 +210,15 @@ async function runDailyBriefing() {
     try {
       const userId = u.id;
 
+      // Step 5 User-State: load consolidated state for this user (single DB call).
+      // Used to boost briefing priority when there is a critical/high attention backlog.
+      let userState = null;
+      try {
+        userState = await computeUserState(userId);
+      } catch (usErr) {
+        logger.warn("Daily briefing: computeUserState failed (ignored)", { userId, message: usErr.message });
+      }
+
       // 2) Watchlist je User laden
       const wl = await getUserWatchlistSymbols(userId, 50);
       const symbols = wl.map((x) => x.symbol).filter(Boolean);
@@ -235,11 +259,17 @@ async function runDailyBriefing() {
         return (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
       });
 
-      // Derive briefing priority from the highest escalation/attention level found
+      // Derive briefing priority from the highest escalation/attention level found.
+      // Step 5 User-State: if the user has a critical/high urgency backlog, escalate
+      // the briefing priority even when the current stock signals are moderate.
       const topOrch = stocks[0]?._orchestration || {};
       const topAttention = stocks[0]?._attentionLevel || "low";
       const topAttentionReason = stocks[0]?._attentionReason || null;
       const topDeliveryMode = topOrch.deliveryMode || "passive_briefing";
+
+      // Resolve effective priority: user-state urgency may escalate stock-level attention
+      const stateBriefingUrgency = userState?.briefingUrgency || "low";
+      const effectivePriority = _resolveEffectivePriority(stateBriefingUrgency, topAttention);
 
       // 4) Fakten bauen
       const facts = buildFactsFromMarket(stocks);
@@ -263,15 +293,15 @@ async function runDailyBriefing() {
         title,
         body,
         kind: "daily_briefing",
-        priority: topAttention,
-        reason: topAttentionReason,
-        actionType: topOrch.escalationLevel === "high" ? "reduce_risk" : null,
+        priority: effectivePriority,
+        reason: topAttentionReason || userState?.userStateSummary || null,
+        actionType: topOrch.escalationLevel === "high" || stateBriefingUrgency === "critical" ? "reduce_risk" : null,
         deliveryMode: topDeliveryMode,
       });
 
       if (created.inserted) {
         createdCount++;
-        logger.info("Daily briefing created", { userId, deliveryMode: topDeliveryMode });
+        logger.info("Daily briefing created", { userId, deliveryMode: topDeliveryMode, userStateUrgency: stateBriefingUrgency });
       } else {
         alreadyToday++;
         logger.info("Daily briefing skipped (already today)", { userId });

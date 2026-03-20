@@ -469,6 +469,10 @@ function buildGuardianPayload(rawStocks, options = {}) {
   const alerts = buildAlerts(stocks);
   const portfolioIntelligence = buildPortfolioIntelligenceSummary(stocks);
 
+  // Step 5 User-State: include consolidated user-state if provided by caller (e.g. from route handler).
+  // The route handler can preload computeUserState(userId) and pass it here via options.userState.
+  const userState = options.userState ?? null;
+
   return {
     success: true,
     stabilityScore,
@@ -483,6 +487,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     },
     portfolioHealth: buildPortfolioHealth(stocks, stabilityScore),
     portfolioIntelligence,
+    // Step 5 User-State: consolidated user state summary (null when not supplied).
+    userState,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),

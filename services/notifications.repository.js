@@ -550,6 +550,100 @@ async function linkFollowUpOutcome(notificationId, followUpOutcome) {
 }
 
 /**
+ * Step 5 User-State: computeUserState
+ * Derives a first consolidated user-state view from existing notification data.
+ * No new tables, no new schema – reads only from the notifications table.
+ *
+ * Returned fields (all cleanly derivable from existing data):
+ *   openAttentionCount    – critical/high-priority notifications not yet seen (last 7 days)
+ *   criticalAttentionCount – critical-priority notifications not yet seen (last 7 days)
+ *   activeFollowUpCount   – notifications with a linked follow-up outcome that have
+ *                           not been acted on or dismissed yet (last 7 days)
+ *   attentionBacklog      – total unseen notifications (last 7 days)
+ *   lastResponseType      – most recent responseType recorded via markActed (any time)
+ *   briefingUrgency       – derived: 'critical' | 'high' | 'medium' | 'low'
+ *   userStateSummary      – short German label describing the overall user state
+ *
+ * @param {number} userId
+ * @returns {Promise<object|null>}
+ */
+async function computeUserState(userId) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return null;
+
+  const res = await pool.query(
+    `
+    WITH agg AS (
+      SELECT
+        COUNT(*) FILTER (WHERE priority IN ('critical','high') AND seen_at IS NULL) AS open_attention_count,
+        COUNT(*) FILTER (WHERE priority = 'critical' AND seen_at IS NULL)           AS critical_attention_count,
+        COUNT(*) FILTER (
+          WHERE follow_up_outcome IS NOT NULL
+            AND acted_at IS NULL
+            AND dismissed_at IS NULL
+        )                                                                             AS active_follow_up_count,
+        COUNT(*) FILTER (WHERE seen_at IS NULL)                                      AS attention_backlog
+      FROM notifications
+      WHERE user_id = $1
+        AND created_at >= NOW() - INTERVAL '7 days'
+    ),
+    last_act AS (
+      SELECT response_type
+      FROM notifications
+      WHERE user_id = $1 AND acted_at IS NOT NULL
+      ORDER BY acted_at DESC
+      LIMIT 1
+    )
+    SELECT agg.*, last_act.response_type AS last_response_type
+    FROM agg
+    LEFT JOIN last_act ON TRUE
+    `,
+    [uid]
+  );
+
+  const row = res.rows?.[0] || {};
+  const openAttentionCount    = Number(row.open_attention_count    || 0);
+  const criticalAttentionCount = Number(row.critical_attention_count || 0);
+  const activeFollowUpCount   = Number(row.active_follow_up_count   || 0);
+  const attentionBacklog      = Number(row.attention_backlog        || 0);
+  const lastResponseType      = row.last_response_type || null;
+
+  // briefingUrgency – first-match rules, transparent and explainable
+  let briefingUrgency;
+  if (criticalAttentionCount > 0) {
+    briefingUrgency = "critical";
+  } else if (openAttentionCount > 0 || activeFollowUpCount > 1) {
+    briefingUrgency = "high";
+  } else if (activeFollowUpCount > 0 || attentionBacklog > 3) {
+    briefingUrgency = "medium";
+  } else {
+    briefingUrgency = "low";
+  }
+
+  // userStateSummary – short German label for frontend/guardian display
+  let userStateSummary;
+  if (briefingUrgency === "critical") {
+    userStateSummary = "Kritischer Aufmerksamkeitsbedarf: sofortige Prüfung empfohlen";
+  } else if (briefingUrgency === "high") {
+    userStateSummary = `${openAttentionCount} Aufmerksamkeitssignal(e) offen – Briefing priorisiert`;
+  } else if (briefingUrgency === "medium") {
+    userStateSummary = "Moderater Rückstand – reguläres Briefing ausreichend";
+  } else {
+    userStateSummary = "Kein akuter Handlungsbedarf";
+  }
+
+  return {
+    openAttentionCount,
+    criticalAttentionCount,
+    activeFollowUpCount,
+    attentionBacklog,
+    lastResponseType,
+    briefingUrgency,
+    userStateSummary,
+  };
+}
+
+/**
  * Step 5: Feedback/Reaction layer
  * getRecentFeedbackSignals – returns aggregated feedback signal counts for a user,
  * optionally filtered by kind. Used to understand how well a user responds to
@@ -604,6 +698,7 @@ module.exports = {
   getUserIdsWithSymbolOnWatchlist,   // ✅ Step 5: batch watchlist check for discovery notify
 
   computeUserAttentionLevel,             // ✅ Step 5: user attention logic
+  computeUserState,                      // ✅ Step 5 User-State: consolidated user state from notification data
 
   createNotification,
   createNotificationOncePerDay,          // ✅ accepts priority/reason
