@@ -13,6 +13,7 @@ const {
   createDiscoveryNotification,
   linkFollowUpOutcome,
   computeUserState,
+  getReminderEligibleNotifications,
 } = require("../services/notifications.repository");
 
 /**
@@ -37,6 +38,9 @@ function _derivePickOrchestration(pick, onWatchlist) {
   }
   return { deliveryMode: "none", escalationLevel: "none", followUpNeeded: false };
 }
+
+// Step 5 Follow-up/Reminder: max open reminder-eligible notifications before gating new delivery
+const MAX_OPEN_REMINDERS_THRESHOLD = 3;
 
 async function runDiscoveryNotify() {
   return runJob("discoveryNotify", async () => {
@@ -105,6 +109,20 @@ async function runDiscoveryNotify() {
           } catch (stateErr) {
             // Non-fatal: proceed with delivery if state check fails
             logger.warn("discoveryNotify: computeUserState failed (ignored)", { userId, message: stateErr.message });
+          }
+
+          // Step 5 Follow-up/Reminder: skip new discovery notification when the user
+          // already has ≥3 open reminder-eligible notifications – they should resolve
+          // existing follow-ups before receiving more. High-escalation bypasses this.
+          try {
+            const reminders = await getReminderEligibleNotifications(userId, MAX_OPEN_REMINDERS_THRESHOLD);
+            if (reminders.length >= MAX_OPEN_REMINDERS_THRESHOLD) {
+              gatedOut++;
+              logger.info("discoveryNotify: user gated (open follow-ups)", { userId, openReminders: reminders.length });
+              continue;
+            }
+          } catch (reminderErr) {
+            logger.warn("discoveryNotify: getReminderEligibleNotifications failed (ignored)", { userId, message: reminderErr.message });
           }
         }
 

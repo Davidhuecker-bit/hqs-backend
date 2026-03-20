@@ -90,6 +90,10 @@ async function analyzeStockWithGuardian(context) {
   // Step 5: read feedback/reaction context if present (from notification reaction loop).
   const feedbackContext = marketData?.feedbackContext ?? context?.feedbackContext ?? null;
 
+  // Step 5 Follow-up/Reminder: read follow-up/reminder context if present.
+  // Passed through from the caller (route/orchestrator) alongside actionOrchestration.
+  const followUpContext = marketData?.followUpContext ?? context?.followUpContext ?? null;
+
   // Step 5 User-State: read consolidated user state if present (pass-through from route/caller).
   const userState = marketData?.userState ?? context?.userState ?? null;
 
@@ -282,7 +286,46 @@ async function analyzeStockWithGuardian(context) {
   }
   const userStateBlock = buildUserStateBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock]
+  // Step 5 Follow-up/Reminder: surfaces follow-up/reminder status for Guardian context.
+  // Explains why a reminder is due, what action is expected, and when the review window closes.
+  const FOLLOW_UP_STATUS_LABELS = {
+    overdue:  "Überfällig – Nutzer hat noch nicht reagiert",
+    pending:  "Ausstehend – Wiedervorlage geplant",
+    closed:   "Abgeschlossen – Nutzeraktion erfolgt oder verworfen",
+    none:     "Kein aktiver Follow-up",
+  };
+  const REMINDER_WINDOW_LABELS = {
+    immediate: "sofort (< 2 Stunden)",
+    short:     "kurzfristig (< 8 Stunden)",
+    medium:    "mittelfristig (< 24 Stunden)",
+    long:      "langfristig (> 24 Stunden)",
+  };
+  function buildFollowUpBlock() {
+    if (!followUpContext) return "";
+    const parts = [];
+    if (followUpContext.followUpStatus) {
+      parts.push(`Follow-up-Status: ${FOLLOW_UP_STATUS_LABELS[followUpContext.followUpStatus] || followUpContext.followUpStatus}`);
+    }
+    if (followUpContext.reminderEligible) {
+      parts.push(`Wiedervorlage: ${followUpContext.reminderReason || "ja"}`);
+    }
+    if (followUpContext.reminderWindow) {
+      parts.push(`Erinnerungsfenster: ${REMINDER_WINDOW_LABELS[followUpContext.reminderWindow] || followUpContext.reminderWindow}`);
+    }
+    if (followUpContext.reviewDue) {
+      parts.push("Prüfung fällig: Signal wartet auf Nutzerreaktion");
+    }
+    if (followUpContext.needsClosure) {
+      parts.push("Abschluss empfohlen: Follow-up wurde bearbeitet, Thema kann geschlossen werden");
+    }
+    if (followUpContext.reminderAt) {
+      parts.push(`Nächste Erinnerung: ${followUpContext.reminderAt}`);
+    }
+    return parts.length ? parts.join(" · ") : "";
+  }
+  const followUpBlock = buildFollowUpBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -347,6 +390,14 @@ Erstelle eine strukturierte Erklärung mit:
    - briefingUrgency="medium": Moderater Rückstand – reguläre Bearbeitung reicht aus
    - briefingUrgency="low": Kein akuter Bedarf – normales Monitoring
    Wenn kein Nutzer-Zustand vorhanden, diesen Punkt weglassen.
+11. Wiedervorlage / Follow-up: Falls ein Follow-up-Kontext vorhanden ist, erkläre kurz die Einordnung –
+   - followUpStatus="overdue": Das Signal ist überfällig – der Nutzer hat noch nicht reagiert. Erkläre, warum dieses Thema erneut aufgegriffen werden muss und was die empfohlene Maßnahme ist.
+   - followUpStatus="pending": Eine Wiedervorlage ist geplant. Erkläre, warum das Thema noch nicht abgeschlossen ist und wann die nächste Prüfung sinnvoll ist.
+   - followUpStatus="closed": Das Follow-up wurde bearbeitet. Bestätige, dass das Thema abgeschlossen werden kann oder ob es weiterhin beobachtet werden sollte.
+   - reviewDue=true: Die Prüffrist ist erreicht – erkläre, welcher konkrete nächste Schritt jetzt erforderlich ist.
+   - needsClosure=true: Das Follow-up wurde vom Nutzer bearbeitet und kann formal abgeschlossen werden.
+   - reminderEligible=true: Erkläre kurz, warum eine Erinnerung sinnvoll ist (z.B. ungesehenes Signal, offener Outcome-Link).
+   Wenn kein Follow-up-Kontext vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

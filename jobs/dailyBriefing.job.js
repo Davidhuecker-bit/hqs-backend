@@ -13,6 +13,7 @@ const {
   createNotificationOncePerDay, // ✅ NEW (anti spam)
   computeUserAttentionLevel,    // ✅ Step 5: attention-level priority
   computeUserState,             // ✅ Step 5 User-State: consolidated state for briefing prioritization
+  getOpenFollowUps,             // ✅ Step 5 Follow-up: open follow-ups for review-due boost
 } = require("../services/notifications.repository");
 
 // ✅ OpenAI
@@ -86,19 +87,30 @@ function _deriveBriefingOrchestration(stock) {
 /**
  * Sort value for briefing order using Action-Orchestration.
  * Lower = higher priority (appears first in briefing).
- *   0 – high escalation + follow-up needed (critical risk)
- *   1 – high escalation (high attention)
- *   2 – medium escalation + follow-up (portfolio/risk change)
- *   3 – medium escalation
- *   4 – attention-based fallback (low/none escalation)
+ *   0 – review-due follow-up + high escalation (highest urgency)
+ *   1 – review-due follow-up + medium escalation
+ *   2 – high escalation + follow-up needed (critical risk)
+ *   3 – high escalation
+ *   4 – medium escalation + follow-up (portfolio/risk change)
+ *   5 – medium escalation
+ *   6 – attention-based fallback (low/none escalation)
+ *
+ * @param {object} stock
+ * @param {boolean} [userHasOpenFollowUps=false] – true when user has unresolved follow-ups
  */
-function _briefingOrchestrationRank(stock) {
+function _briefingOrchestrationRank(stock, userHasOpenFollowUps = false) {
   const orch = stock._orchestration || {};
-  if (orch.escalationLevel === "high" && orch.followUpNeeded) return 0;
-  if (orch.escalationLevel === "high") return 1;
-  if (orch.escalationLevel === "medium" && orch.followUpNeeded) return 2;
-  if (orch.escalationLevel === "medium") return 3;
-  return 4;
+  // Review-due follow-ups rank highest when the user has open follow-ups to resolve
+  if (userHasOpenFollowUps && orch.followUpNeeded) {
+    if (orch.escalationLevel === "high") return 0;
+    if (orch.escalationLevel === "medium") return 1;
+    return 2;
+  }
+  if (orch.escalationLevel === "high" && orch.followUpNeeded) return 2;
+  if (orch.escalationLevel === "high") return 3;
+  if (orch.escalationLevel === "medium" && orch.followUpNeeded) return 4;
+  if (orch.escalationLevel === "medium") return 5;
+  return 6;
 }
 
 /**
@@ -147,8 +159,11 @@ function buildFactsFromMarket(stocks) {
     // Include orchestration hint when actionable (not passive/none)
     const orchLabel = _buildOrchLabel(s._orchestration);
 
+    // Step 5 Follow-up/Reminder: mark review-due follow-up stocks with a brief note
+    const followUpLabel = s._orchestration?.followUpNeeded ? " · Wiedervorlage" : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}.`
     );
   }
   return lines.join("\n");
@@ -219,6 +234,10 @@ async function runDailyBriefing() {
         logger.warn("Daily briefing: computeUserState failed (ignored)", { userId, message: usErr.message });
       }
 
+      // Step 5 Follow-up/Reminder: load count of open follow-ups for sort-order boost.
+      // Uses activeFollowUpCount from userState (no extra DB round-trip).
+      const userHasOpenFollowUps = (userState?.activeFollowUpCount ?? 0) > 0;
+
       // 2) Watchlist je User laden
       const wl = await getUserWatchlistSymbols(userId, 50);
       const symbols = wl.map((x) => x.symbol).filter(Boolean);
@@ -251,10 +270,10 @@ async function runDailyBriefing() {
         // Derive minimal orchestration from attention level for briefing ordering
         s._orchestration = _deriveBriefingOrchestration(s);
       }
-      // Primary sort: orchestration rank (escalation/follow-up urgency)
+      // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: attention level rank (critical → high → medium → low)
       stocks.sort((a, b) => {
-        const orchDiff = _briefingOrchestrationRank(a) - _briefingOrchestrationRank(b);
+        const orchDiff = _briefingOrchestrationRank(a, userHasOpenFollowUps) - _briefingOrchestrationRank(b, userHasOpenFollowUps);
         if (orchDiff !== 0) return orchDiff;
         return (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
       });
