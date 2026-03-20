@@ -90,6 +90,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 5: read feedback/reaction context if present (from notification reaction loop).
   const feedbackContext = marketData?.feedbackContext ?? context?.feedbackContext ?? null;
 
+  // Step 5 User-State: read consolidated user state if present (pass-through from route/caller).
+  const userState = marketData?.userState ?? context?.userState ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -247,7 +250,39 @@ async function analyzeStockWithGuardian(context) {
   }
   const feedbackBlock = buildFeedbackBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock]
+  // Step 5 User-State: surfaces consolidated user state for Guardian context.
+  // Only added when userState is present and has a meaningful urgency level.
+  const URGENCY_LABELS = {
+    critical: "Kritisch",
+    high:     "Hoch",
+    medium:   "Mittel",
+    low:      "Niedrig",
+  };
+  function buildUserStateBlock() {
+    if (!userState) return "";
+    const urgencyLabel = URGENCY_LABELS[userState.briefingUrgency] || userState.briefingUrgency;
+    const parts = [
+      `Nutzer-Gesamtzustand: ${userState.userStateSummary}`,
+      `(Briefing-Dringlichkeit: ${urgencyLabel}`,
+    ];
+    if (userState.openAttentionCount > 0) {
+      parts.push(`, offene Aufmerksamkeitssignale: ${userState.openAttentionCount}`);
+    }
+    if (userState.activeFollowUpCount > 0) {
+      parts.push(`, aktive Follow-ups: ${userState.activeFollowUpCount}`);
+    }
+    if (userState.attentionBacklog > 0) {
+      parts.push(`, ungesehene Meldungen: ${userState.attentionBacklog}`);
+    }
+    if (userState.lastResponseType) {
+      parts.push(`, letzte Nutzerreaktion: ${userState.lastResponseType}`);
+    }
+    parts.push(")");
+    return parts.join("");
+  }
+  const userStateBlock = buildUserStateBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -306,6 +341,12 @@ Erstelle eine strukturierte Erklärung mit:
    - responseType="dismissed": Hinweis wurde verworfen – erkläre, ob das Signal weiterhin beachtet werden sollte
    - responseType="acted": Nutzer hat Maßnahme ergriffen – bestätige oder korrigiere den Schritt auf Basis aktueller Daten
    Wenn kein Feedback-Kontext vorhanden, diesen Punkt weglassen.
+10. Nutzer-Gesamtzustand: Falls ein konsolidierter Nutzer-Zustand vorhanden ist, ordne diesen kurz ein –
+   - briefingUrgency="critical": Der Nutzer hat kritische offene Signale – priorisiere sofortigen Handlungsbedarf
+   - briefingUrgency="high": Der Nutzer hat mehrere offene Aufmerksamkeitssignale – betone Dringlichkeit im Briefing
+   - briefingUrgency="medium": Moderater Rückstand – reguläre Bearbeitung reicht aus
+   - briefingUrgency="low": Kein akuter Bedarf – normales Monitoring
+   Wenn kein Nutzer-Zustand vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

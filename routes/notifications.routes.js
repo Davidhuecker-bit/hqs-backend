@@ -11,6 +11,7 @@ const {
   markActed,
   markDismissed,
   saveDeviceToken,
+  computeUserState,
 } = require("../services/notifications.repository");
 const {
   badRequest,
@@ -155,6 +156,33 @@ router.post("/register-device", async (req, res) => {
 
     await saveDeviceToken(userIdResult.value, token, deviceTypeResult.value);
     return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
+ * ✅ Step 5 User-State: Consolidated user state
+ * GET /api/notifications/user-state?userId=1
+ * Returns the consolidated user state derived from notification/attention/reaction data.
+ */
+router.get("/user-state", async (req, res) => {
+  try {
+    const userIdResult = parseInteger(req.query.userId, {
+      required: true,
+      min: 1,
+      label: "userId",
+    });
+    if (userIdResult.error) {
+      return badRequest(res, userIdResult.error);
+    }
+
+    const state = await computeUserState(userIdResult.value);
+    if (!state) {
+      return badRequest(res, "userId is invalid");
+    }
+
+    return res.json({ success: true, userState: state });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }

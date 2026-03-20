@@ -12,6 +12,7 @@ const {
   getUserIdsWithSymbolOnWatchlist,
   createDiscoveryNotification,
   linkFollowUpOutcome,
+  computeUserState,
 } = require("../services/notifications.repository");
 
 /**
@@ -88,6 +89,23 @@ async function runDiscoveryNotify() {
         if (orchestration.deliveryMode === "none") {
           gatedOut++;
           continue;
+        }
+
+        // Step 5 User-State: skip discovery notification when user already has a large
+        // attention backlog (≥5 unseen) AND pick is not high-escalation – prevents spam
+        // for users who are not engaging with notifications.
+        if (orchestration.escalationLevel !== "high") {
+          try {
+            const state = await computeUserState(userId);
+            if (state && state.attentionBacklog >= 5) {
+              gatedOut++;
+              logger.info("discoveryNotify: user gated (attention backlog)", { userId, attentionBacklog: state.attentionBacklog });
+              continue;
+            }
+          } catch (stateErr) {
+            // Non-fatal: proceed with delivery if state check fails
+            logger.warn("discoveryNotify: computeUserState failed (ignored)", { userId, message: stateErr.message });
+          }
         }
 
         const r = await createDiscoveryNotification({ userId, pick, onWatchlist });
