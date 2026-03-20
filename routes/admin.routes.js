@@ -74,6 +74,21 @@ const {
   detectSisRegression,
   detectSisImprovement,
 } = require("../services/sisHistory.service");
+const { buildMarketSnapshot, getPipelineStatusWithPersistence } = require("../services/marketService");
+const { runTableHealthCheck } = require("../services/tableHealth.service");
+const {
+  collectAndStoreMarketNews,
+  normalizeSymbols,
+} = require("../services/marketNews.service");
+const { badRequest, parseInteger } = require("../utils/requestValidation");
+const {
+  getSignalHistoryAll,
+  getSignalHistoryBySymbol,
+  getOutcomeAnalysis,
+  getTimingQuality,
+  getForecastVsOutcome,
+  getSignalKPIs,
+} = require("../services/signalHistory.repository");
 
 const router = express.Router();
 
@@ -1397,8 +1412,6 @@ router.get("/interface-state", async (req, res) => {
    survive Railway restarts.
 ========================================================= */
 
-const { getPipelineStatus, getPipelineStatusWithPersistence } = require("../services/marketService");
-
 router.get("/pipeline-status", async (req, res) => {
   try {
     const raw = await getPipelineStatusWithPersistence();
@@ -1432,8 +1445,6 @@ router.get("/pipeline-status", async (req, res) => {
    Returns green/yellow/red status for the 8 admin-relevant tables.
 ========================================================= */
 
-const { runTableHealthCheck } = require("../services/tableHealth.service");
-
 router.get("/table-health", async (req, res) => {
   try {
     const report = await runTableHealthCheck();
@@ -1461,6 +1472,59 @@ router.get("/table-health", async (req, res) => {
       tables: [],
       error:  error.message,
     });
+  }
+});
+
+/* =========================================================
+   SNAPSHOT TRIGGER
+   POST /api/admin/snapshot
+   Triggers a full market snapshot build.
+========================================================= */
+
+router.post("/snapshot", async (_req, res) => {
+  try {
+    const result = await buildMarketSnapshot();
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("Admin snapshot route error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      message: "Snapshot-Erstellung fehlgeschlagen",
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
+   MARKET NEWS COLLECT
+   POST /api/admin/market-news/collect
+   Collects and stores market news for given symbols.
+========================================================= */
+
+router.post("/market-news/collect", async (req, res) => {
+  try {
+    const limitResult = parseInteger(req.body?.limit, {
+      defaultValue: 10,
+      min: 1,
+      max: 200,
+      label: "limit",
+    });
+    if (limitResult.error) {
+      return badRequest(res, limitResult.error);
+    }
+
+    const symbolsInput = Array.isArray(req.body?.symbols) ? req.body.symbols : [];
+    const symbols = normalizeSymbols(symbolsInput);
+
+    const result = await collectAndStoreMarketNews({
+      limit: limitResult.value,
+      symbols,
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("Admin market-news/collect route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -1573,15 +1637,6 @@ router.post("/virtual-positions/sync", async (req, res) => {
    guardian_near_miss).  No mock data.  All responses carry
    a _meta block with dataStatus (full|partial|empty).
 ========================================================= */
-
-const {
-  getSignalHistoryAll,
-  getSignalHistoryBySymbol,
-  getOutcomeAnalysis,
-  getTimingQuality,
-  getForecastVsOutcome,
-  getSignalKPIs,
-} = require("../services/signalHistory.repository");
 
 /* ─────────────────────────────────────────────────────────
  * GET /api/admin/signal-history
