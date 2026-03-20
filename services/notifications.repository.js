@@ -643,6 +643,206 @@ async function computeUserState(userId) {
   };
 }
 
+// ── Step 5 Follow-up / Reminder layer ────────────────────────────────────────
+
+/**
+ * computeFollowUpStatus – pure function, no DB.
+ * Derives follow-up/reminder status from existing notification fields.
+ *
+ * Inputs (subset of a notification row):
+ *   priority, followUpOutcome, seenAt, actedAt, dismissedAt, createdAt
+ *
+ * Returned fields:
+ *   followUpStatus   – 'overdue' | 'pending' | 'closed' | 'none'
+ *   reminderEligible – boolean
+ *   reminderReason   – short German reason string | null
+ *   reminderAt       – ISO timestamp estimate for when to remind | null
+ *   reviewDue        – boolean – notification is old enough to warrant review
+ *   reminderWindow   – 'immediate' | 'short' | 'medium' | 'long' | null
+ *   needsClosure     – boolean – acted/dismissed with a linked outcome → can close
+ */
+function computeFollowUpStatus({
+  priority = "normal",
+  followUpOutcome = null,
+  seenAt = null,
+  actedAt = null,
+  dismissedAt = null,
+  createdAt = null,
+} = {}) {
+  const now = Date.now();
+  const createdMs = createdAt ? new Date(createdAt).getTime() : now;
+  const ageHours = (now - createdMs) / (1000 * 60 * 60);
+
+  const isClosed = !!(actedAt || dismissedAt);
+  const isSeen = !!seenAt;
+  const hasLinkedOutcome = !!followUpOutcome;
+
+  // needsClosure: has a linked outcome and was already acted/dismissed
+  const needsClosure = isClosed && hasLinkedOutcome;
+
+  // reviewDue: old enough to warrant attention but not yet resolved
+  const reviewDue =
+    !isClosed &&
+    (
+      (priority === "critical" && ageHours >= 2) ||
+      (priority === "high" && ageHours >= 8) ||
+      ageHours >= 24
+    );
+
+  // reminderEligible rules (first match):
+  let reminderEligible = false;
+  let reminderReason   = null;
+  let reminderWindow   = null;
+
+  if (!isClosed) {
+    if (hasLinkedOutcome) {
+      reminderEligible = true;
+      reminderReason   = "Offenes Follow-up ohne Nutzeraktion";
+      reminderWindow   = priority === "critical" ? "immediate" : priority === "high" ? "short" : "medium";
+    } else if ((priority === "critical" || priority === "high") && !isSeen && ageHours >= 4) {
+      reminderEligible = true;
+      reminderReason   = "Hohes Signal ohne Lesebestätigung";
+      reminderWindow   = priority === "critical" ? "immediate" : "short";
+    } else if (!isSeen && ageHours >= 24) {
+      reminderEligible = true;
+      reminderReason   = "Signal ungelesen – Wiedervorlage";
+      reminderWindow   = "medium";
+    }
+  }
+
+  // followUpStatus
+  let followUpStatus = "none";
+  if (isClosed) {
+    followUpStatus = "closed";
+  } else if (reminderEligible && reviewDue) {
+    followUpStatus = "overdue";
+  } else if (reminderEligible) {
+    followUpStatus = "pending";
+  }
+
+  // reminderAt: estimated from reminder window offset
+  const REMINDER_DELAY_HOURS = { immediate: 2, short: 8, medium: 24, long: 72 };
+  const reminderAt = reminderEligible
+    ? new Date(createdMs + (REMINDER_DELAY_HOURS[reminderWindow] || 24) * 3600 * 1000).toISOString()
+    : null;
+
+  return { followUpStatus, reminderEligible, reminderReason, reminderAt, reviewDue, reminderWindow, needsClosure };
+}
+
+/**
+ * getOpenFollowUps – notifications with a linked follow_up_outcome that have not
+ * been acted on or dismissed (last 14 days). Ordered by priority then age.
+ *
+ * @param {number} userId
+ * @param {number} [limit=20]
+ * @returns {Promise<object[]>}
+ */
+async function getOpenFollowUps(userId, limit = 20) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return [];
+
+  const res = await pool.query(
+    `SELECT id, title, kind, priority, reason, action_type, delivery_mode,
+            created_at, seen_at, acted_at, dismissed_at,
+            response_type, feedback_signal, follow_up_outcome
+     FROM notifications
+     WHERE user_id = $1
+       AND follow_up_outcome IS NOT NULL
+       AND acted_at IS NULL
+       AND dismissed_at IS NULL
+       AND created_at >= NOW() - INTERVAL '14 days'
+     ORDER BY
+       CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+       created_at ASC
+     LIMIT $2`,
+    [uid, Math.min(Number(limit) || 20, 100)]
+  );
+
+  return res.rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    kind: r.kind,
+    priority: r.priority || "normal",
+    reason: r.reason || null,
+    actionType: r.action_type || null,
+    deliveryMode: r.delivery_mode || null,
+    createdAt: new Date(r.created_at).toISOString(),
+    seenAt: r.seen_at ? new Date(r.seen_at).toISOString() : null,
+    actedAt: r.acted_at ? new Date(r.acted_at).toISOString() : null,
+    dismissedAt: r.dismissed_at ? new Date(r.dismissed_at).toISOString() : null,
+    responseType: r.response_type || null,
+    feedbackSignal: r.feedback_signal || null,
+    followUpOutcome: r.follow_up_outcome,
+    ...computeFollowUpStatus({
+      priority: r.priority,
+      followUpOutcome: r.follow_up_outcome,
+      seenAt: r.seen_at,
+      actedAt: r.acted_at,
+      dismissedAt: r.dismissed_at,
+      createdAt: new Date(r.created_at).toISOString(),
+    }),
+  }));
+}
+
+/**
+ * getReminderEligibleNotifications – notifications that qualify for a reminder.
+ * Includes:
+ *   - follow_up_outcome-linked but not acted/dismissed
+ *   - high/critical unseen after 4 hours
+ *   - any priority unseen after 24 hours
+ * Defensive: limited to last 7 days, max 10 results.
+ *
+ * @param {number} userId
+ * @param {number} [limit=10]
+ * @returns {Promise<object[]>}
+ */
+async function getReminderEligibleNotifications(userId, limit = 10) {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return [];
+
+  const res = await pool.query(
+    `SELECT id, title, kind, priority, reason, action_type, delivery_mode,
+            created_at, seen_at, acted_at, dismissed_at,
+            response_type, feedback_signal, follow_up_outcome
+     FROM notifications
+     WHERE user_id = $1
+       AND acted_at IS NULL
+       AND dismissed_at IS NULL
+       AND created_at >= NOW() - INTERVAL '7 days'
+       AND (
+         (follow_up_outcome IS NOT NULL)
+         OR (priority IN ('critical','high') AND seen_at IS NULL AND created_at <= NOW() - INTERVAL '4 hours')
+         OR (seen_at IS NULL AND created_at <= NOW() - INTERVAL '24 hours')
+       )
+     ORDER BY
+       CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END ASC,
+       created_at ASC
+     LIMIT $2`,
+    [uid, Math.min(Number(limit) || 10, 50)]
+  );
+
+  return res.rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    kind: r.kind,
+    priority: r.priority || "normal",
+    reason: r.reason || null,
+    actionType: r.action_type || null,
+    deliveryMode: r.delivery_mode || null,
+    createdAt: new Date(r.created_at).toISOString(),
+    seenAt: r.seen_at ? new Date(r.seen_at).toISOString() : null,
+    followUpOutcome: r.follow_up_outcome || null,
+    ...computeFollowUpStatus({
+      priority: r.priority,
+      followUpOutcome: r.follow_up_outcome,
+      seenAt: r.seen_at,
+      actedAt: r.acted_at,
+      dismissedAt: r.dismissed_at,
+      createdAt: new Date(r.created_at).toISOString(),
+    }),
+  }));
+}
+
 /**
  * Step 5: Feedback/Reaction layer
  * getRecentFeedbackSignals – returns aggregated feedback signal counts for a user,
@@ -713,6 +913,11 @@ module.exports = {
   markDismissed,                         // ✅ Step 5: reaction – user dismissed (negative)
   linkFollowUpOutcome,                   // ✅ Step 5: link notification to outcome_tracking result
   getRecentFeedbackSignals,              // ✅ Step 5: aggregate feedback signals per user/kind
+
+  // ✅ Step 5 Follow-up/Reminder
+  computeFollowUpStatus,                 // pure – derives follow-up/reminder status from notification fields
+  getOpenFollowUps,                      // DB – notifications with open follow_up_outcome
+  getReminderEligibleNotifications,      // DB – notifications that qualify for a reminder push
 
   saveDeviceToken,
   getActiveDeviceTokens,

@@ -231,6 +231,9 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     actionOrchestration: stock?.actionOrchestration ?? null,
     // Step 5: Feedback/Reaction context – if the stock was part of a notification, surface its reaction signals.
     feedbackContext: stock?.feedbackContext ?? null,
+    // Step 5 Follow-up/Reminder: follow-up/reminder status derived from notification reaction data.
+    // followUpContext is passed through from the opportunityScanner/route handler if available.
+    followUpContext: stock?.followUpContext ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -264,6 +267,14 @@ function buildTopSignals(stocks) {
     none: null,
   };
 
+  // Step 5 Follow-up/Reminder: follow-up status badge
+  const FOLLOW_UP_STATUS_BADGES = {
+    overdue:  "⏰ Überfällig",
+    pending:  "🔁 Wiedervorlage",
+    closed:   null,
+    none:     null,
+  };
+
   return stocks
     .slice()
     .sort((left, right) => {
@@ -281,8 +292,9 @@ function buildTopSignals(stocks) {
       const delta      = stock.deltaContext     ?? null;
       const action     = stock.nextAction       ?? null;
       const orch       = stock.actionOrchestration ?? null;
+      const followUp   = stock.followUpContext  ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
-      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, and delivery-mode badge.
+      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, and follow-up badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
@@ -292,11 +304,14 @@ function buildTopSignals(stocks) {
       const deliveryBadge     = orch?.deliveryMode && DELIVERY_MODE_BADGES[orch.deliveryMode]
         ? ` ${DELIVERY_MODE_BADGES[orch.deliveryMode]}`
         : "";
+      const followUpBadge     = followUp?.followUpStatus && FOLLOW_UP_STATUS_BADGES[followUp.followUpStatus]
+        ? ` ${FOLLOW_UP_STATUS_BADGES[followUp.followUpStatus]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -304,6 +319,7 @@ function buildTopSignals(stocks) {
         userAttentionLevel: stock.userAttentionLevel ?? null,
         attentionReason: stock.attentionReason ?? null,
         feedbackContext: stock.feedbackContext ?? null,
+        followUpContext: followUp,
       };
     });
 }
@@ -414,6 +430,14 @@ function buildPortfolioIntelligenceSummary(stocks) {
       negative: stocks.filter((s) => s.feedbackContext?.feedbackSignal === "negative").length,
       acted:    stocks.filter((s) => s.feedbackContext?.responseType === "acted" || s.feedbackContext?.actedAt != null).length,
       dismissed: stocks.filter((s) => s.feedbackContext?.dismissedAt != null).length,
+    },
+    // Step 5 Follow-up/Reminder: summary of follow-up/reminder states across all stocks.
+    followUp: {
+      overdue:          stocks.filter((s) => s.followUpContext?.followUpStatus === "overdue").length,
+      pending:          stocks.filter((s) => s.followUpContext?.followUpStatus === "pending").length,
+      reminderEligible: stocks.filter((s) => s.followUpContext?.reminderEligible === true).length,
+      reviewDue:        stocks.filter((s) => s.followUpContext?.reviewDue === true).length,
+      needsClosure:     stocks.filter((s) => s.followUpContext?.needsClosure === true).length,
     },
   };
 }

@@ -12,6 +12,8 @@ const {
   markDismissed,
   saveDeviceToken,
   computeUserState,
+  getOpenFollowUps,
+  getReminderEligibleNotifications,
 } = require("../services/notifications.repository");
 const {
   badRequest,
@@ -245,6 +247,46 @@ router.post("/mark-dismissed", async (req, res) => {
 
     await markDismissed(userIdResult.value, notificationIdResult.value);
     return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
+ * ✅ Step 5 Follow-up/Reminder: Open follow-ups
+ * GET /api/notifications/follow-ups?userId=1&limit=20
+ * Returns notifications with an open follow_up_outcome (not yet acted/dismissed).
+ */
+router.get("/follow-ups", async (req, res) => {
+  try {
+    const userIdResult = parseInteger(req.query.userId, { required: true, min: 1, label: "userId" });
+    if (userIdResult.error) return badRequest(res, userIdResult.error);
+
+    const limitResult = parseInteger(req.query.limit, { defaultValue: 20, min: 1, max: 100, label: "limit" });
+    if (limitResult.error) return badRequest(res, limitResult.error);
+
+    const items = await getOpenFollowUps(userIdResult.value, limitResult.value);
+    return res.json({ success: true, followUps: items, count: items.length });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+/**
+ * ✅ Step 5 Follow-up/Reminder: Reminder-eligible notifications
+ * GET /api/notifications/reminders?userId=1&limit=10
+ * Returns notifications that qualify for a reminder push.
+ */
+router.get("/reminders", async (req, res) => {
+  try {
+    const userIdResult = parseInteger(req.query.userId, { required: true, min: 1, label: "userId" });
+    if (userIdResult.error) return badRequest(res, userIdResult.error);
+
+    const limitResult = parseInteger(req.query.limit, { defaultValue: 10, min: 1, max: 50, label: "limit" });
+    if (limitResult.error) return badRequest(res, limitResult.error);
+
+    const items = await getReminderEligibleNotifications(userIdResult.value, limitResult.value);
+    return res.json({ success: true, reminders: items, count: items.length });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }
