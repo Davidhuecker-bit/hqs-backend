@@ -3,10 +3,14 @@
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
-// ✅ nutzt dein neues Learning-System (7d/30d kompatibel)
 const { saveDiscovery } = require("./discoveryLearning.service");
+const {
+  initDiscoveryTable,
+  wasRecentlyDiscovered,
+} = require("./discoveryLearning.repository");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
+// Pool is kept for getCurrentPrice (reads from market_snapshots)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -34,32 +38,6 @@ function norm0to1(x) {
   const n = safeNum(x, 0);
   if (n > 1.5) return clamp(n / 100, 0, 1);
   return clamp(n, 0, 1);
-}
-
-/* =========================================================
-   TABLE INIT (SAFE)
-   - Needed for cooldown checks
-   - Creates only if missing (does not break existing table)
-========================================================= */
-async function ensureDiscoveryHistoryTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS discovery_history (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      discovery_score NUMERIC,
-      price_at_discovery NUMERIC,
-      created_at TIMESTAMP DEFAULT NOW(),
-      checked BOOLEAN DEFAULT FALSE,
-      return_7d NUMERIC,
-      return_30d NUMERIC
-    );
-  `);
-
-  // Optional: Index for cooldown + checks
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS ix_discovery_history_symbol_created
-    ON discovery_history(symbol, created_at DESC);
-  `);
 }
 
 /**
@@ -202,28 +180,6 @@ async function getCurrentPrice(symbol) {
   return eur !== null && Number.isFinite(eur) ? eur : null;
 }
 
-/**
- * Cooldown: wenn Symbol in den letzten X Tagen bereits gespeichert ist -> skip
- */
-async function wasRecentlyDiscovered(symbol, days) {
-  const sym = String(symbol || "").trim().toUpperCase();
-  const d = Number(days);
-  if (!sym || !Number.isFinite(d) || d <= 0) return false;
-
-  const res = await pool.query(
-    `
-    SELECT 1
-    FROM discovery_history
-    WHERE symbol = $1
-      AND created_at > NOW() - ($2 || ' days')::interval
-    LIMIT 1
-    `,
-    [sym, String(d)]
-  );
-
-  return !!res.rows.length;
-}
-
 /* =========================================================
    MAIN: DISCOVER
    ✅ FIX: market_advanced_metrics hat kein hqs_score/quality/stability
@@ -231,7 +187,7 @@ async function wasRecentlyDiscovered(symbol, days) {
 ========================================================= */
 
 async function discoverStocks(limit = DEFAULT_LIMIT) {
-  await ensureDiscoveryHistoryTable();
+  await initDiscoveryTable();
 
   const lim = clamp(Number(limit) || DEFAULT_LIMIT, 1, 25);
 

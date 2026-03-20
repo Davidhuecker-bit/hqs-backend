@@ -241,6 +241,36 @@ async function updateDiscoveryResult30d(id, return30d) {
 }
 
 /**
+ * Cooldown check: returns true if the symbol was already saved in the last N days.
+ * Used by discoveryEngine to prevent re-discovering the same symbol too soon.
+ *
+ * @param {string} symbol
+ * @param {number} days
+ * @returns {Promise<boolean>}
+ */
+async function wasRecentlyDiscovered(symbol, days) {
+  const sym = String(symbol || "").trim().toUpperCase();
+  const d = Number(days);
+  if (!sym || !Number.isFinite(d) || d <= 0) return false;
+
+  try {
+    const res = await pool.query(
+      `
+      SELECT 1
+      FROM discovery_history
+      WHERE symbol = $1
+        AND created_at > NOW() - ($2 || ' days')::interval
+      LIMIT 1
+      `,
+      [sym, String(d)]
+    );
+    return !!res.rows.length;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * BACKWARD COMPAT (falls irgendwo noch alte Funktionsnamen genutzt werden)
  * -> Diese mappen auf 7D
  */
@@ -255,6 +285,7 @@ async function updateDiscoveryResult(id, return7d) {
 module.exports = {
   initDiscoveryTable,
   saveDiscovery,
+  wasRecentlyDiscovered,
   loadRuntimeState,
   saveRuntimeState,
   RUNTIME_STATE_MARKET_MEMORY_KEY,

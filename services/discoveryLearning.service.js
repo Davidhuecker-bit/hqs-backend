@@ -10,6 +10,7 @@ const {
   updateDiscoveryResult30d,
   loadRuntimeState,
   saveRuntimeState,
+  saveDiscovery: saveDiscoveryToDb,
   RUNTIME_STATE_MARKET_MEMORY_KEY,
   RUNTIME_STATE_META_LEARNING_KEY,
 } = require("./discoveryLearning.repository");
@@ -68,30 +69,15 @@ async function ensureRuntimeStoresLoaded() {
 
 /* =========================================================
    DISCOVERY SAVE
+   Delegates to discoveryLearning.repository (canonical owner of discovery_history writes)
 ========================================================= */
 
 async function saveDiscovery(symbol, score, price) {
-  const sym = String(symbol || "").trim().toUpperCase();
-  const s = Number(score);
-  const p = Number(price);
-
   try {
-    await pool.query(
-      `
-      INSERT INTO discovery_history
-        (symbol, discovery_score, price_at_discovery, checked_7d, checked_30d)
-      VALUES
-        ($1, $2, $3, FALSE, FALSE)
-      `,
-      [
-        sym,
-        Number.isFinite(s) ? s : null,
-        Number.isFinite(p) ? p : null,
-      ]
-    );
+    await saveDiscoveryToDb(symbol, score, price);
   } catch (e) {
     logger.warn("saveDiscovery failed", {
-      symbol: sym,
+      symbol: String(symbol || "").trim().toUpperCase(),
       message: e.message,
     });
   }
