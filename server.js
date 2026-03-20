@@ -397,23 +397,6 @@ app.post("/api/admin/market-news/collect", async (req, res) => {
 });
 
 /* =========================================================
-TABLE HEALTH
-========================================================= */
-
-app.get("/api/admin/table-health", async (_req, res) => {
-  try {
-    const result = await runTableHealthCheck();
-    return res.json(result);
-  } catch (error) {
-    logger.error("Table health route error", { message: error.message });
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
 HQS ROUTE
 ========================================================= */
 
