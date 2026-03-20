@@ -206,6 +206,7 @@ const APPROVAL_FLOW_STATUS_RANK = {
   closed: 4,
   proposal_available: 5,
 };
+const APPROVAL_FLOW_UNRANKED = 6;
 
 const APPROVAL_FLOW_LABELS = {
   approved_pending_action: "🟢 Bereit zur manuellen Aktion",
@@ -459,7 +460,7 @@ async function runDailyBriefing() {
         const dsDiff = (DECISION_STATUS_RANK[a._decisionStatus] ?? 4) - (DECISION_STATUS_RANK[b._decisionStatus] ?? 4);
         if (dsDiff !== 0) return dsDiff;
         // Step 7 Block 4: approval-flow-status tie-breaker within same decision-status
-        const afsDiff = (APPROVAL_FLOW_STATUS_RANK[a._approvalFlowStatus] ?? 6) - (APPROVAL_FLOW_STATUS_RANK[b._approvalFlowStatus] ?? 6);
+        const afsDiff = (APPROVAL_FLOW_STATUS_RANK[a._approvalFlowStatus] ?? APPROVAL_FLOW_UNRANKED) - (APPROVAL_FLOW_STATUS_RANK[b._approvalFlowStatus] ?? APPROVAL_FLOW_UNRANKED);
         if (afsDiff !== 0) return afsDiff;
         const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
         if (attnDiff !== 0) return attnDiff;

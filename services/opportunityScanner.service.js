@@ -1097,6 +1097,8 @@ function computeDecisionLayer(opp) {
 // No execution, no automation – only controlled follow-up classification.
 // Derives approvalFlowStatus, postDecisionAction, closureStatus,
 // nextReviewAt, deferUntil, executionIntent, actionLifecycleStage.
+const DEFER_REVIEW_DAYS = 3; // days until deferred cases are scheduled for re-check
+
 function computeControlledApprovalFlow(opp) {
   const dl = opp.decisionLayer;
   if (!dl) return null;
@@ -1134,8 +1136,7 @@ function computeControlledApprovalFlow(opp) {
   // ── Path 3: deferred_review → deferred with scheduled re-check ──
   if (ds === "deferred_review") {
     const now = new Date();
-    const deferDays = 3;
-    const deferDate = new Date(now.getTime() + deferDays * 24 * 60 * 60 * 1000);
+    const deferDate = new Date(now.getTime() + DEFER_REVIEW_DAYS * 24 * 60 * 60 * 1000);
     return {
       approvalFlowStatus:  "deferred",
       postDecisionAction:  "wait_for_reassessment",
