@@ -3,9 +3,14 @@
 /*
   Market Orchestrator
 
-  Zentrale Intelligenzschicht.
-  Bewertet alle Engine-Signale und erzeugt eine
-  konsolidierte Marktentscheidung.
+  Kanonische Markt-Orchestrierung.
+  Bewertet alle Engine-Signale und erzeugt einen
+  konsolidierten Markt-Context für die nachgelagerten Schichten.
+
+  Verantwortung: riskMode, dominantNarrative, sectorBias,
+  opportunityStrength, orchestratorConfidence, newsPulse, signalPulse.
+
+  Ablauf: marketOrchestrator → marketBrain (AI-Subscore) → integrationEngine (Finale Integration)
 */
 
 function safe(n, fallback = 0) {

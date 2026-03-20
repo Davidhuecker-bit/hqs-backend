@@ -1,8 +1,16 @@
 "use strict";
 
 /*
-  Market Brain
-  Combines all engine outputs into one final AI score
+  Market Brain – AI Subscore Builder
+
+  Leitet einen KI-gewichteten Teilscore aus HQS, Features,
+  Monte-Carlo-Szenarien, Discoveries und Learning ab.
+
+  Verantwortung: AI-Subscore als Eingabe für integrationEngine.
+  Nicht als zweite finale Scoring-Schicht gedacht – der endgültige
+  Conviction-Score wird ausschließlich in integrationEngine berechnet.
+
+  Ablauf: marketOrchestrator → marketBrain (AI-Subscore) → integrationEngine (Finale Integration)
 */
 
 function safe(n, fallback = 0) {
@@ -67,7 +75,7 @@ function calculateRiskPenalty(volatility) {
 }
 
 /* ===============================
-   FINAL AI SCORE
+   AI SUBSCORE
 ================================ */
 
 function buildAIScore({
