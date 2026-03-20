@@ -309,8 +309,9 @@ function buildTopSignals(stocks) {
       const followUp   = stock.followUpContext  ?? null;
       const ar         = stock.actionReadiness  ?? null;
       const aq         = stock.approvalQueueEntry ?? null;
+      const dl         = stock.decisionLayer     ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
-      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, action-readiness badge, and approval-queue badge.
+      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, action-readiness badge, approval-queue badge, decision badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
@@ -330,11 +331,22 @@ function buildTopSignals(stocks) {
       const aqBadge           = aq?.pendingApproval
         ? ` ⏳ ${aq.approvalQueueBucket === "risk_review" ? "Risiko-Review" : "Freigabe ausstehend"}`
         : "";
+      // Step 7 Block 3: decision-status badge – surface decision state compactly
+      const DECISION_BADGES = {
+        approved_candidate: "✅ Freigabe-Kandidat",
+        pending_review:     "⏳ Prüfung",
+        deferred_review:    "⏸ Zurückgestellt",
+        needs_more_data:    "📊 Mehr Daten",
+        rejected_candidate: "❌ Abgelehnt",
+      };
+      const dlBadge           = dl?.decisionStatus && DECISION_BADGES[dl.decisionStatus]
+        ? ` ${DECISION_BADGES[dl.decisionStatus]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -346,6 +358,8 @@ function buildTopSignals(stocks) {
         actionReadiness: ar,
         // Step 7 Block 2: approval-queue entry for downstream badge rendering
         approvalQueueEntry: aq,
+        // Step 7 Block 3: decision layer for downstream decision-state rendering
+        decisionLayer: dl,
       };
     });
 }
@@ -481,6 +495,14 @@ function buildPortfolioIntelligenceSummary(stocks) {
       riskReview:        stocks.filter((s) => s.approvalQueueEntry?.approvalQueueBucket === "risk_review").length,
       proposalBucket:    stocks.filter((s) => s.approvalQueueEntry?.approvalQueueBucket === "proposal_bucket").length,
       insufficientData:  stocks.filter((s) => s.approvalQueueEntry?.approvalQueueBucket === "insufficient_data").length,
+    },
+    // Step 7 Block 3: decision layer distribution – decision state for review/approval cases.
+    decisionLayer: {
+      approvedCandidate:  stocks.filter((s) => s.decisionLayer?.decisionStatus === "approved_candidate").length,
+      pendingReview:      stocks.filter((s) => s.decisionLayer?.decisionStatus === "pending_review").length,
+      rejectedCandidate:  stocks.filter((s) => s.decisionLayer?.decisionStatus === "rejected_candidate").length,
+      deferredReview:     stocks.filter((s) => s.decisionLayer?.decisionStatus === "deferred_review").length,
+      needsMoreData:      stocks.filter((s) => s.decisionLayer?.decisionStatus === "needs_more_data").length,
     },
   };
 }

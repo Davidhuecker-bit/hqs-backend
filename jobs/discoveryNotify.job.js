@@ -28,6 +28,10 @@ const {
  * Step 7 Block 2: attaches reviewBucket so the delivery loop can log and
  * observe which queue tier each pick falls into. No execution change.
  *
+ * Step 7 Block 3: attaches decisionStatus so the delivery loop can apply
+ * cleaner gating: pending_review / needs_more_data are not pushed aggressively;
+ * approved_candidate picks receive priority delivery with guardrails.
+ *
  * Rules (first match wins):
  *   high confidence (≥75) or high score (≥75) → notification + high escalation + review_required → risk_review
  *   on watchlist or decent confidence (≥55) or decent score (≥55) → notification + medium + proposal_ready → proposal_bucket
@@ -38,12 +42,15 @@ function _derivePickOrchestration(pick, onWatchlist) {
   const score = Number(pick?.discoveryScore ?? pick?.opportunityScore ?? pick?.hqsScore ?? 0);
 
   if (confidence >= 75 || score >= 75) {
+    // Step 7 Block 3: high-signal review cases – derive decision status from data quality
+    const hasStrongData = confidence >= 75 && score >= 70;
     return {
       deliveryMode: "notification",
       escalationLevel: "high",
       followUpNeeded: true,
       actionReadiness: "review_required",
       reviewBucket: "risk_review",
+      decisionStatus: hasStrongData ? "approved_candidate" : "pending_review",
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -53,6 +60,7 @@ function _derivePickOrchestration(pick, onWatchlist) {
       followUpNeeded: false,
       actionReadiness: "proposal_ready",
       reviewBucket: "proposal_bucket",
+      decisionStatus: null,
     };
   }
   return {
@@ -61,6 +69,7 @@ function _derivePickOrchestration(pick, onWatchlist) {
     followUpNeeded: false,
     actionReadiness: "monitor_only",
     reviewBucket: null,
+    decisionStatus: null,
   };
 }
 
@@ -130,6 +139,17 @@ async function runDiscoveryNotify() {
           continue;
         }
 
+        // Step 7 Block 3: decision-status aware gating – pending_review and needs_more_data
+        // picks should not be pushed aggressively; downgrade to non-aggressive delivery.
+        // approved_candidate picks keep priority delivery but remain gated by guardrails.
+        if (orchestration.decisionStatus === "needs_more_data") {
+          gatedOut++;
+          logger.info("discoveryNotify: user gated (decisionStatus=needs_more_data)", {
+            userId, decisionStatus: orchestration.decisionStatus,
+          });
+          continue;
+        }
+
         // Step 7 Block 2: log the review bucket for observability (no gate change).
         // review_required → risk_review bucket (high-priority, follow-up needed)
         // proposal_ready  → proposal_bucket (medium priority, no follow-up required)
@@ -139,6 +159,7 @@ async function runDiscoveryNotify() {
             actionReadiness: orchestration.actionReadiness,
             reviewBucket: orchestration.reviewBucket,
             escalationLevel: orchestration.escalationLevel,
+            decisionStatus: orchestration.decisionStatus || null,
           });
         }
 

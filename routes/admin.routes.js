@@ -1815,6 +1815,11 @@ router.get("/review-queue", async (req, res) => {
         concentrationRisk:   opp.portfolioContext?.concentrationRisk  ?? null,
         finalConviction:     opp.finalConviction  ?? null,
         hqsScore:            opp.hqsScore         ?? null,
+        // Step 7 Block 3: decision layer fields
+        decisionStatus:      opp.decisionLayer?.decisionStatus    ?? null,
+        decisionReason:      opp.decisionLayer?.decisionReason    ?? null,
+        approvalOutcome:     opp.decisionLayer?.approvalOutcome   ?? null,
+        decisionReadiness:   opp.decisionLayer?.decisionReadiness ?? null,
       };
 
       if (aq.pendingApproval) {
@@ -1842,6 +1847,11 @@ router.get("/review-queue", async (req, res) => {
         insufficientDataCount: insufficientData.length,
         riskReviewCount:       pendingApproval.filter((e) => e.approvalQueueBucket === "risk_review").length,
         highPriorityCount:     pendingApproval.filter((e) => e.reviewPriority === "high").length,
+        // Step 7 Block 3: decision layer distribution
+        approvedCandidateCount:  [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "approved_candidate").length,
+        pendingReviewCount:      [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "pending_review").length,
+        deferredReviewCount:     [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "deferred_review").length,
+        needsMoreDataCount:      [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "needs_more_data").length,
       },
       pendingApproval,
       proposalBucket,

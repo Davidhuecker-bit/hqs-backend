@@ -115,6 +115,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 7 Block 2: Approval-Queue entry – collection/prioritisation layer.
   const approvalQueueEntry = marketData?.approvalQueueEntry ?? context?.approvalQueueEntry ?? null;
 
+  // Step 7 Block 3: Decision Layer – concrete decision state for review/approval cases.
+  const decisionLayer = marketData?.decisionLayer ?? context?.decisionLayer ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -500,7 +503,47 @@ async function analyzeStockWithGuardian(context) {
   }
   const approvalQueueBlock = buildApprovalQueueBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock]
+  // Step 7 Block 3: Decision Layer block – explains the concrete decision state
+  // for review/approval cases. Short and verständlich: why is this case pending,
+  // why is it a candidate, why does it need more data, or why was it deferred.
+  const DECISION_STATUS_LABELS = {
+    approved_candidate: "Freigabe-Kandidat – Daten stark und konsistent, manuelle Bestätigung empfohlen",
+    pending_review:     "Prüfung ausstehend – manuelle Bewertung erforderlich",
+    rejected_candidate: "Abgelehnt – Risikokonstellation spricht gegen Freigabe",
+    deferred_review:    "Zurückgestellt – widersprüchliche Signale, erneute Prüfung nach Datenupdate",
+    needs_more_data:    "Mehr Daten nötig – Signalbasis reicht noch nicht für eine Entscheidung",
+  };
+  function buildDecisionLayerBlock() {
+    if (!decisionLayer || !decisionLayer.decisionStatus) return "";
+    const parts = [];
+    const statusLabel = DECISION_STATUS_LABELS[decisionLayer.decisionStatus] || decisionLayer.decisionStatus;
+    parts.push(`Entscheidungsstatus (Step 7 Block 3): ${statusLabel}`);
+    if (decisionLayer.decisionReason) {
+      parts.push(`Begründung: ${decisionLayer.decisionReason}`);
+    }
+    if (decisionLayer.approvalOutcome) {
+      const outcomeLabels = {
+        approval_likely:   "Freigabe wahrscheinlich",
+        rejection_likely:  "Ablehnung wahrscheinlich",
+        proposal_pending:  "Vorschlag ausstehend",
+      };
+      parts.push(`Erwartetes Ergebnis: ${outcomeLabels[decisionLayer.approvalOutcome] || decisionLayer.approvalOutcome}`);
+    }
+    if (decisionLayer.decisionReadiness && decisionLayer.decisionReadiness !== "not_applicable") {
+      const readinessLabels = {
+        review_complete:  "Prüfung abgeschlossen",
+        awaiting_review:  "Wartet auf Prüfung",
+        deferred:         "Zurückgestellt",
+        not_ready:        "Noch nicht entscheidungsreif",
+        proposal_available: "Vorschlag verfügbar",
+      };
+      parts.push(`Entscheidungsreife: ${readinessLabels[decisionLayer.decisionReadiness] || decisionLayer.decisionReadiness}`);
+    }
+    return parts.join(" · ");
+  }
+  const decisionLayerBlock = buildDecisionLayerBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -602,6 +645,16 @@ Erstelle eine strukturierte Erklärung mit:
    - reviewSummary vorhanden: verwende es als kurze Zusammenfassung des Review-Status
    - Halte die Erklärung kurz (1–3 Sätze) – keine neue Analyse, nur Einordnung des Freigabe-Status
    Wenn kein Freigabe-Queue-Eintrag vorhanden, diesen Punkt weglassen.
+16. Entscheidungsstatus (Step 7 Block 3): Falls ein Entscheidungs-Layer vorhanden ist, erkläre kurz und verständlich den aktuellen Entscheidungszustand –
+    - decisionStatus="approved_candidate": erkläre, warum dieser Fall als Freigabe-Kandidat eingestuft wurde – starke Datenbasis, konsistente Signale, aber weiterhin manuelle Bestätigung erforderlich. Keine automatische Genehmigung.
+    - decisionStatus="pending_review": erkläre, warum der Fall noch geprüft werden muss – welche offenen Fragen oder Risiken bestehen, und was der Nutzer als nächstes bewerten sollte.
+    - decisionStatus="rejected_candidate": erkläre, warum die Datenlage gegen eine Freigabe spricht – welche Risikosignale überwiegen und warum Vorsicht geboten ist.
+    - decisionStatus="deferred_review": erkläre, warum der Fall zurückgestellt wurde – widersprüchliche Signale, und wann eine erneute Prüfung sinnvoll wäre.
+    - decisionStatus="needs_more_data": erkläre, warum noch nicht genug Daten für eine Entscheidung vorliegen – was fehlt konkret, und was beobachtet werden muss.
+    - decisionReason vorhanden: verwende es als Kontext für die Erklärung
+    - Wichtig: Kein Entscheidungsstatus bedeutet keine automatische Genehmigung. Auch approved_candidate erfordert manuelle Bestätigung.
+    - Halte die Erklärung kurz (1–3 Sätze) – verständlich und nachvollziehbar
+    Wenn kein Entscheidungs-Layer vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
