@@ -1033,7 +1033,7 @@ function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
     interMarketWarning: Boolean(guardianResult.interMarketWarning),
     robustnessScore: Number(robustness.toFixed(2)),
     antifragile,
-    conviction: Number(conviction.toFixed(1)),
+    finalConviction: Number(conviction.toFixed(1)),
   };
 }
 

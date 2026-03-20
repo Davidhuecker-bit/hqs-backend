@@ -202,6 +202,14 @@ function formatMarketItem(item) {
     scenarios: item.scenarios ?? null,
     advancedUpdatedAt: item.advancedUpdatedAt ?? null,
 
+    // Canonical integrationEngine output fields – present when outcome_tracking data exists.
+    finalConviction: item.finalConviction ?? null,
+    finalConfidence: item.finalConfidence ?? null,
+    finalRating: item.finalRating ?? null,
+    finalDecision: item.finalDecision ?? null,
+    whyInteresting: Array.isArray(item.whyInteresting) ? item.whyInteresting : [],
+    components: item.components ?? null,
+
     timestamp: item.timestamp ?? null,
     source: item.source ?? null,
   };
