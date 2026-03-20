@@ -81,6 +81,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 4b: read delta context if present (pass-through from opportunity scanner).
   const deltaContext = marketData?.deltaContext ?? context?.deltaContext ?? null;
 
+  // Step 4c: read next action hint if present (computed by opportunityScanner).
+  const nextAction = marketData?.nextAction ?? context?.nextAction ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -156,7 +159,19 @@ async function analyzeStockWithGuardian(context) {
     deltaBlock = deltaParts.join(" · ");
   }
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock]
+  // Step 4c: next action block – surfaces the computed next action hint.
+  function buildNextActionBlock() {
+    if (!nextAction?.actionType) return "";
+    const parts = [
+      `Nächster Schritt: ${nextAction.nextActionLabel}`,
+      `(${nextAction.actionType}, Priorität: ${nextAction.actionPriority})`,
+      `– ${nextAction.actionReason}`,
+    ];
+    return parts.join(" ");
+  }
+  const nextActionBlock = buildNextActionBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -193,6 +208,15 @@ Erstelle eine strukturierte Erklärung mit:
    - changeType="losing_conviction": Überzeugung gesunken – kritisch bewerten, Vorsicht empfehlen
    - changeType="portfolio_impact_changed": Portfolio-Relevanz hat sich verändert – Konsequenz erläutern
    Wenn kein Delta-Signal vorhanden (changeType="stable"), diesen Punkt weglassen.
+7. Nächster sinnvoller Schritt: Falls eine Next-Action-Empfehlung vorhanden ist, erläutere kurz warum dieser Schritt sinnvoll ist –
+   - actionType="starter_position": erkläre konkret, warum jetzt ein Einstieg geprüft werden sollte
+   - actionType="watchlist_upgrade": erkläre, warum das Symbol prioritär beobachtet werden sollte
+   - actionType="reduce_risk": erkläre das Risiko und empfehle klar Positionsreduktion
+   - actionType="avoid_adding": erkläre, warum keine weitere Aufstockung empfohlen wird
+   - actionType="rebalance_review": erkläre, warum eine Rebalancing-Prüfung sinnvoll ist
+   - actionType="hold": bestätige, dass keine Aktion nötig ist
+   - actionType="observe": erkläre, warum nur Beobachtung empfohlen wird
+   Wenn kein Next-Action-Hint vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
