@@ -690,28 +690,37 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
     : Array.isArray(finalView?.narratives)
       ? finalView.narratives
       : [];
-  const opportunityScore = calculateOpportunityScore(row);
+  // Prefer integrationEngine chain outputs over local raw recomputation.
+  const chainConviction = safeNum(
+    finalView?.finalConviction,
+    safeNum(tracked?.finalConviction, 0)
+  );
+  const chainConfidence = safeNum(
+    finalView?.finalConfidence,
+    safeNum(tracked?.finalConfidence, 0)
+  );
+  const opportunityScore = chainConviction > 0
+    ? chainConviction
+    : calculateOpportunityScore(row);
+  const confidence = chainConfidence > 0
+    ? chainConfidence
+    : calculateConfidence(row, opportunityScore);
   const robustnessScore = safeNum(historicalContext?.robustness, 0);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
 
     regime: row?.regime ?? tracked?.regime ?? finalView?.regime ?? null,
-    type: classifyOpportunity(row),
+    // Prefer strategyEngine output from chain; fall back to raw classification.
+    type: strategy?.strategy || classifyOpportunity(row),
 
     hqsScore: safeNum(row?.hqs_score, safeNum(finalView?.hqsScore, 0)),
     opportunityScore,
-    confidence: calculateConfidence(row, opportunityScore),
+    confidence,
 
     aiScore: safeNum(finalView?.aiScore, safeNum(brain?.aiScore, 0)),
-    finalConviction: safeNum(
-      finalView?.finalConviction,
-      safeNum(tracked?.finalConviction, 0)
-    ),
-    finalConfidence: safeNum(
-      finalView?.finalConfidence,
-      safeNum(tracked?.finalConfidence, 0)
-    ),
+    finalConviction: chainConviction,
+    finalConfidence: chainConfidence,
     finalRating: finalView?.finalRating || null,
     finalDecision: finalView?.finalDecision || null,
 
@@ -801,7 +810,8 @@ function buildFallbackOpportunity(row, tracked = null) {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
 
     regime: row?.regime ?? tracked?.regime ?? finalView?.regime ?? null,
-    type: classifyOpportunity(row),
+    // Prefer strategyEngine output from chain; fall back to raw classification.
+    type: strategy?.strategy || classifyOpportunity(row),
 
     hqsScore: safeNum(row?.hqs_score, safeNum(finalView?.hqsScore, 0)),
     opportunityScore,
@@ -1147,7 +1157,7 @@ async function getTopOpportunities(arg = 10) {
       return b.finalConfidence - a.finalConfidence;
     }
 
-    return b.opportunityScore - a.opportunityScore;
+    return b.hqsScore - a.hqsScore;
   });
 
   // ── World State: single source of global market truth ───────────────────
