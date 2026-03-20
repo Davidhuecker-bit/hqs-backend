@@ -12,6 +12,8 @@ try {
 const marketNewsRepository = require("./marketNews.repository");
 const { loadEntityMapBySymbols } = require("./entityMap.repository");
 const { buildMarketSentiment } = require("./marketSentiment.service");
+const { listVirtualPositions } = require("./portfolioTwin.service");
+const { getActiveWatchlistSymbols } = require("./watchlist.repository");
 const {
   analyzeNewsArticle,
   buildNewsLifecycle,
@@ -851,6 +853,24 @@ async function getScoringActiveNewsContextBySymbols(
   return result;
 }
 
+const NEWS_PORTFOLIO_MAX_POSITIONS = Number(process.env.NEWS_PORTFOLIO_MAX_POSITIONS || 200);
+const NEWS_WATCHLIST_MAX_SYMBOLS = Number(process.env.NEWS_WATCHLIST_MAX_SYMBOLS || 250);
+
+async function getPortfolioSymbols() {
+  const positions = await listVirtualPositions({ status: "open", limit: NEWS_PORTFOLIO_MAX_POSITIONS });
+  return [
+    ...new Set(
+      positions
+        .map((p) => String(p.symbol || "").trim().toUpperCase())
+        .filter(Boolean)
+    ),
+  ];
+}
+
+async function getWatchlistNewsSymbols() {
+  return getActiveWatchlistSymbols(NEWS_WATCHLIST_MAX_SYMBOLS);
+}
+
 module.exports = {
   fetchFmpMarketNewsForSymbols,
   normalizeFmpNewsItem,
@@ -864,4 +884,6 @@ module.exports = {
   getStructuredMarketNewsBySymbols,
   getScoringActiveMarketNewsBySymbols,
   getScoringActiveNewsContextBySymbols,
+  getPortfolioSymbols,
+  getWatchlistNewsSymbols,
 };
