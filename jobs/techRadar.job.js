@@ -9,7 +9,7 @@
   Discovered entries are persisted in `tech_radar_entries` and surfaced via
   GET /api/admin/tech-radar and GET /api/admin/evolution-board.
 
-  Scheduled from server.js via scheduleTechRadarJob().
+  Scheduled from server.js via scheduleTechRadarScan().
 */
 
 const { runJob } = require("../utils/jobRunner");
