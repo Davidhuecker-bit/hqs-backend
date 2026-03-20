@@ -1,8 +1,17 @@
 "use strict";
 
 /*
-  Discovery Engine
-  Detects special market opportunities
+  Discovery Engine – Pattern Detection (Pipeline: Stage 1 of 4)
+
+  Detects special market opportunity conditions directly from raw
+  technical features and advanced metrics.  Produces a typed discovery
+  array that is consumed by researchEngine (evaluation) and marketBrain
+  (score boost) in the next pipeline stages.
+
+  Verantwortung: Erkennung von momentum_explosion, trend_acceleration und
+  volatility_compression.  Keine Bewertung, kein Scoring – reine Mustererkennung.
+
+  Ablauf: discoveryEngine → researchEngine → marketBrain → strategyEngine → integrationEngine
 */
 
 function safe(n, fallback = 0) {

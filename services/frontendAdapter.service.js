@@ -64,18 +64,18 @@ function inferTrend(changePercent) {
   return "Konsolidierung";
 }
 
-function inferAllocation(hqsScore) {
-  if (hqsScore >= 78) return "Kernposition";
-  if (hqsScore >= 68) return "Tech \u00dcberzeugung";
-  if (hqsScore >= 58) return "Wachstum";
-  if (hqsScore >= 48) return "Rotation";
+function inferAllocation(score) {
+  if (score >= 78) return "Kernposition";
+  if (score >= 68) return "Tech \u00dcberzeugung";
+  if (score >= 58) return "Wachstum";
+  if (score >= 48) return "Rotation";
   return "Fr\u00fcherkennung";
 }
 
-function inferRecommendation(hqsScore) {
-  if (hqsScore >= 75) return "Starke Technische Übereinstimmung";
-  if (hqsScore >= 62) return "Technische Übereinstimmung";
-  if (hqsScore >= 50) return "Analytisches Signal – beobachten";
+function inferRecommendation(score) {
+  if (score >= 75) return "Starke Technische Übereinstimmung";
+  if (score >= 62) return "Technische Übereinstimmung";
+  if (score >= 50) return "Analytisches Signal – beobachten";
   return "Kein klares Analytisches Signal";
 }
 
