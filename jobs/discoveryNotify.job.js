@@ -129,10 +129,14 @@ async function runDiscoveryNotify() {
           // Step 6 Block 2: User preference hints – gate on notificationFatigue and
           // log explorationAffinity for observability. Uses one CTE query instead of
           // two separate computeProductSignals calls. Defensively non-fatal.
+          // Step 6 Block 3: High explorationAffinity overrides the notificationFatigue
+          // gate for discovery content – users who actively engage with discovery picks
+          // should still receive them even when fatigued by other notification types.
           if (orchestration.escalationLevel === "medium") {
             try {
               const hints = await computeUserPreferenceHints(userId, { days: 30 });
-              if (hints.sampleSize >= 5 && hints.notificationFatigue === "high") {
+              const explorationOverrides = hints.explorationAffinity === "high";
+              if (hints.sampleSize >= 5 && hints.notificationFatigue === "high" && !explorationOverrides) {
                 gatedOut++;
                 logger.info("discoveryNotify: user gated (high notification fatigue)", {
                   userId, notificationFatigue: hints.notificationFatigue, sampleSize: hints.sampleSize,
@@ -141,7 +145,7 @@ async function runDiscoveryNotify() {
               }
               if (hints.explorationAffinity) {
                 logger.info("discoveryNotify: user exploration affinity", {
-                  userId, explorationAffinity: hints.explorationAffinity,
+                  userId, explorationAffinity: hints.explorationAffinity, explorationOverrides,
                 });
               }
             } catch (sigErr) {

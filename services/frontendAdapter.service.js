@@ -542,6 +542,35 @@ function buildGuardianPayload(rawStocks, options = {}) {
     }
   }
 
+  // Step 6 Block 3: Adaptive priority insights – summarizes which adaptive signals
+  // are active for this user and how they are affecting recommendation ordering.
+  // Derived from userPreferenceHints + per-stock adaptivePriorityBoost.
+  // Slim pass-through only; no new DB calls.
+  let adaptivePriorityInsights = null;
+  const rawHintsForAdaptive = options.userPreferenceHints ?? null;
+  if (rawHintsForAdaptive && (rawHintsForAdaptive.sampleSize || 0) >= 3) {
+    const activeSignals = [];
+    if (rawHintsForAdaptive.riskSensitivity && rawHintsForAdaptive.riskSensitivity !== "neutral") {
+      activeSignals.push(rawHintsForAdaptive.riskSensitivity);
+    }
+    if (rawHintsForAdaptive.explorationAffinity === "high") activeSignals.push("explorationAffinity=high");
+    if (rawHintsForAdaptive.notificationFatigue === "high")  activeSignals.push("notificationFatigue=high");
+    if (rawHintsForAdaptive.briefingAffinity === "high")     activeSignals.push("briefingAffinity=high");
+    const boostedStocks = stocks.filter((s) => (s.adaptivePriorityBoost ?? 0) !== 0);
+    const avgBoost = boostedStocks.length > 0
+      ? boostedStocks.reduce((sum, s) => sum + (s.adaptivePriorityBoost ?? 0), 0) / boostedStocks.length
+      : 0;
+    const dominantAdjustment = avgBoost > 0.5 ? "boost" : avgBoost < -0.5 ? "penalty" : "neutral";
+    if (activeSignals.length > 0) {
+      adaptivePriorityInsights = {
+        activeSignals,
+        dominantAdjustment,
+        adaptedStocksCount: boostedStocks.length,
+        scopeNote: "Step 6 Block 3 – light adaptive prioritization active",
+      };
+    }
+  }
+
   return {
     success: true,
     stabilityScore,
@@ -562,6 +591,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     userPreferenceInsights,
     // Step 6: Adaptive product signals summary (engagement/outcome quality at portfolio level).
     productSignals,
+    // Step 6 Block 3: Adaptive priority insights (active signals + adjustment direction).
+    adaptivePriorityInsights,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
