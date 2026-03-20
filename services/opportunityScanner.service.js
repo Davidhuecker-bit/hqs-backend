@@ -938,6 +938,18 @@ function computeApprovalQueueEntry(opp) {
  *                       signalContext, portfolioContext, nextAction, actionOrchestration
  * @returns {object}
  */
+// Decision-layer thresholds (named constants for clarity and tuning)
+const DL_CONVICTION_STRONG  = 65;   // finalConviction threshold for "strong"
+const DL_CONFIDENCE_GOOD    = 60;   // finalConfidence threshold for "good"
+const DL_ROBUSTNESS_GOOD    = 0.55; // robustnessScore threshold for "good"
+const DL_SIGNAL_CONF_GOOD   = 55;   // signalConfidence threshold for "good"
+const DL_REJECT_MIN_RISK    = 3;    // minimum riskSignals count for rejection
+const DL_REJECT_MAX_QUALITY = 1;    // maximum dataQuality count for rejection
+const DL_APPROVE_MIN_QUALITY = 3;   // minimum dataQuality count for approval candidate
+const DL_APPROVE_MAX_RISK   = 1;    // maximum riskSignals count for approval candidate
+const DL_DEFER_MIN_RISK     = 2;    // minimum riskSignals for deferred review
+const DL_DEFER_MIN_QUALITY  = 2;    // minimum dataQuality for deferred review (conflicting signals)
+
 function computeDecisionLayer(opp) {
   const ar        = opp.actionReadiness;
   const aq        = opp.approvalQueueEntry;
@@ -993,10 +1005,10 @@ function computeDecisionLayer(opp) {
   // ── Tier 3: review_required → decision logic applies ──
   if (readiness === "review_required") {
     // Signal quality indicators
-    const hasStrongConviction  = conviction >= 65;
-    const hasGoodConfidence    = confidence >= 60;
-    const hasGoodRobustness    = robustness >= 0.55;
-    const hasStrongSignal      = signalConf === null || signalConf >= 55;
+    const hasStrongConviction  = conviction >= DL_CONVICTION_STRONG;
+    const hasGoodConfidence    = confidence >= DL_CONFIDENCE_GOOD;
+    const hasGoodRobustness    = robustness >= DL_ROBUSTNESS_GOOD;
+    const hasStrongSignal      = signalConf === null || signalConf >= DL_SIGNAL_CONF_GOOD;
     const dataQuality          = [hasStrongConviction, hasGoodConfidence, hasGoodRobustness, hasStrongSignal]
       .filter(Boolean).length;
 
@@ -1009,7 +1021,7 @@ function computeDecisionLayer(opp) {
       .filter(Boolean).length;
 
     // Decision D-1: High risk + problematic constellation → rejected_candidate
-    if (riskSignals >= 3 && dataQuality <= 1) {
+    if (riskSignals >= DL_REJECT_MIN_RISK && dataQuality <= DL_REJECT_MAX_QUALITY) {
       return {
         decisionStatus:    "rejected_candidate",
         decisionReason:    "Mehrere Risikosignale bei schwacher Datenbasis – Freigabe nicht empfohlen",
@@ -1020,7 +1032,7 @@ function computeDecisionLayer(opp) {
     }
 
     // Decision D-2: Strong data + low contradiction → approved_candidate
-    if (dataQuality >= 3 && riskSignals <= 1 && !isRiskAction) {
+    if (dataQuality >= DL_APPROVE_MIN_QUALITY && riskSignals <= DL_APPROVE_MAX_RISK && !isRiskAction) {
       const reason = approvalReq
         ? "Starke Datenbasis und konsistente Signale – Freigabe-Kandidat, manuelle Bestätigung erforderlich"
         : "Datenqualität hoch, geringe Widersprüche – empfohlener Kandidat";
@@ -1034,7 +1046,7 @@ function computeDecisionLayer(opp) {
     }
 
     // Decision D-3: Mixed/weak signals → deferred_review or needs_more_data
-    if (dataQuality <= 1) {
+    if (dataQuality <= DL_REJECT_MAX_QUALITY) {
       return {
         decisionStatus:    "needs_more_data",
         decisionReason:    "Signale zu schwach oder unvollständig für eine sichere Entscheidung",
@@ -1044,7 +1056,7 @@ function computeDecisionLayer(opp) {
       };
     }
 
-    if (riskSignals >= 2 && dataQuality >= 2) {
+    if (riskSignals >= DL_DEFER_MIN_RISK && dataQuality >= DL_DEFER_MIN_QUALITY) {
       return {
         decisionStatus:    "deferred_review",
         decisionReason:    "Widersprüchliche Signale – starke Daten, aber erhöhtes Risiko – zurückgestellt",

@@ -168,6 +168,10 @@ function _deriveBriefingApprovalBucket(stock) {
   return null;
 }
 
+// Step 7 Block 3: Decision-status thresholds for briefing derivation
+const BRIEFING_DS_STRONG_SCORE = 65;   // HQS score threshold for approved_candidate in briefing
+const BRIEFING_DS_WEAK_SCORE   = 45;   // HQS score threshold below which needs_more_data applies
+
 /**
  * Step 7 Block 3: Derive a brief decision status for a briefing stock from its
  * already-computed action-readiness, attention, and orchestration signals.
@@ -184,9 +188,9 @@ function _deriveBriefingDecisionStatus(stock) {
   if (ar !== "review_required") return null;
 
   // Strong score + non-critical attention → approved_candidate
-  if (score >= 65 && level !== "critical") return "approved_candidate";
+  if (score >= BRIEFING_DS_STRONG_SCORE && level !== "critical") return "approved_candidate";
   // Weak score → needs_more_data
-  if (score < 45) return "needs_more_data";
+  if (score < BRIEFING_DS_WEAK_SCORE) return "needs_more_data";
   // Default → pending_review
   return "pending_review";
 }

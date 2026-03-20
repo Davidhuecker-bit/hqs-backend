@@ -652,7 +652,7 @@ Erstelle eine strukturierte Erklärung mit:
     - decisionStatus="deferred_review": erkläre, warum der Fall zurückgestellt wurde – widersprüchliche Signale, und wann eine erneute Prüfung sinnvoll wäre.
     - decisionStatus="needs_more_data": erkläre, warum noch nicht genug Daten für eine Entscheidung vorliegen – was fehlt konkret, und was beobachtet werden muss.
     - decisionReason vorhanden: verwende es als Kontext für die Erklärung
-    - Wichtig: Kein Entscheidungsstatus bedeutet automatische Genehmigung. Auch approved_candidate erfordert manuelle Bestätigung.
+    - Wichtig: Kein Entscheidungsstatus bedeutet keine automatische Genehmigung. Auch approved_candidate erfordert manuelle Bestätigung.
     - Halte die Erklärung kurz (1–3 Sätze) – verständlich und nachvollziehbar
     Wenn kein Entscheidungs-Layer vorhanden, diesen Punkt weglassen.
 `;
