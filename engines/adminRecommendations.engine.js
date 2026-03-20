@@ -39,8 +39,6 @@ function buildAdminRecommendations({
   validation = {},
   tuning = {},
 } = {}) {
-  const topBottleneckTitle = diagnostics?.summary?.topBottleneckTitle || "Kein klarer Engpass erkannt";
-
   const nextActions = [];
   const tuningTargets = tuning?.topTuningTargets || [];
   for (const item of tuningTargets.slice(0, 3)) {
@@ -59,7 +57,7 @@ function buildAdminRecommendations({
 
   return {
     generatedAt: new Date().toISOString(),
-    topBottleneckTitle,
+    topBottleneckTitle: diagnostics?.summary?.topBottleneckTitle || "Kein klarer Engpass erkannt",
     nextActions,
     warnings,
     opportunities,
