@@ -135,8 +135,11 @@ router.get("/portfolio", async (req, res) => {
 
     if (!symbols.length) {
       return res.json({
-        success: true,
-        message: "No open portfolio positions found. News will be available once positions are opened.",
+        success: false,
+        message:
+          "Customer-specific portfolio news is not yet available in this code path. " +
+          "A user_id is required for customer-specific symbol lookup but is not accessible here. " +
+          "Use GET /api/market-news?symbols=... for symbol-based news instead.",
         symbols: [],
         limit,
         minRelevance,
@@ -172,8 +175,11 @@ router.get("/watchlist", async (req, res) => {
 
     if (!symbols.length) {
       return res.json({
-        success: true,
-        message: "No active watchlist symbols found.",
+        success: false,
+        message:
+          "Customer-specific watchlist news is not yet available in this code path. " +
+          "A user_id is required for customer-specific symbol lookup but is not accessible here. " +
+          "Use GET /api/market-news?symbols=... for symbol-based news instead.",
         symbols: [],
         limit,
         minRelevance,
