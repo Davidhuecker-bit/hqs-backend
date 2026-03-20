@@ -1181,7 +1181,8 @@ async function buildMarketSnapshot() {
         symbol,
         brain?.aiScore,
         features,
-        trendData
+        trendData,
+        research
       );
 
       const macroContext = buildMacroContextFallback({

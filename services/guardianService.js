@@ -1,3 +1,18 @@
+"use strict";
+
+/*
+  Guardian Service – OpenAI Analysis Consumer
+
+  Wraps the OpenAI GPT model to produce a human-readable stock analysis
+  based on the finalConviction, finalRating, and finalDecision outputs
+  from integrationEngine, supplemented by the raw HQS breakdown.
+
+  Verantwortung: Consume integrationEngine output → generate natural-language
+  analysis via OpenAI Guardian AI prompt.  No scoring, no pipeline state.
+
+  Rolle: Consumer (letzte Schicht – liest fertige Engine-Outputs, schreibt nichts zurück)
+*/
+
 const OpenAI = require("openai");
 
 let client = null;

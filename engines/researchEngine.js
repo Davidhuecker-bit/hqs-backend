@@ -1,11 +1,18 @@
 "use strict";
 
 /*
-  Autonomous Research Engine
+  Research Engine – Hypothesis Evaluation (Pipeline: Stage 2 of 4)
+
   Contextualizes and evaluates confirmed market discoveries.
   Input discoveries come from discoveryEngine – this layer adds
   confidence scoring and bearish-risk context rather than re-detecting
   the same opportunity conditions.
+
+  Verantwortung: Ableitung von Hypothesen aus discoveryEngine-Output und
+  Konfidenz-Bewertung.  Bearish-Pressure ist das einzige research-eigene
+  Signal ohne discoveryEngine-Gegenstück.
+
+  Ablauf: discoveryEngine → researchEngine → marketBrain → strategyEngine → integrationEngine
 */
 
 function safe(n, fallback = 0) {
