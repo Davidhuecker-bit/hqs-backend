@@ -689,6 +689,128 @@ function computeActionOrchestration(opp) {
   };
 }
 
+/* =========================================================
+   STEP 7 BLOCK 1: ACTION-READINESS & APPROVAL LAYER
+   Classifies each opportunity into a controlled action tier.
+   Uses only already-computed signals. No DB calls. No automation.
+   Rules are simple, explicit, and governance-compatible.
+   First match wins (protect before grow before observe).
+=========================================================== */
+
+/**
+ * Derive the action-readiness tier for an opportunity.
+ *
+ * @param {object} opp – fully enriched opportunity (nextAction, deltaContext,
+ *                       actionOrchestration, portfolioContext, robustnessScore,
+ *                       signalContext, userAttentionLevel all expected)
+ * @returns {{
+ *   actionReadiness:    'review_required'|'proposal_ready'|'monitor_only'|'insufficient_confidence',
+ *   approvalRequired:   boolean,
+ *   approvalReason:     string|null,
+ *   executionScope:     'position'|'watchlist'|'portfolio_review'|'observation',
+ *   actionSafetyLevel:  'safe'|'caution'|'restricted',
+ *   automationEligible: false,
+ * }}
+ */
+function computeActionReadiness(opp) {
+  const actionType     = opp.nextAction?.actionType     || "observe";
+  const actionPriority = opp.nextAction?.actionPriority || "low";
+  const attention      = opp.userAttentionLevel          || "low";
+  const escalation     = opp.actionOrchestration?.escalationLevel || "none";
+  const robustness     = safeNum(opp.robustnessScore, 0);
+  const signalConf = opp.signalContext
+    ? safeNum(opp.signalContext.signalConfidence, 0)  // absent signalConfidence within existing context is treated conservatively (0)
+    : null; // no signal context at all → skip the confidence gate (robustness guard is sufficient)
+  const portfolioCtx   = opp.portfolioContext || {};
+
+  // AR-0: insufficient confidence guard – robustness or signal basis too thin
+  // Checked before action-type rules so bad data never generates a false proposal.
+  // signalConf gate only fires when signal context exists (null means context absent, not poor quality).
+  if (robustness < 0.30 || (signalConf !== null && signalConf < 35)) {
+    return {
+      actionReadiness:    "insufficient_confidence",
+      approvalRequired:   false,
+      approvalReason:     "Datenbasis zu gering für Handlungsempfehlung – Signal noch nicht reif",
+      executionScope:     "observation",
+      actionSafetyLevel:  "caution",
+      automationEligible: false,
+    };
+  }
+
+  // AR-1: critical/risk/escalation signals → human approval required
+  if (
+    actionType === "reduce_risk" ||
+    (actionType === "avoid_adding" && portfolioCtx.concentrationRisk === "high") ||
+    attention === "critical" ||
+    escalation === "high"
+  ) {
+    const parts = [];
+    if (actionType === "reduce_risk") parts.push("Risikoreduktion bei bestehender Position");
+    if (portfolioCtx.concentrationRisk === "high") parts.push("hohes Konzentrationsrisiko");
+    if (attention === "critical") parts.push("kritischer Aufmerksamkeitslevel");
+    // Include escalation reason alongside the others (not mutually exclusive)
+    if (escalation === "high") parts.push("hohe Eskalationsstufe");
+    return {
+      actionReadiness:    "review_required",
+      approvalRequired:   true,
+      approvalReason:     parts.join(" · ") || "Risikobasierte Aktion erfordert manuelle Freigabe",
+      executionScope:     actionType === "reduce_risk" ? "position" : "portfolio_review",
+      actionSafetyLevel:  "restricted",
+      automationEligible: false,
+    };
+  }
+
+  // AR-2: rebalance review → portfolio change needs approval
+  if (actionType === "rebalance_review") {
+    return {
+      actionReadiness:    "review_required",
+      approvalRequired:   true,
+      approvalReason:     "Rebalancing-Prüfung erfordert manuelle Überprüfung der Portfolioposition",
+      executionScope:     "portfolio_review",
+      actionSafetyLevel:  "caution",
+      automationEligible: false,
+    };
+  }
+
+  // AR-3: clear buy/upgrade at non-critical profile → structured proposal, no auto-execution
+  if (
+    (actionType === "starter_position" || actionType === "watchlist_upgrade") &&
+    portfolioCtx.concentrationRisk !== "high" &&
+    actionPriority !== "low"
+  ) {
+    return {
+      actionReadiness:    "proposal_ready",
+      approvalRequired:   false,
+      approvalReason:     null,
+      executionScope:     actionType === "starter_position" ? "position" : "watchlist",
+      actionSafetyLevel:  "safe",
+      automationEligible: false,
+    };
+  }
+
+  // AR-4: hold or observe → monitor only, no action needed
+  if (actionType === "hold" || actionType === "observe") {
+    return {
+      actionReadiness:    "monitor_only",
+      approvalRequired:   false,
+      approvalReason:     null,
+      executionScope:     "observation",
+      actionSafetyLevel:  "safe",
+      automationEligible: false,
+    };
+  }
+
+  // AR-5: fallback (avoid_adding without high concentration, low-priority upgrade, etc.)
+  return {
+    actionReadiness:    "monitor_only",
+    approvalRequired:   false,
+    approvalReason:     null,
+    executionScope:     "observation",
+    actionSafetyLevel:  "safe",
+    automationEligible: false,
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -1857,7 +1979,9 @@ async function getTopOpportunities(arg = 10) {
     // Supersedes _userAffinityBonus in the sort – includes more signals at same ±3 range.
     const oppFull = { ...oppWithAttention, actionOrchestration, adaptiveSignalHints };
     const adaptivePriority = _computeAdaptivePriorityLayer(oppFull, userPreferenceHints);
-    return { ...oppFull, ...adaptivePriority };
+    // Step 7 Block 1: compute action-readiness tier (classification only, no execution)
+    const actionReadiness = computeActionReadiness(oppFull);
+    return { ...oppFull, ...adaptivePriority, actionReadiness };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
@@ -2286,4 +2410,5 @@ module.exports = {
   executeSafetyFirst,
   buildOpportunityInsight,
   computeActionOrchestration,
+  computeActionReadiness,
 };

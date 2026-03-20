@@ -109,6 +109,9 @@ async function analyzeStockWithGuardian(context) {
   const adaptivePriorityReason = marketData?.adaptivePriorityReason ?? context?.adaptivePriorityReason ?? null;
   const adjustedRecommendationPriority = marketData?.adjustedRecommendationPriority ?? context?.adjustedRecommendationPriority ?? null;
 
+  // Step 7 Block 1: Action-Readiness & Approval Layer – read classification if present.
+  const actionReadiness = marketData?.actionReadiness ?? context?.actionReadiness ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -431,7 +434,39 @@ async function analyzeStockWithGuardian(context) {
   }
   const adaptivePriorityBlock = buildAdaptivePriorityBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock]
+  // Step 7 Block 1: Action-Readiness & Approval Layer block – explains what readiness tier
+  // this signal has reached and why a specific governance gate applies.
+  // Short and factual: explains observation, approval, proposal, or low-confidence status.
+  const ACTION_READINESS_LABELS = {
+    review_required:        "Freigabe erforderlich – manuelle Überprüfung nötig vor jeder Aktion",
+    proposal_ready:         "Vorschlag bereit – strukturierter Vorschlag, keine automatische Ausführung",
+    monitor_only:           "Nur Beobachtung – kein Handlungsbedarf, Situation weiter beobachten",
+    insufficient_confidence: "Unzureichende Datenbasis – Signal noch nicht reif für Handlungsempfehlung",
+  };
+  const ACTION_SAFETY_LABELS = {
+    restricted: "Eingeschränkt (Risiko-/Governance-Sperre)",
+    caution:    "Vorsicht (erhöhte Aufmerksamkeit empfohlen)",
+    safe:       "Unkritisch",
+  };
+  function buildActionReadinessBlock() {
+    if (!actionReadiness) return "";
+    const parts = [];
+    const readinessLabel = ACTION_READINESS_LABELS[actionReadiness.actionReadiness] || actionReadiness.actionReadiness;
+    parts.push(`Aktionsbereitschaft (Step 7): ${readinessLabel}`);
+    if (actionReadiness.approvalRequired) {
+      parts.push(`Freigabe erforderlich: ${actionReadiness.approvalReason || "ja"}`);
+    }
+    if (actionReadiness.actionSafetyLevel) {
+      parts.push(`Sicherheitsstufe: ${ACTION_SAFETY_LABELS[actionReadiness.actionSafetyLevel] || actionReadiness.actionSafetyLevel}`);
+    }
+    if (actionReadiness.executionScope && actionReadiness.executionScope !== "observation") {
+      parts.push(`Ausführungsbereich: ${actionReadiness.executionScope}`);
+    }
+    return parts.join(" · ");
+  }
+  const actionReadinessBlock = buildActionReadinessBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -517,6 +552,13 @@ Erstelle eine strukturierte Erklärung mit:
    - Wichtig: Risiko-Signale, Guardian-Warnungen und kritische Follow-up-Pflichten bleiben immer dominant – Nutzerpräferenzen können diese nicht außer Kraft setzen. Falls ein adaptives Signal eine Risiko- oder kritische Warnung betrifft, weise explizit darauf hin, dass die Risikobewertung unverändert bleibt.
    - Halte die Erklärung kurz (1–2 Sätze) und nachvollziehbar – keine neue Analyse, nur Einordnung der Systementscheidung
    Wenn kein adaptives Priorisierungs-Signal vorhanden, diesen Punkt weglassen.
+14. Aktionsbereitschaft (Step 7): Falls eine Aktionsbereitschafts-Klassifizierung vorhanden ist, erkläre kurz, warum das Signal in diese Stufe eingeordnet wurde –
+   - actionReadiness="review_required": erkläre, warum eine manuelle Freigabe nötig ist (z.B. Risikoreduktion, Konzentrationsrisiko, kritischer Aufmerksamkeitslevel) und was der Nutzer jetzt prüfen sollte
+   - actionReadiness="proposal_ready": erkläre, dass ein strukturierter Vorschlag vorliegt, aber keine automatische Ausführung stattfindet – was sollte der Nutzer als nächsten Schritt prüfen?
+   - actionReadiness="monitor_only": erkläre, warum nur Beobachtung empfohlen wird – kein Handlungsbedarf, aber weiter im Auge behalten
+   - actionReadiness="insufficient_confidence": erkläre, warum die Datenbasis noch nicht ausreicht – was fehlt, damit das Signal aktionsreif wird?
+   - approvalRequired=true: weise explizit darauf hin, dass keine Aktion ohne Nutzer-Freigabe stattfindet – das System handelt nicht eigenständig
+   Wenn keine Aktionsbereitschafts-Klassifizierung vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

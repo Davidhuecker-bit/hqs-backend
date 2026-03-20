@@ -22,22 +22,40 @@ const {
  * Discovery picks don't go through getTopOpportunities(), so we derive
  * deliveryMode and escalationLevel directly from pick confidence/score.
  *
+ * Also attaches actionReadiness (Step 7 Block 1) so the notification gate
+ * can suppress monitor_only picks and prioritise review_required / proposal_ready.
+ *
  * Rules (first match wins):
- *   high confidence (≥75) or high score (≥75) → notification + high escalation
- *   on watchlist or decent confidence (≥55) or decent score (≥55) → notification + medium
- *   else → none (skip push – low-signal pick not worth notifying)
+ *   high confidence (≥75) or high score (≥75) → notification + high escalation + review_required
+ *   on watchlist or decent confidence (≥55) or decent score (≥55) → notification + medium + proposal_ready
+ *   else → none (skip push – low-signal pick not worth notifying) + monitor_only
  */
 function _derivePickOrchestration(pick, onWatchlist) {
   const confidence = Number(pick?.confidence ?? 0);
   const score = Number(pick?.discoveryScore ?? pick?.opportunityScore ?? pick?.hqsScore ?? 0);
 
   if (confidence >= 75 || score >= 75) {
-    return { deliveryMode: "notification", escalationLevel: "high", followUpNeeded: true };
+    return {
+      deliveryMode: "notification",
+      escalationLevel: "high",
+      followUpNeeded: true,
+      actionReadiness: "review_required",
+    };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
-    return { deliveryMode: "notification", escalationLevel: "medium", followUpNeeded: false };
+    return {
+      deliveryMode: "notification",
+      escalationLevel: "medium",
+      followUpNeeded: false,
+      actionReadiness: "proposal_ready",
+    };
   }
-  return { deliveryMode: "none", escalationLevel: "none", followUpNeeded: false };
+  return {
+    deliveryMode: "none",
+    escalationLevel: "none",
+    followUpNeeded: false,
+    actionReadiness: "monitor_only",
+  };
 }
 
 // Step 5 Follow-up/Reminder: max open reminder-eligible notifications before gating new delivery
@@ -93,6 +111,16 @@ async function runDiscoveryNotify() {
         // Gate: skip notification for low-signal picks (deliveryMode=none)
         if (orchestration.deliveryMode === "none") {
           gatedOut++;
+          continue;
+        }
+
+        // Step 7 Block 1: gate monitor_only picks from push notifications.
+        // Only review_required and proposal_ready picks are worth a push.
+        if (orchestration.actionReadiness === "monitor_only") {
+          gatedOut++;
+          logger.info("discoveryNotify: user gated (action_readiness=monitor_only)", {
+            userId, actionReadiness: orchestration.actionReadiness,
+          });
           continue;
         }
 

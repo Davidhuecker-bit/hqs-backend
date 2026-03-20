@@ -236,6 +236,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     followUpContext: stock?.followUpContext ?? null,
     // Step 6: Adaptive product signals – recommendation outcome and track-record hints per symbol.
     adaptiveSignalHints: stock?.adaptiveSignalHints ?? null,
+    // Step 7 Block 1: Action-Readiness classification (readiness tier + approval flag).
+    actionReadiness: stock?.actionReadiness ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -277,6 +279,14 @@ function buildTopSignals(stocks) {
     none:     null,
   };
 
+  // Step 7 Block 1: Action-Readiness badge – surfaces controlled action tier in top signal list.
+  const ACTION_READINESS_BADGES = {
+    review_required:         "🔒 Freigabe nötig",
+    proposal_ready:          "📝 Vorschlag",
+    monitor_only:            null,
+    insufficient_confidence: "⚠ Datenbasis gering",
+  };
+
   return stocks
     .slice()
     .sort((left, right) => {
@@ -295,8 +305,9 @@ function buildTopSignals(stocks) {
       const action     = stock.nextAction       ?? null;
       const orch       = stock.actionOrchestration ?? null;
       const followUp   = stock.followUpContext  ?? null;
+      const ar         = stock.actionReadiness  ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
-      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, and follow-up badge.
+      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, and action-readiness badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
@@ -309,11 +320,14 @@ function buildTopSignals(stocks) {
       const followUpBadge     = followUp?.followUpStatus && FOLLOW_UP_STATUS_BADGES[followUp.followUpStatus]
         ? ` ${FOLLOW_UP_STATUS_BADGES[followUp.followUpStatus]}`
         : "";
+      const arBadge           = ar?.actionReadiness && ACTION_READINESS_BADGES[ar.actionReadiness]
+        ? ` ${ACTION_READINESS_BADGES[ar.actionReadiness]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -322,6 +336,7 @@ function buildTopSignals(stocks) {
         attentionReason: stock.attentionReason ?? null,
         feedbackContext: stock.feedbackContext ?? null,
         followUpContext: followUp,
+        actionReadiness: ar,
       };
     });
 }
@@ -440,6 +455,14 @@ function buildPortfolioIntelligenceSummary(stocks) {
       reminderEligible: stocks.filter((s) => s.followUpContext?.reminderEligible === true).length,
       reviewDue:        stocks.filter((s) => s.followUpContext?.reviewDue === true).length,
       needsClosure:     stocks.filter((s) => s.followUpContext?.needsClosure === true).length,
+    },
+    // Step 7 Block 1: action-readiness distribution across all stocks.
+    actionReadiness: {
+      reviewRequired:         stocks.filter((s) => s.actionReadiness?.actionReadiness === "review_required").length,
+      proposalReady:          stocks.filter((s) => s.actionReadiness?.actionReadiness === "proposal_ready").length,
+      monitorOnly:            stocks.filter((s) => s.actionReadiness?.actionReadiness === "monitor_only").length,
+      insufficientConfidence: stocks.filter((s) => s.actionReadiness?.actionReadiness === "insufficient_confidence").length,
+      approvalRequired:       stocks.filter((s) => s.actionReadiness?.approvalRequired === true).length,
     },
   };
 }
