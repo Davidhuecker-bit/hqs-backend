@@ -112,6 +112,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 7 Block 1: Action-Readiness & Approval Layer – read classification if present.
   const actionReadiness = marketData?.actionReadiness ?? context?.actionReadiness ?? null;
 
+  // Step 7 Block 2: Approval-Queue entry – collection/prioritisation layer.
+  const approvalQueueEntry = marketData?.approvalQueueEntry ?? context?.approvalQueueEntry ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -466,7 +469,38 @@ async function analyzeStockWithGuardian(context) {
   }
   const actionReadinessBlock = buildActionReadinessBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock]
+  // Step 7 Block 2: Approval-Queue block – explains the review/approval state concisely.
+  // Covers: why pending, why proposal only, why not yet ready.
+  const QUEUE_BUCKET_LABELS = {
+    risk_review:      "Risiko-Review",
+    proposal_bucket:  "Vorschlags-Review",
+    insufficient_data: "Datenbasis zu gering",
+  };
+  function buildApprovalQueueBlock() {
+    if (!approvalQueueEntry) return "";
+    const parts = [];
+    if (approvalQueueEntry.pendingApproval) {
+      const bucketLabel = QUEUE_BUCKET_LABELS[approvalQueueEntry.approvalQueueBucket] || approvalQueueEntry.approvalQueueBucket;
+      parts.push(`Freigabe ausstehend – Queue: ${bucketLabel}`);
+      if (approvalQueueEntry.reviewPriority) {
+        parts.push(`Review-Priorität: ${approvalQueueEntry.reviewPriority}`);
+      }
+      if (approvalQueueEntry.reviewReason) {
+        parts.push(`Grund: ${approvalQueueEntry.reviewReason}`);
+      }
+    } else if (approvalQueueEntry.approvalQueueBucket === "proposal_bucket") {
+      parts.push("Strukturierter Vorschlag – bereit zur Prüfung, keine automatische Ausführung");
+      if (approvalQueueEntry.reviewPriority) {
+        parts.push(`Vorschlags-Priorität: ${approvalQueueEntry.reviewPriority}`);
+      }
+    } else if (approvalQueueEntry.approvalQueueBucket === "insufficient_data") {
+      parts.push("Datenbasis zu gering – Signal noch nicht freigabereif, weiter beobachten");
+    }
+    return parts.length ? `Freigabe-Queue (Step 7 Block 2): ${parts.join(" · ")}` : "";
+  }
+  const approvalQueueBlock = buildApprovalQueueBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -559,6 +593,15 @@ Erstelle eine strukturierte Erklärung mit:
    - actionReadiness="insufficient_confidence": erkläre, warum die Datenbasis noch nicht ausreicht – was fehlt, damit das Signal aktionsreif wird?
    - approvalRequired=true: weise explizit darauf hin, dass keine Aktion ohne Nutzer-Freigabe stattfindet – das System handelt nicht eigenständig
    Wenn keine Aktionsbereitschafts-Klassifizierung vorhanden, diesen Punkt weglassen.
+15. Freigabe-Queue (Step 7 Block 2): Falls ein Freigabe-Queue-Eintrag vorhanden ist, erkläre kurz und verständlich den Review-Status –
+   - pendingApproval=true + approvalQueueBucket="risk_review": erkläre, warum das Signal einer Risiko-Prüfung unterzogen wird (z.B. Reduce-Risk-Aktion, hohes Konzentrationsrisiko, Rebalancing) und was der Nutzer konkret prüfen sollte, bevor er handelt
+   - pendingApproval=true + approvalQueueBucket="proposal_bucket": erkläre, dass ein Vorschlag zur manuellen Freigabe bereit liegt – was macht diesen Vorschlag freigabewürdig und was fehlt noch für eine sichere Entscheidung?
+   - pendingApproval=false + approvalQueueBucket="proposal_bucket": erkläre, dass ein strukturierter Vorschlag vorliegt, aber keine formale Freigabe erforderlich ist – der Nutzer kann selbst entscheiden
+   - pendingApproval=false + approvalQueueBucket="insufficient_data": erkläre klar, warum das Signal noch nicht freigabereif ist und was beobachtet werden muss, damit es in die Queue aufsteigen kann
+   - reviewPriority="high": weise explizit auf die hohe Dringlichkeit der Prüfung hin
+   - reviewSummary vorhanden: verwende es als kurze Zusammenfassung des Review-Status
+   - Halte die Erklärung kurz (1–3 Sätze) – keine neue Analyse, nur Einordnung des Freigabe-Status
+   Wenn kein Freigabe-Queue-Eintrag vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

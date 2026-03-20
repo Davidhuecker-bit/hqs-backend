@@ -89,6 +89,7 @@ const {
   getForecastVsOutcome,
   getSignalKPIs,
 } = require("../services/signalHistory.repository");
+const { getTopOpportunities } = require("../services/opportunityScanner.service");
 
 const router = express.Router();
 
@@ -1767,6 +1768,87 @@ router.get("/signal-kpis", async (req, res) => {
     return res.json(result);
   } catch (error) {
     logger.error("Admin signal-kpis route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────
+ * GET /api/admin/review-queue
+ * Step 7 Block 2: Approval-Queue & Action Review Flow
+ *
+ * Returns the current approval/review queue derived from
+ * the top opportunities.  No execution – read-only view.
+ *
+ * Response shape:
+ *   pendingApproval  – items awaiting manual review (approvalRequired=true)
+ *   proposalBucket   – structured proposals ready for user decision
+ *   insufficientData – signals not yet ready for any action
+ *   summary          – counts per bucket + priority breakdown
+ *
+ * Query params:
+ *   ?limit=20        – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/review-queue", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    const pendingApproval = [];
+    const proposalBucket  = [];
+    const insufficientData = [];
+
+    for (const opp of opportunities) {
+      const aq = opp.approvalQueueEntry;
+      if (!aq) continue;
+
+      const entry = {
+        symbol:              opp.symbol,
+        actionReadiness:     opp.actionReadiness?.actionReadiness ?? null,
+        approvalRequired:    opp.actionReadiness?.approvalRequired ?? false,
+        reviewPriority:      aq.reviewPriority,
+        approvalQueueBucket: aq.approvalQueueBucket,
+        reviewReason:        aq.reviewReason,
+        reviewSummary:       aq.reviewSummary,
+        actionType:          opp.nextAction?.actionType        ?? null,
+        actionPriority:      opp.nextAction?.actionPriority    ?? null,
+        escalationLevel:     opp.actionOrchestration?.escalationLevel ?? null,
+        concentrationRisk:   opp.portfolioContext?.concentrationRisk  ?? null,
+        finalConviction:     opp.finalConviction  ?? null,
+        hqsScore:            opp.hqsScore         ?? null,
+      };
+
+      if (aq.pendingApproval) {
+        pendingApproval.push(entry);
+      } else if (aq.approvalQueueBucket === "proposal_bucket") {
+        proposalBucket.push(entry);
+      } else if (aq.approvalQueueBucket === "insufficient_data") {
+        insufficientData.push(entry);
+      }
+    }
+
+    // Sort pending by reviewPriority (high → medium → low)
+    const PRIORITY_RANK = { high: 0, medium: 1, low: 2 };
+    const byPriority = (a, b) =>
+      (PRIORITY_RANK[a.reviewPriority] ?? 3) - (PRIORITY_RANK[b.reviewPriority] ?? 3);
+    pendingApproval.sort(byPriority);
+    proposalBucket.sort(byPriority);
+
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      summary: {
+        pendingApprovalCount:  pendingApproval.length,
+        proposalBucketCount:   proposalBucket.length,
+        insufficientDataCount: insufficientData.length,
+        riskReviewCount:       pendingApproval.filter((e) => e.approvalQueueBucket === "risk_review").length,
+        highPriorityCount:     pendingApproval.filter((e) => e.reviewPriority === "high").length,
+      },
+      pendingApproval,
+      proposalBucket,
+      insufficientData,
+    });
+  } catch (error) {
+    logger.error("Admin review-queue route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
