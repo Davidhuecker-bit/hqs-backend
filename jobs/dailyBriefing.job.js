@@ -34,6 +34,10 @@ const ATTENTION_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 // Step 7 Block 1: Action-Readiness ordering for briefing sort (lower = higher priority).
 const ACTION_READINESS_RANK = { review_required: 0, proposal_ready: 1, monitor_only: 2, insufficient_confidence: 3 };
 
+// Step 7 Block 3: Decision-Status ordering for briefing sort (lower = higher priority).
+// approved_candidate tops the list as it has a clear decision state, followed by pending_review.
+const DECISION_STATUS_RANK = { approved_candidate: 0, pending_review: 1, deferred_review: 2, needs_more_data: 3 };
+
 // Thresholds for stock attention classification based on daily price change and HQS score.
 // A significant DROP (≤ -5%) on a scored stock (≥ 55) triggers a high-attention risk alert.
 // A significant GAIN (≥ +5%) on a strong-score stock (≥ 65) triggers a medium/high alert.
@@ -164,6 +168,29 @@ function _deriveBriefingApprovalBucket(stock) {
   return null;
 }
 
+/**
+ * Step 7 Block 3: Derive a brief decision status for a briefing stock from its
+ * already-computed action-readiness, attention, and orchestration signals.
+ * No extra DB calls. Returns null for non-review cases.
+ *
+ * Maps review_required cases into: approved_candidate, pending_review, needs_more_data
+ * based on available signal strength (HQS score as proxy for conviction in briefing context).
+ */
+function _deriveBriefingDecisionStatus(stock) {
+  const ar    = stock._actionReadiness  || "monitor_only";
+  const level = stock._attentionLevel   || "low";
+  const score = Number(stock.hqsScore ?? 0);
+
+  if (ar !== "review_required") return null;
+
+  // Strong score + non-critical attention → approved_candidate
+  if (score >= 65 && level !== "critical") return "approved_candidate";
+  // Weak score → needs_more_data
+  if (score < 45) return "needs_more_data";
+  // Default → pending_review
+  return "pending_review";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -245,8 +272,19 @@ function buildFactsFromMarket(stocks) {
       ? " · 📝 Vorschlag bereit"
       : "";
 
+    // Step 7 Block 3: include decision status label for review cases
+    const DECISION_STATUS_LABELS = {
+      approved_candidate: "✅ Freigabe-Kandidat",
+      pending_review:     "⏳ Prüfung ausstehend",
+      deferred_review:    "⏸ Zurückgestellt",
+      needs_more_data:    "📊 Mehr Daten nötig",
+    };
+    const dsLabel = s._decisionStatus && DECISION_STATUS_LABELS[s._decisionStatus]
+      ? ` · ${DECISION_STATUS_LABELS[s._decisionStatus]}`
+      : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}.`
     );
   }
   return lines.join("\n");
@@ -356,16 +394,22 @@ async function runDailyBriefing() {
         s._actionReadiness = _deriveBriefingActionReadiness(s);
         // Step 7 Block 2: derive approval-queue bucket for clearer briefing labelling
         s._approvalQueueBucket = _deriveBriefingApprovalBucket(s);
+        // Step 7 Block 3: derive decision status for review-case language/order
+        s._decisionStatus = _deriveBriefingDecisionStatus(s);
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)
-      // Tertiary sort: attention level rank (critical → high → medium → low)
-      // Quaternary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
+      // Tertiary sort: Step 7 Block 3 decision-status (approved_candidate > pending_review > deferred > needs_more_data)
+      // Quaternary sort: attention level rank (critical → high → medium → low)
+      // Quinary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
       stocks.sort((a, b) => {
         const orchDiff = _briefingOrchestrationRank(a, userHasOpenFollowUps) - _briefingOrchestrationRank(b, userHasOpenFollowUps);
         if (orchDiff !== 0) return orchDiff;
         const arDiff = (ACTION_READINESS_RANK[a._actionReadiness] ?? 3) - (ACTION_READINESS_RANK[b._actionReadiness] ?? 3);
         if (arDiff !== 0) return arDiff;
+        // Step 7 Block 3: decision-status tie-breaker within same action-readiness tier
+        const dsDiff = (DECISION_STATUS_RANK[a._decisionStatus] ?? 4) - (DECISION_STATUS_RANK[b._decisionStatus] ?? 4);
+        if (dsDiff !== 0) return dsDiff;
         const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
         if (attnDiff !== 0) return attnDiff;
         return _adaptiveBriefingBoost(a, userPreferenceHints) - _adaptiveBriefingBoost(b, userPreferenceHints);

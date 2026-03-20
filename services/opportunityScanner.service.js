@@ -915,6 +915,171 @@ function computeApprovalQueueEntry(opp) {
   };
 }
 
+/**
+ * Step 7 Block 3: Approval Decision Layer – derives a concrete decision state
+ * for review/approval cases from already-computed signals.
+ *
+ * Pure derivation — no execution, no automatic approval, no new DB calls.
+ * Turns "this case needs review" into "this case is in state X because Y".
+ *
+ * Decision statuses:
+ *   pending_review     – review required, risk or contradictions present
+ *   approved_candidate – review required but data is strong & consistent → likely approvable
+ *   rejected_candidate – review required with problematic constellation → likely not approvable
+ *   deferred_review    – review required but contradictory/weak data → defer until clearer
+ *   needs_more_data    – insufficient or thin data basis → cannot decide yet
+ *
+ * Only review_required cases enter the decision logic. Other tiers
+ * (proposal_ready, monitor_only, insufficient_confidence) are mapped
+ * transparently without pretending to be approved.
+ *
+ * @param {object} opp – opportunity with actionReadiness, approvalQueueEntry,
+ *                       finalConviction, finalConfidence, robustnessScore,
+ *                       signalContext, portfolioContext, nextAction, actionOrchestration
+ * @returns {object}
+ */
+function computeDecisionLayer(opp) {
+  const ar        = opp.actionReadiness;
+  const aq        = opp.approvalQueueEntry;
+  if (!ar) return null;
+
+  const readiness      = ar.actionReadiness;
+  const approvalReq    = ar.approvalRequired;
+  const safetyLevel    = ar.actionSafetyLevel    || "safe";
+  const conviction     = safeNum(opp.finalConviction, 0);
+  const confidence     = safeNum(opp.finalConfidence, 0);
+  const robustness     = safeNum(opp.robustnessScore, 0);
+  const signalConf     = opp.signalContext
+    ? safeNum(opp.signalContext.signalConfidence, 0)
+    : null;
+  const escalation     = opp.actionOrchestration?.escalationLevel || "none";
+  const concRisk       = opp.portfolioContext?.concentrationRisk  || "none";
+  const actionType     = opp.nextAction?.actionType               || "observe";
+  const reviewPriority = aq?.reviewPriority                       || null;
+
+  // ── Tier 0: insufficient_confidence → needs_more_data (clear separation) ──
+  if (readiness === "insufficient_confidence") {
+    return {
+      decisionStatus:    "needs_more_data",
+      decisionReason:    "Datenbasis zu gering für eine Entscheidung – Robustness oder Signalqualität unzureichend",
+      approvalOutcome:   null,
+      decisionReadiness: "not_ready",
+      reviewDecision:    null,
+    };
+  }
+
+  // ── Tier 1: monitor_only → outside decision logic (no approval case) ──
+  if (readiness === "monitor_only") {
+    return {
+      decisionStatus:    null,
+      decisionReason:    null,
+      approvalOutcome:   null,
+      decisionReadiness: "not_applicable",
+      reviewDecision:    null,
+    };
+  }
+
+  // ── Tier 2: proposal_ready → not auto-approved, transparent pass-through ──
+  if (readiness === "proposal_ready") {
+    return {
+      decisionStatus:    null,
+      decisionReason:    null,
+      approvalOutcome:   "proposal_pending",
+      decisionReadiness: "proposal_available",
+      reviewDecision:    null,
+    };
+  }
+
+  // ── Tier 3: review_required → decision logic applies ──
+  if (readiness === "review_required") {
+    // Signal quality indicators
+    const hasStrongConviction  = conviction >= 65;
+    const hasGoodConfidence    = confidence >= 60;
+    const hasGoodRobustness    = robustness >= 0.55;
+    const hasStrongSignal      = signalConf === null || signalConf >= 55;
+    const dataQuality          = [hasStrongConviction, hasGoodConfidence, hasGoodRobustness, hasStrongSignal]
+      .filter(Boolean).length;
+
+    // Risk / contradiction indicators
+    const hasHighConcentration = concRisk === "high";
+    const hasHighEscalation    = escalation === "high";
+    const isRiskAction         = actionType === "reduce_risk";
+    const hasRestricted        = safetyLevel === "restricted";
+    const riskSignals          = [hasHighConcentration, hasHighEscalation, isRiskAction, hasRestricted]
+      .filter(Boolean).length;
+
+    // Decision D-1: High risk + problematic constellation → rejected_candidate
+    if (riskSignals >= 3 && dataQuality <= 1) {
+      return {
+        decisionStatus:    "rejected_candidate",
+        decisionReason:    "Mehrere Risikosignale bei schwacher Datenbasis – Freigabe nicht empfohlen",
+        approvalOutcome:   "rejection_likely",
+        decisionReadiness: "review_complete",
+        reviewDecision:    "reject",
+      };
+    }
+
+    // Decision D-2: Strong data + low contradiction → approved_candidate
+    if (dataQuality >= 3 && riskSignals <= 1 && !isRiskAction) {
+      const reason = approvalReq
+        ? "Starke Datenbasis und konsistente Signale – Freigabe-Kandidat, manuelle Bestätigung erforderlich"
+        : "Datenqualität hoch, geringe Widersprüche – empfohlener Kandidat";
+      return {
+        decisionStatus:    "approved_candidate",
+        decisionReason:    reason,
+        approvalOutcome:   "approval_likely",
+        decisionReadiness: "review_complete",
+        reviewDecision:    "approve_candidate",
+      };
+    }
+
+    // Decision D-3: Mixed/weak signals → deferred_review or needs_more_data
+    if (dataQuality <= 1) {
+      return {
+        decisionStatus:    "needs_more_data",
+        decisionReason:    "Signale zu schwach oder unvollständig für eine sichere Entscheidung",
+        approvalOutcome:   null,
+        decisionReadiness: "not_ready",
+        reviewDecision:    null,
+      };
+    }
+
+    if (riskSignals >= 2 && dataQuality >= 2) {
+      return {
+        decisionStatus:    "deferred_review",
+        decisionReason:    "Widersprüchliche Signale – starke Daten, aber erhöhtes Risiko – zurückgestellt",
+        approvalOutcome:   null,
+        decisionReadiness: "deferred",
+        reviewDecision:    "defer",
+      };
+    }
+
+    // Decision D-4: Default for review_required → pending_review
+    const parts = [];
+    if (hasHighEscalation) parts.push("hohe Eskalation");
+    if (hasHighConcentration) parts.push("Konzentrationsrisiko");
+    if (!hasStrongConviction) parts.push("moderate Conviction");
+    return {
+      decisionStatus:    "pending_review",
+      decisionReason:    parts.length
+        ? `Manuelle Prüfung erforderlich: ${parts.join(", ")}`
+        : "Review erforderlich – Entscheidung steht aus",
+      approvalOutcome:   null,
+      decisionReadiness: "awaiting_review",
+      reviewDecision:    null,
+    };
+  }
+
+  // Fallback: unknown readiness tier → null decision
+  return {
+    decisionStatus:    null,
+    decisionReason:    null,
+    approvalOutcome:   null,
+    decisionReadiness: "not_applicable",
+    reviewDecision:    null,
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -2087,7 +2252,9 @@ async function getTopOpportunities(arg = 10) {
     const actionReadiness = computeActionReadiness(oppFull);
     // Step 7 Block 2: derive approval-queue entry (collection/prioritisation layer)
     const approvalQueueEntry = computeApprovalQueueEntry({ ...oppFull, actionReadiness });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry };
+    // Step 7 Block 3: derive decision layer – concrete decision state for review/approval cases
+    const decisionLayer = computeDecisionLayer({ ...oppFull, actionReadiness, approvalQueueEntry });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
@@ -2518,4 +2685,5 @@ module.exports = {
   computeActionOrchestration,
   computeActionReadiness,
   computeApprovalQueueEntry,
+  computeDecisionLayer,
 };
