@@ -310,6 +310,7 @@ function buildTopSignals(stocks) {
       const ar         = stock.actionReadiness  ?? null;
       const aq         = stock.approvalQueueEntry ?? null;
       const dl         = stock.decisionLayer     ?? null;
+      const caf        = stock.controlledApprovalFlow ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
       // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, action-readiness badge, approval-queue badge, decision badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
@@ -342,11 +343,23 @@ function buildTopSignals(stocks) {
       const dlBadge           = dl?.decisionStatus && DECISION_BADGES[dl.decisionStatus]
         ? ` ${DECISION_BADGES[dl.decisionStatus]}`
         : "";
+      // Step 7 Block 4: controlled approval flow badge – surface follow-up state compactly
+      const CAF_BADGES = {
+        approved_pending_action: "🟢 Bereit",
+        awaiting_review:         "⏳ Prüfung",
+        deferred:                "⏸ Vertagt",
+        waiting_for_more_data:   "📊 Daten",
+        closed:                  "🔴 Geschlossen",
+        proposal_available:      "📝 Vorschlag",
+      };
+      const cafBadge          = caf?.approvalFlowStatus && CAF_BADGES[caf.approvalFlowStatus]
+        ? ` ${CAF_BADGES[caf.approvalFlowStatus]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -360,6 +373,8 @@ function buildTopSignals(stocks) {
         approvalQueueEntry: aq,
         // Step 7 Block 3: decision layer for downstream decision-state rendering
         decisionLayer: dl,
+        // Step 7 Block 4: controlled approval flow for downstream lifecycle rendering
+        controlledApprovalFlow: caf,
       };
     });
 }
@@ -503,6 +518,15 @@ function buildPortfolioIntelligenceSummary(stocks) {
       rejectedCandidate:  stocks.filter((s) => s.decisionLayer?.decisionStatus === "rejected_candidate").length,
       deferredReview:     stocks.filter((s) => s.decisionLayer?.decisionStatus === "deferred_review").length,
       needsMoreData:      stocks.filter((s) => s.decisionLayer?.decisionStatus === "needs_more_data").length,
+    },
+    // Step 7 Block 4: controlled approval flow distribution – follow-up lifecycle states.
+    controlledApprovalFlow: {
+      approvedPendingAction: stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "approved_pending_action").length,
+      awaitingReview:        stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "awaiting_review").length,
+      deferred:              stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "deferred").length,
+      waitingForMoreData:    stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "waiting_for_more_data").length,
+      closed:                stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "closed").length,
+      proposalAvailable:     stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "proposal_available").length,
     },
   };
 }

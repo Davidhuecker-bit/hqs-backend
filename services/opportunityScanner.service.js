@@ -1092,6 +1092,104 @@ function computeDecisionLayer(opp) {
   };
 }
 
+// ── Step 7 Block 4: Controlled Approval Action Flow ────────────────────────
+// Answers: "What is the next controlled system step after the decision?"
+// No execution, no automation – only controlled follow-up classification.
+// Derives approvalFlowStatus, postDecisionAction, closureStatus,
+// nextReviewAt, deferUntil, executionIntent, actionLifecycleStage.
+function computeControlledApprovalFlow(opp) {
+  const dl = opp.decisionLayer;
+  if (!dl) return null;
+
+  const ds = dl.decisionStatus;
+  const readiness = opp.actionReadiness?.actionReadiness || null;
+  const approvalOutcome = dl.approvalOutcome || null;
+
+  // ── Path 1: approved_candidate → ready for manual action ──
+  if (ds === "approved_candidate") {
+    return {
+      approvalFlowStatus:  "approved_pending_action",
+      postDecisionAction:  "ready_for_manual_action",
+      closureStatus:       null,
+      nextReviewAt:        null,
+      deferUntil:          null,
+      executionIntent:     "manual_confirmation_required",
+      actionLifecycleStage: "post_decision",
+    };
+  }
+
+  // ── Path 2: rejected_candidate → closed ──
+  if (ds === "rejected_candidate") {
+    return {
+      approvalFlowStatus:  "closed",
+      postDecisionAction:  "no_action",
+      closureStatus:       "closed_rejected",
+      nextReviewAt:        null,
+      deferUntil:          null,
+      executionIntent:     "none",
+      actionLifecycleStage: "closed",
+    };
+  }
+
+  // ── Path 3: deferred_review → deferred with scheduled re-check ──
+  if (ds === "deferred_review") {
+    const now = new Date();
+    const deferDays = 3;
+    const deferDate = new Date(now.getTime() + deferDays * 24 * 60 * 60 * 1000);
+    return {
+      approvalFlowStatus:  "deferred",
+      postDecisionAction:  "wait_for_reassessment",
+      closureStatus:       null,
+      nextReviewAt:        deferDate.toISOString(),
+      deferUntil:          deferDate.toISOString(),
+      executionIntent:     "reassess_after_data_update",
+      actionLifecycleStage: "deferred",
+    };
+  }
+
+  // ── Path 4: needs_more_data → waiting for more data ──
+  if (ds === "needs_more_data") {
+    return {
+      approvalFlowStatus:  "waiting_for_more_data",
+      postDecisionAction:  "collect_more_signals",
+      closureStatus:       null,
+      nextReviewAt:        null,
+      deferUntil:          null,
+      executionIntent:     "passive_observation",
+      actionLifecycleStage: "pre_decision",
+    };
+  }
+
+  // ── Path 5: pending_review → awaiting review ──
+  if (ds === "pending_review") {
+    return {
+      approvalFlowStatus:  "awaiting_review",
+      postDecisionAction:  "pending_human_review",
+      closureStatus:       null,
+      nextReviewAt:        null,
+      deferUntil:          null,
+      executionIntent:     "awaiting_manual_assessment",
+      actionLifecycleStage: "in_review",
+    };
+  }
+
+  // ── Path 6: proposal_ready (no decision status) → not in real approval flow ──
+  if (readiness === "proposal_ready" && approvalOutcome === "proposal_pending") {
+    return {
+      approvalFlowStatus:  "proposal_available",
+      postDecisionAction:  "user_may_review_proposal",
+      closureStatus:       null,
+      nextReviewAt:        null,
+      deferUntil:          null,
+      executionIntent:     "no_approval_needed",
+      actionLifecycleStage: "proposal",
+    };
+  }
+
+  // ── Path 7: monitor_only / no decision → outside approval flow ──
+  return null;
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -2266,7 +2364,9 @@ async function getTopOpportunities(arg = 10) {
     const approvalQueueEntry = computeApprovalQueueEntry({ ...oppFull, actionReadiness });
     // Step 7 Block 3: derive decision layer – concrete decision state for review/approval cases
     const decisionLayer = computeDecisionLayer({ ...oppFull, actionReadiness, approvalQueueEntry });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer };
+    // Step 7 Block 4: derive controlled approval flow – next controlled follow-up step after decision
+    const controlledApprovalFlow = computeControlledApprovalFlow({ ...oppFull, actionReadiness, decisionLayer });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

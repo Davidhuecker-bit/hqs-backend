@@ -118,6 +118,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 7 Block 3: Decision Layer – concrete decision state for review/approval cases.
   const decisionLayer = marketData?.decisionLayer ?? context?.decisionLayer ?? null;
 
+  // Step 7 Block 4: Controlled Approval Flow – next controlled follow-up step after decision.
+  const controlledApprovalFlow = marketData?.controlledApprovalFlow ?? context?.controlledApprovalFlow ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -543,7 +546,54 @@ async function analyzeStockWithGuardian(context) {
   }
   const decisionLayerBlock = buildDecisionLayerBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock]
+  // Step 7 Block 4: Controlled Approval Flow block – explains the next controlled follow-up step.
+  const CAF_STATUS_LABELS = {
+    approved_pending_action: "Bereit zur manuellen Aktion – Freigabe-Kandidat wartet auf Bestätigung",
+    awaiting_review:         "Wartet auf Prüfung – manuelle Bewertung steht noch aus",
+    deferred:                "Zurückgestellt – erneute Prüfung nach Datenupdate geplant",
+    waiting_for_more_data:   "Mehr Daten nötig – passive Beobachtung bis Signalbasis ausreicht",
+    closed:                  "Abgeschlossen – keine weitere Aktion erforderlich",
+    proposal_available:      "Vorschlag verfügbar – Nutzer kann eigenständig prüfen",
+  };
+  const CAF_ACTION_LABELS = {
+    ready_for_manual_action:   "Manuelle Bestätigung empfohlen",
+    no_action:                 "Keine Aktion erforderlich",
+    wait_for_reassessment:     "Abwarten und bei Datenupdate erneut prüfen",
+    collect_more_signals:      "Weitere Signale sammeln",
+    pending_human_review:      "Manuelle Prüfung ausstehend",
+    user_may_review_proposal:  "Nutzer kann Vorschlag prüfen",
+  };
+  function buildControlledApprovalFlowBlock() {
+    if (!controlledApprovalFlow || !controlledApprovalFlow.approvalFlowStatus) return "";
+    const parts = [];
+    const statusLabel = CAF_STATUS_LABELS[controlledApprovalFlow.approvalFlowStatus] || controlledApprovalFlow.approvalFlowStatus;
+    parts.push(`Folgestatus (Step 7 Block 4): ${statusLabel}`);
+    if (controlledApprovalFlow.postDecisionAction) {
+      const actionLabel = CAF_ACTION_LABELS[controlledApprovalFlow.postDecisionAction] || controlledApprovalFlow.postDecisionAction;
+      parts.push(`Nächster Schritt: ${actionLabel}`);
+    }
+    if (controlledApprovalFlow.closureStatus) {
+      parts.push(`Abschlussstatus: ${controlledApprovalFlow.closureStatus === "closed_rejected" ? "Abgelehnt und geschlossen" : controlledApprovalFlow.closureStatus}`);
+    }
+    if (controlledApprovalFlow.deferUntil) {
+      parts.push(`Vertagt bis: ${controlledApprovalFlow.deferUntil}`);
+    }
+    if (controlledApprovalFlow.actionLifecycleStage) {
+      const lifecycleLabels = {
+        post_decision: "Nach Entscheidung",
+        closed:        "Abgeschlossen",
+        deferred:      "Zurückgestellt",
+        pre_decision:  "Vor Entscheidung",
+        in_review:     "In Prüfung",
+        proposal:      "Vorschlagsphase",
+      };
+      parts.push(`Lebenszyklusphase: ${lifecycleLabels[controlledApprovalFlow.actionLifecycleStage] || controlledApprovalFlow.actionLifecycleStage}`);
+    }
+    return parts.join(" · ");
+  }
+  const controlledApprovalFlowBlock = buildControlledApprovalFlowBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -655,6 +705,18 @@ Erstelle eine strukturierte Erklärung mit:
     - Wichtig: Kein Entscheidungsstatus bedeutet keine automatische Genehmigung. Auch approved_candidate erfordert manuelle Bestätigung.
     - Halte die Erklärung kurz (1–3 Sätze) – verständlich und nachvollziehbar
     Wenn kein Entscheidungs-Layer vorhanden, diesen Punkt weglassen.
+17. Kontrollierter Folgefluss (Step 7 Block 4): Falls ein kontrollierter Approval-Folgefluss vorhanden ist, erkläre kurz und verständlich, was jetzt als Nächstes passiert –
+    - approvalFlowStatus="approved_pending_action": erkläre, dass der Fall als Freigabe-Kandidat bereitsteht und auf manuelle Bestätigung wartet – keine automatische Ausführung, der Nutzer entscheidet
+    - approvalFlowStatus="awaiting_review": erkläre, dass der Fall noch geprüft werden muss – was steht aus und was sollte der Nutzer als nächstes tun
+    - approvalFlowStatus="deferred": erkläre, warum der Fall zurückgestellt wurde – widersprüchliche Signale, Datenupdate abwarten, und wann eine erneute Prüfung geplant ist
+    - approvalFlowStatus="waiting_for_more_data": erkläre, warum noch mehr Daten benötigt werden – was fehlt und wie lange typischerweise gewartet wird
+    - approvalFlowStatus="closed": erkläre, warum der Fall abgeschlossen ist – Risikokonstellation, keine Aktion mehr nötig
+    - approvalFlowStatus="proposal_available": erkläre, dass ein strukturierter Vorschlag vorliegt, den der Nutzer eigenständig prüfen kann – keine formale Freigabe erforderlich
+    - postDecisionAction vorhanden: verwende es als Kontext für den nächsten konkreten Schritt
+    - deferUntil vorhanden: nenne das geplante Datum der erneuten Prüfung
+    - Wichtig: Der Folgefluss ist kontrolliert und nicht automatisch. Kein Schritt wird ohne manuelle Bestätigung ausgeführt.
+    - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und handlungsorientiert
+    Wenn kein kontrollierter Folgefluss vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
