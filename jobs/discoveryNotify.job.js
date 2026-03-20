@@ -44,13 +44,19 @@ function _derivePickOrchestration(pick, onWatchlist) {
   if (confidence >= 75 || score >= 75) {
     // Step 7 Block 3: high-signal review cases – derive decision status from data quality
     const hasStrongData = confidence >= 75 && score >= 70;
+    const decisionStatus = hasStrongData ? "approved_candidate" : "pending_review";
+    // Step 7 Block 4: derive controlled approval flow status from decision state
+    const approvalFlowStatus = hasStrongData ? "approved_pending_action" : "awaiting_review";
+    const postDecisionAction = hasStrongData ? "ready_for_manual_action" : "pending_human_review";
     return {
       deliveryMode: "notification",
       escalationLevel: "high",
       followUpNeeded: true,
       actionReadiness: "review_required",
       reviewBucket: "risk_review",
-      decisionStatus: hasStrongData ? "approved_candidate" : "pending_review",
+      decisionStatus,
+      approvalFlowStatus,
+      postDecisionAction,
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -61,6 +67,8 @@ function _derivePickOrchestration(pick, onWatchlist) {
       actionReadiness: "proposal_ready",
       reviewBucket: "proposal_bucket",
       decisionStatus: null,
+      approvalFlowStatus: "proposal_available",
+      postDecisionAction: "user_may_review_proposal",
     };
   }
   return {
@@ -70,6 +78,8 @@ function _derivePickOrchestration(pick, onWatchlist) {
     actionReadiness: "monitor_only",
     reviewBucket: null,
     decisionStatus: null,
+    approvalFlowStatus: null,
+    postDecisionAction: null,
   };
 }
 
@@ -150,6 +160,31 @@ async function runDiscoveryNotify() {
           continue;
         }
 
+        // Step 7 Block 4: controlled approval flow gating – deferred and waiting_for_more_data
+        // should not be pushed aggressively. awaiting_review gets softer delivery.
+        // ready_for_manual_action (approved_pending_action) gets priority delivery with guardrails.
+        if (orchestration.approvalFlowStatus === "deferred") {
+          gatedOut++;
+          logger.info("discoveryNotify: user gated (approvalFlowStatus=deferred)", {
+            userId, approvalFlowStatus: orchestration.approvalFlowStatus,
+          });
+          continue;
+        }
+        if (orchestration.approvalFlowStatus === "waiting_for_more_data") {
+          gatedOut++;
+          logger.info("discoveryNotify: user gated (approvalFlowStatus=waiting_for_more_data)", {
+            userId, approvalFlowStatus: orchestration.approvalFlowStatus,
+          });
+          continue;
+        }
+        if (orchestration.approvalFlowStatus === "closed") {
+          gatedOut++;
+          logger.info("discoveryNotify: user gated (approvalFlowStatus=closed)", {
+            userId, approvalFlowStatus: orchestration.approvalFlowStatus,
+          });
+          continue;
+        }
+
         // Step 7 Block 2: log the review bucket for observability (no gate change).
         // review_required → risk_review bucket (high-priority, follow-up needed)
         // proposal_ready  → proposal_bucket (medium priority, no follow-up required)
@@ -160,6 +195,8 @@ async function runDiscoveryNotify() {
             reviewBucket: orchestration.reviewBucket,
             escalationLevel: orchestration.escalationLevel,
             decisionStatus: orchestration.decisionStatus || null,
+            approvalFlowStatus: orchestration.approvalFlowStatus || null,
+            postDecisionAction: orchestration.postDecisionAction || null,
           });
         }
 

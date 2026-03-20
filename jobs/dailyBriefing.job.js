@@ -195,6 +195,43 @@ function _deriveBriefingDecisionStatus(stock) {
   return "pending_review";
 }
 
+// Step 7 Block 4: Controlled Approval Flow derivation for briefing stocks.
+// Maps decision status to the next controlled follow-up classification.
+// No execution – only language and ordering context for the briefing.
+const APPROVAL_FLOW_STATUS_RANK = {
+  approved_pending_action: 0,
+  awaiting_review: 1,
+  deferred: 2,
+  waiting_for_more_data: 3,
+  closed: 4,
+  proposal_available: 5,
+};
+const APPROVAL_FLOW_UNRANKED = 6;
+
+const APPROVAL_FLOW_LABELS = {
+  approved_pending_action: "🟢 Bereit zur manuellen Aktion",
+  awaiting_review:         "⏳ Wartet auf Prüfung",
+  deferred:                "⏸ Zurückgestellt",
+  waiting_for_more_data:   "📊 Mehr Daten nötig",
+  closed:                  "🔴 Abgeschlossen",
+  proposal_available:      "📝 Vorschlag verfügbar",
+};
+
+function _deriveBriefingApprovalFlowStatus(stock) {
+  const ds = stock._decisionStatus;
+  if (!ds) {
+    // proposal_ready without decision → proposal available
+    if (stock._actionReadiness === "proposal_ready") return "proposal_available";
+    return null;
+  }
+  if (ds === "approved_candidate")  return "approved_pending_action";
+  if (ds === "rejected_candidate")  return "closed";
+  if (ds === "deferred_review")     return "deferred";
+  if (ds === "needs_more_data")     return "waiting_for_more_data";
+  if (ds === "pending_review")      return "awaiting_review";
+  return null;
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -287,8 +324,13 @@ function buildFactsFromMarket(stocks) {
       ? ` · ${DECISION_STATUS_LABELS[s._decisionStatus]}`
       : "";
 
+    // Step 7 Block 4: include controlled approval flow label for post-decision context
+    const afsLabel = s._approvalFlowStatus && APPROVAL_FLOW_LABELS[s._approvalFlowStatus]
+      ? ` · ${APPROVAL_FLOW_LABELS[s._approvalFlowStatus]}`
+      : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}.`
     );
   }
   return lines.join("\n");
@@ -400,10 +442,13 @@ async function runDailyBriefing() {
         s._approvalQueueBucket = _deriveBriefingApprovalBucket(s);
         // Step 7 Block 3: derive decision status for review-case language/order
         s._decisionStatus = _deriveBriefingDecisionStatus(s);
+        // Step 7 Block 4: derive controlled approval flow status for follow-up language/order
+        s._approvalFlowStatus = _deriveBriefingApprovalFlowStatus(s);
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)
       // Tertiary sort: Step 7 Block 3 decision-status (approved_candidate > pending_review > deferred > needs_more_data)
+      // Step 7 Block 4: approval-flow-status as additional tie-breaker after decision-status
       // Quaternary sort: attention level rank (critical → high → medium → low)
       // Quinary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
       stocks.sort((a, b) => {
@@ -414,6 +459,9 @@ async function runDailyBriefing() {
         // Step 7 Block 3: decision-status tie-breaker within same action-readiness tier
         const dsDiff = (DECISION_STATUS_RANK[a._decisionStatus] ?? 4) - (DECISION_STATUS_RANK[b._decisionStatus] ?? 4);
         if (dsDiff !== 0) return dsDiff;
+        // Step 7 Block 4: approval-flow-status tie-breaker within same decision-status
+        const afsDiff = (APPROVAL_FLOW_STATUS_RANK[a._approvalFlowStatus] ?? APPROVAL_FLOW_UNRANKED) - (APPROVAL_FLOW_STATUS_RANK[b._approvalFlowStatus] ?? APPROVAL_FLOW_UNRANKED);
+        if (afsDiff !== 0) return afsDiff;
         const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
         if (attnDiff !== 0) return attnDiff;
         return _adaptiveBriefingBoost(a, userPreferenceHints) - _adaptiveBriefingBoost(b, userPreferenceHints);

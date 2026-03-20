@@ -1820,6 +1820,14 @@ router.get("/review-queue", async (req, res) => {
         decisionReason:      opp.decisionLayer?.decisionReason    ?? null,
         approvalOutcome:     opp.decisionLayer?.approvalOutcome   ?? null,
         decisionReadiness:   opp.decisionLayer?.decisionReadiness ?? null,
+        // Step 7 Block 4: controlled approval flow fields
+        approvalFlowStatus:    opp.controlledApprovalFlow?.approvalFlowStatus    ?? null,
+        postDecisionAction:    opp.controlledApprovalFlow?.postDecisionAction    ?? null,
+        closureStatus:         opp.controlledApprovalFlow?.closureStatus         ?? null,
+        nextReviewAt:          opp.controlledApprovalFlow?.nextReviewAt          ?? null,
+        deferUntil:            opp.controlledApprovalFlow?.deferUntil            ?? null,
+        executionIntent:       opp.controlledApprovalFlow?.executionIntent       ?? null,
+        actionLifecycleStage:  opp.controlledApprovalFlow?.actionLifecycleStage  ?? null,
       };
 
       if (aq.pendingApproval) {
@@ -1852,6 +1860,12 @@ router.get("/review-queue", async (req, res) => {
         pendingReviewCount:      [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "pending_review").length,
         deferredReviewCount:     [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "deferred_review").length,
         needsMoreDataCount:      [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.decisionStatus === "needs_more_data").length,
+        // Step 7 Block 4: controlled approval flow distribution
+        approvalFlowApprovedPendingAction: [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "approved_pending_action").length,
+        approvalFlowAwaitingReview:        [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "awaiting_review").length,
+        approvalFlowDeferred:              [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "deferred").length,
+        approvalFlowWaitingForMoreData:    [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "waiting_for_more_data").length,
+        approvalFlowClosed:                [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "closed").length,
       },
       pendingApproval,
       proposalBucket,
