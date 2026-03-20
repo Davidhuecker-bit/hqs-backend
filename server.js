@@ -14,7 +14,6 @@ const logger = require("./utils/logger");
 const {
   badRequest,
   parseInteger,
-  parseNumber,
   parseSymbol,
 } = require("./utils/requestValidation");
 
@@ -34,32 +33,16 @@ const { analyzeStockWithGuardian } = require("./services/guardianService");
 
 const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
 const { optimizePortfolio } = require("./services/portfolioOptimizer");
-const { simulateStrategy } = require("./services/backtestEngine");
 const { buildGuardianPayload } = require("./services/frontendAdapter.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
 const { initWeightTable } = require("./services/weightHistory.repository");
-const { getBacktestHistory } = require("./services/factorHistory.repository");
 
-const { runForwardLearning } = require("./services/forwardLearning.service");
-
-const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
-const {
-  runMarketNewsRefreshJob,
-} = require("./jobs/marketNewsRefresh.job");
-const {
-  runNewsLifecycleCleanupJob,
-} = require("./jobs/newsLifecycleCleanup.job");
+const { initJobLocksTable } = require("./services/jobLock.repository");
 const {
   hydrateOpportunityRuntimeState,
 } = require("./services/opportunityScanner.service");
 const { buildWorldState } = require("./services/worldState.service");
-
-/* =========================================================
-UNIVERSE
-========================================================= */
-
-const { refreshUniverse } = require("./services/universe.service");
 
 /* =========================================================
 ROUTES
@@ -77,8 +60,6 @@ DISCOVERY
 ========================================================= */
 
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
-const { discoverStocks } = require("./services/discoveryEngine.service");
-const { evaluateDiscoveries } = require("./services/discoveryLearning.service");
 const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
 const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable } = require("./services/autonomyAudit.repository");
@@ -88,14 +69,14 @@ const { runForecastVerificationJob } = require("./jobs/forecastVerification.job"
 const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
 const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
 const { runTechRadarJob } = require("./jobs/techRadar.job");
-const { ensureVirtualPositionsTable, syncVirtualPositions } = require("./services/portfolioTwin.service");
-const { ensureSisHistoryTable, saveSisSnapshot } = require("./services/sisHistory.service");
+const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
+const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
 
-const { waitForDb, classifyDbError } = require("./utils/dbHealth");
+const { waitForDb } = require("./utils/dbHealth");
 
 /* =========================================================
 TABLE HEALTH  (Task 5 – admin table diagnostics)
@@ -685,41 +666,9 @@ app.listen(PORT, async () => {
   if (RUN_JOBS) {
     logger.info("RUN_JOBS=true -> starting background jobs inside API server");
 
-    try {
-      if (process.env.FMP_API_KEY) {
-        await runUniverseRefreshLocked();
-      } else {
-        logger.warn("FMP_API_KEY missing -> Universe refresh skipped on startup");
-      }
-    } catch (uErr) {
-      logger.warn("Universe refresh failed on startup", {
-        message: uErr.message,
-      });
-    }
-
-    try {
-      await runIntegratedWarmupCycle();
-    } catch (err) {
-      logger.warn("runIntegratedWarmupCycle failed on startup", {
-        message: err.message,
-      });
-    }
-
-    setInterval(async () => {
-      try {
-        await runIntegratedWarmupCycle();
-        logger.info("Warmup executed");
-      } catch (err) {
-        logger.error("Warmup Fehler", { message: err.message });
-      }
-    }, 15 * 60 * 1000);
-
-    scheduleDailyUniverseRefresh();
     scheduleDailyForecastVerification();
     scheduleCausalMemoryRecalibration();
     scheduleTechRadarScan();
-    scheduleDailyDiscoveryScan();
-    scheduleDailyDiscoveryLearning();
   }
 
   const failedLabels = initErrors.map((e) => e.label);
@@ -739,7 +688,7 @@ app.listen(PORT, async () => {
 });
 
 /* =========================================================
-DAILY UNIVERSE REFRESH
+BACKGROUND JOB SCHEDULERS
 ========================================================= */
 
 function msUntilNextLocalTime(targetHour, targetMinute) {
@@ -748,27 +697,6 @@ function msUntilNextLocalTime(targetHour, targetMinute) {
   next.setHours(targetHour, targetMinute, 0, 0);
   if (next <= now) next.setDate(next.getDate() + 1);
   return next.getTime() - now.getTime();
-}
-
-async function scheduleDailyUniverseRefresh() {
-  const hour = Number(process.env.UNIVERSE_REFRESH_HOUR || 2);
-  const minute = Number(process.env.UNIVERSE_REFRESH_MINUTE || 10);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      if (process.env.FMP_API_KEY) {
-        await runUniverseRefreshLocked();
-      } else {
-        logger.warn("FMP_API_KEY missing -> Universe refresh skipped");
-      }
-    } catch (err) {
-      logger.error("Daily universe refresh failed", { message: err.message });
-    } finally {
-      scheduleDailyUniverseRefresh();
-    }
-  }, delay);
 }
 
 /* =========================================================
@@ -833,52 +761,6 @@ async function scheduleTechRadarScan() {
       logger.error("Tech-Radar scan failed", { message: err.message });
     } finally {
       scheduleTechRadarScan();
-    }
-  }, delay);
-}
-
-/* =========================================================
-   DAILY DISCOVERY SCAN  (populate discovery_history)
-========================================================= */
-
-async function scheduleDailyDiscoveryScan() {
-  // Default: run at 09:00 daily.
-  // Snapshot data refreshes every 15 min via warmup cycle, so prices are always recent.
-  const hour   = Number(process.env.DISCOVERY_SCAN_HOUR   || 9);
-  const minute = Number(process.env.DISCOVERY_SCAN_MINUTE || 0);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      await runDiscoveryScanLocked();
-    } catch (err) {
-      logger.error("[discovery] daily scan failed", { message: err.message });
-    } finally {
-      scheduleDailyDiscoveryScan();
-    }
-  }, delay);
-}
-
-/* =========================================================
-   DAILY DISCOVERY LEARNING  (7d / 30d return evaluation)
-========================================================= */
-
-async function scheduleDailyDiscoveryLearning() {
-  // Default: run at 11:00 daily.
-  // Evaluates discoveries ≥ 7d / ≥ 30d old (independent of scan timing).
-  const hour   = Number(process.env.DISCOVERY_LEARNING_HOUR   || 11);
-  const minute = Number(process.env.DISCOVERY_LEARNING_MINUTE || 0);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      await runDiscoveryLearningLocked();
-    } catch (err) {
-      logger.error("[discovery] daily learning evaluation failed", { message: err.message });
-    } finally {
-      scheduleDailyDiscoveryLearning();
     }
   }, delay);
 }
