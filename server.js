@@ -24,7 +24,6 @@ CORE SERVICES
 
 const {
   getMarketData,
-  buildMarketSnapshot,
   hydrateMarketRuntimeState,
   ensureTablesExist,
   pingDb,
@@ -43,11 +42,6 @@ const { initWeightTable } = require("./services/weightHistory.repository");
 const { getBacktestHistory } = require("./services/factorHistory.repository");
 
 const { runForwardLearning } = require("./services/forwardLearning.service");
-
-const {
-  collectAndStoreMarketNews,
-  normalizeSymbols,
-} = require("./services/marketNews.service");
 
 const { acquireLock, initJobLocksTable } = require("./services/jobLock.repository");
 const {
@@ -328,86 +322,6 @@ app.get("/api/market", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Fehler beim Abrufen der Marktdaten",
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-SNAPSHOT ROUTE
-========================================================= */
-
-app.post("/api/admin/snapshot", async (_req, res) => {
-  try {
-    const result = await buildMarketSnapshot();
-
-    return res.json({
-      success: true,
-      ...result,
-    });
-  } catch (error) {
-    logger.error("Snapshot route error", { message: error.message });
-
-    return res.status(500).json({
-      success: false,
-      message: "Snapshot-Erstellung fehlgeschlagen",
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-MARKET-NEWS ROUTES
-========================================================= */
-
-app.post("/api/admin/market-news/collect", async (req, res) => {
-  try {
-    const limitResult = parseInteger(req.body?.limit, {
-      defaultValue: 10,
-      min: 1,
-      max: 200,
-      label: "limit",
-    });
-    if (limitResult.error) {
-      return badRequest(res, limitResult.error);
-    }
-
-    const symbolsInput = Array.isArray(req.body?.symbols)
-      ? req.body.symbols
-      : [];
-    const symbols = normalizeSymbols(symbolsInput);
-
-    const result = await collectAndStoreMarketNews({
-      limit: limitResult.value,
-      symbols,
-    });
-
-    return res.json({
-      success: true,
-      ...result,
-    });
-  } catch (error) {
-    logger.error("Market-news collect route error", { message: error.message });
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-TABLE HEALTH
-========================================================= */
-
-app.get("/api/admin/table-health", async (_req, res) => {
-  try {
-    const result = await runTableHealthCheck();
-    return res.json(result);
-  } catch (error) {
-    logger.error("Table health route error", { message: error.message });
-    return res.status(500).json({
-      success: false,
       error: error.message,
     });
   }
