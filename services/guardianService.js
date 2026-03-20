@@ -4,11 +4,13 @@
   Guardian Service – OpenAI Analysis Consumer
 
   Wraps the OpenAI GPT model to produce a human-readable stock analysis
-  based on the finalConviction, finalRating, and finalDecision outputs
-  from integrationEngine, supplemented by the raw HQS breakdown.
+  based on the canonical integrationEngine output fields:
+    finalConviction, finalConfidence, finalRating, finalDecision,
+    whyInteresting, components (conviction breakdown), hqsScore, regime.
 
-  Verantwortung: Consume integrationEngine output → generate natural-language
-  analysis via OpenAI Guardian AI prompt.  No scoring, no pipeline state.
+  Verantwortung: Consume integrationEngine canonical output → generate
+  natural-language analysis via OpenAI Guardian AI prompt.
+  No scoring, no pipeline state.
 
   Rolle: Consumer (letzte Schicht – liest fertige Engine-Outputs, schreibt nichts zurück)
 */
@@ -37,8 +39,9 @@ async function analyzeStockWithGuardian(context) {
     marketData,
   } = context;
 
-  // Use integrationEngine outputs when available; fall back to raw HQS fields.
+  // Read canonical integrationEngine output fields.
   const finalConviction = marketData?.finalConviction ?? null;
+  const finalConfidence = marketData?.finalConfidence ?? null;
   const finalRating = marketData?.finalRating ?? null;
   const finalDecision = marketData?.finalDecision ?? null;
   const whyInteresting = Array.isArray(marketData?.whyInteresting) && marketData.whyInteresting.length
@@ -46,14 +49,14 @@ async function analyzeStockWithGuardian(context) {
     : null;
   const hqsScore = marketData?.hqsScore ?? null;
   const regime = marketData?.regime ?? null;
-  const hqsBreakdown = marketData?.hqsBreakdown ?? null;
-  const trend = marketData?.trend ?? null;
+  const components = marketData?.components ?? null;
 
   function buildConvictionBlock() {
     if (finalConviction != null) {
       const ratingLabel = finalRating || "–";
       const decisionLabel = finalDecision || "–";
-      return `Final Conviction: ${finalConviction} (${ratingLabel}, Entscheidung: ${decisionLabel})`;
+      const confidenceLabel = finalConfidence != null ? `, Confidence: ${finalConfidence}` : "";
+      return `Final Conviction: ${finalConviction} (${ratingLabel}, Entscheidung: ${decisionLabel}${confidenceLabel})`;
     }
     return `HQS Score: ${hqsScore ?? "–"}`;
   }
@@ -64,17 +67,15 @@ async function analyzeStockWithGuardian(context) {
     ? `Markt-Regime: ${regime}`
     : "";
 
-  const breakdownBlock = hqsBreakdown
-    ? `HQS-Breakdown: Momentum ${hqsBreakdown.momentum ?? "–"}, Quality ${hqsBreakdown.quality ?? "–"}, Stability ${hqsBreakdown.stability ?? "–"}, Relative ${hqsBreakdown.relative ?? "–"}`
+  const componentsBlock = components
+    ? `Conviction-Breakdown: HQS ${components.hqs ?? "–"}, AI ${components.ai ?? "–"}, StrategyAdj ${components.strategyAdjusted ?? "–"}, Resilience ${components.resilience != null ? Math.round(components.resilience * 100) : "–"}, NewsStrength ${components.newsStrength ?? "–"}`
     : "";
-
-  const trendBlock = trend ? `Trend: ${trend}` : "";
 
   const whyBlock = whyInteresting
     ? `Auffälligkeiten (Integration Engine): ${whyInteresting}`
     : "";
 
-  const contextLines = [convictionBlock, regimeBlock, breakdownBlock, trendBlock, whyBlock]
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock]
     .filter(Boolean)
     .join("\n");
 

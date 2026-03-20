@@ -533,30 +533,20 @@ async function buildIntegratedMarketView({
   const baseView = {
     symbol,
 
-    hqsScore: safe(hqs?.hqsScore),
-    aiScore: safe(brain?.aiScore),
-
+    // ── Canonical final output fields (contract for all consumers) ──
     finalConviction,
     finalConfidence,
     finalRating,
     finalDecision,
+    whyInteresting,
+
+    // ── Conviction inputs (reference scores) ──
+    hqsScore: safe(hqs?.hqsScore),
+    aiScore: safe(brain?.aiScore),
 
     regime: hqs?.regime ?? null,
 
-    features: features ?? {},
-    discoveries: discoveries ?? [],
-    learning: learning ?? {},
-    strategy: strategy ?? {},
-    narratives: narratives ?? [],
-    simulations: simulations ?? [],
-    resilienceScore: safe(resilienceScore),
-    research: research ?? {},
-    globalContext: mergedGlobalContext,
-    newsContext: mergedGlobalContext.newsContext ?? null,
-    signalContext: mergedGlobalContext.signalContext ?? null,
-
-    whyInteresting,
-
+    // ── Conviction breakdown (labeled components of finalConviction) ──
     components: {
       hqs: safe(hqs?.hqsScore),
       ai: safe(brain?.aiScore),
@@ -577,7 +567,22 @@ async function buildIntegratedMarketView({
       signalAdjustment,
     },
 
+    // ── Provenance ──
+    source: "integrationEngine",
     timestamp: new Date().toISOString(),
+
+    // ── Raw pipeline inputs (carried for downstream context) ──
+    features: features ?? {},
+    discoveries: discoveries ?? [],
+    learning: learning ?? {},
+    strategy: strategy ?? {},
+    narratives: narratives ?? [],
+    simulations: simulations ?? [],
+    resilienceScore: safe(resilienceScore),
+    research: research ?? {},
+    globalContext: mergedGlobalContext,
+    newsContext: mergedGlobalContext.newsContext ?? null,
+    signalContext: mergedGlobalContext.signalContext ?? null,
   };
 
   return runPlugins(baseView);

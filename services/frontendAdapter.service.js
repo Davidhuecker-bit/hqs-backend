@@ -135,11 +135,15 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
   const volatilityScore = clamp(Math.round(volatility * 1400), 0, 100);
   const correlationScore = clamp(Math.round(35 + (symbol.charCodeAt(0) % 30) + index * 4), 0, 100);
   const sentimentScore = clamp(Math.round(55 - changePercent * 4), 0, 100);
-  const confidence = clamp(
+  // Prefer finalConfidence (integrationEngine output) when available; fall back to computed.
+  const computedConfidence = clamp(
     Math.round(hqsScore * 0.6 + stabilityScore * 0.25 + (100 - volatilityScore) * 0.15),
     35,
     95,
   );
+  const confidence = toFiniteNumber(stock?.finalConfidence, null) !== null
+    ? clamp(toFiniteNumber(stock.finalConfidence), 35, 95)
+    : computedConfidence;
 
   const fallbackNews = buildSyntheticNewsItems(
     { symbol, changePercent, hqsScore },
@@ -177,6 +181,13 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     correlationScore,
     sentimentScore,
     confidence,
+    // Canonical integrationEngine output fields (explicit passthrough, null when not present).
+    finalConviction: stock?.finalConviction ?? null,
+    finalConfidence: stock?.finalConfidence ?? null,
+    finalRating: stock?.finalRating ?? null,
+    finalDecision: stock?.finalDecision ?? null,
+    whyInteresting: Array.isArray(stock?.whyInteresting) ? stock.whyInteresting : [],
+    components: stock?.components ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -192,26 +203,28 @@ function buildTopSignals(stocks) {
   return stocks
     .slice()
     .sort((left, right) => {
-      const leftScore = toFiniteNumber(left.hqsScore, 0) + toFiniteNumber(left.changePercent, 0) * 2;
-      const rightScore = toFiniteNumber(right.hqsScore, 0) + toFiniteNumber(right.changePercent, 0) * 2;
+      // Prefer finalConviction (integrationEngine) over raw hqsScore for ranking.
+      const leftScore = toFiniteNumber(left.finalConviction ?? left.hqsScore, 0) + toFiniteNumber(left.changePercent, 0) * 2;
+      const rightScore = toFiniteNumber(right.finalConviction ?? right.hqsScore, 0) + toFiniteNumber(right.changePercent, 0) * 2;
       return rightScore - leftScore;
     })
     .slice(0, 3)
     .map((stock) => ({
       symbol: stock.symbol,
-      type: toFiniteNumber(stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
-      score: clamp(Math.round(toFiniteNumber(stock.hqsScore, 0)), 0, 100),
+      type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
+      score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
       summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%`,
     }));
 }
 
 function buildRiskFlags(stocks) {
   const flags = stocks
-    .filter((stock) => toFiniteNumber(stock.hqsScore, 50) < 50 || toFiniteNumber(stock.changePercent, 0) <= -2)
+    // Prefer finalConviction (integrationEngine) over raw hqsScore for risk assessment.
+    .filter((stock) => toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 50) < 50 || toFiniteNumber(stock.changePercent, 0) <= -2)
     .slice(0, 4)
     .map((stock) => ({
       symbol: stock.symbol,
-      level: toFiniteNumber(stock.hqsScore, 50) < 40 ? "high" : "medium",
+      level: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 50) < 40 ? "high" : "medium",
       message: `${stock.symbol}: defensives Monitoring empfohlen.`,
     }));
 
