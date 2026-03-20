@@ -229,6 +229,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     attentionReason: stock?.attentionReason ?? null,
     // Step 5b: Action-Orchestration – HOW the system treats this signal (deliveryMode, escalationLevel, etc.)
     actionOrchestration: stock?.actionOrchestration ?? null,
+    // Step 5: Feedback/Reaction context – if the stock was part of a notification, surface its reaction signals.
+    feedbackContext: stock?.feedbackContext ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -301,6 +303,7 @@ function buildTopSignals(stocks) {
         actionOrchestration: orch,
         userAttentionLevel: stock.userAttentionLevel ?? null,
         attentionReason: stock.attentionReason ?? null,
+        feedbackContext: stock.feedbackContext ?? null,
       };
     });
 }
@@ -404,6 +407,13 @@ function buildPortfolioIntelligenceSummary(stocks) {
         notification:  stocks.filter((s) => s.actionOrchestration?.deliveryMode === "notification").length,
         briefing:      stocks.filter((s) => s.actionOrchestration?.deliveryMode === "briefing").length,
       },
+    },
+    // Step 5: feedback/reaction summary – how users responded to signals for these stocks.
+    feedback: {
+      positive: stocks.filter((s) => s.feedbackContext?.feedbackSignal === "positive").length,
+      negative: stocks.filter((s) => s.feedbackContext?.feedbackSignal === "negative").length,
+      acted:    stocks.filter((s) => s.feedbackContext?.responseType === "acted" || s.feedbackContext?.actedAt != null).length,
+      dismissed: stocks.filter((s) => s.feedbackContext?.dismissedAt != null).length,
     },
   };
 }

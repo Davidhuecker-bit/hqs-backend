@@ -11,6 +11,7 @@ const {
   getActiveBriefingUsers,
   getUserIdsWithSymbolOnWatchlist,
   createDiscoveryNotification,
+  linkFollowUpOutcome,
 } = require("../services/notifications.repository");
 
 /**
@@ -90,8 +91,20 @@ async function runDiscoveryNotify() {
         }
 
         const r = await createDiscoveryNotification({ userId, pick, onWatchlist });
-        if (r?.inserted) created++;
-        else skipped++;
+        if (r?.inserted) {
+          created++;
+          // Step 5: link follow_up_outcome to pattern_key so the notification
+          // can be connected to its measurable outcome when verification runs.
+          if (r.id && pick?.patternKey) {
+            try {
+              await linkFollowUpOutcome(r.id, `pattern:${pick.patternKey}`);
+            } catch (linkErr) {
+              logger.warn("discoveryNotify: linkFollowUpOutcome failed (ignored)", { message: linkErr.message });
+            }
+          }
+        } else {
+          skipped++;
+        }
       } catch (e) {
         logger.error("Discovery notify user failed", { userId: u?.id, message: e.message });
       }
