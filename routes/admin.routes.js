@@ -74,6 +74,16 @@ const {
   detectSisRegression,
   detectSisImprovement,
 } = require("../services/sisHistory.service");
+const { getPipelineStatusWithPersistence } = require("../services/marketService");
+const { runTableHealthCheck } = require("../services/tableHealth.service");
+const {
+  getSignalHistoryAll,
+  getSignalHistoryBySymbol,
+  getOutcomeAnalysis,
+  getTimingQuality,
+  getForecastVsOutcome,
+  getSignalKPIs,
+} = require("../services/signalHistory.repository");
 
 const router = express.Router();
 
@@ -1397,8 +1407,6 @@ router.get("/interface-state", async (req, res) => {
    survive Railway restarts.
 ========================================================= */
 
-const { getPipelineStatus, getPipelineStatusWithPersistence } = require("../services/marketService");
-
 router.get("/pipeline-status", async (req, res) => {
   try {
     const raw = await getPipelineStatusWithPersistence();
@@ -1431,8 +1439,6 @@ router.get("/pipeline-status", async (req, res) => {
    GET /api/admin/table-health
    Returns green/yellow/red status for the 8 admin-relevant tables.
 ========================================================= */
-
-const { runTableHealthCheck } = require("../services/tableHealth.service");
 
 router.get("/table-health", async (req, res) => {
   try {
@@ -1573,15 +1579,6 @@ router.post("/virtual-positions/sync", async (req, res) => {
    guardian_near_miss).  No mock data.  All responses carry
    a _meta block with dataStatus (full|partial|empty).
 ========================================================= */
-
-const {
-  getSignalHistoryAll,
-  getSignalHistoryBySymbol,
-  getOutcomeAnalysis,
-  getTimingQuality,
-  getForecastVsOutcome,
-  getSignalKPIs,
-} = require("../services/signalHistory.repository");
 
 /* ─────────────────────────────────────────────────────────
  * GET /api/admin/signal-history
