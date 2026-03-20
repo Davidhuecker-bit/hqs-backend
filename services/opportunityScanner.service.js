@@ -42,6 +42,8 @@ const {
   buildPortfolioContextForSymbols,
   enrichWithPortfolioContext,
 } = require("./portfolioContext.service");
+// Step 5: User attention level – derived from portfolio/delta/action signals
+const { computeUserAttentionLevel } = require("./notifications.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1444,7 +1446,20 @@ async function getTopOpportunities(arg = 10) {
     const tracked     = persistedOutcomeBySymbol?.[o.symbol] || null;
     const deltaContext = computeDeltaContext(o, tracked);
     const nextAction   = computeNextAction({ ...o, deltaContext });
-    return { ...o, deltaContext, nextAction };
+    // Step 5: Derive user attention level from combined portfolio/delta/action signals.
+    // Simple transparent rules – first match wins (see computeUserAttentionLevel).
+    const pCtx = o.portfolioContext || {};
+    const attention = computeUserAttentionLevel({
+      alreadyOwned:      Boolean(pCtx.alreadyOwned),
+      onWatchlist:       Boolean(pCtx.onWatchlist),
+      concentrationRisk: pCtx.concentrationRisk  || "none",
+      deltaPriority:     deltaContext.deltaPriority || "stable",
+      portfolioPriority: pCtx.portfolioPriority   || "medium",
+      actionPriority:    nextAction.actionPriority || "low",
+      changesPercentage: safeNum(o.changesPercentage ?? o.changePercent, 0),
+      hqsScore:          safeNum(o.hqsScore, 50),
+    });
+    return { ...o, deltaContext, nextAction, userAttentionLevel: attention.level, attentionReason: attention.reason };
   });
 
   // Portfolio-intelligence + delta-aware re-sort:

@@ -7,7 +7,11 @@ const { runJob } = require("../utils/jobRunner");
 const { acquireLock } = require("../services/jobLock.repository");
 
 const { discoverStocks } = require("../services/discoveryEngine.service");
-const { getActiveBriefingUsers, createDiscoveryNotification } = require("../services/notifications.repository");
+const {
+  getActiveBriefingUsers,
+  getUserIdsWithSymbolOnWatchlist,
+  createDiscoveryNotification,
+} = require("../services/notifications.repository");
 
 async function runDiscoveryNotify() {
   return runJob("discoveryNotify", async () => {
@@ -37,13 +41,23 @@ async function runDiscoveryNotify() {
     }
 
     // 3) Notification pro User speichern (1 pro Tag geschützt)
+    // Step 5: Single DB query to find all users who have this symbol on their watchlist.
+    // This avoids an N+1 query pattern (one query per user) for the watchlist check.
+    let usersWithPickOnWatchlist = new Set();
+    try {
+      usersWithPickOnWatchlist = await getUserIdsWithSymbolOnWatchlist(pick.symbol);
+    } catch (e) {
+      logger.warn("Discovery notify: watchlist batch check failed (ignored)", { message: e.message });
+    }
+
     let created = 0;
     let skipped = 0;
 
     for (const u of users) {
       try {
         const userId = u.id;
-        const r = await createDiscoveryNotification({ userId, pick });
+        const onWatchlist = usersWithPickOnWatchlist.has(Number(userId));
+        const r = await createDiscoveryNotification({ userId, pick, onWatchlist });
         if (r?.inserted) created++;
         else skipped++;
       } catch (e) {

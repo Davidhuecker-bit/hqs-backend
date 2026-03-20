@@ -11,6 +11,7 @@ const {
   getActiveBriefingUsers,
   getUserWatchlistSymbols,
   createNotificationOncePerDay, // ✅ NEW (anti spam)
+  computeUserAttentionLevel,    // ✅ Step 5: attention-level priority
 } = require("../services/notifications.repository");
 
 // ✅ OpenAI
@@ -22,6 +23,38 @@ try {
   ({ getLatestDiscoveryPick } = require("../services/discoveryEngine.service"));
 } catch (_) {
   getLatestDiscoveryPick = null;
+}
+
+// ── Attention level ordering ─────────────────────────────────────────────────
+const ATTENTION_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
+
+// Thresholds for stock attention classification based on daily price change and HQS score.
+// A significant DROP (≤ -5%) on a scored stock (≥ 55) triggers a high-attention risk alert.
+// A significant GAIN (≥ +5%) on a strong-score stock (≥ 65) triggers a medium/high alert.
+const ATTENTION_DROP_THRESHOLD     = -5;   // % daily change (negative)
+const ATTENTION_GAIN_THRESHOLD     =  5;   // % daily change (positive)
+const ATTENTION_DROP_MIN_SCORE     = 55;   // min HQS score for drop alert
+const ATTENTION_GAIN_MIN_SCORE     = 65;   // min HQS score for gain alert
+
+/**
+ * Compute a simple attention level for a stock using available market data.
+ * Uses hqsScore and changesPercentage (already in getMarketData response).
+ * No extra DB calls.
+ */
+function _stockAttentionLevel(stock) {
+  const change = Math.abs(Number(stock.changesPercentage) || 0);
+  const score  = Number(stock.hqsScore) || 50;
+
+  // High: significant drop on scored stock → risk alert
+  if ((Number(stock.changesPercentage) || 0) <= ATTENTION_DROP_THRESHOLD && score >= ATTENTION_DROP_MIN_SCORE) {
+    return computeUserAttentionLevel({ actionPriority: "high", changesPercentage: stock.changesPercentage, hqsScore: score });
+  }
+  // Medium/High: strong upward move on high-score stock
+  if (change >= ATTENTION_GAIN_THRESHOLD && score >= ATTENTION_GAIN_MIN_SCORE) {
+    return computeUserAttentionLevel({ portfolioPriority: "high", changesPercentage: stock.changesPercentage, hqsScore: score });
+  }
+  // General: pass through available signals
+  return computeUserAttentionLevel({ changesPercentage: stock.changesPercentage, hqsScore: score });
 }
 
 function buildFactsFromMarket(stocks) {
@@ -37,8 +70,13 @@ function buildFactsFromMarket(stocks) {
 
     const regime = s.regime || "unbekannt";
 
+    // Step 5: include attention level in briefing context when elevated
+    const attnLabel = s._attentionLevel && s._attentionLevel !== "low"
+      ? `, Aufmerksamkeit: ${s._attentionLevel}` + (s._attentionReason ? ` (${s._attentionReason})` : "")
+      : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}.`
     );
   }
   return lines.join("\n");
@@ -123,6 +161,22 @@ async function runDailyBriefing() {
         continue;
       }
 
+      // Step 5: Compute attention level per stock and sort by priority.
+      // Most important signals (critical → high → medium → low) appear first.
+      // Uses only existing market data fields – no extra DB calls.
+      for (const s of stocks) {
+        const attn = _stockAttentionLevel(s);
+        s._attentionLevel = attn.level;
+        s._attentionReason = attn.reason;
+      }
+      stocks.sort((a, b) =>
+        (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3)
+      );
+
+      // Derive briefing priority from the highest attention level found
+      const topAttention = stocks[0]?._attentionLevel || "low";
+      const topAttentionReason = stocks[0]?._attentionReason || null;
+
       // 4) Fakten bauen
       const facts = buildFactsFromMarket(stocks);
 
@@ -145,6 +199,8 @@ async function runDailyBriefing() {
         title,
         body,
         kind: "daily_briefing",
+        priority: topAttention,
+        reason: topAttentionReason,
       });
 
       if (created.inserted) {
