@@ -50,6 +50,21 @@ const WORLD_STATE_KEY = "world_state";
 // avoid hammering the DB on every opportunity scan)
 const CACHE_TTL_MS = 2 * 60 * 1000;
 
+// ── Freshness / Staleness thresholds ────────────────────────────────────────
+// Consumers use classifyWorldStateAge() to decide how much to trust a snapshot.
+//
+//   fresh      : age < STALE_THRESHOLD_MS  → full authority, normal pipeline
+//   stale      : STALE_THRESHOLD_MS ≤ age < HARD_STALE_MS → usable with warning
+//   hard_stale : age ≥ HARD_STALE_MS       → defensive fallback only; consumers
+//                                            MUST NOT use as authoritative input
+//
+// These thresholds are intentionally generous:
+//   - buildWorldState() runs on a background schedule and can lag on cold start.
+//   - 20-min stale window prevents false alarms during normal cadence gaps.
+//   - 60-min hard-stale ensures a stalled job does not silently poison live data.
+const STALE_THRESHOLD_MS = 20 * 60 * 1000; // 20 min → stale
+const HARD_STALE_MS      = 60 * 60 * 1000; // 60 min → hard_stale (defensive only)
+
 // ── Global Macro Context thresholds ─────────────────────────────────────────
 // Volatility regime boundaries (highVolRatio → vixTrend proxy)
 const HIGH_VOL_RATIO_THRESHOLD     = 0.45; // ≥45 % symbols above vol threshold → stressed
@@ -87,6 +102,47 @@ function _getCached() {
 function _setCache(value) {
   _cache = value;
   _cacheTs = Date.now();
+}
+
+/* =========================================================
+   FRESHNESS / STALENESS HELPERS
+   Exported so that every consumer (marketService, opportunityScanner, …)
+   can apply a uniform staleness policy instead of each inventing its own.
+========================================================= */
+
+/**
+ * Classifies a world_state object by the age of its `created_at` timestamp.
+ *
+ * @param {object|null} ws  – world_state with a `created_at` ISO string
+ * @returns {"fresh"|"stale"|"hard_stale"}
+ */
+function classifyWorldStateAge(ws) {
+  if (!ws || !ws.created_at) return "hard_stale";
+  const ageMs = Date.now() - new Date(ws.created_at).getTime();
+  if (ageMs < STALE_THRESHOLD_MS) return "fresh";
+  if (ageMs < HARD_STALE_MS)      return "stale";
+  return "hard_stale";
+}
+
+/**
+ * Returns true when the world_state is fresh enough for full, authoritative use.
+ *
+ * @param {object|null} ws
+ * @returns {boolean}
+ */
+function isWorldStateFresh(ws) {
+  return classifyWorldStateAge(ws) === "fresh";
+}
+
+/**
+ * Returns true when the world_state is too old to be used even as a fallback.
+ * Consumers MUST fall through to per-symbol / direct-service estimates instead.
+ *
+ * @param {object|null} ws
+ * @returns {boolean}
+ */
+function isWorldStateHardStale(ws) {
+  return classifyWorldStateAge(ws) === "hard_stale";
 }
 
 /* =========================================================
@@ -498,6 +554,16 @@ async function getWorldState() {
   try {
     const persisted = await loadRuntimeState(WORLD_STATE_KEY);
     if (persisted && persisted.version) {
+      const freshnessLabel = classifyWorldStateAge(persisted);
+      // Hard-stale persisted snapshots are not trustworthy – rebuild synchronously
+      // instead of returning stale data to consumers.
+      if (freshnessLabel === "hard_stale") {
+        logger.warn(
+          "worldState: persisted snapshot is hard_stale – rebuilding synchronously",
+          { created_at: persisted.created_at }
+        );
+        return buildWorldState();
+      }
       _setCache(persisted);
       // Rebuild asynchronously so the next call gets a fresh snapshot
       buildWorldState().catch((err) =>
@@ -518,4 +584,7 @@ async function getWorldState() {
 module.exports = {
   buildWorldState,
   getWorldState,
+  classifyWorldStateAge,
+  isWorldStateFresh,
+  isWorldStateHardStale,
 };

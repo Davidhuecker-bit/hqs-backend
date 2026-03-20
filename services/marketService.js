@@ -92,7 +92,7 @@ const {
   calculateRobustnessScore,
 } = require("./opportunityScanner.service");
 const { collectSocialSignals } = require("./socialScanner.service");
-const { getWorldState } = require("./worldState.service");
+const { getWorldState, classifyWorldStateAge } = require("./worldState.service");
 
 const logger = require("../utils/logger");
 const { Pool } = require("pg");
@@ -982,6 +982,19 @@ async function buildMarketSnapshot() {
   let globalWs = null;
   try {
     globalWs = await getWorldState();
+    const _wsFreshness = classifyWorldStateAge(globalWs);
+    if (_wsFreshness === "hard_stale") {
+      // Hard-stale world_state must not be used as authoritative macro truth.
+      // Discard and rely on per-symbol fallbacks (buildMacroContextFallback etc.).
+      logger.warn("buildMarketSnapshot: world_state is hard_stale – discarding, using per-symbol fallbacks", {
+        created_at: globalWs?.created_at,
+      });
+      globalWs = null;
+    } else if (_wsFreshness === "stale") {
+      logger.warn("buildMarketSnapshot: world_state is stale – using with degraded trust", {
+        created_at: globalWs?.created_at,
+      });
+    }
   } catch (_) {
     // Non-critical – per-symbol fallbacks remain active when world_state is
     // unavailable (e.g. first startup before initial build completes).

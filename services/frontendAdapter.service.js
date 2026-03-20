@@ -1,5 +1,32 @@
 const DEFAULT_FRONTEND_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMD"];
 
+// ── Canonical field contract ─────────────────────────────────────────────────
+// These are the integrationEngine output fields that the frontend depends on.
+// hasCanonicalFields() lets normalizeStockForFrontend mark stocks that arrived
+// without a full pipeline run so consumers know to interpret them as degraded.
+const CANONICAL_FIELDS = [
+  "finalConviction",
+  "finalConfidence",
+  "finalRating",
+  "finalDecision",
+  "whyInteresting",
+  "components",
+];
+
+/**
+ * Returns true when a raw stock object carries all canonical integrationEngine
+ * output fields.  False means the stock bypassed the full pipeline; inferred
+ * scores (hqsScore-based) are used instead and `_degraded` is set on output.
+ *
+ * @param {object|null} stock
+ * @returns {boolean}
+ */
+function hasCanonicalFields(stock) {
+  // finalConviction and finalRating are the primary integrationEngine signals.
+  // Their presence indicates the stock completed the full conviction pipeline.
+  return stock?.finalConviction != null && stock?.finalRating != null;
+}
+
 const SYMBOL_META = {
   AAPL: { name: "Apple", category: "Consumer Tech", marketCap: "Large Cap", type: "Aktie" },
   MSFT: { name: "Microsoft", category: "Cloud AI", marketCap: "Large Cap", type: "Aktie" },
@@ -188,6 +215,9 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     finalDecision: stock?.finalDecision ?? null,
     whyInteresting: Array.isArray(stock?.whyInteresting) ? stock.whyInteresting : [],
     components: stock?.components ?? null,
+    // _degraded: true signals that integrationEngine canonical fields are absent;
+    // inferred hqsScore-based values are used instead of finalConviction pipeline output.
+    _degraded: !hasCanonicalFields(stock),
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -289,6 +319,9 @@ function createFallbackStocks(symbols, generatedAt) {
           changePercent: index % 2 === 0 ? 1.2 + index : -0.8 - index * 0.2,
           hqsScore: 58 + index * 6,
           stabilityScore: 55 + index * 4,
+          // _isSyntheticFallback marks stocks created as placeholders when no
+          // real pipeline data is available; always _degraded by definition.
+          _isSyntheticFallback: true,
         },
         index,
         generatedAt,
@@ -321,6 +354,9 @@ function buildGuardianPayload(rawStocks, options = {}) {
       source: "Finnhub + HQS Engine",
       generatedAt,
       symbolCount: stocks.length,
+      // canonicalCount: stocks with full integrationEngine output (finalConviction present).
+      // Remaining stocks use hqsScore-based inferred values (_degraded: true).
+      canonicalCount: stocks.filter((s) => !s._degraded).length,
     },
     portfolioHealth: buildPortfolioHealth(stocks, stabilityScore),
     topSignals,
@@ -339,4 +375,6 @@ module.exports = {
   parseSymbolsQuery,
   normalizeStockForFrontend,
   buildGuardianPayload,
+  hasCanonicalFields,
+  CANONICAL_FIELDS,
 };
