@@ -499,6 +499,25 @@ function buildGuardianPayload(rawStocks, options = {}) {
   // The route handler can preload computeUserState(userId) and pass it here via options.userState.
   const userState = options.userState ?? null;
 
+  // Step 6 Block 2: Per-user preference hints – slim summary for the frontend.
+  // The caller (route handler) can preload computeUserPreferenceHints(userId) and pass it via options.
+  // Only key insight fields are surfaced; no raw counts or internal thresholds.
+  let userPreferenceInsights = null;
+  const rawHints = options.userPreferenceHints ?? null;
+  if (rawHints && typeof rawHints === "object" && rawHints.sampleSize > 0) {
+    userPreferenceInsights = {
+      preferredDeliveryMode:  rawHints.preferredDeliveryMode  ?? null,
+      preferredActionType:    rawHints.preferredActionType    ?? null,
+      actionResponsiveness:   rawHints.actionResponsiveness   ?? null,
+      riskSensitivity:        rawHints.riskSensitivity        ?? null,
+      notificationFatigue:    rawHints.notificationFatigue    ?? null,
+      briefingAffinity:       rawHints.briefingAffinity       ?? null,
+      explorationAffinity:    rawHints.explorationAffinity    ?? null,
+      sampleSize:             rawHints.sampleSize,
+      computedAt:             rawHints.computedAt             ?? null,
+    };
+  }
+
   // Step 6: Adaptive product signals – aggregate recommendationOutcome from stocks
   // that carry adaptiveSignalHints (populated by opportunityScanner via outcome_tracking data).
   // Provides a summary-level view for the frontend; no new DB call needed here.
@@ -539,6 +558,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     portfolioIntelligence,
     // Step 5 User-State: consolidated user state summary (null when not supplied).
     userState,
+    // Step 6 Block 2: Per-user behavioral preference insights (null when not supplied).
+    userPreferenceInsights,
     // Step 6: Adaptive product signals summary (engagement/outcome quality at portfolio level).
     productSignals,
     topSignals,

@@ -100,6 +100,10 @@ async function analyzeStockWithGuardian(context) {
   // Step 6: Adaptive product signals – read recommendation outcome and track-record hints if present.
   const adaptiveSignalHints = marketData?.adaptiveSignalHints ?? context?.adaptiveSignalHints ?? null;
 
+  // Step 6 Block 2: Per-user preference hints – read behavioral profile if present.
+  // Passed through from the caller (route/orchestrator) alongside userState.
+  const userPreferenceHints = marketData?.userPreferenceHints ?? context?.userPreferenceHints ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -350,7 +354,54 @@ async function analyzeStockWithGuardian(context) {
   }
   const adaptiveSignalBlock = buildAdaptiveSignalBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock]
+  // Step 6 Block 2: Per-user preference hints block – surfaces behavioral profile when available.
+  // Only included when hints are present; short and factual, no new prompt world.
+  const RESPONSIVENESS_LABELS = {
+    high:   "Reagiert schnell (< 2 Stunden nach Benachrichtigung)",
+    medium: "Reagiert moderat (2–24 Stunden nach Benachrichtigung)",
+    low:    "Reagiert langsam (> 24 Stunden oder selten)",
+  };
+  const RISK_SENSITIVITY_LABELS = {
+    risk_averse:        "Risikoavers – reagiert bevorzugt auf Risiko-Hinweise",
+    opportunity_seeker: "Chancenorientiert – reagiert bevorzugt auf Kaufsignale",
+    neutral:            "Ausgewogen – reagiert ähnlich auf Risiko- und Kaufsignale",
+  };
+  const FATIGUE_LABELS = {
+    high:     "Hoch – viele Benachrichtigungen werden ignoriert oder verworfen",
+    moderate: "Moderat – gelegentliches Ignorieren von Benachrichtigungen",
+    low:      "Niedrig – Nutzer öffnet und bearbeitet Benachrichtigungen regelmäßig",
+  };
+  const AFFINITY_LABELS = {
+    high:   "Hoch",
+    medium: "Mittel",
+    low:    "Niedrig",
+  };
+  function buildUserPreferenceBlock() {
+    if (!userPreferenceHints) return "";
+    const parts = [];
+    if (userPreferenceHints.actionResponsiveness) {
+      parts.push(`Reaktionsgeschwindigkeit: ${RESPONSIVENESS_LABELS[userPreferenceHints.actionResponsiveness] || userPreferenceHints.actionResponsiveness}`);
+    }
+    if (userPreferenceHints.riskSensitivity) {
+      parts.push(`Risikoempfindlichkeit: ${RISK_SENSITIVITY_LABELS[userPreferenceHints.riskSensitivity] || userPreferenceHints.riskSensitivity}`);
+    }
+    if (userPreferenceHints.notificationFatigue) {
+      parts.push(`Benachrichtigungs-Sättigung: ${FATIGUE_LABELS[userPreferenceHints.notificationFatigue] || userPreferenceHints.notificationFatigue}`);
+    }
+    if (userPreferenceHints.briefingAffinity) {
+      parts.push(`Briefing-Affinität: ${AFFINITY_LABELS[userPreferenceHints.briefingAffinity] || userPreferenceHints.briefingAffinity}`);
+    }
+    if (userPreferenceHints.explorationAffinity) {
+      parts.push(`Explorations-Affinität (Discovery): ${AFFINITY_LABELS[userPreferenceHints.explorationAffinity] || userPreferenceHints.explorationAffinity}`);
+    }
+    if (userPreferenceHints.preferredDeliveryMode) {
+      parts.push(`Bevorzugter Liefermodus: ${userPreferenceHints.preferredDeliveryMode}`);
+    }
+    return parts.length ? `Nutzer-Verhaltensprofil: ${parts.join(" · ")}` : "";
+  }
+  const userPreferenceBlock = buildUserPreferenceBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -423,6 +474,13 @@ Erstelle eine strukturierte Erklärung mit:
    - needsClosure=true: Das Follow-up wurde vom Nutzer bearbeitet und kann formal abgeschlossen werden.
    - reminderEligible=true: Erkläre kurz, warum eine Erinnerung sinnvoll ist (z.B. ungesehenes Signal, offener Outcome-Link).
    Wenn kein Follow-up-Kontext vorhanden, diesen Punkt weglassen.
+12. Nutzer-Verhaltensprofil: Falls ein Nutzer-Verhaltensprofil vorhanden ist, ordne kurz ein, wie die Analyse auf diesen Nutzer abgestimmt werden sollte –
+   - riskSensitivity="risk_averse": Betone Risiko-Aspekte stärker, da der Nutzer auf Risiko-Signale besonders anspricht
+   - riskSensitivity="opportunity_seeker": Betone Chancen und Kaufsignale, da der Nutzer auf positive Szenarien reagiert
+   - notificationFatigue="high": Halte die Analyse besonders prägnant und priorisiert – der Nutzer wird von zu vielen Hinweisen überwältigt
+   - actionResponsiveness="low": Weise explizit auf Dringlichkeit hin, wenn das Signal zeitkritisch ist
+   - explorationAffinity="high": Betone neue oder unbekannte Signale, da der Nutzer Discovery-Hinweise schätzt
+   Wenn kein Nutzer-Verhaltensprofil vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

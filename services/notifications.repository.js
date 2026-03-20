@@ -994,6 +994,167 @@ async function computeProductSignals(userId, { days = 30 } = {}) {
   }
 }
 
+// ── Step 6 Block 2: User Preference Hints ────────────────────────────────────
+
+/**
+ * computeUserPreferenceHints – derives first-layer per-user adaptive preference
+ * hints from existing notification reaction, delivery and engagement data.
+ * No schema changes. Single DB round-trip via CTE.
+ *
+ * Derived hints (categorical, null when insufficient data):
+ *   preferredDeliveryMode  – delivery_mode that historically led to the most acted responses
+ *   preferredActionType    – action_type that historically led to the most acted responses
+ *   actionResponsiveness   – 'high' | 'medium' | 'low': median hours from seen to acted
+ *   riskSensitivity        – 'risk_averse' | 'opportunity_seeker' | 'neutral': which action types user acts on
+ *   notificationFatigue    – 'high' | 'moderate' | 'low': combined dismiss+ignore rate over delivered
+ *   briefingAffinity       – 'high' | 'medium' | 'low': share of actions from briefing-mode notifications
+ *   explorationAffinity    – 'high' | 'medium' | 'low': share of actions from discovery-kind notifications
+ *
+ * All hints are null when sampleSize is below the minimum threshold (3).
+ * Defensive: returns empty hint object on error so callers remain non-fatal.
+ *
+ * @param {number} userId
+ * @param {object} [opts]
+ * @param {number} [opts.days=30] - look-back window (1..365)
+ * @returns {Promise<object>}
+ */
+async function computeUserPreferenceHints(userId, { days = 30 } = {}) {
+  const uid = Number(userId);
+  const empty = {
+    preferredDeliveryMode: null,
+    preferredActionType: null,
+    actionResponsiveness: null,
+    riskSensitivity: null,
+    notificationFatigue: null,
+    briefingAffinity: null,
+    explorationAffinity: null,
+    sampleSize: 0,
+    computedAt: new Date().toISOString(),
+  };
+  if (!Number.isFinite(uid) || uid <= 0) return empty;
+
+  const d = Math.min(Math.max(Number(days) || 30, 1), 365);
+  // Minimum sample size to derive any categorical hint (avoids false signals on very few notifications).
+  const MIN_SAMPLE = 3;
+
+  try {
+    // Single CTE query: aggregate stats + top acted delivery_mode/action_type combination.
+    const res = await pool.query(
+      `WITH base AS (
+         SELECT delivery_mode, action_type, kind,
+                delivered_at, seen_at, acted_at, dismissed_at
+         FROM notifications
+         WHERE user_id = $1
+           AND created_at >= NOW() - ($2 || ' days')::interval
+       ),
+       agg AS (
+         SELECT
+           COUNT(*)                                                                             AS total,
+           COUNT(delivered_at)                                                                  AS delivered,
+           COUNT(acted_at)                                                                      AS acted,
+           COUNT(dismissed_at)                                                                  AS dismissed,
+           COUNT(*) FILTER (WHERE seen_at IS NULL AND delivered_at IS NOT NULL)                 AS unseen,
+           AVG(EXTRACT(EPOCH FROM (acted_at - seen_at)) / 3600.0)
+             FILTER (WHERE acted_at IS NOT NULL AND seen_at IS NOT NULL)                        AS avg_hours_to_act,
+           COUNT(*) FILTER (WHERE acted_at IS NOT NULL
+             AND action_type IN ('reduce_risk','avoid_adding'))                                 AS risk_actions,
+           COUNT(*) FILTER (WHERE acted_at IS NOT NULL
+             AND action_type IN ('starter_position','watchlist_upgrade','rebalance_review'))     AS opp_actions,
+           COUNT(*) FILTER (WHERE acted_at IS NOT NULL AND action_type IS NOT NULL)             AS typed_actions,
+           COUNT(*) FILTER (WHERE acted_at IS NOT NULL AND delivery_mode LIKE '%briefing%')     AS acted_briefing,
+           COUNT(*) FILTER (WHERE acted_at IS NOT NULL AND kind LIKE '%discovery%')             AS acted_discovery
+         FROM base
+       ),
+       top_combo AS (
+         SELECT delivery_mode, action_type
+         FROM base
+         WHERE acted_at IS NOT NULL
+         GROUP BY delivery_mode, action_type
+         ORDER BY COUNT(*) DESC
+         LIMIT 1
+       )
+       SELECT agg.*, top_combo.delivery_mode AS top_delivery_mode,
+                      top_combo.action_type   AS top_action_type
+       FROM agg LEFT JOIN top_combo ON true`,
+      [uid, d]
+    );
+
+    const row = res.rows?.[0] || {};
+    const total          = Number(row.total           || 0);
+    const delivered      = Number(row.delivered       || 0);
+    const acted          = Number(row.acted           || 0);
+    const dismissed      = Number(row.dismissed       || 0);
+    const unseen         = Number(row.unseen          || 0);
+    const avgHoursToAct  = row.avg_hours_to_act != null ? Number(row.avg_hours_to_act) : null;
+    const riskActions    = Number(row.risk_actions    || 0);
+    const oppActions     = Number(row.opp_actions     || 0);
+    const typedActions   = Number(row.typed_actions   || 0);
+    const actedBriefing  = Number(row.acted_briefing  || 0);
+    const actedDiscovery = Number(row.acted_discovery || 0);
+
+    const preferredDeliveryMode = row.top_delivery_mode || null;
+    const preferredActionType   = row.top_action_type   || null;
+
+    // actionResponsiveness: how quickly the user acts after seeing a notification
+    let actionResponsiveness = null;
+    if (avgHoursToAct !== null && acted >= MIN_SAMPLE) {
+      if      (avgHoursToAct < 2)  actionResponsiveness = "high";
+      else if (avgHoursToAct < 24) actionResponsiveness = "medium";
+      else                         actionResponsiveness = "low";
+    }
+
+    // riskSensitivity: which action types the user historically acts on
+    let riskSensitivity = null;
+    if (typedActions >= MIN_SAMPLE) {
+      if      (riskActions > oppActions) riskSensitivity = "risk_averse";
+      else if (oppActions > riskActions) riskSensitivity = "opportunity_seeker";
+      else                               riskSensitivity = "neutral";
+    }
+
+    // notificationFatigue: combined dismiss + unseen rate over delivered notifications
+    let notificationFatigue = null;
+    if (delivered >= MIN_SAMPLE) {
+      const fatigueRate = (dismissed + unseen) / delivered;
+      if      (fatigueRate >= 0.7) notificationFatigue = "high";
+      else if (fatigueRate >= 0.4) notificationFatigue = "moderate";
+      else                         notificationFatigue = "low";
+    }
+
+    // briefingAffinity: fraction of acted responses that came from briefing-type deliveries
+    let briefingAffinity = null;
+    if (acted >= MIN_SAMPLE) {
+      const rate = actedBriefing / acted;
+      if      (rate >= 0.5) briefingAffinity = "high";
+      else if (rate >= 0.2) briefingAffinity = "medium";
+      else                  briefingAffinity = "low";
+    }
+
+    // explorationAffinity: fraction of acted responses from discovery-kind notifications
+    let explorationAffinity = null;
+    if (acted >= MIN_SAMPLE) {
+      const rate = actedDiscovery / acted;
+      if      (rate >= 0.3) explorationAffinity = "high";
+      else if (rate >= 0.1) explorationAffinity = "medium";
+      else                  explorationAffinity = "low";
+    }
+
+    return {
+      preferredDeliveryMode,
+      preferredActionType,
+      actionResponsiveness,
+      riskSensitivity,
+      notificationFatigue,
+      briefingAffinity,
+      explorationAffinity,
+      sampleSize: total,
+      computedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    if (logger?.warn) logger.warn("computeUserPreferenceHints error", { userId: uid, message: err.message });
+    return empty;
+  }
+}
+
 module.exports = {
   initNotificationTables,
   seedDemoUserIfEmpty,
@@ -1004,6 +1165,7 @@ module.exports = {
   computeUserAttentionLevel,             // ✅ Step 5: user attention logic
   computeUserState,                      // ✅ Step 5 User-State: consolidated user state from notification data
   computeProductSignals,                 // ✅ Step 6: adaptive product signals (engagement/action/dismissal scores)
+  computeUserPreferenceHints,            // ✅ Step 6 Block 2: per-user behavioral preference hints
 
   createNotification,
   createNotificationOncePerDay,          // ✅ accepts priority/reason

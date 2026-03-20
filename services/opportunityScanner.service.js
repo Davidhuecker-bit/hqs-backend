@@ -147,6 +147,46 @@ function _deltaPriorityBonus(deltaCtx) {
   return 0;
 }
 
+// ── User Affinity Bonus (Step 6 Block 2) ─────────────────────────────────────
+// Applies a light per-user preference adjustment to the sort score.
+// Kept minimal (±2) so conviction/portfolio/delta factors stay dominant.
+// Only applied when userPreferenceHints are explicitly passed in by the caller.
+const USER_AFFINITY_BONUS   =  2;
+const USER_AFFINITY_PENALTY = -2;
+
+/**
+ * Returns a small sort-score adjustment (±2) based on per-user preference hints.
+ * - risk_averse users: boost reduce_risk / avoid_adding actions
+ * - opportunity_seeker users: boost starter_position / watchlist_upgrade actions
+ * No change for neutral, missing, or unmatched combinations.
+ *
+ * @param {object}      opp   – opportunity with nextAction attached
+ * @param {object|null} hints – computeUserPreferenceHints() result
+ * @returns {number}
+ */
+function _userAffinityBonus(opp, hints) {
+  if (!hints || !hints.riskSensitivity) return 0;
+  const actionType = opp.nextAction?.actionType || null;
+  if (!actionType) return 0;
+  const RISK_ACTIONS = ["reduce_risk", "avoid_adding"];
+  const OPP_ACTIONS  = ["starter_position", "watchlist_upgrade", "rebalance_review"];
+  // Pure opportunity actions (excludes rebalance_review which is portfolio maintenance,
+  // not penalized for risk-averse users).
+  const OPP_PUSH_ACTIONS = ["starter_position", "watchlist_upgrade"];
+  if (hints.riskSensitivity === "risk_averse" && RISK_ACTIONS.includes(actionType)) {
+    return USER_AFFINITY_BONUS;
+  }
+  if (hints.riskSensitivity === "opportunity_seeker" && OPP_ACTIONS.includes(actionType)) {
+    return USER_AFFINITY_BONUS;
+  }
+  // Gentle counter-signal: risk_averse user sees a pure buy-side signal → slight nudge down.
+  // rebalance_review is excluded: portfolio maintenance is neutral for all risk profiles.
+  if (hints.riskSensitivity === "risk_averse" && OPP_PUSH_ACTIONS.includes(actionType)) {
+    return USER_AFFINITY_PENALTY;
+  }
+  return 0;
+}
+
 /**
  * Compute delta/change context for an opportunity.
  *
@@ -1466,6 +1506,13 @@ async function getTopOpportunities(arg = 10) {
       ? String(options.regime).trim().toLowerCase()
       : null;
 
+  // Step 6 Block 2: optional per-user preference hints from the caller (e.g. route handler).
+  // Null-safe: the scanner runs without user context by default – hints are purely additive.
+  const userPreferenceHints =
+    options.userPreferenceHints && typeof options.userPreferenceHints === "object"
+      ? options.userPreferenceHints
+      : null;
+
   const res = await pool.query(`
     WITH latest_hqs AS (
       SELECT DISTINCT ON (symbol)
@@ -1639,17 +1686,18 @@ async function getTopOpportunities(arg = 10) {
     return { ...oppWithAttention, actionOrchestration, adaptiveSignalHints };
   });
 
-  // Portfolio-intelligence + delta-aware re-sort:
-  // diversifiers / elevated delta get gentle nudge up;
-  // high-concentration / degraded delta get gentle nudge down.
-  // Conviction/confidence still dominate; combined bonus is ±3–8 pts.
+  // Portfolio-intelligence + delta-aware + user-affinity re-sort.
+  // Conviction/confidence still dominate; combined bonus is ±3–10 pts.
+  // userPreferenceHints bonus is ±2 (only when hints passed in by caller).
   opportunitiesWithDelta.sort((a, b) => {
     const aAdj = safeNum(a.finalConviction, safeNum(a.hqsScore, 0))
       + _portfolioIntelligenceBonus(a.portfolioContext)
-      + _deltaPriorityBonus(a.deltaContext);
+      + _deltaPriorityBonus(a.deltaContext)
+      + _userAffinityBonus(a, userPreferenceHints);
     const bAdj = safeNum(b.finalConviction, safeNum(b.hqsScore, 0))
       + _portfolioIntelligenceBonus(b.portfolioContext)
-      + _deltaPriorityBonus(b.deltaContext);
+      + _deltaPriorityBonus(b.deltaContext)
+      + _userAffinityBonus(b, userPreferenceHints);
     if (bAdj !== aAdj) return bAdj - aAdj;
     if (b.finalConfidence !== a.finalConfidence) return b.finalConfidence - a.finalConfidence;
     return safeNum(b.hqsScore, 0) - safeNum(a.hqsScore, 0);
@@ -2044,6 +2092,7 @@ async function getTopOpportunities(arg = 10) {
     allocationApproved:      budgetSummary ? budgetSummary.approvedPositions : null,
     budgetConsumedPct:       budgetSummary ? budgetSummary.consumedBudgetPct : null,
     virtualPositionsOpened:  virtualOpenResults.filter((r) => r.virtualPositionOpened).length,
+    userAffinityActive:      userPreferenceHints ? userPreferenceHints.riskSensitivity || null : null,
     returned: out.length,
   });
 
