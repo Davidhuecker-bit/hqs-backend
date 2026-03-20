@@ -18,6 +18,8 @@ const {
   buildNewsLifecycle,
 } = require("./newsIntelligence.service");
 
+const { ensureTrackedSymbol } = require("./universe.repository");
+
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const FMP_NEWS_URL = "https://financialmodelingprep.com/api/v3/stock_news";
 const FMP_NEWS_TIMEOUT_MS = Number(process.env.FMP_NEWS_TIMEOUT_MS || 20000);
@@ -786,6 +788,11 @@ function filterAndSortNewsItems(items = [], options = {}) {
 async function getStructuredMarketNewsBySymbols(symbols, limitPerSymbol = 5, options = {}) {
   const normalizedSymbols = normalizeSymbols(symbols);
   if (!normalizedSymbols.length) return {};
+
+  // Fire-and-forget: enroll any unknown symbols so the scanner can pick them up later.
+  for (const sym of normalizedSymbols) {
+    ensureTrackedSymbol(sym, { source: "market_news_read" }).catch(() => {});
+  }
 
   const grouped = await marketNewsRepository.loadLatestMarketNewsBySymbols(
     normalizedSymbols,

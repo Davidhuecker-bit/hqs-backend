@@ -69,6 +69,7 @@ const {
   initUniverseTables,
   getUniverseBatch,
   listActiveUniverseSymbols,
+  ensureTrackedSymbol,
 } = require("./universe.repository");
 const {
   loadRuntimeState,
@@ -1693,6 +1694,9 @@ async function getMarketData(symbol, { limit } = {}) {
   try {
     if (symbol) {
       const entry = await getStoredMarketDataBySymbol(symbol);
+      // Fire-and-forget: enroll unknown symbols so the scanner can pick them up later.
+      // Does NOT block the response or trigger any live API call.
+      ensureTrackedSymbol(symbol, { source: "market_read" }).catch(() => {});
       return entry ? [entry] : [];
     }
 

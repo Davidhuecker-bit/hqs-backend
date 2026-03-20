@@ -152,6 +152,45 @@ async function setCursor(cursor, key = CURSOR_KEY_SNAPSHOT) {
   );
 }
 
+/**
+ * Ensure a single symbol is present in universe_symbols.
+ * Idempotent: ON CONFLICT DO NOTHING prevents duplicate rows.
+ * Minimal fields only; does not overwrite existing metadata.
+ *
+ * @param {string} symbol
+ * @param {object} [options]
+ * @param {number} [options.priority=50]  – lower wins during batch scans
+ * @param {string} [options.source]       – label for logging only
+ * @returns {{ tracked: boolean, symbol: string, enrolled: boolean }}
+ */
+async function ensureTrackedSymbol(symbol, options = {}) {
+  const normalized = cleanSymbol(symbol);
+  if (!normalized) return { tracked: false, symbol: normalized || "", enrolled: false };
+
+  const priority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 50;
+  const source = String(options.source || "customer_request").trim();
+
+  try {
+    const res = await pool.query(
+      `INSERT INTO universe_symbols (symbol, is_active, priority, updated_at)
+       VALUES ($1, TRUE, $2, NOW())
+       ON CONFLICT (symbol) DO NOTHING
+       RETURNING symbol`,
+      [normalized, priority]
+    );
+
+    const enrolled = res.rows.length > 0;
+    if (enrolled) {
+      logger.info("ensureTrackedSymbol: enrolled new symbol", { symbol: normalized, source });
+    }
+
+    return { tracked: true, symbol: normalized, enrolled };
+  } catch (err) {
+    logger.error("ensureTrackedSymbol: failed", { symbol: normalized, message: err.message });
+    return { tracked: false, symbol: normalized, enrolled: false };
+  }
+}
+
 async function countActiveUniverse(country = null) {
   const args = [];
   const filters = [`is_active = TRUE`];
@@ -266,6 +305,7 @@ module.exports = {
   CURSOR_KEY_SNAPSHOT,
   initUniverseTables,
   upsertUniverseSymbols,
+  ensureTrackedSymbol,
   countActiveUniverse,
   listActiveUniverseSymbols,
   getUniverseBatch,
