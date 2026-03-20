@@ -28,6 +28,7 @@ const { Pool } = require("pg");
 const logger   = require("../utils/logger");
 const { getSector, calculatePositionSize } = require("./capitalAllocation.service");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
+const { ensureTrackedSymbol } = require("./universe.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -272,6 +273,10 @@ async function openVirtualPositionFromAllocation(data) {
   if (!symbol)       throw new Error("openVirtualPositionFromAllocation: symbol is required");
   if (entryPrice <= 0) throw new Error("openVirtualPositionFromAllocation: entryPrice must be > 0");
   if (allocatedEur <= 0) throw new Error("openVirtualPositionFromAllocation: allocatedEur must be > 0");
+
+  // Enroll symbol in universe_symbols so the scanner can pick it up.
+  // Awaited here since this is already a write path; does not trigger live API calls.
+  await ensureTrackedSymbol(symbol, { source: "portfolio_twin", priority: 20 });
 
   const res = await pool.query(
     `INSERT INTO virtual_positions
