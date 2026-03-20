@@ -92,6 +92,8 @@ function calculateRelativeVolume(volume, avgVolume) {
 ================================ */
 
 function buildFeatures(data = {}, advanced = {}) {
+  if (!data || typeof data !== "object") data = {};
+  if (!advanced || typeof advanced !== "object") advanced = {};
 
   const price = safe(data.price);
   const volume = safe(data.volume);

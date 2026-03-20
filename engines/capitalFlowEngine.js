@@ -158,5 +158,7 @@ function analyzeCapitalFlows({
 }
 
 module.exports = {
-  analyzeCapitalFlows
+  analyzeCapitalFlows,
+  calculateMarketBreadth,
+  detectSectorFlows
 };
