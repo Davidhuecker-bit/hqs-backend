@@ -8,6 +8,8 @@ const {
   normalizeLimit,
   normalizeMinRelevance,
   getStructuredMarketNewsBySymbols,
+  getPortfolioNewsSymbols,
+  getWatchlistNewsSymbols,
 } = require("../services/marketNews.service");
 
 const logger = require("../utils/logger");
@@ -89,6 +91,121 @@ function formatSummary(summary) {
     topRelevanceScore: Number(safe?.topRelevanceScore ?? 0) || 0,
   };
 }
+
+async function buildNewsResponseFromSymbols(symbols, limit, minRelevance, directions) {
+  const structured = await getStructuredMarketNewsBySymbols(symbols, limit, {
+    minRelevance,
+    directions,
+  });
+
+  const newsBySymbol = {};
+  let count = 0;
+
+  for (const symbol of symbols) {
+    const bucket = structured?.[symbol] || { items: [], summary: {} };
+    const items = Array.isArray(bucket.items)
+      ? bucket.items
+          .map(formatNewsItem)
+          .sort((a, b) => {
+            const relevanceDiff = extractRelevanceScore(b) - extractRelevanceScore(a);
+            if (relevanceDiff !== 0) return relevanceDiff;
+            return extractPublishedTimestamp(b) - extractPublishedTimestamp(a);
+          })
+      : [];
+    const summary = formatSummary(bucket.summary);
+
+    newsBySymbol[symbol] = {
+      summary,
+      items,
+    };
+
+    count += items.length;
+  }
+
+  return {
+    success: true,
+    symbols,
+    limit,
+    minRelevance,
+    directions,
+    count,
+    newsBySymbol,
+  };
+}
+
+router.get("/portfolio", async (req, res) => {
+  try {
+    const limit = normalizeLimit(req.query.limit);
+    const minRelevance = normalizeMinRelevance(req.query.minRelevance);
+    const directions = normalizeDirections(req.query.direction);
+
+    const rawSymbols = await getPortfolioNewsSymbols();
+    const symbols = normalizeSymbols(rawSymbols);
+
+    if (!symbols.length) {
+      return res.json({
+        success: true,
+        source: "portfolio",
+        message: "No open portfolio positions found. News will appear once virtual positions are opened.",
+        symbols: [],
+        limit,
+        minRelevance,
+        directions,
+        count: 0,
+        newsBySymbol: {},
+      });
+    }
+
+    return res.json(await buildNewsResponseFromSymbols(symbols, limit, minRelevance, directions));
+  } catch (error) {
+    logger.error("Market news portfolio route error", {
+      message: error.message,
+      stack: error.stack,
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while fetching portfolio market news. Please try again later.",
+    });
+  }
+});
+
+router.get("/watchlist", async (req, res) => {
+  try {
+    const limit = normalizeLimit(req.query.limit);
+    const minRelevance = normalizeMinRelevance(req.query.minRelevance);
+    const directions = normalizeDirections(req.query.direction);
+
+    const rawSymbols = await getWatchlistNewsSymbols();
+    const symbols = normalizeSymbols(rawSymbols);
+
+    if (!symbols.length) {
+      return res.json({
+        success: true,
+        source: "watchlist",
+        message: "No active watchlist symbols found. News will appear once the watchlist is populated.",
+        symbols: [],
+        limit,
+        minRelevance,
+        directions,
+        count: 0,
+        newsBySymbol: {},
+      });
+    }
+
+    return res.json(await buildNewsResponseFromSymbols(symbols, limit, minRelevance, directions));
+  } catch (error) {
+    logger.error("Market news watchlist route error", {
+      message: error.message,
+      stack: error.stack,
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: "An unexpected error occurred while fetching watchlist market news. Please try again later.",
+    });
+  }
+});
 
 router.get("/", async (req, res) => {
   try {

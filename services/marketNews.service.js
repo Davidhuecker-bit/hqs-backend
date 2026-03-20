@@ -16,6 +16,8 @@ const {
   analyzeNewsArticle,
   buildNewsLifecycle,
 } = require("./newsIntelligence.service");
+const { getActiveWatchlistSymbols } = require("./watchlist.repository");
+const { getSharedPool } = require("../config/database");
 
 const FMP_API_KEY = process.env.FMP_API_KEY;
 const FMP_NEWS_URL = "https://financialmodelingprep.com/api/v3/stock_news";
@@ -851,6 +853,30 @@ async function getScoringActiveNewsContextBySymbols(
   return result;
 }
 
+async function getPortfolioNewsSymbols() {
+  try {
+    const pool = getSharedPool();
+    const res = await pool.query(
+      `SELECT DISTINCT symbol FROM virtual_positions WHERE status = 'open' ORDER BY symbol ASC`
+    );
+    return (res.rows || [])
+      .map((r) => String(r.symbol || "").trim().toUpperCase())
+      .filter(Boolean);
+  } catch (err) {
+    if (logger?.warn) logger.warn("getPortfolioNewsSymbols: query failed", { message: err.message });
+    return [];
+  }
+}
+
+async function getWatchlistNewsSymbols(limit = 250) {
+  try {
+    return await getActiveWatchlistSymbols(limit);
+  } catch (err) {
+    if (logger?.warn) logger.warn("getWatchlistNewsSymbols: query failed", { message: err.message });
+    return [];
+  }
+}
+
 module.exports = {
   fetchFmpMarketNewsForSymbols,
   normalizeFmpNewsItem,
@@ -864,4 +890,6 @@ module.exports = {
   getStructuredMarketNewsBySymbols,
   getScoringActiveMarketNewsBySymbols,
   getScoringActiveNewsContextBySymbols,
+  getPortfolioNewsSymbols,
+  getWatchlistNewsSymbols,
 };
