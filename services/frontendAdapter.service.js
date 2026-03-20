@@ -224,6 +224,9 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     deltaContext: stock?.deltaContext ?? null,
     // Step 4c: Next action hint (computed by opportunityScanner from delta + portfolio signals).
     nextAction: stock?.nextAction ?? null,
+    // Step 5: User attention level and reason (derived from portfolio/delta/action signals).
+    userAttentionLevel: stock?.userAttentionLevel ?? null,
+    attentionReason: stock?.attentionReason ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -244,19 +247,27 @@ function buildTopSignals(stocks) {
     portfolio_impact_changed: "Portfolio-Impact",
   };
 
+  // Step 5: attention-level sort boost – keeps conviction dominant (100-pt scale)
+  // while surfacing critical/high-attention signals to the top of the list.
+  const ATTENTION_SORT_BOOST = { critical: 20, high: 10, medium: 3, low: 0 };
+
   return stocks
     .slice()
     .sort((left, right) => {
       // Prefer finalConviction (integrationEngine) over raw hqsScore for ranking.
       const leftScore = toFiniteNumber(left.finalConviction ?? left.hqsScore, 0) + toFiniteNumber(left.changePercent, 0) * 2;
       const rightScore = toFiniteNumber(right.finalConviction ?? right.hqsScore, 0) + toFiniteNumber(right.changePercent, 0) * 2;
-      return rightScore - leftScore;
+      // Step 5: boost critical/high attention signals to the top
+      const leftBoost  = ATTENTION_SORT_BOOST[left.userAttentionLevel  || "low"] || 0;
+      const rightBoost = ATTENTION_SORT_BOOST[right.userAttentionLevel || "low"] || 0;
+      return (rightScore + rightBoost) - (leftScore + leftBoost);
     })
     .slice(0, 3)
     .map((stock) => {
       const ctx        = stock.portfolioContext ?? null;
       const delta      = stock.deltaContext     ?? null;
       const action     = stock.nextAction       ?? null;
+      const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
       // Append portfolio-context badge, intelligence label, delta badge, and next-action badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
@@ -268,10 +279,12 @@ function buildTopSignals(stocks) {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
+        userAttentionLevel: stock.userAttentionLevel ?? null,
+        attentionReason: stock.attentionReason ?? null,
       };
     });
 }
@@ -359,6 +372,12 @@ function buildPortfolioIntelligenceSummary(stocks) {
     },
     // Next-action summary: count by actionType across all stocks with a computed action.
     nextActionSummary: buildNextActionSummary(stocks),
+    // Step 5: attention distribution – how many signals require user attention at each level.
+    attention: {
+      critical: stocks.filter((s) => s.userAttentionLevel === "critical").length,
+      high:     stocks.filter((s) => s.userAttentionLevel === "high").length,
+      medium:   stocks.filter((s) => s.userAttentionLevel === "medium").length,
+    },
   };
 }
 
