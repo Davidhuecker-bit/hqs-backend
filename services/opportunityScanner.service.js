@@ -37,6 +37,11 @@ const {
   hasOpenVirtualPosition,
   openVirtualPositionFromAllocation,
 } = require("./portfolioTwin.service");
+// Step 4: Personalized Decision Layer – portfolio/watchlist context per symbol
+const {
+  buildPortfolioContextForSymbols,
+  enrichWithPortfolioContext,
+} = require("./portfolioContext.service");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1160,6 +1165,24 @@ async function getTopOpportunities(arg = 10) {
     return b.hqsScore - a.hqsScore;
   });
 
+  // ── Step 4: Personalized Decision Layer ─────────────────────────────────
+  // One round-trip: load open virtual positions + watchlist membership for all
+  // candidate symbols, then merge portfolio context into each opportunity.
+  // Graceful fallback: context defaults to unknown when DB is unavailable.
+  let portfolioCtxMap = new Map();
+  try {
+    portfolioCtxMap = await buildPortfolioContextForSymbols(
+      opportunities.map((o) => o.symbol)
+    );
+  } catch (ctxErr) {
+    logger.warn("getTopOpportunities: portfolio context load failed – continuing without", {
+      message: ctxErr.message,
+    });
+  }
+  const opportunitiesWithCtx = opportunities.map((o) =>
+    enrichWithPortfolioContext(o, portfolioCtxMap)
+  );
+
   // ── World State: single source of global market truth ───────────────────
   // Replaces three individual async calls (regime, inter-market, agent weights)
   // with one unified getWorldState() lookup that is already cached in-memory.
@@ -1234,7 +1257,7 @@ async function getTopOpportunities(arg = 10) {
   // ── Agentic Debate + Guardian Protocol + Insight building ───────────────
   let suppressedCount = 0;
   let debateBlockedCount = 0;
-  const withInsights = await Promise.all(opportunities.map(async (opp) => {
+  const withInsights = await Promise.all(opportunitiesWithCtx.map(async (opp) => {
     // 1. Meta-Rationale: historical context for this symbol
     let metaRationale = null;
     try {
