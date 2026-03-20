@@ -2,7 +2,10 @@
 
 /*
   Autonomous Research Engine
-  Generates and evaluates market hypotheses
+  Contextualizes and evaluates confirmed market discoveries.
+  Input discoveries come from discoveryEngine – this layer adds
+  confidence scoring and bearish-risk context rather than re-detecting
+  the same opportunity conditions.
 */
 
 function safe(n, fallback = 0) {
@@ -12,30 +15,33 @@ function safe(n, fallback = 0) {
 
 /* ===============================
    HYPOTHESIS GENERATION
+   Derives hypotheses from discoveryEngine output (no re-detection).
+   Bearish pressure is the one research-only signal with no
+   discoveryEngine counterpart.
 ================================ */
 
-function generateHypotheses(symbolData, features, advanced) {
+function generateHypotheses(discoveries, features, advanced) {
 
   const hypotheses = [];
 
-  const trend = safe(advanced?.trend);
-  const volatility = safe(advanced?.volatilityAnnual);
-  const volumeAccel = safe(features?.volumeAcceleration);
-  const trendStrength = safe(features?.trendStrength);
+  const discoveryTypes = new Set((discoveries || []).map(d => d.type));
 
-  if (trendStrength > 1.2 && volumeAccel > 0.4) {
+  if (discoveryTypes.has("momentum_explosion") || discoveryTypes.has("trend_acceleration")) {
     hypotheses.push({
       type: "momentum_continuation",
       label: "Momentum Continuation Hypothesis"
     });
   }
 
-  if (volatility < 0.2 && trend > 0.1) {
+  if (discoveryTypes.has("volatility_compression")) {
     hypotheses.push({
       type: "volatility_breakout",
       label: "Volatility Compression Breakout"
     });
   }
+
+  const trend = safe(advanced?.trend);
+  const volatility = safe(advanced?.volatilityAnnual);
 
   if (trend < -0.1 && volatility > 0.6) {
     hypotheses.push({
@@ -99,11 +105,13 @@ function buildResearchReport(symbol, hypotheses, evaluations) {
 
 /* ===============================
    MAIN RESEARCH PIPELINE
+   discoveries: optional array from discoveryEngine (enables chain mode).
+   When omitted, only the bearish-pressure hypothesis is generated.
 ================================ */
 
-function runResearch(symbol, symbolData, features, advanced, aiScore) {
+function runResearch(symbol, symbolData, features, advanced, aiScore, discoveries = []) {
 
-  const hypotheses = generateHypotheses(symbolData, features, advanced);
+  const hypotheses = generateHypotheses(discoveries, features, advanced);
 
   const evaluations = evaluateHypotheses(hypotheses, aiScore);
 

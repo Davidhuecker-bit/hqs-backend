@@ -2,7 +2,10 @@
 
 /*
   Strategy Engine
-  Determines which strategy fits the current market conditions
+  Derives the strategy and score adjustment from market conditions.
+  When a researchReport from researchEngine is provided, the breakout
+  strategy is confirmed via research signals (chain mode) rather than
+  re-evaluating the raw volatility/trend condition.
 */
 
 function safe(n, fallback = 0) {
@@ -10,7 +13,7 @@ function safe(n, fallback = 0) {
   return Number.isFinite(v) ? v : fallback;
 }
 
-function detectStrategy(features, advanced) {
+function detectStrategy(features, advanced, researchReport) {
 
   const trend = safe(advanced?.trend);
   const volatility = safe(advanced?.volatilityAnnual);
@@ -23,7 +26,11 @@ function detectStrategy(features, advanced) {
     };
   }
 
-  if (volatility < 0.2 && trend > 0.1) {
+  const breakoutConfirmed = researchReport
+    ? (researchReport.researchSignals || []).some(s => s.hypothesis === "volatility_breakout")
+    : (volatility < 0.2 && trend > 0.1);
+
+  if (breakoutConfirmed) {
     return {
       strategy: "breakout",
       label: "Breakout Setup"
@@ -66,9 +73,9 @@ function adjustScoreForStrategy(aiScore, strategy) {
   return Math.max(0, Math.min(100, adjusted));
 }
 
-function applyStrategy(symbol, aiScore, features, advanced) {
+function applyStrategy(symbol, aiScore, features, advanced, researchReport = null) {
 
-  const strategyInfo = detectStrategy(features, advanced);
+  const strategyInfo = detectStrategy(features, advanced, researchReport);
 
   const adjustedScore = adjustScoreForStrategy(
     aiScore,
