@@ -14,7 +14,7 @@ const {
   linkFollowUpOutcome,
   computeUserState,
   getReminderEligibleNotifications,
-  computeProductSignals,             // ✅ Step 6: adaptive product signals
+  computeUserPreferenceHints,        // ✅ Step 6 Block 2: per-user preference hints
 } = require("../services/notifications.repository");
 
 /**
@@ -126,22 +126,26 @@ async function runDiscoveryNotify() {
             logger.warn("discoveryNotify: getReminderEligibleNotifications failed (ignored)", { userId, message: reminderErr.message });
           }
 
-          // Step 6: Adaptive product signal – if the user shows a very high dismissal
-          // pattern (≥60% of seen notifications dismissed) and the pick is only
-          // medium-escalation, suppress the notification to reduce delivery fatigue.
-          // Requires at least 5 notifications in the sample to avoid false gates.
+          // Step 6 Block 2: User preference hints – gate on notificationFatigue and
+          // log explorationAffinity for observability. Uses one CTE query instead of
+          // two separate computeProductSignals calls. Defensively non-fatal.
           if (orchestration.escalationLevel === "medium") {
             try {
-              const signals = await computeProductSignals(userId, { days: 30 });
-              if (signals.sampleSize >= 5 && signals.dismissalScore >= 0.6) {
+              const hints = await computeUserPreferenceHints(userId, { days: 30 });
+              if (hints.sampleSize >= 5 && hints.notificationFatigue === "high") {
                 gatedOut++;
-                logger.info("discoveryNotify: user gated (high dismissal rate)", {
-                  userId, dismissalScore: signals.dismissalScore, sampleSize: signals.sampleSize,
+                logger.info("discoveryNotify: user gated (high notification fatigue)", {
+                  userId, notificationFatigue: hints.notificationFatigue, sampleSize: hints.sampleSize,
                 });
                 continue;
               }
+              if (hints.explorationAffinity) {
+                logger.info("discoveryNotify: user exploration affinity", {
+                  userId, explorationAffinity: hints.explorationAffinity,
+                });
+              }
             } catch (sigErr) {
-              logger.warn("discoveryNotify: computeProductSignals failed (ignored)", { userId, message: sigErr.message });
+              logger.warn("discoveryNotify: computeUserPreferenceHints failed (ignored)", { userId, message: sigErr.message });
             }
           }
         }
