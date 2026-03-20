@@ -1,8 +1,17 @@
 "use strict";
 
 /*
-  Integration Engine
-  Combines all subsystem outputs into one final intelligence object
+  Integration Engine – Finale Integrations- und Conviction-Schicht
+
+  Bündelt die Outputs von marketOrchestrator (Markt-Context) und
+  marketBrain (AI-Subscore) zum endgültigen Conviction-Score, Rating,
+  Entscheidung und Ranking-Grundlage.
+
+  Verantwortung: finale Adjustments, Conviction, Ranking, Plugin-Integration.
+  Basis-Orchestrierung und AI-Subscore werden nicht hier berechnet,
+  sondern aus marketOrchestrator bzw. marketBrain konsumiert.
+
+  Ablauf: marketOrchestrator → marketBrain (AI-Subscore) → integrationEngine (Finale Integration)
 */
 
 const { runPlugins } = require("./opportunityPluginRegistry");
@@ -256,6 +265,8 @@ function calculateEventPenalty(globalContext = {}) {
 
 /* ===============================
    FINAL CONVICTION SCORE
+   Konsumiert: aiScore von marketBrain (AI-Subscore),
+   globalContext.orchestrator von marketOrchestrator (Markt-Context).
 ================================ */
 
 function calculateFinalConviction({
@@ -345,7 +356,6 @@ function buildFinalDecision(score) {
 
 function buildFinalConfidence({
   learning,
-  brain,
   globalContext,
   resilienceScore,
 }) {
@@ -491,7 +501,6 @@ async function buildIntegratedMarketView({
 
   const finalConfidence = buildFinalConfidence({
     learning,
-    brain,
     globalContext: mergedGlobalContext,
     resilienceScore,
   });
