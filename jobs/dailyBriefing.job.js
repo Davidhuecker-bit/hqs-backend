@@ -57,6 +57,60 @@ function _stockAttentionLevel(stock) {
   return computeUserAttentionLevel({ changesPercentage: stock.changesPercentage, hqsScore: score });
 }
 
+/**
+ * Derive a minimal Action-Orchestration for a briefing stock using only the
+ * already-computed attention level. No extra DB calls.
+ *
+ * This maps attention level → escalation/deliveryMode for briefing ordering.
+ *
+ * escalationLevel: 'high' | 'medium' | 'none'
+ * followUpNeeded:  boolean – whether the stock warrants explicit follow-up
+ * deliveryMode:    'briefing_and_notification' | 'briefing' | 'passive_briefing' | 'none'
+ */
+function _deriveBriefingOrchestration(stock) {
+  const level = stock._attentionLevel || "low";
+
+  if (level === "critical") {
+    return { escalationLevel: "high", followUpNeeded: true, deliveryMode: "briefing_and_notification" };
+  }
+  if (level === "high") {
+    return { escalationLevel: "high", followUpNeeded: false, deliveryMode: "briefing_and_notification" };
+  }
+  if (level === "medium") {
+    return { escalationLevel: "medium", followUpNeeded: false, deliveryMode: "briefing" };
+  }
+  return { escalationLevel: "none", followUpNeeded: false, deliveryMode: "passive_briefing" };
+}
+
+/**
+ * Sort value for briefing order using Action-Orchestration.
+ * Lower = higher priority (appears first in briefing).
+ *   0 – high escalation + follow-up needed (critical risk)
+ *   1 – high escalation (high attention)
+ *   2 – medium escalation + follow-up (portfolio/risk change)
+ *   3 – medium escalation
+ *   4 – attention-based fallback (low/none escalation)
+ */
+function _briefingOrchestrationRank(stock) {
+  const orch = stock._orchestration || {};
+  if (orch.escalationLevel === "high" && orch.followUpNeeded) return 0;
+  if (orch.escalationLevel === "high") return 1;
+  if (orch.escalationLevel === "medium" && orch.followUpNeeded) return 2;
+  if (orch.escalationLevel === "medium") return 3;
+  return 4;
+}
+
+/**
+ * Build a brief orchestration label for a stock's fact line.
+ * Returns empty string for passive/none delivery modes (no clutter for routine stocks).
+ */
+function _buildOrchLabel(orch) {
+  if (!orch?.deliveryMode) return "";
+  if (orch.deliveryMode === "passive_briefing" || orch.deliveryMode === "none") return "";
+  const followUp = orch.followUpNeeded ? " · Follow-up empfohlen" : "";
+  return `, Behandlung: ${orch.deliveryMode}${followUp}`;
+}
+
 function buildFactsFromMarket(stocks) {
   const lines = [];
   for (const s of stocks) {
@@ -70,13 +124,16 @@ function buildFactsFromMarket(stocks) {
 
     const regime = s.regime || "unbekannt";
 
-    // Step 5: include attention level in briefing context when elevated
+    // Include attention level when elevated
     const attnLabel = s._attentionLevel && s._attentionLevel !== "low"
       ? `, Aufmerksamkeit: ${s._attentionLevel}` + (s._attentionReason ? ` (${s._attentionReason})` : "")
       : "";
 
+    // Include orchestration hint when actionable (not passive/none)
+    const orchLabel = _buildOrchLabel(s._orchestration);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}.`
     );
   }
   return lines.join("\n");
@@ -161,21 +218,28 @@ async function runDailyBriefing() {
         continue;
       }
 
-      // Step 5: Compute attention level per stock and sort by priority.
-      // Most important signals (critical → high → medium → low) appear first.
-      // Uses only existing market data fields – no extra DB calls.
+      // Step 5: Compute attention level per stock, then derive Action-Orchestration,
+      // and sort by orchestration priority first (escalation/follow-up), then attention rank.
       for (const s of stocks) {
         const attn = _stockAttentionLevel(s);
         s._attentionLevel = attn.level;
         s._attentionReason = attn.reason;
+        // Derive minimal orchestration from attention level for briefing ordering
+        s._orchestration = _deriveBriefingOrchestration(s);
       }
-      stocks.sort((a, b) =>
-        (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3)
-      );
+      // Primary sort: orchestration rank (escalation/follow-up urgency)
+      // Secondary sort: attention level rank (critical → high → medium → low)
+      stocks.sort((a, b) => {
+        const orchDiff = _briefingOrchestrationRank(a) - _briefingOrchestrationRank(b);
+        if (orchDiff !== 0) return orchDiff;
+        return (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
+      });
 
-      // Derive briefing priority from the highest attention level found
+      // Derive briefing priority from the highest escalation/attention level found
+      const topOrch = stocks[0]?._orchestration || {};
       const topAttention = stocks[0]?._attentionLevel || "low";
       const topAttentionReason = stocks[0]?._attentionReason || null;
+      const topDeliveryMode = topOrch.deliveryMode || "passive_briefing";
 
       // 4) Fakten bauen
       const facts = buildFactsFromMarket(stocks);
@@ -201,11 +265,13 @@ async function runDailyBriefing() {
         kind: "daily_briefing",
         priority: topAttention,
         reason: topAttentionReason,
+        actionType: topOrch.escalationLevel === "high" ? "reduce_risk" : null,
+        deliveryMode: topDeliveryMode,
       });
 
       if (created.inserted) {
         createdCount++;
-        logger.info("Daily briefing created", { userId });
+        logger.info("Daily briefing created", { userId, deliveryMode: topDeliveryMode });
       } else {
         alreadyToday++;
         logger.info("Daily briefing skipped (already today)", { userId });

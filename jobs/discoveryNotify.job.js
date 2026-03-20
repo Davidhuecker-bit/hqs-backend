@@ -13,6 +13,29 @@ const {
   createDiscoveryNotification,
 } = require("../services/notifications.repository");
 
+/**
+ * Derive a minimal Action-Orchestration for a discovery pick.
+ * Discovery picks don't go through getTopOpportunities(), so we derive
+ * deliveryMode and escalationLevel directly from pick confidence/score.
+ *
+ * Rules (first match wins):
+ *   high confidence (≥75) or high score (≥75) → notification + high escalation
+ *   on watchlist or decent confidence (≥55) or decent score (≥55) → notification + medium
+ *   else → none (skip push – low-signal pick not worth notifying)
+ */
+function _derivePickOrchestration(pick, onWatchlist) {
+  const confidence = Number(pick?.confidence ?? 0);
+  const score = Number(pick?.discoveryScore ?? pick?.opportunityScore ?? pick?.hqsScore ?? 0);
+
+  if (confidence >= 75 || score >= 75) {
+    return { deliveryMode: "notification", escalationLevel: "high", followUpNeeded: true };
+  }
+  if (onWatchlist || confidence >= 55 || score >= 55) {
+    return { deliveryMode: "notification", escalationLevel: "medium", followUpNeeded: false };
+  }
+  return { deliveryMode: "none", escalationLevel: "none", followUpNeeded: false };
+}
+
 async function runDiscoveryNotify() {
   return runJob("discoveryNotify", async () => {
     // Lock: verhindert Doppel-Run bei Deploy/Cron
@@ -40,9 +63,7 @@ async function runDiscoveryNotify() {
       return { processedCount: 0 };
     }
 
-    // 3) Notification pro User speichern (1 pro Tag geschützt)
-    // Step 5: Single DB query to find all users who have this symbol on their watchlist.
-    // This avoids an N+1 query pattern (one query per user) for the watchlist check.
+    // 3) Batch-check: welche User haben dieses Symbol auf der Watchlist
     let usersWithPickOnWatchlist = new Set();
     try {
       usersWithPickOnWatchlist = await getUserIdsWithSymbolOnWatchlist(pick.symbol);
@@ -52,11 +73,22 @@ async function runDiscoveryNotify() {
 
     let created = 0;
     let skipped = 0;
+    let gatedOut = 0;
 
     for (const u of users) {
       try {
         const userId = u.id;
         const onWatchlist = usersWithPickOnWatchlist.has(Number(userId));
+
+        // Action-Orchestration: derive per-user delivery intent
+        const orchestration = _derivePickOrchestration(pick, onWatchlist);
+
+        // Gate: skip notification for low-signal picks (deliveryMode=none)
+        if (orchestration.deliveryMode === "none") {
+          gatedOut++;
+          continue;
+        }
+
         const r = await createDiscoveryNotification({ userId, pick, onWatchlist });
         if (r?.inserted) created++;
         else skipped++;
@@ -65,9 +97,14 @@ async function runDiscoveryNotify() {
       }
     }
 
+    logger.info("Discovery notify complete", {
+      created, skipped, gatedOut, users: users.length, pick: pick.symbol,
+    });
+
     return {
       processedCount: created,
       skippedCount: skipped,
+      gatedOutCount: gatedOut,
       users: users.length,
       pick: pick.symbol,
     };
