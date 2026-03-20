@@ -29,7 +29,7 @@ const { logAgentForecasts } = require("./agentForecast.repository");
 const { getAgentWeights, buildMetaRationale } = require("./causalMemory.repository");
 const { getSharpenedThresholds } = require("./sectorCoherence.service");
 // World State: unified global market truth (regime + cross-asset + sector + agents)
-const { getWorldState } = require("./worldState.service");
+const { getWorldState, classifyWorldStateAge } = require("./worldState.service");
 // Capital Allocation Layer: position sizing, risk-budget, sector caps
 const { applyCapitalAllocation } = require("./capitalAllocation.service");
 // Portfolio Twin: virtual position tracking (Stage 2 – auto live-integration)
@@ -1177,6 +1177,21 @@ async function getTopOpportunities(arg = 10) {
 
   try {
     const ws = await getWorldState();
+    const _wsFreshness = classifyWorldStateAge(ws);
+    if (_wsFreshness === "hard_stale") {
+      // Hard-stale: do not use as authoritative input – trigger the fallback below.
+      logger.warn(
+        "getTopOpportunities: world_state is hard_stale – falling back to direct service calls",
+        { created_at: ws?.created_at }
+      );
+      throw new Error("world_state hard_stale – defensive fallback active");
+    }
+    if (_wsFreshness === "stale") {
+      logger.warn(
+        "getTopOpportunities: world_state is stale – using with degraded trust",
+        { created_at: ws?.created_at }
+      );
+    }
     marketRegime = {
       cluster:      ws.regime.cluster,
       avgHqs:       ws.regime.avgHqs,

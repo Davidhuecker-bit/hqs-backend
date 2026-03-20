@@ -17,6 +17,30 @@
 
 const OpenAI = require("openai");
 
+// ── Canonical field contract ─────────────────────────────────────────────────
+// These are the integrationEngine output fields that Guardian depends on.
+// detectMissingCanonicalFields() surfaces gaps so callers know when the
+// analysis is based on partial data.
+const GUARDIAN_CANONICAL_FIELDS = [
+  "finalConviction",
+  "finalConfidence",
+  "finalRating",
+  "finalDecision",
+  "whyInteresting",
+  "components",
+];
+
+/**
+ * Returns the list of canonical fields that are absent from marketData.
+ * An empty result means the full integrationEngine output is present.
+ *
+ * @param {object|null} marketData
+ * @returns {string[]}  names of missing fields
+ */
+function detectMissingCanonicalFields(marketData) {
+  return GUARDIAN_CANONICAL_FIELDS.filter((field) => marketData?.[field] == null);
+}
+
 let client = null;
 
 function getClient() {
@@ -50,6 +74,22 @@ async function analyzeStockWithGuardian(context) {
   const hqsScore = marketData?.hqsScore ?? null;
   const regime = marketData?.regime ?? null;
   const components = marketData?.components ?? null;
+
+  // ── Fallback guard ───────────────────────────────────────────────────────
+  // Surface any missing canonical fields so pipeline gaps are visible.
+  const missingFields = detectMissingCanonicalFields(marketData);
+  if (missingFields.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[guardianService] ${symbol}: missing canonical fields: ${missingFields.join(", ")}`
+    );
+  }
+  // If both the primary conviction score and the fallback hqsScore are absent
+  // there is no scoring data to base an analysis on.  Return a clear degraded
+  // response instead of invoking the AI with empty/null inputs.
+  if (finalConviction == null && hqsScore == null) {
+    return `[Guardian: degraded – keine Scoring-Daten für ${symbol || "?"} verfügbar. Fehlende Felder: ${missingFields.join(", ")}]`;
+  }
 
   function buildConvictionBlock() {
     if (finalConviction != null) {
@@ -108,4 +148,4 @@ Erstelle eine strukturierte Erklärung mit:
   return response.choices[0].message.content;
 }
 
-module.exports = { analyzeStockWithGuardian };
+module.exports = { analyzeStockWithGuardian, detectMissingCanonicalFields };

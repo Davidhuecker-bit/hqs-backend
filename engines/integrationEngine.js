@@ -25,6 +25,53 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+/* =========================================================
+   CANONICAL OUTPUT CONTRACT
+   Every consumer of buildIntegratedMarketView() depends on these six fields.
+   assertCanonicalOutput() surfaces missing fields via a warning instead of
+   letting broken output propagate silently through the pipeline.
+========================================================= */
+
+const CANONICAL_OUTPUT_FIELDS = [
+  "finalConviction",
+  "finalConfidence",
+  "finalRating",
+  "finalDecision",
+  "whyInteresting",
+  "components",
+];
+
+/**
+ * Validates that all canonical output fields are present and non-null.
+ * Logs a warning listing any missing fields so broken pipelines are visible.
+ * Returns a patched view with safe, clearly-degraded defaults for any gap.
+ *
+ * @param {object} view    – assembled output of buildIntegratedMarketView()
+ * @param {string} symbol  – symbol string for diagnostics
+ * @returns {object}  view (patched in place if necessary)
+ */
+function assertCanonicalOutput(view, symbol) {
+  const missing = CANONICAL_OUTPUT_FIELDS.filter((field) => view[field] == null);
+  if (missing.length === 0) return view;
+
+  // Surface the gap – never silently pass through incomplete output.
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[integrationEngine] assertCanonicalOutput: missing fields for ${symbol || "?"}: ${missing.join(", ")}`
+  );
+
+  // Patch with clearly-degraded safe defaults so downstream consumers
+  // receive a defined contract even when the pipeline is partially broken.
+  const patched = { ...view };
+  if (patched.finalConviction == null) patched.finalConviction = 0;
+  if (patched.finalConfidence == null) patched.finalConfidence = 0;
+  if (patched.finalRating     == null) patched.finalRating     = "Low Conviction";
+  if (patched.finalDecision   == null) patched.finalDecision   = "IGNORIEREN";
+  if (patched.whyInteresting  == null) patched.whyInteresting  = [];
+  if (patched.components      == null) patched.components      = {};
+  return patched;
+}
+
 const NEWS_CONVICTION_MAX_ABS = 8;
 // Final conviction uses a softer news profile than the orchestrator so that
 // prepared news context can move ranking meaningfully without dominating HQS/AI.
@@ -585,7 +632,7 @@ async function buildIntegratedMarketView({
     signalContext: mergedGlobalContext.signalContext ?? null,
   };
 
-  return runPlugins(baseView);
+  return runPlugins(assertCanonicalOutput(baseView, symbol));
 }
 
 module.exports = {
