@@ -64,6 +64,7 @@ const {
   createOutcomeTrackingEntry,
   buildAnalysisRationale,
   buildStructuredPatternSignature,
+  loadLatestOutcomeTrackingBySymbols,
 } = require("./outcomeTracking.repository");
 const {
   initUniverseTables,
@@ -1687,6 +1688,23 @@ async function getStoredMarketDataBySymbol(symbol) {
     entry.volatility = adv.volatility ?? null;
     entry.scenarios = adv.scenarios ?? null;
     entry.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
+  }
+
+  // Enrich with canonical integrationEngine output fields stored in outcome_tracking.
+  try {
+    const trackedMap = await loadLatestOutcomeTrackingBySymbols([normalizedSymbol]);
+    const tracked = trackedMap?.[normalizedSymbol] || null;
+    if (tracked) {
+      const finalView = tracked.payload?.finalView || {};
+      entry.finalConviction = tracked.finalConviction || null;
+      entry.finalConfidence = tracked.finalConfidence || null;
+      entry.finalRating = finalView.finalRating || null;
+      entry.finalDecision = finalView.finalDecision || null;
+      entry.whyInteresting = Array.isArray(finalView.whyInteresting) ? finalView.whyInteresting : [];
+      entry.components = finalView.components || null;
+    }
+  } catch (_) {
+    // Non-critical – canonical fields stay undefined; consumers handle null gracefully.
   }
 
   return entry;
