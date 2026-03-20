@@ -890,6 +890,110 @@ async function getRecentFeedbackSignals(userId, { kind = null, days = 30 } = {})
   return { positive, negative, neutral, noResponse, total };
 }
 
+// ── Step 6: Adaptive Product Signals ─────────────────────────────────────────
+
+/**
+ * computeProductSignals – aggregates normalized product signals for a user
+ * from existing notification reaction data. No schema changes required.
+ *
+ * Derived scores (all 0..1):
+ *   engagementScore       – seen / total (how often the user opens notifications)
+ *   actionTakenScore      – acted / seen (how often seen leads to action)
+ *   dismissalScore        – dismissed / seen (how often seen leads to dismissal)
+ *   deliveryEffectiveness – acted / delivered (overall delivery quality)
+ *   followUpEffectiveness – acted-on follow-up-linked / total follow-up-linked
+ *
+ * userPreferenceHints contains the delivery_mode and action_type combinations
+ * that historically produced the most acted responses.
+ *
+ * @param {number} userId
+ * @param {object} [opts]
+ * @param {number} [opts.days=30] - look-back window
+ * @returns {Promise<object>}
+ */
+async function computeProductSignals(userId, { days = 30 } = {}) {
+  const uid = Number(userId);
+  const empty = {
+    engagementScore: 0, actionTakenScore: 0, dismissalScore: 0,
+    deliveryEffectiveness: 0, followUpEffectiveness: 0,
+    userPreferenceHints: { preferredDeliveryMode: null, preferredActionType: null, topCombinations: [] },
+    sampleSize: 0, computedAt: new Date().toISOString(),
+  };
+  if (!Number.isFinite(uid) || uid <= 0) return empty;
+
+  const d = Math.min(Math.max(Number(days) || 30, 1), 365);
+  try {
+    const res = await pool.query(
+      `SELECT
+         COUNT(*)                                                                      AS total,
+         COUNT(CASE WHEN delivered_at IS NOT NULL THEN 1 END)                         AS delivered,
+         COUNT(CASE WHEN seen_at IS NOT NULL THEN 1 END)                              AS seen,
+         COUNT(CASE WHEN acted_at IS NOT NULL THEN 1 END)                             AS acted,
+         COUNT(CASE WHEN dismissed_at IS NOT NULL THEN 1 END)                         AS dismissed,
+         COUNT(CASE WHEN follow_up_outcome IS NOT NULL AND acted_at IS NOT NULL THEN 1 END) AS follow_up_acted,
+         COUNT(CASE WHEN follow_up_outcome IS NOT NULL THEN 1 END)                    AS follow_up_total
+       FROM notifications
+       WHERE user_id = $1
+         AND created_at >= NOW() - ($2 || ' days')::interval`,
+      [uid, d]
+    );
+
+    const row           = res.rows?.[0] || {};
+    const total         = Number(row.total          || 0);
+    const delivered     = Number(row.delivered      || 0);
+    const seen          = Number(row.seen           || 0);
+    const acted         = Number(row.acted          || 0);
+    const dismissed     = Number(row.dismissed      || 0);
+    const followUpActed = Number(row.follow_up_acted || 0);
+    const followUpTotal = Number(row.follow_up_total || 0);
+
+    const engagementScore       = total        > 0 ? Number((seen        / total       ).toFixed(4)) : 0;
+    const actionTakenScore      = seen         > 0 ? Number((acted       / seen        ).toFixed(4)) : 0;
+    const dismissalScore        = seen         > 0 ? Number((dismissed   / seen        ).toFixed(4)) : 0;
+    const deliveryEffectiveness = delivered    > 0 ? Number((acted       / delivered   ).toFixed(4)) : 0;
+    const followUpEffectiveness = followUpTotal > 0 ? Number((followUpActed / followUpTotal).toFixed(4)) : 0;
+
+    // Preference hints: which delivery_mode + action_type combinations led to acted responses.
+    const hintRes = await pool.query(
+      `SELECT delivery_mode, action_type, COUNT(*) AS acted_count
+       FROM notifications
+       WHERE user_id = $1
+         AND acted_at IS NOT NULL
+         AND created_at >= NOW() - ($2 || ' days')::interval
+       GROUP BY delivery_mode, action_type
+       ORDER BY acted_count DESC
+       LIMIT 5`,
+      [uid, d]
+    );
+
+    const preferredDeliveryMode = hintRes.rows?.[0]?.delivery_mode || null;
+    const preferredActionType   = hintRes.rows?.[0]?.action_type   || null;
+    const userPreferenceHints   = {
+      preferredDeliveryMode,
+      preferredActionType,
+      topCombinations: hintRes.rows.slice(0, 3).map((r) => ({
+        deliveryMode: r.delivery_mode || null,
+        actionType:   r.action_type   || null,
+        actedCount:   Number(r.acted_count || 0),
+      })),
+    };
+
+    return {
+      engagementScore,
+      actionTakenScore,
+      dismissalScore,
+      deliveryEffectiveness,
+      followUpEffectiveness,
+      userPreferenceHints,
+      sampleSize: total,
+      computedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    if (logger?.warn) logger.warn("computeProductSignals error", { userId: uid, message: err.message });
+    return empty;
+  }
+}
+
 module.exports = {
   initNotificationTables,
   seedDemoUserIfEmpty,
@@ -899,6 +1003,7 @@ module.exports = {
 
   computeUserAttentionLevel,             // ✅ Step 5: user attention logic
   computeUserState,                      // ✅ Step 5 User-State: consolidated user state from notification data
+  computeProductSignals,                 // ✅ Step 6: adaptive product signals (engagement/action/dismissal scores)
 
   createNotification,
   createNotificationOncePerDay,          // ✅ accepts priority/reason

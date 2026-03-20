@@ -97,6 +97,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 5 User-State: read consolidated user state if present (pass-through from route/caller).
   const userState = marketData?.userState ?? context?.userState ?? null;
 
+  // Step 6: Adaptive product signals – read recommendation outcome and track-record hints if present.
+  const adaptiveSignalHints = marketData?.adaptiveSignalHints ?? context?.adaptiveSignalHints ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -325,7 +328,29 @@ async function analyzeStockWithGuardian(context) {
   }
   const followUpBlock = buildFollowUpBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock]
+  // Step 6: Adaptive product signal block – surfaces track-record hints when available.
+  // Brief and optional: only included when outcomeDataAvailable = true.
+  function buildAdaptiveSignalBlock() {
+    if (!adaptiveSignalHints || !adaptiveSignalHints.outcomeDataAvailable) return "";
+    const parts = [];
+    if (adaptiveSignalHints.recommendationOutcome != null) {
+      parts.push(`Historischer Signalqualitäts-Score: ${adaptiveSignalHints.recommendationOutcome}/100`);
+    }
+    if (adaptiveSignalHints.successRate != null) {
+      parts.push(`Trefferquote vergangener Signale: ${Math.round(adaptiveSignalHints.successRate * 100)}%`);
+    }
+    if (adaptiveSignalHints.avgActualReturn != null) {
+      const retPct = (adaptiveSignalHints.avgActualReturn * 100).toFixed(2);
+      parts.push(`Ø Rendite evaluierter Signale: ${retPct}%`);
+    }
+    if (adaptiveSignalHints.outcomeSampleSize != null) {
+      parts.push(`Datenbasis: ${adaptiveSignalHints.outcomeSampleSize} ausgewertete Signal(e)`);
+    }
+    return parts.length ? parts.join(" · ") : "";
+  }
+  const adaptiveSignalBlock = buildAdaptiveSignalBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock]
     .filter(Boolean)
     .join("\n");
 

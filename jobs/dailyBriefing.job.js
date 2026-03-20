@@ -14,6 +14,7 @@ const {
   computeUserAttentionLevel,    // ✅ Step 5: attention-level priority
   computeUserState,             // ✅ Step 5 User-State: consolidated state for briefing prioritization
   getOpenFollowUps,             // ✅ Step 5 Follow-up: open follow-ups for review-due boost
+  computeProductSignals,        // ✅ Step 6: adaptive product signals
 } = require("../services/notifications.repository");
 
 // ✅ OpenAI
@@ -290,6 +291,25 @@ async function runDailyBriefing() {
       const stateBriefingUrgency = userState?.briefingUrgency || "low";
       const effectivePriority = _resolveEffectivePriority(stateBriefingUrgency, topAttention);
 
+      // Step 6: Adaptive product signal – adjust delivery mode for users who
+      // consistently dismiss notifications (≥60% dismissal rate on ≥5 samples).
+      // briefing_and_notification → briefing to reduce delivery fatigue.
+      // This is a first-pass adaptive hook; no hard scoring changes.
+      let adaptedDeliveryMode = topDeliveryMode;
+      if (topDeliveryMode === "briefing_and_notification") {
+        try {
+          const signals = await computeProductSignals(userId, { days: 30 });
+          if (signals.sampleSize >= 5 && signals.dismissalScore >= 0.6) {
+            adaptedDeliveryMode = "briefing";
+            logger.info("dailyBriefing: delivery downgraded (high dismissal)", {
+              userId, dismissalScore: signals.dismissalScore, sampleSize: signals.sampleSize,
+            });
+          }
+        } catch (sigErr) {
+          logger.warn("dailyBriefing: computeProductSignals failed (ignored)", { userId, message: sigErr.message });
+        }
+      }
+
       // 4) Fakten bauen
       const facts = buildFactsFromMarket(stocks);
 
@@ -315,12 +335,12 @@ async function runDailyBriefing() {
         priority: effectivePriority,
         reason: topAttentionReason || userState?.userStateSummary || null,
         actionType: topOrch.escalationLevel === "high" || stateBriefingUrgency === "critical" ? "reduce_risk" : null,
-        deliveryMode: topDeliveryMode,
+        deliveryMode: adaptedDeliveryMode,
       });
 
       if (created.inserted) {
         createdCount++;
-        logger.info("Daily briefing created", { userId, deliveryMode: topDeliveryMode, userStateUrgency: stateBriefingUrgency });
+        logger.info("Daily briefing created", { userId, deliveryMode: adaptedDeliveryMode, userStateUrgency: stateBriefingUrgency });
       } else {
         alreadyToday++;
         logger.info("Daily briefing skipped (already today)", { userId });
