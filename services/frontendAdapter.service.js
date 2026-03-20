@@ -499,12 +499,16 @@ function buildGuardianPayload(rawStocks, options = {}) {
   // The route handler can preload computeUserState(userId) and pass it here via options.userState.
   const userState = options.userState ?? null;
 
-  // Step 6 Block 2: Per-user preference hints – slim summary for the frontend.
+  // Step 6 Block 2 / Block 4: Per-user preference hints – slim summary for the frontend.
   // The caller (route handler) can preload computeUserPreferenceHints(userId) and pass it via options.
   // Only key insight fields are surfaced; no raw counts or internal thresholds.
+  //
+  // GUARDRAIL (Block 4): minimum sample size raised to 5 to avoid overclaiming on thin data.
+  // Below this threshold, no preference insights are surfaced to prevent false behavioral signals.
+  const FRONTEND_MIN_RELIABLE_SAMPLE = 5;
   let userPreferenceInsights = null;
   const rawHints = options.userPreferenceHints ?? null;
-  if (rawHints && typeof rawHints === "object" && rawHints.sampleSize > 0) {
+  if (rawHints && typeof rawHints === "object" && (rawHints.sampleSize || 0) >= FRONTEND_MIN_RELIABLE_SAMPLE) {
     userPreferenceInsights = {
       preferredDeliveryMode:  rawHints.preferredDeliveryMode  ?? null,
       preferredActionType:    rawHints.preferredActionType    ?? null,
@@ -537,15 +541,21 @@ function buildGuardianPayload(rawStocks, options = {}) {
         symbolsWithOutcomeData: withOutcomeData.length,
         avgRecommendationOutcome,
         avgSuccessRate: avgSuccessRate !== null ? Number(avgSuccessRate.toFixed(4)) : null,
+        // GUARDRAIL (Block 4): only mark as reliable when ≥3 symbols have outcome data.
+        // Prevents overclaiming on a single data point.
+        reliable: withOutcomeData.length >= 3,
         computedFromStocks: true,
       };
     }
   }
 
-  // Step 6 Block 3: Adaptive priority insights – summarizes which adaptive signals
+  // Step 6 Block 3 / Block 4: Adaptive priority insights – summarizes which adaptive signals
   // are active for this user and how they are affecting recommendation ordering.
   // Derived from userPreferenceHints + per-stock adaptivePriorityBoost.
   // Slim pass-through only; no new DB calls.
+  //
+  // GUARDRAIL (Block 4): adds `reliable` flag (sampleSize ≥ 5) so the frontend can
+  // distinguish confident insights from thin-data estimates.
   let adaptivePriorityInsights = null;
   const rawHintsForAdaptive = options.userPreferenceHints ?? null;
   if (rawHintsForAdaptive && (rawHintsForAdaptive.sampleSize || 0) >= 3) {
@@ -566,6 +576,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
         activeSignals,
         dominantAdjustment,
         adaptedStocksCount: boostedStocks.length,
+        // reliable=true requires sampleSize ≥ 5; below that, insights are directional only.
+        reliable: (rawHintsForAdaptive.sampleSize || 0) >= 5,
         scopeNote: "Step 6 Block 3 – light adaptive prioritization active",
       };
     }
