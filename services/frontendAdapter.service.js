@@ -321,73 +321,9 @@ function buildGuardianPayload(rawStocks, options = {}) {
   };
 }
 
-function buildMarketNewsPayload(symbols, stocksBySymbol = {}, generatedAt = new Date().toISOString()) {
-  const safeSymbols = parseSymbolsQuery(symbols, DEFAULT_FRONTEND_SYMBOLS.slice(0, 3));
-  const newsBySymbol = {};
-
-  safeSymbols.forEach((symbol) => {
-    const sourceStock = stocksBySymbol[symbol] || { symbol };
-    const realNews = Array.isArray(sourceStock?.news)
-      ? sourceStock.news
-          .filter((entry) => entry && String(entry.title || "").trim())
-          .map((entry) => ({
-            title: String(entry.title || "").trim(),
-            link: String(entry.link || `https://finance.yahoo.com/quote/${symbol}`),
-            source: String(entry.source || "News"),
-            publishedAt: String(entry.publishedAt || generatedAt),
-          }))
-      : [];
-    newsBySymbol[symbol] =
-      realNews.length > 0 ? realNews.slice(0, 3) : buildSyntheticNewsItems(sourceStock, generatedAt, 3);
-  });
-
-  return {
-    success: true,
-    generatedAt,
-    newsBySymbol,
-  };
-}
-
-function buildInsiderSignalPayload(symbols, stocksBySymbol = {}, generatedAt = new Date().toISOString()) {
-  const safeSymbols = parseSymbolsQuery(symbols, DEFAULT_FRONTEND_SYMBOLS.slice(0, 3));
-  const insiderBySymbol = {};
-
-  safeSymbols.forEach((symbol) => {
-    const sourceStock = stocksBySymbol[symbol] || {};
-    const hqsScore = clamp(Math.round(toFiniteNumber(sourceStock.hqsScore, 52)), 0, 100);
-    const changePercent = toFiniteNumber(sourceStock.changePercent, 0);
-
-    let signal = "neutral";
-    if (hqsScore >= 65 && changePercent >= 0) signal = "buying";
-    else if (hqsScore <= 45 || changePercent <= -2) signal = "selling";
-
-    const confidence = clamp(Math.round(hqsScore * 0.65 + Math.abs(changePercent) * 7), 30, 95);
-    const summary =
-      signal === "buying"
-        ? `Insider-Flow zeigt konstruktives Bild fur ${symbol}.`
-        : signal === "selling"
-          ? `Insider-Flow bleibt bei ${symbol} defensiv.`
-          : `Insider-Flow bei ${symbol} ist aktuell ausgeglichen.`;
-
-    insiderBySymbol[symbol] = {
-      signal,
-      confidence,
-      summary,
-    };
-  });
-
-  return {
-    success: true,
-    generatedAt,
-    insiderBySymbol,
-  };
-}
-
 module.exports = {
   DEFAULT_FRONTEND_SYMBOLS,
   parseSymbolsQuery,
   normalizeStockForFrontend,
   buildGuardianPayload,
-  buildMarketNewsPayload,
-  buildInsiderSignalPayload,
 };
