@@ -605,8 +605,8 @@ async function getNotificationStats() {
   };
 }
 
-async function getCoverageStats(snapshotStats, hqsStats, advancedStats, outcomeStats, watchlistStats) {
-  const activeUniverse = safeNum(watchlistStats?.active, 0);
+async function getCoverageStats(snapshotStats, hqsStats, advancedStats, outcomeStats, universeStats) {
+  const activeUniverse = safeNum(universeStats?.active, 0);
   const recentSnapshotSymbols = safeNum(snapshotStats?.recentSymbols, 0);
 
   const snapshotUniverseCoverage = pct(recentSnapshotSymbols, activeUniverse);
