@@ -78,6 +78,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 4: read portfolio context if present (pass-through from opportunity scanner).
   const portfolioContext = marketData?.portfolioContext ?? context?.portfolioContext ?? null;
 
+  // Step 4b: read delta context if present (pass-through from opportunity scanner).
+  const deltaContext = marketData?.deltaContext ?? context?.deltaContext ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -128,7 +131,32 @@ async function analyzeStockWithGuardian(context) {
       `, portfolioPriority: ${portfolioContext.portfolioPriority || "–"})`
     : "";
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock]
+  // Step 4b: delta block – explains what changed since the last engine run.
+  // Only added when a non-stable change type is present.
+  const DELTA_CHANGE_LABELS = {
+    new_signal:             "Neu im Scanner – erste Prüfung empfohlen",
+    gaining_relevance:      "Conviction gestiegen – relevanter als zuletzt",
+    risk_increased:         "Risiko erhöht – Konzentrationsrisiko oder Score-Rückgang",
+    losing_conviction:      "Conviction gesunken – kritisch beobachten",
+    portfolio_impact_changed: "Portfolio-Impact geändert – Positionseröffnung prüfen",
+  };
+  let deltaBlock = "";
+  if (deltaContext && deltaContext.changeType && deltaContext.changeType !== "stable") {
+    const changeLabel = DELTA_CHANGE_LABELS[deltaContext.changeType] || deltaContext.changeType;
+    const deltaParts = [`Delta-Signal: ${changeLabel} (Priorität: ${deltaContext.deltaPriority})`];
+    if (deltaContext.newToWatch)            deltaParts.push("Neu relevant");
+    if (deltaContext.becameMoreRelevant)    deltaParts.push("Relevanz gestiegen");
+    if (deltaContext.becameRiskier)         deltaParts.push("Risiko gestiegen");
+    if (deltaContext.lostConviction)        deltaParts.push("Überzeugung verloren");
+    if (deltaContext.portfolioImpactChanged) deltaParts.push("Portfolio-Fit geändert");
+    if (deltaContext._convictionDelta !== null) {
+      const sign = deltaContext._convictionDelta >= 0 ? "+" : "";
+      deltaParts.push(`Δ Conviction: ${sign}${deltaContext._convictionDelta}`);
+    }
+    deltaBlock = deltaParts.join(" · ");
+  }
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -158,6 +186,13 @@ Erstelle eine strukturierte Erklärung mit:
    - concentrationRisk="high": explizit warnen, dass das Sektorgewicht bereits kritisch ist
    - diversificationBenefit=ja: explizit positiv auf Diversifikationsmehrwert hinweisen
    Wenn kein Portfolio-Kontext verfügbar, diesen Punkt weglassen.
+6. Veränderungs-Einschätzung: Falls ein Delta-Signal vorhanden ist, erkläre präzise was sich verändert hat –
+   - changeType="new_signal": Symbol ist neu im Scanner – erste Einschätzung empfehlen
+   - changeType="gaining_relevance": Conviction/Relevanz ist gestiegen – Chance betonen
+   - changeType="risk_increased": Risiko ist gestiegen – explizit warnen
+   - changeType="losing_conviction": Überzeugung gesunken – kritisch bewerten, Vorsicht empfehlen
+   - changeType="portfolio_impact_changed": Portfolio-Relevanz hat sich verändert – Konsequenz erläutern
+   Wenn kein Delta-Signal vorhanden (changeType="stable"), diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
