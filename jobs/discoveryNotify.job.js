@@ -25,9 +25,12 @@ const {
  * Also attaches actionReadiness (Step 7 Block 1) so the notification gate
  * can suppress monitor_only picks and prioritise review_required / proposal_ready.
  *
+ * Step 7 Block 2: attaches reviewBucket so the delivery loop can log and
+ * observe which queue tier each pick falls into. No execution change.
+ *
  * Rules (first match wins):
- *   high confidence (≥75) or high score (≥75) → notification + high escalation + review_required
- *   on watchlist or decent confidence (≥55) or decent score (≥55) → notification + medium + proposal_ready
+ *   high confidence (≥75) or high score (≥75) → notification + high escalation + review_required → risk_review
+ *   on watchlist or decent confidence (≥55) or decent score (≥55) → notification + medium + proposal_ready → proposal_bucket
  *   else → none (skip push – low-signal pick not worth notifying) + monitor_only
  */
 function _derivePickOrchestration(pick, onWatchlist) {
@@ -40,6 +43,7 @@ function _derivePickOrchestration(pick, onWatchlist) {
       escalationLevel: "high",
       followUpNeeded: true,
       actionReadiness: "review_required",
+      reviewBucket: "risk_review",
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -48,6 +52,7 @@ function _derivePickOrchestration(pick, onWatchlist) {
       escalationLevel: "medium",
       followUpNeeded: false,
       actionReadiness: "proposal_ready",
+      reviewBucket: "proposal_bucket",
     };
   }
   return {
@@ -55,6 +60,7 @@ function _derivePickOrchestration(pick, onWatchlist) {
     escalationLevel: "none",
     followUpNeeded: false,
     actionReadiness: "monitor_only",
+    reviewBucket: null,
   };
 }
 
@@ -122,6 +128,18 @@ async function runDiscoveryNotify() {
             userId, actionReadiness: orchestration.actionReadiness,
           });
           continue;
+        }
+
+        // Step 7 Block 2: log the review bucket for observability (no gate change).
+        // review_required → risk_review bucket (high-priority, follow-up needed)
+        // proposal_ready  → proposal_bucket (medium priority, no follow-up required)
+        if (orchestration.reviewBucket) {
+          logger.info("discoveryNotify: pick assigned to review bucket", {
+            userId, symbol: pick.symbol,
+            actionReadiness: orchestration.actionReadiness,
+            reviewBucket: orchestration.reviewBucket,
+            escalationLevel: orchestration.escalationLevel,
+          });
         }
 
         // Step 5 User-State: skip discovery notification when user already has a large

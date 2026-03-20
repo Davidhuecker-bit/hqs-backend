@@ -238,6 +238,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     adaptiveSignalHints: stock?.adaptiveSignalHints ?? null,
     // Step 7 Block 1: Action-Readiness classification (readiness tier + approval flag).
     actionReadiness: stock?.actionReadiness ?? null,
+    // Step 7 Block 2: Approval-Queue entry (pending state, priority, bucket, summary).
+    approvalQueueEntry: stock?.approvalQueueEntry ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -306,8 +308,9 @@ function buildTopSignals(stocks) {
       const orch       = stock.actionOrchestration ?? null;
       const followUp   = stock.followUpContext  ?? null;
       const ar         = stock.actionReadiness  ?? null;
+      const aq         = stock.approvalQueueEntry ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
-      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, and action-readiness badge.
+      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, action-readiness badge, and approval-queue badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
@@ -323,11 +326,15 @@ function buildTopSignals(stocks) {
       const arBadge           = ar?.actionReadiness && ACTION_READINESS_BADGES[ar.actionReadiness]
         ? ` ${ACTION_READINESS_BADGES[ar.actionReadiness]}`
         : "";
+      // Step 7 Block 2: approval-queue badge – surface pending state compactly
+      const aqBadge           = aq?.pendingApproval
+        ? ` ⏳ ${aq.approvalQueueBucket === "risk_review" ? "Risiko-Review" : "Freigabe ausstehend"}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -337,6 +344,8 @@ function buildTopSignals(stocks) {
         feedbackContext: stock.feedbackContext ?? null,
         followUpContext: followUp,
         actionReadiness: ar,
+        // Step 7 Block 2: approval-queue entry for downstream badge rendering
+        approvalQueueEntry: aq,
       };
     });
 }
@@ -463,6 +472,15 @@ function buildPortfolioIntelligenceSummary(stocks) {
       monitorOnly:            stocks.filter((s) => s.actionReadiness?.actionReadiness === "monitor_only").length,
       insufficientConfidence: stocks.filter((s) => s.actionReadiness?.actionReadiness === "insufficient_confidence").length,
       approvalRequired:       stocks.filter((s) => s.actionReadiness?.approvalRequired === true).length,
+    },
+    // Step 7 Block 2: approval-queue distribution – collection/prioritisation layer.
+    approvalQueue: {
+      pendingApproval:   stocks.filter((s) => s.approvalQueueEntry?.pendingApproval === true).length,
+      highPriority:      stocks.filter((s) => s.approvalQueueEntry?.reviewPriority === "high").length,
+      mediumPriority:    stocks.filter((s) => s.approvalQueueEntry?.reviewPriority === "medium").length,
+      riskReview:        stocks.filter((s) => s.approvalQueueEntry?.approvalQueueBucket === "risk_review").length,
+      proposalBucket:    stocks.filter((s) => s.approvalQueueEntry?.approvalQueueBucket === "proposal_bucket").length,
+      insufficientData:  stocks.filter((s) => s.approvalQueueEntry?.approvalQueueBucket === "insufficient_data").length,
     },
   };
 }

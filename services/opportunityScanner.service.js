@@ -811,6 +811,110 @@ function computeActionReadiness(opp) {
   };
 }
 
+/**
+ * Step 7 Block 2: Derive an approval-queue entry from an already-computed
+ * action-readiness result and the surrounding opportunity signals.
+ *
+ * Pure derivation — no execution, no new DB calls.
+ * Returns null when actionReadiness is absent.
+ *
+ * Output fields:
+ *   pendingApproval      – true only for review_required + approvalRequired
+ *   reviewReason         – human-readable reason (from approvalReason or derived)
+ *   reviewPriority       – 'high' | 'medium' | 'low' | null
+ *   approvalQueueBucket  – 'risk_review' | 'proposal_bucket' | 'insufficient_data' | null
+ *   reviewSummary        – one-liner for UI/briefing display
+ *
+ * @param {object} opp – opportunity with actionReadiness, nextAction,
+ *                       actionOrchestration, portfolioContext
+ * @returns {object|null}
+ */
+function computeApprovalQueueEntry(opp) {
+  const ar = opp.actionReadiness;
+  if (!ar) return null;
+
+  const readiness      = ar.actionReadiness;
+  const approvalReq    = ar.approvalRequired;
+  const approvalReason = ar.approvalReason;
+  const actionType     = opp.nextAction?.actionType     || "observe";
+  const actionPriority = opp.nextAction?.actionPriority || "low";
+  const escalation     = opp.actionOrchestration?.escalationLevel || "none";
+  const portfolioCtx   = opp.portfolioContext || {};
+
+  // Tier 1: insufficient_confidence → not ready for any queue, observe only
+  if (readiness === "insufficient_confidence") {
+    return {
+      pendingApproval:     false,
+      reviewReason:        approvalReason || null,
+      reviewPriority:      null,
+      approvalQueueBucket: "insufficient_data",
+      reviewSummary:       "Zu wenig Daten – Signal noch nicht reif. Weiter beobachten.",
+    };
+  }
+
+  // Tier 2: monitor_only → no queue entry needed
+  if (readiness === "monitor_only") {
+    return {
+      pendingApproval:     false,
+      reviewReason:        null,
+      reviewPriority:      null,
+      approvalQueueBucket: null,
+      reviewSummary:       null,
+    };
+  }
+
+  // Tier 3: proposal_ready → structured proposal, no approval gating
+  if (readiness === "proposal_ready") {
+    return {
+      pendingApproval:     false,
+      reviewReason:        null,
+      reviewPriority:      actionPriority === "high" ? "medium" : "low",
+      approvalQueueBucket: "proposal_bucket",
+      reviewSummary:       "Strukturierter Vorschlag – zur Prüfung bereit, keine automatische Ausführung.",
+    };
+  }
+
+  // Tier 4: review_required + approvalRequired → pending approval
+  if (readiness === "review_required" && approvalReq) {
+    // Priority: high escalation AND high actionPriority → high
+    //           either condition → medium
+    //           fallback → low
+    let reviewPriority = "low";
+    if (escalation === "high" && actionPriority === "high") {
+      reviewPriority = "high";
+    } else if (escalation === "high" || actionPriority === "high") {
+      reviewPriority = "medium";
+    }
+
+    // Bucket: risk-driven actions → risk_review; otherwise → proposal_bucket
+    const isRiskDriven =
+      actionType === "reduce_risk" ||
+      actionType === "rebalance_review" ||
+      portfolioCtx.concentrationRisk === "high";
+    const approvalQueueBucket = isRiskDriven ? "risk_review" : "proposal_bucket";
+    const bucketLabel = approvalQueueBucket === "risk_review"
+      ? "Risiko-Review"
+      : "Vorschlags-Review";
+
+    return {
+      pendingApproval:     true,
+      reviewReason:        approvalReason || "Freigabe erforderlich",
+      reviewPriority,
+      approvalQueueBucket,
+      reviewSummary:       `Wartet auf Freigabe (${bucketLabel}): ${approvalReason || "manuelle Prüfung nötig"}`,
+    };
+  }
+
+  // Fallback: review_required without explicit approvalRequired flag
+  return {
+    pendingApproval:     false,
+    reviewReason:        approvalReason || null,
+    reviewPriority:      null,
+    approvalQueueBucket: null,
+    reviewSummary:       null,
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -1981,7 +2085,9 @@ async function getTopOpportunities(arg = 10) {
     const adaptivePriority = _computeAdaptivePriorityLayer(oppFull, userPreferenceHints);
     // Step 7 Block 1: compute action-readiness tier (classification only, no execution)
     const actionReadiness = computeActionReadiness(oppFull);
-    return { ...oppFull, ...adaptivePriority, actionReadiness };
+    // Step 7 Block 2: derive approval-queue entry (collection/prioritisation layer)
+    const approvalQueueEntry = computeApprovalQueueEntry({ ...oppFull, actionReadiness });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
@@ -2411,4 +2517,5 @@ module.exports = {
   buildOpportunityInsight,
   computeActionOrchestration,
   computeActionReadiness,
+  computeApprovalQueueEntry,
 };

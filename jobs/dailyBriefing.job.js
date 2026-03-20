@@ -147,6 +147,23 @@ function _deriveBriefingActionReadiness(stock) {
   return "monitor_only";
 }
 
+/**
+ * Step 7 Block 2: Derive the approval-queue bucket for a briefing stock from its
+ * already-computed action-readiness tier and orchestration. No extra DB calls.
+ *
+ * Returns a short label string for briefing display or null for monitor_only.
+ */
+function _deriveBriefingApprovalBucket(stock) {
+  const ar   = stock._actionReadiness  || "monitor_only";
+  const orch = stock._orchestration    || {};
+  if (ar === "review_required") {
+    // High-escalation with follow-up needed → risk review; otherwise proposal-level
+    return orch.followUpNeeded ? "risk_review" : "proposal_bucket";
+  }
+  if (ar === "proposal_ready") return "proposal_bucket";
+  return null;
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -221,8 +238,15 @@ function buildFactsFromMarket(stocks) {
       ? `, Aktionsbereitschaft: ${s._actionReadiness}`
       : "";
 
+    // Step 7 Block 2: include approval-queue bucket label for review/proposal cases
+    const aqLabel = s._approvalQueueBucket === "risk_review"
+      ? " · 🔒 Risiko-Review"
+      : s._approvalQueueBucket === "proposal_bucket"
+      ? " · 📝 Vorschlag bereit"
+      : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}.`
     );
   }
   return lines.join("\n");
@@ -330,6 +354,8 @@ async function runDailyBriefing() {
         s._orchestration = _deriveBriefingOrchestration(s);
         // Step 7 Block 1: derive action-readiness tier from orchestration + attention
         s._actionReadiness = _deriveBriefingActionReadiness(s);
+        // Step 7 Block 2: derive approval-queue bucket for clearer briefing labelling
+        s._approvalQueueBucket = _deriveBriefingApprovalBucket(s);
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)
