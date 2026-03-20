@@ -118,9 +118,14 @@ async function analyzeStockWithGuardian(context) {
     ? `Auffälligkeiten (Integration Engine): ${whyInteresting}`
     : "";
 
-  // Step 4: portfolio context block shown when available.
+  // Step 4: portfolio context block – extended with portfolio intelligence signals.
   const portfolioBlock = portfolioContext
-    ? `Portfolio-Kontext: ${portfolioContext.portfolioContextLabel || "–"} (alreadyOwned: ${portfolioContext.alreadyOwned}, onWatchlist: ${portfolioContext.onWatchlist}, portfolioFit: ${portfolioContext.portfolioFit})`
+    ? `Portfolio-Kontext: ${portfolioContext.portfolioContextLabel || "–"}` +
+      ` (portfolioRole: ${portfolioContext.portfolioRole || "–"}` +
+      `, concentrationRisk: ${portfolioContext.concentrationRisk || "–"}` +
+      `, diversificationBenefit: ${portfolioContext.diversificationBenefit ? "ja" : "nein"}` +
+      `, sectorOverlap: ${portfolioContext.sectorOverlap ? "ja" : "nein"}` +
+      `, portfolioPriority: ${portfolioContext.portfolioPriority || "–"})`
     : "";
 
   const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock]
@@ -145,7 +150,14 @@ Erstelle eine strukturierte Erklärung mit:
 2. Risiko-Level: Niedrig / Mittel / Hoch
 3. Kurze Begründung (3-5 Sätze, mit Bezug auf HQS-Score, Regime und Trend)
 4. Handlungsempfehlung (konsistent mit dem finalen Conviction-Score falls vorhanden)
-5. Portfolio-Einordnung: Beantworte konkret, was der Portfolio-Kontext bedeutet – falls bereits im Portfolio: Konzentrations-/Aufstockungsrisiko beurteilen; falls auf der Beobachtungsliste: optimalen Einstiegszeitpunkt diskutieren; falls neue Entdeckung: Diversifikationsmehrwert und erste Plausibilitätsprüfung. Wenn kein Portfolio-Kontext verfügbar, diesen Punkt weglassen.
+5. Portfolio-Einordnung: Beantworte konkret, was der Portfolio-Kontext bedeutet –
+   - portfolioRole="additive": bewertet ob die Aufstockung das Konzentrationsrisiko erhöht
+   - portfolioRole="redundant": erklärt warum der Sektor bereits vertreten ist und ob das Risiko steigt
+   - portfolioRole="diversifier": erläutert den Diversifikationsmehrwert und welchen neuen Sektor das Symbol bringt
+   - portfolioRole="complement": diskutiert den optimalen Einstiegszeitpunkt für die Beobachtungsliste
+   - concentrationRisk="high": explizit warnen, dass das Sektorgewicht bereits kritisch ist
+   - diversificationBenefit=ja: explizit positiv auf Diversifikationsmehrwert hinweisen
+   Wenn kein Portfolio-Kontext verfügbar, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

@@ -108,6 +108,28 @@ function safeObject(value, fallback = {}) {
   }
 }
 
+/**
+ * Returns a small sort-score adjustment for a candidate based on its
+ * portfolio intelligence context.  Diversifiers get a gentle boost;
+ * candidates that would increase concentration risk get a gentle penalty.
+ * The delta is kept small (±5) so conviction/confidence remain dominant.
+ *
+ * @param {object|null} ctx  – portfolioContext from enrichWithPortfolioContext
+ * @returns {number}  adjustment to add to the effective conviction score
+ */
+const PORTFOLIO_DIVERSIFICATION_BONUS    =  3;
+const PORTFOLIO_HIGH_CONCENTRATION_PENALTY = -5;
+const PORTFOLIO_MED_CONCENTRATION_PENALTY  = -2;
+
+function _portfolioIntelligenceBonus(ctx) {
+  if (!ctx) return 0;
+  let bonus = 0;
+  if (ctx.diversificationBenefit) bonus += PORTFOLIO_DIVERSIFICATION_BONUS;
+  if (ctx.concentrationRisk === "high")   bonus += PORTFOLIO_HIGH_CONCENTRATION_PENALTY;
+  else if (ctx.concentrationRisk === "medium") bonus += PORTFOLIO_MED_CONCENTRATION_PENALTY;
+  return bonus;
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -1004,6 +1026,26 @@ function buildOpportunityInsight(opportunity, guardianResult, marketCluster) {
     summary = `${summary} 🤖 Interne Debatte: ${debateSummary}`;
   }
 
+  // Portfolio intelligence note: surface role/concentration for non-suppressed signals
+  const portfolioCtx = opportunity?.portfolioContext;
+  if (!guardianResult.suppressed && portfolioCtx?.portfolioRole) {
+    const roleMap = {
+      additive:    "Aufstockung bestehender Position",
+      redundant:   "Sektor bereits im Portfolio vertreten",
+      diversifier: "Ergänzt Portfolio mit neuem Sektor",
+      complement:  "Ergänzt Watchlist-Abdeckung",
+    };
+    const roleNote = roleMap[portfolioCtx.portfolioRole];
+    const concNote = portfolioCtx.concentrationRisk === "high"
+      ? " – Konzentrationsrisiko erhöht"
+      : portfolioCtx.concentrationRisk === "medium"
+      ? " – Sektorgewicht prüfen"
+      : "";
+    if (roleNote) {
+      summary = `${summary} 📊 Portfolio: ${roleNote}${concNote}.`;
+    }
+  }
+
   // Inter-market warning note
   if (guardianResult.interMarketWarning) {
     summary += " ⚠️ Frühwarnung: BTC und Gold zeigen gleichzeitig Risikoabbau.";
@@ -1182,6 +1224,19 @@ async function getTopOpportunities(arg = 10) {
   const opportunitiesWithCtx = opportunities.map((o) =>
     enrichWithPortfolioContext(o, portfolioCtxMap)
   );
+
+  // Portfolio-intelligence-aware re-sort: diversifiers and low-concentration-risk
+  // candidates get a gentle nudge up; high-concentration-risk candidates get a
+  // gentle nudge down.  Conviction/confidence still dominate; bonus is ±3–5 pts.
+  opportunitiesWithCtx.sort((a, b) => {
+    const aAdj = safeNum(a.finalConviction, safeNum(a.hqsScore, 0))
+      + _portfolioIntelligenceBonus(a.portfolioContext);
+    const bAdj = safeNum(b.finalConviction, safeNum(b.hqsScore, 0))
+      + _portfolioIntelligenceBonus(b.portfolioContext);
+    if (bAdj !== aAdj) return bAdj - aAdj;
+    if (b.finalConfidence !== a.finalConfidence) return b.finalConfidence - a.finalConfidence;
+    return safeNum(b.hqsScore, 0) - safeNum(a.hqsScore, 0);
+  });
 
   // ── World State: single source of global market truth ───────────────────
   // Replaces three individual async calls (regime, inter-market, agent weights)

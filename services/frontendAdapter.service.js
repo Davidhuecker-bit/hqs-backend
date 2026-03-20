@@ -243,13 +243,14 @@ function buildTopSignals(stocks) {
     .slice(0, 3)
     .map((stock) => {
       const ctx = stock.portfolioContext ?? null;
-      // Append a short portfolio-context badge to the signal summary when available.
+      // Append portfolio-context badge and intelligence label to the signal summary.
       const ctxBadge = ctx?.portfolioContextLabel ? ` · ${ctx.portfolioContextLabel}` : "";
+      const intelligenceBadge = ctx?.portfolioIntelligenceLabel ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}`,
         portfolioContext: ctx,
       };
     });
@@ -304,6 +305,21 @@ function buildCorrelationSeries(stocks, generatedAt) {
   };
 }
 
+function buildPortfolioIntelligenceSummary(stocks) {
+  const withCtx = stocks.filter((s) => s.portfolioContext?.portfolioRole
+    && s.portfolioContext.portfolioRole !== "unknown");
+  if (withCtx.length === 0) return null;
+
+  return {
+    diversifiers:         withCtx.filter((s) => s.portfolioContext.portfolioRole === "diversifier").length,
+    redundant:            withCtx.filter((s) => s.portfolioContext.portfolioRole === "redundant").length,
+    additive:             withCtx.filter((s) => s.portfolioContext.portfolioRole === "additive").length,
+    complement:           withCtx.filter((s) => s.portfolioContext.portfolioRole === "complement").length,
+    highConcentrationRisk: withCtx.filter((s) => s.portfolioContext.concentrationRisk === "high").length,
+    total:                withCtx.length,
+  };
+}
+
 function buildPortfolioHealth(stocks, stabilityScore) {
   const avgHqs = average(stocks.map((stock) => stock.hqsScore), 50);
   const avgRisk = average(stocks.map((stock) => stock.volatilityScore), 50);
@@ -353,6 +369,7 @@ function buildGuardianPayload(rawStocks, options = {}) {
   const topSignals = buildTopSignals(stocks);
   const riskFlags = buildRiskFlags(stocks);
   const alerts = buildAlerts(stocks);
+  const portfolioIntelligence = buildPortfolioIntelligenceSummary(stocks);
 
   return {
     success: true,
@@ -367,6 +384,7 @@ function buildGuardianPayload(rawStocks, options = {}) {
       canonicalCount: stocks.filter((s) => !s._degraded).length,
     },
     portfolioHealth: buildPortfolioHealth(stocks, stabilityScore),
+    portfolioIntelligence,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
