@@ -14,6 +14,7 @@ const {
   linkFollowUpOutcome,
   computeUserState,
   getReminderEligibleNotifications,
+  computeProductSignals,             // ✅ Step 6: adaptive product signals
 } = require("../services/notifications.repository");
 
 /**
@@ -123,6 +124,25 @@ async function runDiscoveryNotify() {
             }
           } catch (reminderErr) {
             logger.warn("discoveryNotify: getReminderEligibleNotifications failed (ignored)", { userId, message: reminderErr.message });
+          }
+
+          // Step 6: Adaptive product signal – if the user shows a very high dismissal
+          // pattern (≥60% of seen notifications dismissed) and the pick is only
+          // medium-escalation, suppress the notification to reduce delivery fatigue.
+          // Requires at least 5 notifications in the sample to avoid false gates.
+          if (orchestration.escalationLevel === "medium") {
+            try {
+              const signals = await computeProductSignals(userId, { days: 30 });
+              if (signals.sampleSize >= 5 && signals.dismissalScore >= 0.6) {
+                gatedOut++;
+                logger.info("discoveryNotify: user gated (high dismissal rate)", {
+                  userId, dismissalScore: signals.dismissalScore, sampleSize: signals.sampleSize,
+                });
+                continue;
+              }
+            } catch (sigErr) {
+              logger.warn("discoveryNotify: computeProductSignals failed (ignored)", { userId, message: sigErr.message });
+            }
           }
         }
 

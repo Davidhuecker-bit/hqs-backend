@@ -11,6 +11,7 @@ const {
   loadLatestOutcomeTrackingBySymbols,
   buildStructuredPatternSignature,
   getPatternStats,
+  computeRecommendationOutcomeBySymbols, // ✅ Step 6: adaptive signal hook
 } = require("./outcomeTracking.repository");
 const {
   loadRuntimeState,
@@ -1528,6 +1529,20 @@ async function getTopOpportunities(arg = 10) {
     }
   }
 
+  // Step 6: Adaptive signal hook – load recommendation outcomes for all candidate
+  // symbols in one batch query. Attached as adaptiveSignalHints per opportunity.
+  // Non-blocking: errors are silently swallowed so the rest of the pipeline is unaffected.
+  let recommendationOutcomeBySymbol = {};
+  if (rows.length) {
+    try {
+      recommendationOutcomeBySymbol = await computeRecommendationOutcomeBySymbols(
+        rows.map((row) => row.symbol)
+      );
+    } catch (_rcErr) {
+      // Defensive: adaptive signals are optional – pipeline continues without them.
+    }
+  }
+
   const opportunities = rows.map((row) => {
     const normalizedSymbol = String(row?.symbol || "").trim().toUpperCase();
     const persistedOpportunity = buildOpportunityFromBatchResult(
@@ -1610,7 +1625,18 @@ async function getTopOpportunities(arg = 10) {
     // already-computed attention level, next action and delta context.
     const oppWithAttention = { ...o, deltaContext, nextAction, userAttentionLevel: attention.level, attentionReason: attention.reason };
     const actionOrchestration = computeActionOrchestration(oppWithAttention);
-    return { ...oppWithAttention, actionOrchestration };
+    // Step 6: Adaptive signal hook – attach recommendation outcome from evaluated
+    // outcome_tracking history. This is an informational hook; no scoring changes.
+    // adaptiveSignalHints will be used by future adaptive prioritization logic.
+    const rcOutcome = recommendationOutcomeBySymbol?.[o.symbol] || null;
+    const adaptiveSignalHints = rcOutcome ? {
+      recommendationOutcome:  rcOutcome.recommendationOutcome,
+      avgActualReturn:        rcOutcome.avgActualReturn,
+      successRate:            rcOutcome.successRate,
+      outcomeDataAvailable:   true,
+      outcomeSampleSize:      rcOutcome.sampleSize,
+    } : { outcomeDataAvailable: false };
+    return { ...oppWithAttention, actionOrchestration, adaptiveSignalHints };
   });
 
   // Portfolio-intelligence + delta-aware re-sort:

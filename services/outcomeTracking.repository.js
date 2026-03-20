@@ -871,6 +871,198 @@ async function verifyPerformance({ id, currentPrice, windowLabel = "24h" }) {
   }
 }
 
+/* =========================================================
+   STEP 6: ADAPTIVE PRODUCT SIGNALS – RECOMMENDATION OUTCOME
+========================================================= */
+
+/**
+ * computeRecommendationOutcome – derives a normalized recommendation quality
+ * score (0..100) for a symbol from existing evaluated outcome_tracking records.
+ *
+ * Uses only already-evaluated rows (is_evaluated = TRUE, performance data
+ * present). No schema changes. Defensive: returns null when no data available.
+ *
+ * @param {string} symbol
+ * @param {object} [opts]
+ * @param {number} [opts.limit=10] - max recent evaluated records to consider
+ * @returns {Promise<{
+ *   symbol: string,
+ *   recommendationOutcome: number,  // 0..100: signal track-record quality
+ *   avgActualReturn: number|null,   // average price-delta across evaluated windows
+ *   successRate: number|null,       // fraction of signals that moved in predicted direction
+ *   sampleSize: number,
+ *   computedAt: string,
+ * }|null>}
+ */
+async function computeRecommendationOutcome(symbol, { limit = 10 } = {}) {
+  if (!symbol || typeof symbol !== "string") return null;
+  const sym = String(symbol).trim().toUpperCase();
+  if (!sym) return null;
+
+  const lim = Math.min(Math.max(Number(limit) || 10, 1), 50);
+  try {
+    const res = await pool.query(
+      `SELECT
+         (performance_24h->>'success_rate')::numeric AS success_24h,
+         (performance_7d ->>'success_rate')::numeric AS success_7d,
+         (performance_24h->>'price_delta')::numeric  AS delta_24h,
+         (performance_7d ->>'price_delta')::numeric  AS delta_7d
+       FROM outcome_tracking
+       WHERE symbol = $1
+         AND is_evaluated = TRUE
+         AND (performance_24h IS NOT NULL OR performance_7d IS NOT NULL)
+       ORDER BY predicted_at DESC
+       LIMIT $2`,
+      [sym, lim]
+    );
+
+    if (!res.rows.length) return null;
+
+    let successSum = 0, successCount = 0, returnSum = 0, returnCount = 0;
+    for (const r of res.rows) {
+      const s24 = r.success_24h != null ? Number(r.success_24h) : null;
+      const s7d = r.success_7d  != null ? Number(r.success_7d)  : null;
+      const d24 = r.delta_24h   != null ? Number(r.delta_24h)   : null;
+      const d7d = r.delta_7d    != null ? Number(r.delta_7d)    : null;
+
+      // Prefer 7d data; fall back to 24h
+      const successRate = s7d ?? s24;
+      const priceDelta  = d7d ?? d24;
+      if (successRate !== null) { successSum += successRate; successCount++; }
+      if (priceDelta  !== null) { returnSum  += priceDelta;  returnCount++;  }
+    }
+
+    const avgSuccessRate  = successCount > 0 ? successSum / successCount : null;
+    const avgActualReturn = returnCount  > 0 ? returnSum  / returnCount  : null;
+
+    // recommendationOutcome: 0..100 composite score
+    //   50 = neutral baseline (no data advantage over random)
+    //   > 50 = solid historical track record
+    //   < 50 = poor historical accuracy
+    //
+    // Formula: successRate * 60  (0..60 pts, reflects direction accuracy)
+    //        + returnPts          (0..40 pts, reflects magnitude quality)
+    //
+    // returnPts scaling:
+    //   avgActualReturn is a price-delta fraction (e.g. +0.05 = +5%).
+    //   Multiplying by 200 maps ±10% returns to ±20 pts range.
+    //   Clamping to [-20, +20] prevents outlier distortion.
+    //   Adding 20 shifts the range from [-20, +20] → [0, 40] pts.
+    //   When no return data is available, returnPts defaults to 20 (neutral mid-point).
+    let outcome = 50;
+    if (avgSuccessRate !== null) {
+      const returnPts = avgActualReturn !== null
+        ? Math.min(Math.max(avgActualReturn * 200, -20), 20) + 20
+        : 20; // neutral mid-point when return data is absent
+      outcome = Math.max(0, Math.min(100, Math.round(avgSuccessRate * 60 + returnPts)));
+    }
+
+    return {
+      symbol: sym,
+      recommendationOutcome: outcome,
+      avgActualReturn: avgActualReturn !== null ? Number(avgActualReturn.toFixed(6)) : null,
+      successRate:     avgSuccessRate  !== null ? Number(avgSuccessRate.toFixed(4))  : null,
+      sampleSize:      res.rows.length,
+      computedAt:      new Date().toISOString(),
+    };
+  } catch (err) {
+    logger.warn("computeRecommendationOutcome error", { symbol: sym, message: err.message });
+    return null;
+  }
+}
+
+/**
+ * computeRecommendationOutcomeBySymbols – batch version of
+ * computeRecommendationOutcome. Issues a single DB query for multiple symbols.
+ *
+ * Returns a map of { [SYMBOL]: recommendationOutcomeObject | null }.
+ * Symbols with no evaluated data are mapped to null.
+ *
+ * @param {string[]} symbols
+ * @param {object}   [opts]
+ * @param {number}   [opts.limit=10] - per-symbol record limit
+ * @returns {Promise<Record<string, object|null>>}
+ */
+async function computeRecommendationOutcomeBySymbols(symbols = [], { limit = 10 } = {}) {
+  const normalized = symbols
+    .map((s) => String(s || "").trim().toUpperCase())
+    .filter(Boolean);
+  if (!normalized.length) return {};
+
+  const lim = Math.min(Math.max(Number(limit) || 10, 1), 50);
+  try {
+    // Fetch last `lim` evaluated records per symbol in one query.
+    const res = await pool.query(
+      `SELECT symbol,
+         (performance_24h->>'success_rate')::numeric AS success_24h,
+         (performance_7d ->>'success_rate')::numeric AS success_7d,
+         (performance_24h->>'price_delta')::numeric  AS delta_24h,
+         (performance_7d ->>'price_delta')::numeric  AS delta_7d,
+         row_number() OVER (PARTITION BY symbol ORDER BY predicted_at DESC) AS rn
+       FROM outcome_tracking
+       WHERE symbol = ANY($1::text[])
+         AND is_evaluated = TRUE
+         AND (performance_24h IS NOT NULL OR performance_7d IS NOT NULL)`,
+      [normalized]
+    );
+
+    // Group rows by symbol, respect per-symbol limit
+    const bySymbol = {};
+    for (const r of res.rows) {
+      const sym = String(r.symbol || "").trim().toUpperCase();
+      if (!sym) continue;
+      if (Number(r.rn) > lim) continue;
+      if (!bySymbol[sym]) bySymbol[sym] = [];
+      bySymbol[sym].push(r);
+    }
+
+    const result = {};
+    for (const sym of normalized) {
+      const rows = bySymbol[sym];
+      if (!rows || !rows.length) { result[sym] = null; continue; }
+
+      let successSum = 0, successCount = 0, returnSum = 0, returnCount = 0;
+      for (const r of rows) {
+        const s24 = r.success_24h != null ? Number(r.success_24h) : null;
+        const s7d = r.success_7d  != null ? Number(r.success_7d)  : null;
+        const d24 = r.delta_24h   != null ? Number(r.delta_24h)   : null;
+        const d7d = r.delta_7d    != null ? Number(r.delta_7d)    : null;
+        const successRate = s7d ?? s24;
+        const priceDelta  = d7d ?? d24;
+        if (successRate !== null) { successSum += successRate; successCount++; }
+        if (priceDelta  !== null) { returnSum  += priceDelta;  returnCount++;  }
+      }
+
+      const avgSuccessRate  = successCount > 0 ? successSum / successCount : null;
+      const avgActualReturn = returnCount  > 0 ? returnSum  / returnCount  : null;
+
+      // Same scoring formula as computeRecommendationOutcome (see that function for full rationale).
+      // successRate * 60 pts (direction accuracy) + returnPts 0..40 pts (magnitude quality).
+      let outcome = 50;
+      if (avgSuccessRate !== null) {
+        const returnPts = avgActualReturn !== null
+          ? Math.min(Math.max(avgActualReturn * 200, -20), 20) + 20
+          : 20; // neutral mid-point when return data is absent
+        outcome = Math.max(0, Math.min(100, Math.round(avgSuccessRate * 60 + returnPts)));
+      }
+
+      result[sym] = {
+        symbol: sym,
+        recommendationOutcome: outcome,
+        avgActualReturn: avgActualReturn !== null ? Number(avgActualReturn.toFixed(6)) : null,
+        successRate:     avgSuccessRate  !== null ? Number(avgSuccessRate.toFixed(4))  : null,
+        sampleSize:      rows.length,
+        computedAt:      new Date().toISOString(),
+      };
+    }
+    return result;
+  } catch (err) {
+    logger.warn("computeRecommendationOutcomeBySymbols error", { message: err.message });
+    // Return nulls for all symbols on error to keep caller non-fatal
+    return Object.fromEntries(normalized.map((s) => [s, null]));
+  }
+}
+
 module.exports = {
   initOutcomeTrackingTable,
   createOutcomeTrackingEntry,
@@ -884,4 +1076,7 @@ module.exports = {
   buildStructuredPatternSignature,
   getPatternStats,
   getDue7dVerifications,
+  // ✅ Step 6: adaptive product signals
+  computeRecommendationOutcome,
+  computeRecommendationOutcomeBySymbols,
 };

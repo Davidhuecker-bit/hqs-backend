@@ -234,6 +234,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     // Step 5 Follow-up/Reminder: follow-up/reminder status derived from notification reaction data.
     // followUpContext is passed through from the opportunityScanner/route handler if available.
     followUpContext: stock?.followUpContext ?? null,
+    // Step 6: Adaptive product signals – recommendation outcome and track-record hints per symbol.
+    adaptiveSignalHints: stock?.adaptiveSignalHints ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -497,6 +499,30 @@ function buildGuardianPayload(rawStocks, options = {}) {
   // The route handler can preload computeUserState(userId) and pass it here via options.userState.
   const userState = options.userState ?? null;
 
+  // Step 6: Adaptive product signals – aggregate recommendationOutcome from stocks
+  // that carry adaptiveSignalHints (populated by opportunityScanner via outcome_tracking data).
+  // Provides a summary-level view for the frontend; no new DB call needed here.
+  let productSignals = options.productSignals ?? null;
+  if (!productSignals) {
+    const withOutcomeData = stocks.filter((s) => s.adaptiveSignalHints?.outcomeDataAvailable === true);
+    if (withOutcomeData.length > 0) {
+      const avgRecommendationOutcome = Math.round(
+        withOutcomeData.reduce((sum, s) => sum + (s.adaptiveSignalHints.recommendationOutcome ?? 50), 0)
+        / withOutcomeData.length
+      );
+      const withSuccessRate = withOutcomeData.filter((s) => s.adaptiveSignalHints.successRate != null);
+      const avgSuccessRate = withSuccessRate.length > 0
+        ? withSuccessRate.reduce((sum, s) => sum + s.adaptiveSignalHints.successRate, 0) / withSuccessRate.length
+        : null;
+      productSignals = {
+        symbolsWithOutcomeData: withOutcomeData.length,
+        avgRecommendationOutcome,
+        avgSuccessRate: avgSuccessRate !== null ? Number(avgSuccessRate.toFixed(4)) : null,
+        computedFromStocks: true,
+      };
+    }
+  }
+
   return {
     success: true,
     stabilityScore,
@@ -513,6 +539,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     portfolioIntelligence,
     // Step 5 User-State: consolidated user state summary (null when not supplied).
     userState,
+    // Step 6: Adaptive product signals summary (engagement/outcome quality at portfolio level).
+    productSignals,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
