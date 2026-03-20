@@ -84,6 +84,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 4c: read next action hint if present (computed by opportunityScanner).
   const nextAction = marketData?.nextAction ?? context?.nextAction ?? null;
 
+  // Step 5b: read action-orchestration if present (computed by opportunityScanner).
+  const actionOrchestration = marketData?.actionOrchestration ?? context?.actionOrchestration ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -171,7 +174,41 @@ async function analyzeStockWithGuardian(context) {
   }
   const nextActionBlock = buildNextActionBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock]
+  // Step 5b: action-orchestration block – explains why the system chose this delivery mode.
+  // Short, factual, no new prompt world – just surfaces the orchestration decision.
+  const DELIVERY_MODE_LABELS = {
+    briefing_and_notification: "Briefing + Sofort-Benachrichtigung (akuter Handlungsbedarf)",
+    notification:  "Sofort-Benachrichtigung (zeitkritisches Signal)",
+    briefing:      "Im Tages-Briefing berücksichtigt",
+    passive_briefing: "Passiv beobachtet (kein akuter Bedarf)",
+    none:          "Kein aktiver Hinweis",
+  };
+  const REVIEW_WINDOW_LABELS = {
+    immediate: "sofort",
+    short:     "kurzfristig (1–3 Tage)",
+    medium:    "mittelfristig (1–2 Wochen)",
+    long:      "langfristig (>2 Wochen)",
+  };
+  function buildActionOrchestrationBlock() {
+    if (!actionOrchestration) return "";
+    const parts = [];
+    if (actionOrchestration.deliveryMode) {
+      parts.push(`System-Behandlung: ${DELIVERY_MODE_LABELS[actionOrchestration.deliveryMode] || actionOrchestration.deliveryMode}`);
+    }
+    if (actionOrchestration.escalationLevel && actionOrchestration.escalationLevel !== "none") {
+      parts.push(`Eskalationsstufe: ${actionOrchestration.escalationLevel}`);
+    }
+    if (actionOrchestration.followUpNeeded) {
+      parts.push(`Follow-up erforderlich: ${actionOrchestration.followUpReason || "ja"}`);
+    }
+    if (actionOrchestration.reviewWindow) {
+      parts.push(`Prüfungsfenster: ${REVIEW_WINDOW_LABELS[actionOrchestration.reviewWindow] || actionOrchestration.reviewWindow}`);
+    }
+    return parts.length ? parts.join(" · ") : "";
+  }
+  const actionOrchestrationBlock = buildActionOrchestrationBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -217,6 +254,13 @@ Erstelle eine strukturierte Erklärung mit:
    - actionType="hold": bestätige, dass keine Aktion nötig ist
    - actionType="observe": erkläre, warum nur Beobachtung empfohlen wird
    Wenn kein Next-Action-Hint vorhanden, diesen Punkt weglassen.
+8. System-Einordnung: Falls Action-Orchestration vorhanden ist, erkläre kurz, warum das System diesen Behandlungsmodus gewählt hat –
+   - deliveryMode="briefing_and_notification": erkläre, warum akuter Handlungsbedarf besteht und warum sowohl Briefing als auch Sofortmeldung nötig sind
+   - deliveryMode="notification": erkläre, warum ein zeitkritisches Signal vorliegt, das sofort mitgeteilt werden sollte
+   - deliveryMode="briefing": erkläre, warum das Signal im regulären Tages-Briefing ausreicht und keine Sofortmeldung nötig ist
+   - deliveryMode="passive_briefing" oder "none": erkläre, warum kein aktiver Hinweis nötig ist und nur Beobachtung empfohlen wird
+   - followUpNeeded=true: nenne konkret den empfohlenen Nachfolgeschritt und den Zeithorizont
+   Wenn keine Action-Orchestration vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

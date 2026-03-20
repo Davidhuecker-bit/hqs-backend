@@ -227,6 +227,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     // Step 5: User attention level and reason (derived from portfolio/delta/action signals).
     userAttentionLevel: stock?.userAttentionLevel ?? null,
     attentionReason: stock?.attentionReason ?? null,
+    // Step 5b: Action-Orchestration – HOW the system treats this signal (deliveryMode, escalationLevel, etc.)
+    actionOrchestration: stock?.actionOrchestration ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -251,6 +253,15 @@ function buildTopSignals(stocks) {
   // while surfacing critical/high-attention signals to the top of the list.
   const ATTENTION_SORT_BOOST = { critical: 20, high: 10, medium: 3, low: 0 };
 
+  // Step 5b: delivery-mode badge – surfaces action-orchestration in top signal summaries.
+  const DELIVERY_MODE_BADGES = {
+    briefing_and_notification: "🔔 Jetzt",
+    notification:  "🔔",
+    briefing:      "📋",
+    passive_briefing: null,
+    none: null,
+  };
+
   return stocks
     .slice()
     .sort((left, right) => {
@@ -267,22 +278,27 @@ function buildTopSignals(stocks) {
       const ctx        = stock.portfolioContext ?? null;
       const delta      = stock.deltaContext     ?? null;
       const action     = stock.nextAction       ?? null;
+      const orch       = stock.actionOrchestration ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
-      // Append portfolio-context badge, intelligence label, delta badge, and next-action badge.
+      // Append portfolio-context badge, intelligence label, delta badge, next-action badge, and delivery-mode badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
       const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
         ? ` · ${DELTA_CHANGE_BADGES[delta.changeType] || "Änderung"}`
         : "";
       const actionBadge       = action?.nextActionLabel ? ` → ${action.nextActionLabel}` : "";
+      const deliveryBadge     = orch?.deliveryMode && DELIVERY_MODE_BADGES[orch.deliveryMode]
+        ? ` ${DELIVERY_MODE_BADGES[orch.deliveryMode]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
+        actionOrchestration: orch,
         userAttentionLevel: stock.userAttentionLevel ?? null,
         attentionReason: stock.attentionReason ?? null,
       };
@@ -377,6 +393,17 @@ function buildPortfolioIntelligenceSummary(stocks) {
       critical: stocks.filter((s) => s.userAttentionLevel === "critical").length,
       high:     stocks.filter((s) => s.userAttentionLevel === "high").length,
       medium:   stocks.filter((s) => s.userAttentionLevel === "medium").length,
+    },
+    // Step 5b: action-orchestration summary – escalation and follow-up counts across all stocks.
+    orchestration: {
+      escalateHigh:   stocks.filter((s) => s.actionOrchestration?.escalationLevel === "high").length,
+      escalateMedium: stocks.filter((s) => s.actionOrchestration?.escalationLevel === "medium").length,
+      followUpNeeded: stocks.filter((s) => s.actionOrchestration?.followUpNeeded === true).length,
+      deliveryModes: {
+        briefingAndNotification: stocks.filter((s) => s.actionOrchestration?.deliveryMode === "briefing_and_notification").length,
+        notification:  stocks.filter((s) => s.actionOrchestration?.deliveryMode === "notification").length,
+        briefing:      stocks.filter((s) => s.actionOrchestration?.deliveryMode === "briefing").length,
+      },
     },
   };
 }

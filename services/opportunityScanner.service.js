@@ -332,6 +332,152 @@ function computeNextAction(opp) {
   };
 }
 
+/**
+ * Step 5 – Action-Orchestration Layer
+ *
+ * Derives HOW the system should treat this opportunity for the user:
+ * notification, briefing, follow-up, escalation, or passive observation.
+ *
+ * Uses only already-computed signals – no extra DB calls.
+ * Rules are simple, transparent, and trace back to a single most-important driver.
+ * First match wins (priority order: protect first, then grow, then observe).
+ *
+ * @param {object} opp – opportunity enriched with userAttentionLevel, nextAction, deltaContext
+ * @returns {{
+ *   actionFlowStage:  'escalate'|'notify'|'brief'|'observe'|'none',
+ *   deliveryMode:     'briefing_and_notification'|'notification'|'briefing'|'passive_briefing'|'none',
+ *   escalationLevel:  'high'|'medium'|'low'|'none',
+ *   followUpNeeded:   boolean,
+ *   followUpReason:   string|null,
+ *   reviewWindow:     'immediate'|'short'|'medium'|'long'|null,
+ * }}
+ */
+function computeActionOrchestration(opp) {
+  const attentionLevel = opp.userAttentionLevel || "low";
+  const actionType     = opp.nextAction?.actionType     || "observe";
+  const deltaPriority  = opp.deltaContext?.deltaPriority || "stable";
+
+  // ── Rule table (first match wins) ────────────────────────────────────────
+
+  // O1: critical + reduce_risk → immediate escalation, full dual-channel push
+  if (attentionLevel === "critical" && actionType === "reduce_risk") {
+    return {
+      actionFlowStage: "escalate",
+      deliveryMode:    "briefing_and_notification",
+      escalationLevel: "high",
+      followUpNeeded:  true,
+      followUpReason:  "Kritisches Konzentrationsrisiko – sofortige Überprüfung empfohlen",
+      reviewWindow:    "immediate",
+    };
+  }
+
+  // O2: high attention + reduce_risk → escalate, dual push
+  if (attentionLevel === "high" && actionType === "reduce_risk") {
+    return {
+      actionFlowStage: "escalate",
+      deliveryMode:    "briefing_and_notification",
+      escalationLevel: "high",
+      followUpNeeded:  true,
+      followUpReason:  "Risikoreduktion empfohlen – Positionsüberprüfung nötig",
+      reviewWindow:    "immediate",
+    };
+  }
+
+  // O3: high attention + starter_position → push notification, follow-up needed
+  if (attentionLevel === "high" && actionType === "starter_position") {
+    return {
+      actionFlowStage: "notify",
+      deliveryMode:    "notification",
+      escalationLevel: "medium",
+      followUpNeeded:  true,
+      followUpReason:  "Einstiegsgelegenheit – Entscheidung innerhalb kurzer Zeit empfohlen",
+      reviewWindow:    "short",
+    };
+  }
+
+  // O4: high attention + rebalance_review → brief + follow-up
+  if (attentionLevel === "high" && actionType === "rebalance_review") {
+    return {
+      actionFlowStage: "notify",
+      deliveryMode:    "notification",
+      escalationLevel: "medium",
+      followUpNeeded:  true,
+      followUpReason:  "Rebalancing-Prüfung empfohlen",
+      reviewWindow:    "short",
+    };
+  }
+
+  // O5: medium attention + watchlist_upgrade → briefing, no immediate follow-up
+  if (attentionLevel === "medium" && actionType === "watchlist_upgrade") {
+    return {
+      actionFlowStage: "brief",
+      deliveryMode:    "briefing",
+      escalationLevel: "low",
+      followUpNeeded:  false,
+      followUpReason:  null,
+      reviewWindow:    "medium",
+    };
+  }
+
+  // O6: degraded delta + observe → passive briefing, short follow-up window
+  if (deltaPriority === "degraded" && actionType === "observe") {
+    return {
+      actionFlowStage: "observe",
+      deliveryMode:    "passive_briefing",
+      escalationLevel: "none",
+      followUpNeeded:  true,
+      followUpReason:  "Sinkende Überzeugung – erneute Prüfung kurzfristig empfohlen",
+      reviewWindow:    "short",
+    };
+  }
+
+  // O7: stable delta + hold → passive briefing, long window
+  if (deltaPriority === "stable" && actionType === "hold") {
+    return {
+      actionFlowStage: "observe",
+      deliveryMode:    "passive_briefing",
+      escalationLevel: "none",
+      followUpNeeded:  false,
+      followUpReason:  null,
+      reviewWindow:    "long",
+    };
+  }
+
+  // O8: any remaining high attention → notify
+  if (attentionLevel === "high") {
+    return {
+      actionFlowStage: "notify",
+      deliveryMode:    "notification",
+      escalationLevel: "medium",
+      followUpNeeded:  false,
+      followUpReason:  null,
+      reviewWindow:    "short",
+    };
+  }
+
+  // O9: medium attention → briefing
+  if (attentionLevel === "medium") {
+    return {
+      actionFlowStage: "brief",
+      deliveryMode:    "briefing",
+      escalationLevel: "low",
+      followUpNeeded:  false,
+      followUpReason:  null,
+      reviewWindow:    "medium",
+    };
+  }
+
+  // O10: low attention / no signal → no active delivery
+  return {
+    actionFlowStage: "observe",
+    deliveryMode:    "none",
+    escalationLevel: "none",
+    followUpNeeded:  false,
+    followUpReason:  null,
+    reviewWindow:    null,
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -1459,7 +1605,12 @@ async function getTopOpportunities(arg = 10) {
       changesPercentage: safeNum(o.changesPercentage ?? o.changePercent, 0),
       hqsScore:          safeNum(o.hqsScore, 50),
     });
-    return { ...o, deltaContext, nextAction, userAttentionLevel: attention.level, attentionReason: attention.reason };
+    // Step 5b: Action-Orchestration – derive HOW to treat this opportunity
+    // (deliveryMode, escalationLevel, followUpNeeded, reviewWindow) from the
+    // already-computed attention level, next action and delta context.
+    const oppWithAttention = { ...o, deltaContext, nextAction, userAttentionLevel: attention.level, attentionReason: attention.reason };
+    const actionOrchestration = computeActionOrchestration(oppWithAttention);
+    return { ...oppWithAttention, actionOrchestration };
   });
 
   // Portfolio-intelligence + delta-aware re-sort:
@@ -1882,4 +2033,5 @@ module.exports = {
   calculateRobustnessScore,
   executeSafetyFirst,
   buildOpportunityInsight,
+  computeActionOrchestration,
 };

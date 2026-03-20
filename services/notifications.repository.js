@@ -43,6 +43,8 @@ async function initNotificationTables() {
       is_read BOOLEAN DEFAULT FALSE,
       priority TEXT DEFAULT 'normal',
       reason TEXT,
+      action_type TEXT,
+      delivery_mode TEXT,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -52,6 +54,8 @@ async function initNotificationTables() {
   try {
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'normal'`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS reason TEXT`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_type TEXT`);
+    await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS delivery_mode TEXT`);
   } catch (migErr) {
     // Warn but continue – migration may fail if columns already exist in some PG versions
     // or due to transient lock issues; table is still usable without these columns.
@@ -144,14 +148,14 @@ async function getUserWatchlistSymbols(userId, limit = 200) {
   }));
 }
 
-async function createNotification({ userId, title, body, kind = "daily_briefing", priority = "normal", reason = null }) {
+async function createNotification({ userId, title, body, kind = "daily_briefing", priority = "normal", reason = null, actionType = null, deliveryMode = null }) {
   const res = await pool.query(
     `
-    INSERT INTO notifications(user_id, title, body, kind, priority, reason)
-    VALUES ($1,$2,$3,$4,$5,$6)
+    INSERT INTO notifications(user_id, title, body, kind, priority, reason, action_type, delivery_mode)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
     RETURNING id, created_at
     `,
-    [userId, title, body, kind, String(priority || "normal"), reason || null]
+    [userId, title, body, kind, String(priority || "normal"), reason || null, actionType || null, deliveryMode || null]
   );
   return {
     id: res.rows[0].id,
@@ -164,7 +168,7 @@ async function createNotification({ userId, title, body, kind = "daily_briefing"
  * verhindert Spam: pro user+kind nur 1 Notification pro Tag
  * returns { inserted: boolean, id?, createdAt? }
  */
-async function createNotificationOncePerDay({ userId, title, body, kind, priority = "normal", reason = null }) {
+async function createNotificationOncePerDay({ userId, title, body, kind, priority = "normal", reason = null, actionType = null, deliveryMode = null }) {
   const uid = Number(userId);
   if (!Number.isFinite(uid) || uid <= 0) return { inserted: false };
 
@@ -189,7 +193,7 @@ async function createNotificationOncePerDay({ userId, title, body, kind, priorit
     return { inserted: false, id: exists.rows[0].id };
   }
 
-  const created = await createNotification({ userId: uid, title: t, body: b, kind: k, priority, reason });
+  const created = await createNotification({ userId: uid, title: t, body: b, kind: k, priority, reason, actionType, deliveryMode });
   return { inserted: true, ...created };
 }
 
@@ -345,6 +349,8 @@ async function createDiscoveryNotification({ userId, pick, onWatchlist = false }
     kind: "discovery_pick",
     priority: attention.level,
     reason: attention.reason,
+    actionType: "starter_position",
+    deliveryMode: "notification",
   });
 }
 
@@ -368,7 +374,7 @@ async function getUserIdsWithSymbolOnWatchlist(symbol) {
 async function listNotifications(userId, limit = 50) {
   const res = await pool.query(
     `
-    SELECT id, title, body, kind, is_read, priority, reason, created_at
+    SELECT id, title, body, kind, is_read, priority, reason, action_type, delivery_mode, created_at
     FROM notifications
     WHERE user_id = $1
     ORDER BY created_at DESC
@@ -385,6 +391,8 @@ async function listNotifications(userId, limit = 50) {
     isRead: !!r.is_read,
     priority: r.priority || "normal",
     reason: r.reason || null,
+    actionType: r.action_type || null,
+    deliveryMode: r.delivery_mode || null,
     createdAt: new Date(r.created_at).toISOString(),
   }));
 }
