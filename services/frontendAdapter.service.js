@@ -218,6 +218,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     // _degraded: true signals that integrationEngine canonical fields are absent;
     // inferred hqsScore-based values are used instead of finalConviction pipeline output.
     _degraded: !hasCanonicalFields(stock),
+    // Step 4: Personalized portfolio/watchlist context (pass-through from opportunityScanner).
+    portfolioContext: stock?.portfolioContext ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -239,12 +241,18 @@ function buildTopSignals(stocks) {
       return rightScore - leftScore;
     })
     .slice(0, 3)
-    .map((stock) => ({
-      symbol: stock.symbol,
-      type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
-      score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-      summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%`,
-    }));
+    .map((stock) => {
+      const ctx = stock.portfolioContext ?? null;
+      // Append a short portfolio-context badge to the signal summary when available.
+      const ctxBadge = ctx?.portfolioContextLabel ? ` · ${ctx.portfolioContextLabel}` : "";
+      return {
+        symbol: stock.symbol,
+        type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
+        score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}`,
+        portfolioContext: ctx,
+      };
+    });
 }
 
 function buildRiskFlags(stocks) {

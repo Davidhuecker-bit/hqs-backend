@@ -75,6 +75,9 @@ async function analyzeStockWithGuardian(context) {
   const regime = marketData?.regime ?? null;
   const components = marketData?.components ?? null;
 
+  // Step 4: read portfolio context if present (pass-through from opportunity scanner).
+  const portfolioContext = marketData?.portfolioContext ?? context?.portfolioContext ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -115,7 +118,12 @@ async function analyzeStockWithGuardian(context) {
     ? `Auffälligkeiten (Integration Engine): ${whyInteresting}`
     : "";
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock]
+  // Step 4: portfolio context block shown when available.
+  const portfolioBlock = portfolioContext
+    ? `Portfolio-Kontext: ${portfolioContext.portfolioContextLabel || "–"} (alreadyOwned: ${portfolioContext.alreadyOwned}, onWatchlist: ${portfolioContext.onWatchlist}, portfolioFit: ${portfolioContext.portfolioFit})`
+    : "";
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -137,6 +145,7 @@ Erstelle eine strukturierte Erklärung mit:
 2. Risiko-Level: Niedrig / Mittel / Hoch
 3. Kurze Begründung (3-5 Sätze, mit Bezug auf HQS-Score, Regime und Trend)
 4. Handlungsempfehlung (konsistent mit dem finalen Conviction-Score falls vorhanden)
+5. Portfolio-Einordnung: Beantworte konkret, was der Portfolio-Kontext bedeutet – falls bereits im Portfolio: Konzentrations-/Aufstockungsrisiko beurteilen; falls auf der Beobachtungsliste: optimalen Einstiegszeitpunkt diskutieren; falls neue Entdeckung: Diversifikationsmehrwert und erste Plausibilitätsprüfung. Wenn kein Portfolio-Kontext verfügbar, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
