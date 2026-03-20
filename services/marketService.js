@@ -1190,13 +1190,25 @@ async function buildMarketSnapshot() {
         globalWs,
       });
 
-      const crossAsset = analyzeCrossAssetEnvironment(macroContext);
+      // Cross-asset environment: use world_state's global result when available
+      // to avoid rebuilding the same global macro signals per symbol.
+      const crossAsset =
+        globalWs?.cross_asset_environment != null
+          ? globalWs.cross_asset_environment
+          : analyzeCrossAssetEnvironment(macroContext);
 
-      const capitalFlows = analyzeCapitalFlows(
-        buildCapitalFlowFallback({ normalized })
+      // Capital flows: use world_state's global summary when available;
+      // fall back to per-symbol volume/sector estimate only if world_state is missing.
+      const capitalFlows =
+        globalWs?.capital_flow_summary != null
+          ? globalWs.capital_flow_summary
+          : analyzeCapitalFlows(buildCapitalFlowFallback({ normalized }));
+
+      // Event intelligence: derive from world_state's global macro context when
+      // available so event signals reflect actual market-wide conditions.
+      const eventIntelligence = analyzeMacroEvents(
+        globalWs?.macro_context_global ?? macroContext
       );
-
-      const eventIntelligence = analyzeMacroEvents(macroContext);
 
       const setupSignature = buildSetupSignature({
         regime,
@@ -1245,6 +1257,11 @@ async function buildMarketSnapshot() {
         persist: false,
       });
 
+      const resolvedMarketBreadth =
+        capitalFlows?.marketBreadth ??
+        globalWs?.macro_context_global?.marketBreadth ??
+        macroContext.marketBreadth;
+
       const orchestrator = orchestrateMarket({
         trendData,
         aiScore: brain?.aiScore,
@@ -1255,9 +1272,8 @@ async function buildMarketSnapshot() {
         crossAssetSignals: crossAsset?.signals || [],
         capitalFlows,
         macroContext: {
-          ...macroContext,
-          marketBreadth:
-            capitalFlows?.marketBreadth ?? macroContext.marketBreadth,
+          ...(globalWs?.macro_context_global ?? macroContext),
+          marketBreadth: resolvedMarketBreadth,
         },
         eventIntelligence,
         marketMemory,
