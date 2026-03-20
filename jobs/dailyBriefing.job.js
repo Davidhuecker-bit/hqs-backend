@@ -140,10 +140,14 @@ function _resolveEffectivePriority(stateBriefingUrgency, stockAttentionLevel) {
 }
 
 /**
- * Step 6 Block 3: Small adaptive sort adjustment for briefing order.
+ * Step 6 Block 3 / Block 4: Small adaptive sort adjustment for briefing order.
  * Returns a numeric offset: negative = higher priority (appears earlier).
  * Only used as a third tie-breaker, after orchestration and attention ranks.
- * Critical/high attention stocks are never demoted by this signal.
+ *
+ * Guardrail (Block 4): this function only ever returns 0 or -1 (boost toward
+ * the front), never +1. Critical/high-attention stocks therefore cannot be
+ * demoted by adaptive preference signals – the adaptive layer is purely
+ * additive within the tie-breaker slot.
  *
  * @param {object}      stock – stock with _attentionLevel and _attentionReason
  * @param {object|null} hints – computeUserPreferenceHints() result
@@ -321,26 +325,40 @@ async function runDailyBriefing() {
       const stateBriefingUrgency = userState?.briefingUrgency || "low";
       const effectivePriority = _resolveEffectivePriority(stateBriefingUrgency, topAttention);
 
-      // Step 6 Block 2: User preference hints – use notificationFatigue for delivery
-      // downgrade and briefingAffinity / preferredActionType for light adaptation.
+      // Step 6 Block 2 / Block 4: User preference hints – use notificationFatigue for
+      // delivery downgrade and briefingAffinity / preferredActionType for light adaptation.
       // One CTE query replaces the old computeProductSignals call. Non-fatal.
       //
       // adaptedDeliveryMode starts from the stock-/orchestration-level delivery mode.
       // adaptedActionType starts from urgency logic: "reduce_risk" on high urgency, else null.
       //   → If null, the user's historically preferred action type can fill the slot below.
+      //
+      // GUARDRAIL (Block 4): delivery-mode downgrade is never applied when effectivePriority
+      // or topAttention is "critical". Critical topics must use briefing_and_notification
+      // regardless of user fatigue – safety and governance override comfort.
       let adaptedDeliveryMode = topDeliveryMode;
       let adaptedActionType = topOrch.escalationLevel === "high" || stateBriefingUrgency === "critical" ? "reduce_risk" : null;
       let userPreferenceHints = null;
       try {
         userPreferenceHints = await computeUserPreferenceHints(userId, { days: 30 });
         if (userPreferenceHints.sampleSize >= 5) {
-          // Downgrade delivery mode for users with high notification fatigue
-          if (topDeliveryMode === "briefing_and_notification" && userPreferenceHints.notificationFatigue === "high") {
-            adaptedDeliveryMode = "briefing";
-            logger.info("dailyBriefing: delivery downgraded (high notification fatigue)", {
-              userId, notificationFatigue: userPreferenceHints.notificationFatigue,
-              sampleSize: userPreferenceHints.sampleSize,
-            });
+          // Downgrade delivery mode for users with high notification fatigue –
+          // GUARDRAIL: never downgrade critical priority topics.
+          const hasCriticalTopic = (effectivePriority === "critical" || topAttention === "critical");
+          if (topDeliveryMode === "briefing_and_notification" &&
+              userPreferenceHints.notificationFatigue === "high") {
+            if (!hasCriticalTopic) {
+              adaptedDeliveryMode = "briefing";
+              logger.info("dailyBriefing: delivery downgraded (high notification fatigue)", {
+                userId, notificationFatigue: userPreferenceHints.notificationFatigue,
+                sampleSize: userPreferenceHints.sampleSize,
+              });
+            } else {
+              // Guardrail triggered: log that downgrade was blocked for critical topic.
+              logger.info("dailyBriefing: delivery downgrade blocked (critical topic protected from fatigue gate)", {
+                userId, effectivePriority, topAttention,
+              });
+            }
           }
           // If no urgent action type is set, use the user's historically preferred action type
           if (adaptedActionType === null && userPreferenceHints.preferredActionType) {

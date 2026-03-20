@@ -1155,7 +1155,20 @@ async function computeUserPreferenceHints(userId, { days = 30 } = {}) {
   }
 }
 
-// ── Step 6 Block 3: Adaptive Delivery Priority ────────────────────────────────
+// ── Step 6 Block 3 / Block 4: Adaptive Delivery Priority ─────────────────────
+
+/**
+ * isReliableAdaptiveSignal – returns true when a hints object has enough
+ * samples to be used as a reliable adaptive signal.
+ * Callers can use this before acting on preference-derived hints.
+ *
+ * @param {object|null} hints – computeUserPreferenceHints() result
+ * @param {number}      [minSample=5] – minimum sample size for reliability
+ * @returns {boolean}
+ */
+function isReliableAdaptiveSignal(hints, minSample = 5) {
+  return !!(hints && (hints.sampleSize || 0) >= minSample);
+}
 
 /**
  * computeAdaptiveDeliveryPriority – derives a slim, decision-ready object
@@ -1165,19 +1178,26 @@ async function computeUserPreferenceHints(userId, { days = 30 } = {}) {
  *
  * Returns:
  *   deliveryBoost    +1 | 0 | -1  – marginal priority adjustment for delivery
- *   suppressPush     boolean       – true when fatigue is high AND no exploration override
+ *   suppressPush     boolean       – true when fatigue is high AND no exploration
+ *                                    override AND topicType is not risk/critical
  *   preferBriefingOnly boolean     – true when briefingAffinity=high AND fatigue>=moderate
  *   reason           string|null   – short traceable explanation
+ *   guardrailApplied string|null   – set when a guardrail blocked a fatigue signal
+ *
+ * GUARDRAIL (Block 4): supplying topicType="risk" or topicType="critical" prevents
+ * suppressPush from being set regardless of notificationFatigue. Risk and critical
+ * topics must always reach the user; delivery comfort never overrides safety.
  *
  * Non-fatal: returns neutral defaults on error or insufficient data.
  *
  * @param {number} userId
  * @param {object} [opts]
  * @param {number} [opts.days=30]
+ * @param {string} [opts.topicType=null] – "risk" | "critical" | null
  * @returns {Promise<object>}
  */
-async function computeAdaptiveDeliveryPriority(userId, { days = 30 } = {}) {
-  const neutral = { deliveryBoost: 0, suppressPush: false, preferBriefingOnly: false, reason: null };
+async function computeAdaptiveDeliveryPriority(userId, { days = 30, topicType = null } = {}) {
+  const neutral = { deliveryBoost: 0, suppressPush: false, preferBriefingOnly: false, reason: null, guardrailApplied: null };
   try {
     const hints = await computeUserPreferenceHints(userId, { days });
     if (!hints || (hints.sampleSize || 0) < 3) return neutral;
@@ -1185,19 +1205,32 @@ async function computeAdaptiveDeliveryPriority(userId, { days = 30 } = {}) {
     let deliveryBoost = 0;
     let suppressPush = false;
     let preferBriefingOnly = false;
+    let guardrailApplied = null;
     const reasons = [];
 
     // Exploration affinity overrides fatigue for discovery-type content
     const explorationOverrides = hints.explorationAffinity === "high";
 
+    // GUARDRAIL: risk/critical topics are never suppressed by fatigue signals.
+    // User safety and governance take precedence over delivery comfort.
+    const isRiskOrCriticalTopic = (topicType === "risk" || topicType === "critical");
+
     if (hints.notificationFatigue === "high" && !explorationOverrides) {
-      deliveryBoost -= 1;
-      suppressPush = true;
-      reasons.push("notificationFatigue=high");
+      if (isRiskOrCriticalTopic) {
+        // Guardrail fires: fatigue cannot suppress risk/critical content.
+        reasons.push("notificationFatigue=high(risk-topic-protected)");
+        guardrailApplied = "fatigue-suppression-blocked:risk-critical-topic";
+      } else {
+        deliveryBoost -= 1;
+        suppressPush = true;
+        reasons.push("notificationFatigue=high");
+      }
     }
 
+    // GUARDRAIL: briefingAffinity downgrade also skipped for risk/critical topics.
     if (hints.briefingAffinity === "high" &&
-        (hints.notificationFatigue === "high" || hints.notificationFatigue === "moderate")) {
+        (hints.notificationFatigue === "high" || hints.notificationFatigue === "moderate") &&
+        !isRiskOrCriticalTopic) {
       preferBriefingOnly = true;
       reasons.push("briefingAffinity=high");
     }
@@ -1212,6 +1245,7 @@ async function computeAdaptiveDeliveryPriority(userId, { days = 30 } = {}) {
       suppressPush,
       preferBriefingOnly,
       reason: reasons.length > 0 ? reasons.join("+") : null,
+      guardrailApplied,
     };
   } catch (err) {
     if (logger?.warn) logger.warn("computeAdaptiveDeliveryPriority error", { userId, message: err.message });
@@ -1231,6 +1265,7 @@ module.exports = {
   computeProductSignals,                 // ✅ Step 6: adaptive product signals (engagement/action/dismissal scores)
   computeUserPreferenceHints,            // ✅ Step 6 Block 2: per-user behavioral preference hints
   computeAdaptiveDeliveryPriority,       // ✅ Step 6 Block 3: slim delivery-decision helper
+  isReliableAdaptiveSignal,              // ✅ Step 6 Block 4: guardrail – min-sample reliability check
 
   createNotification,
   createNotificationOncePerDay,          // ✅ accepts priority/reason

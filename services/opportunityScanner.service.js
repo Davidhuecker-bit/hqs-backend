@@ -187,12 +187,19 @@ function _userAffinityBonus(opp, hints) {
   return 0;
 }
 
-// ── Adaptive Priority Layer (Step 6 Block 3) ─────────────────────────────────
+// ── Adaptive Priority Layer (Step 6 Block 4 – with Guardrails) ───────────────
 // Combines userPreferenceHints, adaptiveSignalHints, deltaContext, nextAction
 // and actionOrchestration into a transparent, small per-opportunity priority
 // adjustment. Supersedes the simpler _userAffinityBonus in the sort (±2→±3).
 // All signal contributions are traceable via adaptivePriorityReason.
 // Only applied when userPreferenceHints are passed in and sampleSize ≥ 3.
+//
+// Guardrails (Block 4):
+//   • Critical-attention opportunities are NEVER demoted by adaptive signals.
+//   • Risk/reduce signals (reduce_risk, avoid_adding, risk_increased) are
+//     NEVER penalised by notificationFatigue – user safety > delivery comfort.
+//   • Boost/penalty is hard-capped at ±3; any raw overflow is surfaced as
+//     guardrailApplied so callers can trace the clipping.
 const ADAPTIVE_BOOST_MAX =  3;
 const ADAPTIVE_BOOST_MIN = -3;
 
@@ -208,11 +215,13 @@ const ADAPTIVE_BOOST_MIN = -3;
  *   outcomeSuccessRate ≥ 0.6 (≥3 evaluated outcomes)            → +1
  *   outcomeSuccessRate < 0.3 (≥5 evaluated outcomes)            → -1
  *   notificationFatigue=high     + push-type delivery            → -1
+ *     (BLOCKED for risk/critical signals – guardrail)
  *
  * @param {object}      opp   – fully enriched opportunity
  * @param {object|null} hints – computeUserPreferenceHints() result
  * @returns {{ adaptivePriorityBoost: number, adaptivePriorityReason: string|null,
- *             deliveryPreferenceFit: string, adjustedRecommendationPriority: string }}
+ *             deliveryPreferenceFit: string, adjustedRecommendationPriority: string,
+ *             guardrailApplied: string|null }}
  */
 function _computeAdaptivePriorityLayer(opp, hints) {
   const baseAttn = opp.userAttentionLevel || "low";
@@ -221,17 +230,29 @@ function _computeAdaptivePriorityLayer(opp, hints) {
     adaptivePriorityReason: null,
     deliveryPreferenceFit: "unknown",
     adjustedRecommendationPriority: baseAttn,
+    guardrailApplied: null,
   };
   if (!hints || (hints.sampleSize || 0) < 3) return noChange;
 
   let boost = 0;
   const reasons = [];
+  let guardrailApplied = null;
 
   const actionType    = opp.nextAction?.actionType     || null;
   const changeType    = opp.deltaContext?.changeType    || "stable";
   const deltaPriority = opp.deltaContext?.deltaPriority || "stable";
   const deliveryMode  = opp.actionOrchestration?.deliveryMode || null;
   const sh            = opp.adaptiveSignalHints         || {};
+
+  // Guardrail: is this a risk-critical signal that must stay dominant?
+  // Risk actions and explicit risk-increase signals are never suppressed by
+  // preference signals – user safety and governance take priority.
+  const isRiskCriticalSignal = (
+    baseAttn === "critical" ||
+    changeType === "risk_increased" ||
+    actionType === "reduce_risk" ||
+    actionType === "avoid_adding"
+  );
 
   // Signal 1: risk-averse user + risk-type signal → boost risk/reduce signals
   if (hints.riskSensitivity === "risk_averse") {
@@ -272,20 +293,34 @@ function _computeAdaptivePriorityLayer(opp, hints) {
     }
   }
 
-  // Signal 5: notification fatigue → reduce push pressure for non-critical delivery
+  // Signal 5: notification fatigue → reduce push pressure for non-critical delivery.
+  // GUARDRAIL: fatigue never suppresses risk/critical signals. User safety > delivery comfort.
   if (hints.notificationFatigue === "high" &&
       deliveryMode &&
       deliveryMode !== "passive_briefing" &&
       deliveryMode !== "none") {
-    boost -= 1;
-    reasons.push("notificationFatigue");
+    if (isRiskCriticalSignal) {
+      // Blocked – risk/critical topics must reach the user regardless of fatigue.
+      // Reason key uses "notificationFatigue-guardrail" to distinguish from
+      // the normal "notificationFatigue" penalty; both are traceable in ADAPTIVE_REASON_LABELS.
+      reasons.push("notificationFatigue-guardrail");
+      guardrailApplied = guardrailApplied || "fatigue-suppression-blocked:risk-critical";
+    } else {
+      boost -= 1;
+      reasons.push("notificationFatigue");
+    }
   }
 
-  // Clamp to ±3
+  // Clamp to ±3 and record if the raw value was clipped.
+  const rawBoost = boost;
   const adaptivePriorityBoost = Math.max(
     ADAPTIVE_BOOST_MIN,
-    Math.min(ADAPTIVE_BOOST_MAX, boost)
+    Math.min(ADAPTIVE_BOOST_MAX, rawBoost)
   );
+  if (rawBoost !== adaptivePriorityBoost) {
+    guardrailApplied = guardrailApplied
+      || `boost-cap(raw=${rawBoost},capped=${adaptivePriorityBoost})`;
+  }
 
   // deliveryPreferenceFit: does the delivery mode match the user's historical preference?
   let deliveryPreferenceFit = "neutral";
@@ -301,11 +336,16 @@ function _computeAdaptivePriorityLayer(opp, hints) {
   // adjustedRecommendationPriority: apply boost to attention level (one tier max).
   // Capped at "high" (index 2): "critical" is reserved for base-signal strength only,
   // never created through adaptive boosting alone.
+  // GUARDRAIL: critical items are NEVER demoted – adaptive layer is purely additive for them.
   const ATTN_TIERS = ["low", "medium", "high", "critical"];
   const baseIdx    = ATTN_TIERS.indexOf(baseAttn);
   let adjIdx       = baseIdx >= 0 ? baseIdx : 0;
   if (adaptivePriorityBoost >= 2 && adjIdx < 2) adjIdx = Math.min(adjIdx + 1, 2); // cap at "high"
-  if (adaptivePriorityBoost <= -2 && adjIdx > 0) adjIdx = Math.max(adjIdx - 1, 0);
+  if (adaptivePriorityBoost <= -2 && adjIdx > 0 && baseAttn !== "critical") {
+    adjIdx = Math.max(adjIdx - 1, 0);
+  } else if (adaptivePriorityBoost <= -2 && baseAttn === "critical") {
+    guardrailApplied = guardrailApplied || "critical-demotion-blocked";
+  }
   const adjustedRecommendationPriority = ATTN_TIERS[adjIdx];
 
   return {
@@ -313,6 +353,7 @@ function _computeAdaptivePriorityLayer(opp, hints) {
     adaptivePriorityReason: reasons.length > 0 ? reasons.join("+") : null,
     deliveryPreferenceFit,
     adjustedRecommendationPriority,
+    guardrailApplied,
   };
 }
 

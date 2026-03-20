@@ -416,6 +416,7 @@ async function analyzeStockWithGuardian(context) {
     "highSuccessRate":                  "Signal-Historie mit hoher Trefferquote – historisch verlässliches Signal",
     "lowSuccessRate":                   "Signal-Historie mit niedriger Trefferquote – Vorsicht geboten",
     "notificationFatigue":              "Nutzer zeigt Benachrichtigungs-Sättigung – Lieferpriorität reduziert",
+    "notificationFatigue-guardrail":    "Benachrichtigungs-Sättigung erkannt, aber Risiko-/kritisches Signal bleibt dominant – Guardrail aktiv",
   };
   function buildAdaptivePriorityBlock() {
     if (adaptivePriorityBoost === null || adaptivePriorityBoost === undefined || adaptivePriorityBoost === 0) return "";
@@ -513,6 +514,7 @@ Erstelle eine strukturierte Erklärung mit:
 13. Adaptive Priorisierung: Falls ein adaptives Priorisierungs-Signal vorhanden ist, erkläre kurz, warum das System dieses Thema für diesen Nutzer höher oder niedriger eingestuft hat –
    - Priorität erhöht: nenne den Grund (z.B. Risikoaversion, Entdeckungsaffinität, hohe Signal-Trefferquote) und bestätige, ob die Höherstufung zum aktuellen Marktbild passt
    - Priorität reduziert: nenne den Grund (z.B. Benachrichtigungs-Sättigung, niedrige Signal-Trefferquote) und weise hin, falls das Thema trotzdem relevant bleibt
+   - Wichtig: Risiko-Signale, Guardian-Warnungen und kritische Follow-up-Pflichten bleiben immer dominant – Nutzerpräferenzen können diese nicht außer Kraft setzen. Falls ein adaptives Signal eine Risiko- oder kritische Warnung betrifft, weise explizit darauf hin, dass die Risikobewertung unverändert bleibt.
    - Halte die Erklärung kurz (1–2 Sätze) und nachvollziehbar – keine neue Analyse, nur Einordnung der Systementscheidung
    Wenn kein adaptives Priorisierungs-Signal vorhanden, diesen Punkt weglassen.
 `;

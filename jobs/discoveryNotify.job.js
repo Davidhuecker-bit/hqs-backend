@@ -126,12 +126,17 @@ async function runDiscoveryNotify() {
             logger.warn("discoveryNotify: getReminderEligibleNotifications failed (ignored)", { userId, message: reminderErr.message });
           }
 
-          // Step 6 Block 2: User preference hints – gate on notificationFatigue and
-          // log explorationAffinity for observability. Uses one CTE query instead of
+          // Step 6 Block 2 / Block 4: User preference hints – gate on notificationFatigue
+          // and log explorationAffinity for observability. Uses one CTE query instead of
           // two separate computeProductSignals calls. Defensively non-fatal.
           // Step 6 Block 3: High explorationAffinity overrides the notificationFatigue
           // gate for discovery content – users who actively engage with discovery picks
           // should still receive them even when fatigued by other notification types.
+          //
+          // GUARDRAIL (Block 4): this gate only runs when escalationLevel === "medium".
+          // High-escalation picks (confidence ≥ 75 or score ≥ 75) bypass all gates,
+          // including notificationFatigue, because high-signal content must always reach
+          // the user. See outer guard: `if (orchestration.escalationLevel !== "high")`.
           if (orchestration.escalationLevel === "medium") {
             try {
               const hints = await computeUserPreferenceHints(userId, { days: 30 });
