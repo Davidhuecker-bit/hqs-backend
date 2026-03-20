@@ -232,6 +232,40 @@ function _deriveBriefingApprovalFlowStatus(stock) {
   return null;
 }
 
+/**
+ * Step 7 Block 5: Derive compact audit/safety hints for a briefing stock from its
+ * already-computed internal governance signals. No extra DB calls.
+ *
+ * Returns: { governanceStatus, traceReason, blockedByGuardrail }
+ */
+function _deriveBriefingAuditHints(stock) {
+  const ar    = stock._actionReadiness  || "monitor_only";
+  const ds    = stock._decisionStatus   || null;
+  const afs   = stock._approvalFlowStatus || null;
+  const level = stock._attentionLevel   || "low";
+
+  // governanceStatus: derived from readiness + decision state
+  let governanceStatus = "observation";
+  if (ar === "review_required")                                    governanceStatus = "review_controlled";
+  else if (ar === "proposal_ready")                                governanceStatus = "proposal_available";
+  else if (ar === "insufficient_confidence" || ds === "needs_more_data") governanceStatus = "data_limited";
+  else if (afs === "closed")                                       governanceStatus = "closed";
+
+  // traceReason: first relevant explanation
+  let traceReason = null;
+  if (ds === "needs_more_data")      traceReason = "Datenbasis unzureichend – Signalqualität zu gering";
+  else if (ds === "deferred_review") traceReason = "Zurückgestellt – Wiedervorlage geplant";
+  else if (ds === "rejected_candidate") traceReason = "Risikokonstellation – nicht freigabereif";
+  else if (ds === "approved_candidate") traceReason = "Starke Signallage – manuelle Bestätigung empfohlen";
+  else if (ar === "review_required") traceReason = "Freigabepflichtig – manuelle Prüfung erforderlich";
+  else if (ar === "insufficient_confidence") traceReason = "Signalqualität zu gering für Aktion";
+
+  // blockedByGuardrail: critical attention + review_required signals a guardrail-like condition
+  const blockedByGuardrail = (level === "critical" && ar === "review_required");
+
+  return { governanceStatus, traceReason, blockedByGuardrail };
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -329,8 +363,17 @@ function buildFactsFromMarket(stocks) {
       ? ` · ${APPROVAL_FLOW_LABELS[s._approvalFlowStatus]}`
       : "";
 
+    // Step 7 Block 5: include audit/safety hint when governance is not routine observation
+    const auditHints = s._auditHints;
+    const govLabel = (auditHints?.governanceStatus && auditHints.governanceStatus !== "observation")
+      ? ` · Governance: ${auditHints.governanceStatus}`
+      : "";
+    const guardrailLabel = auditHints?.blockedByGuardrail
+      ? " · 🛡 Guardrail aktiv"
+      : "";
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}.`
     );
   }
   return lines.join("\n");
@@ -444,6 +487,8 @@ async function runDailyBriefing() {
         s._decisionStatus = _deriveBriefingDecisionStatus(s);
         // Step 7 Block 4: derive controlled approval flow status for follow-up language/order
         s._approvalFlowStatus = _deriveBriefingApprovalFlowStatus(s);
+        // Step 7 Block 5: derive compact audit/safety hints for fact-line and ordering
+        s._auditHints = _deriveBriefingAuditHints(s);
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)

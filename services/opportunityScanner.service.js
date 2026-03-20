@@ -1191,6 +1191,121 @@ function computeControlledApprovalFlow(opp) {
   return null;
 }
 
+/* =========================================================
+   STEP 7 BLOCK 5: AUDIT-, SAFETY- & TRACEABILITY-LAYER
+   Condenses already-computed governance signals into a compact
+   audit/trace/safety summary. No new logic – only derivation.
+   Answers: why is this case in its current governance state?
+   Which guardrail or rule led to the current classification?
+   Where is this case in the controlled lifecycle?
+========================================================= */
+
+function computeAuditTraceLayer(opp) {
+  const ar  = opp.actionReadiness        || null;
+  const aq  = opp.approvalQueueEntry     || null;
+  const dl  = opp.decisionLayer          || null;
+  const caf = opp.controlledApprovalFlow || null;
+
+  const readiness      = ar?.actionReadiness    || null;
+  const safetyLevel    = ar?.actionSafetyLevel  || "safe";
+  const approvalReq    = ar?.approvalRequired   || false;
+  const approvalReason = ar?.approvalReason     || null;
+  const guardrail      = opp.guardrailApplied   || null;
+  const adaptiveReason = opp.adaptivePriorityReason || null;
+
+  const decisionStatus = dl?.decisionStatus    || null;
+  const decisionReason = dl?.decisionReason    || null;
+  const flowStatus     = caf?.approvalFlowStatus || null;
+  const closureStatus  = caf?.closureStatus    || null;
+  const deferUntil     = caf?.deferUntil       || null;
+  const reviewSummary  = aq?.reviewSummary     || null;
+
+  // ── safetyFlags ──────────────────────────────────────────────────────────
+  const safetyFlags = [];
+  if (safetyLevel === "restricted")                        safetyFlags.push("safety:restricted");
+  if (safetyLevel === "caution")                           safetyFlags.push("safety:caution");
+  if (guardrail)                                           safetyFlags.push(`guardrail:${guardrail}`);
+  if (approvalReq)                                         safetyFlags.push("approval:required");
+  if (aq?.approvalQueueBucket === "risk_review")           safetyFlags.push("bucket:risk_review");
+
+  // ── blockedByGuardrail ────────────────────────────────────────────────────
+  const blockedByGuardrail = Boolean(guardrail);
+
+  // ── governanceStatus ─────────────────────────────────────────────────────
+  let governanceStatus = null;
+  if (readiness === "review_required" || approvalReq) {
+    governanceStatus = "review_controlled";
+  } else if (readiness === "proposal_ready") {
+    governanceStatus = "proposal_available";
+  } else if (readiness === "insufficient_confidence" || decisionStatus === "needs_more_data") {
+    governanceStatus = "data_limited";
+  } else if (flowStatus === "closed") {
+    governanceStatus = "closed";
+  } else if (readiness === "monitor_only") {
+    governanceStatus = "observation";
+  }
+
+  // ── traceReason ──────────────────────────────────────────────────────────
+  // First match wins: guardrail > data limits > decision states > approval > adaptive
+  let traceReason = null;
+  if (guardrail) {
+    traceReason = `Guardrail aktiv: ${guardrail}`;
+  } else if (readiness === "insufficient_confidence") {
+    traceReason = decisionReason || "Datenbasis zu gering – Signal noch nicht entscheidungsreif";
+  } else if (decisionStatus === "needs_more_data") {
+    traceReason = decisionReason || "Mehr Daten benötigt – Signalqualität unzureichend für Entscheidung";
+  } else if (decisionStatus === "deferred_review") {
+    traceReason = decisionReason || "Zurückgestellt – widersprüchliche Signale, Wiedervorlage geplant";
+  } else if (decisionStatus === "rejected_candidate") {
+    traceReason = decisionReason || "Abgelehnt – Risikokonstellation nicht freigabereif";
+  } else if (decisionStatus === "approved_candidate") {
+    traceReason = "Starke Datenbasis und konsistente Signale – manuelle Bestätigung empfohlen";
+  } else if (approvalReq) {
+    traceReason = approvalReason || "Freigabepflichtig – manuelle Prüfung erforderlich";
+  } else if (adaptiveReason) {
+    traceReason = `Adaptive Priorisierung: ${adaptiveReason}`;
+  }
+
+  // ── tracePath ─────────────────────────────────────────────────────────────
+  let tracePath = null;
+  if (flowStatus === "approved_pending_action") {
+    tracePath = "post_decision:ready_for_manual_action";
+  } else if (flowStatus === "awaiting_review") {
+    tracePath = "in_review:pending_human_assessment";
+  } else if (flowStatus === "deferred") {
+    tracePath = deferUntil ? `deferred:reassessment_at_${deferUntil}` : "deferred:reassessment_pending";
+  } else if (flowStatus === "waiting_for_more_data") {
+    tracePath = "pre_decision:collecting_signals";
+  } else if (flowStatus === "closed") {
+    tracePath = closureStatus ? `closed:${closureStatus}` : "closed";
+  } else if (flowStatus === "proposal_available") {
+    tracePath = "proposal:available_for_user_review";
+  } else if (readiness === "monitor_only") {
+    tracePath = "observation:no_action_required";
+  } else if (readiness === "insufficient_confidence") {
+    tracePath = "observation:data_insufficient";
+  }
+
+  // ── auditSummary ──────────────────────────────────────────────────────────
+  const parts = [];
+  if (governanceStatus) parts.push(`Status: ${governanceStatus}`);
+  if (reviewSummary)    parts.push(reviewSummary);
+  else if (traceReason) parts.push(traceReason);
+  if (safetyFlags.length) parts.push(`Safety: ${safetyFlags.join(", ")}`);
+  if (tracePath)        parts.push(`Pfad: ${tracePath}`);
+
+  const auditSummary = parts.length ? parts.join(" · ") : null;
+
+  return {
+    traceReason,
+    tracePath,
+    safetyFlags,
+    governanceStatus,
+    auditSummary,
+    blockedByGuardrail,
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -2367,7 +2482,9 @@ async function getTopOpportunities(arg = 10) {
     const decisionLayer = computeDecisionLayer({ ...oppFull, actionReadiness, approvalQueueEntry });
     // Step 7 Block 4: derive controlled approval flow – next controlled follow-up step after decision
     const controlledApprovalFlow = computeControlledApprovalFlow({ ...oppFull, actionReadiness, decisionLayer });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow };
+    // Step 7 Block 5: derive audit/safety/traceability layer from all governance signals
+    const auditTrace = computeAuditTraceLayer({ ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
@@ -2799,4 +2916,6 @@ module.exports = {
   computeActionReadiness,
   computeApprovalQueueEntry,
   computeDecisionLayer,
+  computeControlledApprovalFlow,
+  computeAuditTraceLayer,
 };

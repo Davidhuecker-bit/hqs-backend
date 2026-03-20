@@ -240,6 +240,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     actionReadiness: stock?.actionReadiness ?? null,
     // Step 7 Block 2: Approval-Queue entry (pending state, priority, bucket, summary).
     approvalQueueEntry: stock?.approvalQueueEntry ?? null,
+    // Step 7 Block 5: Audit/trace/safety layer – governanceStatus, traceReason, safetyFlags, auditSummary.
+    auditTrace: stock?.auditTrace ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -311,6 +313,7 @@ function buildTopSignals(stocks) {
       const aq         = stock.approvalQueueEntry ?? null;
       const dl         = stock.decisionLayer     ?? null;
       const caf        = stock.controlledApprovalFlow ?? null;
+      const audit      = stock.auditTrace        ?? null;
       const attention  = stock.userAttentionLevel ? ` [Achtung: ${stock.userAttentionLevel}]` : "";
       // Append portfolio-context badge, intelligence label, delta badge, next-action badge, delivery-mode badge, follow-up badge, action-readiness badge, approval-queue badge, decision badge.
       const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
@@ -355,11 +358,15 @@ function buildTopSignals(stocks) {
       const cafBadge          = caf?.approvalFlowStatus && CAF_BADGES[caf.approvalFlowStatus]
         ? ` ${CAF_BADGES[caf.approvalFlowStatus]}`
         : "";
+      // Step 7 Block 5: audit/safety badge – surface guardrail or governance state compactly
+      const auditBadge        = audit?.blockedByGuardrail
+        ? " 🛡 Guardrail"
+        : (audit?.governanceStatus === "data_limited" ? " 📊 Datenbasis begrenzt" : "");
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -375,6 +382,8 @@ function buildTopSignals(stocks) {
         decisionLayer: dl,
         // Step 7 Block 4: controlled approval flow for downstream lifecycle rendering
         controlledApprovalFlow: caf,
+        // Step 7 Block 5: audit/trace/safety layer for downstream governance rendering
+        auditTrace: audit,
       };
     });
 }
@@ -527,6 +536,15 @@ function buildPortfolioIntelligenceSummary(stocks) {
       waitingForMoreData:    stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "waiting_for_more_data").length,
       closed:                stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "closed").length,
       proposalAvailable:     stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "proposal_available").length,
+    },
+    // Step 7 Block 5: audit/safety/traceability distribution – governance and guardrail states.
+    auditTrace: {
+      reviewControlled:  stocks.filter((s) => s.auditTrace?.governanceStatus === "review_controlled").length,
+      proposalAvailable: stocks.filter((s) => s.auditTrace?.governanceStatus === "proposal_available").length,
+      dataLimited:       stocks.filter((s) => s.auditTrace?.governanceStatus === "data_limited").length,
+      observation:       stocks.filter((s) => s.auditTrace?.governanceStatus === "observation").length,
+      closed:            stocks.filter((s) => s.auditTrace?.governanceStatus === "closed").length,
+      blockedByGuardrail: stocks.filter((s) => s.auditTrace?.blockedByGuardrail === true).length,
     },
   };
 }

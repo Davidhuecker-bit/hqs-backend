@@ -48,6 +48,12 @@ function _derivePickOrchestration(pick, onWatchlist) {
     // Step 7 Block 4: derive controlled approval flow status from decision state
     const approvalFlowStatus = hasStrongData ? "approved_pending_action" : "awaiting_review";
     const postDecisionAction = hasStrongData ? "ready_for_manual_action" : "pending_human_review";
+    // Step 7 Block 5: derive audit/safety signals
+    const governanceStatus = "review_controlled";
+    const traceReason = hasStrongData
+      ? "Starke Datenbasis und konsistente Signale – manuelle Bestätigung empfohlen"
+      : "Freigabepflichtig – manuelle Prüfung erforderlich";
+    const safetyFlags = ["approval:required", "bucket:risk_review"];
     return {
       deliveryMode: "notification",
       escalationLevel: "high",
@@ -57,6 +63,10 @@ function _derivePickOrchestration(pick, onWatchlist) {
       decisionStatus,
       approvalFlowStatus,
       postDecisionAction,
+      governanceStatus,
+      traceReason,
+      safetyFlags,
+      blockedByGuardrail: false,
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -69,6 +79,10 @@ function _derivePickOrchestration(pick, onWatchlist) {
       decisionStatus: null,
       approvalFlowStatus: "proposal_available",
       postDecisionAction: "user_may_review_proposal",
+      governanceStatus: "proposal_available",
+      traceReason: "Strukturierter Vorschlag verfügbar – Nutzer entscheidet eigenständig",
+      safetyFlags: [],
+      blockedByGuardrail: false,
     };
   }
   return {
@@ -80,6 +94,10 @@ function _derivePickOrchestration(pick, onWatchlist) {
     decisionStatus: null,
     approvalFlowStatus: null,
     postDecisionAction: null,
+    governanceStatus: "observation",
+    traceReason: "Signal zu schwach für aktive Zustellung – nur Beobachtung",
+    safetyFlags: [],
+    blockedByGuardrail: false,
   };
 }
 
@@ -197,6 +215,10 @@ async function runDiscoveryNotify() {
             decisionStatus: orchestration.decisionStatus || null,
             approvalFlowStatus: orchestration.approvalFlowStatus || null,
             postDecisionAction: orchestration.postDecisionAction || null,
+            // Step 7 Block 5: audit/safety context for observability
+            governanceStatus: orchestration.governanceStatus || null,
+            traceReason: orchestration.traceReason || null,
+            safetyFlags: orchestration.safetyFlags?.length ? orchestration.safetyFlags : null,
           });
         }
 
