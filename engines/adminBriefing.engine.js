@@ -2,6 +2,16 @@
 
 // engines/adminBriefing.engine.js
 // Baut eine verständliche Chef-Zusammenfassung für dein Kontrollzentrum.
+//
+// Text-Mapping für systemStatus, trustStatus, scalingStatus und expansionStatus
+// kommt aus adminRecommendations.engine.js (gemeinsame Wahrheitsquelle).
+
+const {
+  resolveSystemStatusText,
+  resolveTrustStatusText,
+  resolveScalingStatusText,
+  resolveExpansionStatusText,
+} = require("./adminRecommendations.engine");
 
 function safeNum(value, fallback = 0) {
   const n = Number(value);
@@ -49,25 +59,20 @@ function buildAdminBriefing({
   const weakest600 = targets?.summaries?.scaling600?.weakest || null;
   const weakest1000 = targets?.summaries?.scaling1000?.weakest || null;
 
-  let overallStatus = "Das System läuft in einem mittleren Zustand.";
-  if (systemBand === "excellent") overallStatus = "Das System läuft aktuell sehr stark und stabil.";
-  else if (systemBand === "good") overallStatus = "Das System läuft aktuell stabil.";
-  else if (systemBand === "critical") overallStatus = "Das System läuft aktuell kritisch und braucht sofort Aufmerksamkeit.";
+  const overallStatus = resolveSystemStatusText(systemBand);
+  const trustStatus = resolveTrustStatusText(trustBand);
 
-  let trustStatus = "Die wichtigsten Berechnungen sind aktuell nur teilweise belastbar.";
-  if (trustBand === "trusted") trustStatus = "Die wichtigsten Berechnungen wirken aktuell belastbar.";
-  else if (trustBand === "usable") trustStatus = "Die wichtigsten Berechnungen sind brauchbar, aber noch nicht maximal abgesichert.";
-  else if (trustBand === "unreliable") trustStatus = "Die wichtigsten Berechnungen sind aktuell noch nicht verlässlich genug.";
+  // Use release.scale flags (richer than diagnostics.summary booleans) as source for scaling text.
+  const scaleStatus = resolveScalingStatusText(Boolean(scale600?.allowed), Boolean(scale450?.allowed));
 
-  let scaleStatus = "Noch keine saubere Skalierungsfreigabe.";
-  if (scale600?.allowed) scaleStatus = "Das System ist bereit für einen kontrollierten Ausbau auf 600 Aktien.";
-  else if (scale450?.allowed) scaleStatus = "Ein kontrollierter Ausbau auf 450 Aktien ist aktuell testbar.";
-  else scaleStatus = "Das aktuelle Niveau sollte vor weiterer Skalierung erst stabilisiert werden.";
-
-  let expansionStatus = "Der nächste sinnvolle Ausbau liegt aktuell im breiteren US-Universum.";
-  if (chinaRelease?.allowed) expansionStatus = "China ist aktuell als nächster Ausbau freigabereif.";
-  else if (europeRelease?.allowed) expansionStatus = "Europa ist aktuell als nächster Ausbau freigabereif.";
-  else if (usRelease?.allowed) expansionStatus = "Ein breiteres US-Universum ist aktuell der sauberste nächste Ausbau.";
+  // Derive nextBestExpansion from release.expansion flags (authoritative release decision layer).
+  let nextBestExpansionFromRelease = "us_broader_universe";
+  if (chinaRelease?.allowed) {
+    nextBestExpansionFromRelease = "china";
+  } else if (europeRelease?.allowed) {
+    nextBestExpansionFromRelease = "europe";
+  }
+  const expansionStatus = resolveExpansionStatusText(nextBestExpansionFromRelease);
 
   const biggestRisk = topAlert
     ? {

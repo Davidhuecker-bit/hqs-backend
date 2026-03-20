@@ -22,22 +22,65 @@ async function analyzeStockWithGuardian(context) {
     marketData,
   } = context;
 
+  // Use integrationEngine outputs when available; fall back to raw HQS fields.
+  const finalConviction = marketData?.finalConviction ?? null;
+  const finalRating = marketData?.finalRating ?? null;
+  const finalDecision = marketData?.finalDecision ?? null;
+  const whyInteresting = Array.isArray(marketData?.whyInteresting) && marketData.whyInteresting.length
+    ? marketData.whyInteresting.join(", ")
+    : null;
+  const hqsScore = marketData?.hqsScore ?? null;
+  const regime = marketData?.regime ?? null;
+  const hqsBreakdown = marketData?.hqsBreakdown ?? null;
+  const trend = marketData?.trend ?? null;
+
+  function buildConvictionBlock() {
+    if (finalConviction != null) {
+      const ratingLabel = finalRating || "–";
+      const decisionLabel = finalDecision || "–";
+      return `Final Conviction: ${finalConviction} (${ratingLabel}, Entscheidung: ${decisionLabel})`;
+    }
+    return `HQS Score: ${hqsScore ?? "–"}`;
+  }
+
+  const convictionBlock = buildConvictionBlock();
+
+  const regimeBlock = regime
+    ? `Markt-Regime: ${regime}`
+    : "";
+
+  const breakdownBlock = hqsBreakdown
+    ? `HQS-Breakdown: Momentum ${hqsBreakdown.momentum ?? "–"}, Quality ${hqsBreakdown.quality ?? "–"}, Stability ${hqsBreakdown.stability ?? "–"}, Relative ${hqsBreakdown.relative ?? "–"}`
+    : "";
+
+  const trendBlock = trend ? `Trend: ${trend}` : "";
+
+  const whyBlock = whyInteresting
+    ? `Auffälligkeiten (Integration Engine): ${whyInteresting}`
+    : "";
+
+  const contextLines = [convictionBlock, regimeBlock, breakdownBlock, trendBlock, whyBlock]
+    .filter(Boolean)
+    .join("\n");
+
   const prompt = `
-Du bist Guardian AI – ein professionelles Finanz-Analyse-System.
+Du bist Guardian AI – ein professionelles Finanz-Analyse-System, das auf dem HQS-Framework aufbaut.
 
 Erkläre die folgenden finalen Marktdaten:
 
 Symbol: ${symbol}
 
-Marktdaten:
+${contextLines}
+
+Vollständige Rohdaten:
 ${JSON.stringify(marketData, null, 2)}
 
 Erstelle eine strukturierte Erklärung mit:
 
-1. Bewertung: Bullish / Neutral / Bearish
+1. Bewertung: Bullish / Neutral / Bearish (konsistent mit Regime und HQS-Score)
 2. Risiko-Level: Niedrig / Mittel / Hoch
-3. Kurze Begründung (3-5 Sätze)
-4. Handlungsempfehlung
+3. Kurze Begründung (3-5 Sätze, mit Bezug auf HQS-Score, Regime und Trend)
+4. Handlungsempfehlung (konsistent mit dem finalen Conviction-Score falls vorhanden)
 `;
 
   const response = await getClient().chat.completions.create({
