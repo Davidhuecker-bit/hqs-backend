@@ -1155,6 +1155,70 @@ async function computeUserPreferenceHints(userId, { days = 30 } = {}) {
   }
 }
 
+// ── Step 6 Block 3: Adaptive Delivery Priority ────────────────────────────────
+
+/**
+ * computeAdaptiveDeliveryPriority – derives a slim, decision-ready object
+ * for adaptive delivery gating from per-user preference hints.
+ * Designed for use by jobs/routes that need a transparent yes/no/downgrade
+ * for notification delivery without having to interpret raw hints directly.
+ *
+ * Returns:
+ *   deliveryBoost    +1 | 0 | -1  – marginal priority adjustment for delivery
+ *   suppressPush     boolean       – true when fatigue is high AND no exploration override
+ *   preferBriefingOnly boolean     – true when briefingAffinity=high AND fatigue>=moderate
+ *   reason           string|null   – short traceable explanation
+ *
+ * Non-fatal: returns neutral defaults on error or insufficient data.
+ *
+ * @param {number} userId
+ * @param {object} [opts]
+ * @param {number} [opts.days=30]
+ * @returns {Promise<object>}
+ */
+async function computeAdaptiveDeliveryPriority(userId, { days = 30 } = {}) {
+  const neutral = { deliveryBoost: 0, suppressPush: false, preferBriefingOnly: false, reason: null };
+  try {
+    const hints = await computeUserPreferenceHints(userId, { days });
+    if (!hints || (hints.sampleSize || 0) < 3) return neutral;
+
+    let deliveryBoost = 0;
+    let suppressPush = false;
+    let preferBriefingOnly = false;
+    const reasons = [];
+
+    // Exploration affinity overrides fatigue for discovery-type content
+    const explorationOverrides = hints.explorationAffinity === "high";
+
+    if (hints.notificationFatigue === "high" && !explorationOverrides) {
+      deliveryBoost -= 1;
+      suppressPush = true;
+      reasons.push("notificationFatigue=high");
+    }
+
+    if (hints.briefingAffinity === "high" &&
+        (hints.notificationFatigue === "high" || hints.notificationFatigue === "moderate")) {
+      preferBriefingOnly = true;
+      reasons.push("briefingAffinity=high");
+    }
+
+    if (hints.actionResponsiveness === "high" && hints.notificationFatigue !== "high") {
+      deliveryBoost += 1;
+      reasons.push("responsiveness=high");
+    }
+
+    return {
+      deliveryBoost,
+      suppressPush,
+      preferBriefingOnly,
+      reason: reasons.length > 0 ? reasons.join("+") : null,
+    };
+  } catch (err) {
+    if (logger?.warn) logger.warn("computeAdaptiveDeliveryPriority error", { userId, message: err.message });
+    return neutral;
+  }
+}
+
 module.exports = {
   initNotificationTables,
   seedDemoUserIfEmpty,
@@ -1166,6 +1230,7 @@ module.exports = {
   computeUserState,                      // ✅ Step 5 User-State: consolidated user state from notification data
   computeProductSignals,                 // ✅ Step 6: adaptive product signals (engagement/action/dismissal scores)
   computeUserPreferenceHints,            // ✅ Step 6 Block 2: per-user behavioral preference hints
+  computeAdaptiveDeliveryPriority,       // ✅ Step 6 Block 3: slim delivery-decision helper
 
   createNotification,
   createNotificationOncePerDay,          // ✅ accepts priority/reason

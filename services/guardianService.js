@@ -104,6 +104,11 @@ async function analyzeStockWithGuardian(context) {
   // Passed through from the caller (route/orchestrator) alongside userState.
   const userPreferenceHints = marketData?.userPreferenceHints ?? context?.userPreferenceHints ?? null;
 
+  // Step 6 Block 3: Adaptive priority signals – read pre-computed boost and reason if present.
+  const adaptivePriorityBoost  = marketData?.adaptivePriorityBoost  ?? context?.adaptivePriorityBoost  ?? null;
+  const adaptivePriorityReason = marketData?.adaptivePriorityReason ?? context?.adaptivePriorityReason ?? null;
+  const adjustedRecommendationPriority = marketData?.adjustedRecommendationPriority ?? context?.adjustedRecommendationPriority ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -401,7 +406,31 @@ async function analyzeStockWithGuardian(context) {
   }
   const userPreferenceBlock = buildUserPreferenceBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock]
+  // Step 6 Block 3: Adaptive priority block – explains why the system prioritized
+  // this topic higher or lower based on user-specific adaptive signals.
+  // Only included when a non-zero boost is present and reason is available.
+  const ADAPTIVE_REASON_LABELS = {
+    "riskAverse+riskSignal":            "Nutzer ist risikoavers – Risiko-Signale werden stärker gewichtet",
+    "explorationAffinity+newSignal":    "Nutzer hat hohe Entdeckungsaffinität – neue Signale werden hervorgehoben",
+    "opportunitySeeker+elevatedSignal": "Nutzer ist chancenorientiert – starke Kaufsignale werden priorisiert",
+    "highSuccessRate":                  "Signal-Historie mit hoher Trefferquote – historisch verlässliches Signal",
+    "lowSuccessRate":                   "Signal-Historie mit niedriger Trefferquote – Vorsicht geboten",
+    "notificationFatigue":              "Nutzer zeigt Benachrichtigungs-Sättigung – Lieferpriorität reduziert",
+  };
+  function buildAdaptivePriorityBlock() {
+    if (adaptivePriorityBoost === null || adaptivePriorityBoost === undefined || adaptivePriorityBoost === 0) return "";
+    const direction = adaptivePriorityBoost > 0 ? "Priorität erhöht" : "Priorität reduziert";
+    const reasonParts = adaptivePriorityReason
+      ? adaptivePriorityReason.split("+").map((r) => { const t = r.trim(); return ADAPTIVE_REASON_LABELS[t] || t; }).join(" · ")
+      : "Adaptive Priorisierung aktiv";
+    const adjPart = adjustedRecommendationPriority
+      ? `, angepasste Empfehlungspriorität: ${adjustedRecommendationPriority}`
+      : "";
+    return `Adaptive Priorisierung (Block 3): ${direction} um ${Math.abs(adaptivePriorityBoost)} Punkte · ${reasonParts}${adjPart}`;
+  }
+  const adaptivePriorityBlock = buildAdaptivePriorityBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -481,6 +510,11 @@ Erstelle eine strukturierte Erklärung mit:
    - actionResponsiveness="low": Weise explizit auf Dringlichkeit hin, wenn das Signal zeitkritisch ist
    - explorationAffinity="high": Betone neue oder unbekannte Signale, da der Nutzer Discovery-Hinweise schätzt
    Wenn kein Nutzer-Verhaltensprofil vorhanden, diesen Punkt weglassen.
+13. Adaptive Priorisierung: Falls ein adaptives Priorisierungs-Signal vorhanden ist, erkläre kurz, warum das System dieses Thema für diesen Nutzer höher oder niedriger eingestuft hat –
+   - Priorität erhöht: nenne den Grund (z.B. Risikoaversion, Entdeckungsaffinität, hohe Signal-Trefferquote) und bestätige, ob die Höherstufung zum aktuellen Marktbild passt
+   - Priorität reduziert: nenne den Grund (z.B. Benachrichtigungs-Sättigung, niedrige Signal-Trefferquote) und weise hin, falls das Thema trotzdem relevant bleibt
+   - Halte die Erklärung kurz (1–2 Sätze) und nachvollziehbar – keine neue Analyse, nur Einordnung der Systementscheidung
+   Wenn kein adaptives Priorisierungs-Signal vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

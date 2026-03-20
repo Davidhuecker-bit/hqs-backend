@@ -187,6 +187,135 @@ function _userAffinityBonus(opp, hints) {
   return 0;
 }
 
+// ── Adaptive Priority Layer (Step 6 Block 3) ─────────────────────────────────
+// Combines userPreferenceHints, adaptiveSignalHints, deltaContext, nextAction
+// and actionOrchestration into a transparent, small per-opportunity priority
+// adjustment. Supersedes the simpler _userAffinityBonus in the sort (±2→±3).
+// All signal contributions are traceable via adaptivePriorityReason.
+// Only applied when userPreferenceHints are passed in and sampleSize ≥ 3.
+const ADAPTIVE_BOOST_MAX =  3;
+const ADAPTIVE_BOOST_MIN = -3;
+
+/**
+ * Computes a transparent adaptive priority adjustment for one opportunity.
+ * Called after the full opportunity is assembled (adaptiveSignalHints,
+ * nextAction, deltaContext, actionOrchestration all attached).
+ *
+ * Signal contributions (capped at ±3 total):
+ *   riskSensitivity=risk_averse  + risk-type change/action      → +2
+ *   explorationAffinity=high     + new_signal/gaining_relevance  → +2
+ *   riskSensitivity=opportunity_seeker + elevated buy signal     → +1
+ *   outcomeSuccessRate ≥ 0.6 (≥3 evaluated outcomes)            → +1
+ *   outcomeSuccessRate < 0.3 (≥5 evaluated outcomes)            → -1
+ *   notificationFatigue=high     + push-type delivery            → -1
+ *
+ * @param {object}      opp   – fully enriched opportunity
+ * @param {object|null} hints – computeUserPreferenceHints() result
+ * @returns {{ adaptivePriorityBoost: number, adaptivePriorityReason: string|null,
+ *             deliveryPreferenceFit: string, adjustedRecommendationPriority: string }}
+ */
+function _computeAdaptivePriorityLayer(opp, hints) {
+  const baseAttn = opp.userAttentionLevel || "low";
+  const noChange = {
+    adaptivePriorityBoost: 0,
+    adaptivePriorityReason: null,
+    deliveryPreferenceFit: "unknown",
+    adjustedRecommendationPriority: baseAttn,
+  };
+  if (!hints || (hints.sampleSize || 0) < 3) return noChange;
+
+  let boost = 0;
+  const reasons = [];
+
+  const actionType    = opp.nextAction?.actionType     || null;
+  const changeType    = opp.deltaContext?.changeType    || "stable";
+  const deltaPriority = opp.deltaContext?.deltaPriority || "stable";
+  const deliveryMode  = opp.actionOrchestration?.deliveryMode || null;
+  const sh            = opp.adaptiveSignalHints         || {};
+
+  // Signal 1: risk-averse user + risk-type signal → boost risk/reduce signals
+  if (hints.riskSensitivity === "risk_averse") {
+    if (changeType === "risk_increased" ||
+        actionType === "reduce_risk" ||
+        actionType === "avoid_adding") {
+      boost += 2;
+      reasons.push("riskAverse+riskSignal");
+    }
+  }
+
+  // Signal 2: exploration-affinity user + new/gaining signal → boost discovery
+  if (hints.explorationAffinity === "high") {
+    if (changeType === "new_signal" || changeType === "gaining_relevance") {
+      boost += 2;
+      reasons.push("explorationAffinity+newSignal");
+    }
+  }
+
+  // Signal 3: opportunity seeker + elevated buy signal → small additional boost
+  if (hints.riskSensitivity === "opportunity_seeker") {
+    if ((actionType === "starter_position" || actionType === "watchlist_upgrade") &&
+        deltaPriority === "elevated") {
+      boost += 1;
+      reasons.push("opportunitySeeker+elevatedSignal");
+    }
+  }
+
+  // Signal 4: outcome track-record quality (only when ≥3 recorded outcomes)
+  if (sh.outcomeDataAvailable && (sh.outcomeSampleSize || 0) >= 3) {
+    const sr = sh.successRate ?? null;
+    if (sr !== null && sr >= 0.6) {
+      boost += 1;
+      reasons.push("highSuccessRate");
+    } else if (sr !== null && sr < 0.3 && (sh.outcomeSampleSize || 0) >= 5) {
+      boost -= 1;
+      reasons.push("lowSuccessRate");
+    }
+  }
+
+  // Signal 5: notification fatigue → reduce push pressure for non-critical delivery
+  if (hints.notificationFatigue === "high" &&
+      deliveryMode &&
+      deliveryMode !== "passive_briefing" &&
+      deliveryMode !== "none") {
+    boost -= 1;
+    reasons.push("notificationFatigue");
+  }
+
+  // Clamp to ±3
+  const adaptivePriorityBoost = Math.max(
+    ADAPTIVE_BOOST_MIN,
+    Math.min(ADAPTIVE_BOOST_MAX, boost)
+  );
+
+  // deliveryPreferenceFit: does the delivery mode match the user's historical preference?
+  let deliveryPreferenceFit = "neutral";
+  if (hints.preferredDeliveryMode && deliveryMode) {
+    if (deliveryMode === hints.preferredDeliveryMode ||
+        (hints.briefingAffinity === "high" && deliveryMode.includes("briefing"))) {
+      deliveryPreferenceFit = "high";
+    } else if (hints.notificationFatigue === "high" && deliveryMode === "notification") {
+      deliveryPreferenceFit = "low";
+    }
+  }
+
+  // adjustedRecommendationPriority: apply boost to attention level (one tier max).
+  // Capped at "high" (index 2): "critical" is reserved for base-signal strength only,
+  // never created through adaptive boosting alone.
+  const ATTN_TIERS = ["low", "medium", "high", "critical"];
+  const baseIdx    = ATTN_TIERS.indexOf(baseAttn);
+  let adjIdx       = baseIdx >= 0 ? baseIdx : 0;
+  if (adaptivePriorityBoost >= 2 && adjIdx < 2) adjIdx = Math.min(adjIdx + 1, 2); // cap at "high"
+  if (adaptivePriorityBoost <= -2 && adjIdx > 0) adjIdx = Math.max(adjIdx - 1, 0);
+  const adjustedRecommendationPriority = ATTN_TIERS[adjIdx];
+
+  return {
+    adaptivePriorityBoost,
+    adaptivePriorityReason: reasons.length > 0 ? reasons.join("+") : null,
+    deliveryPreferenceFit,
+    adjustedRecommendationPriority,
+  };
+}
+
 /**
  * Compute delta/change context for an opportunity.
  *
@@ -1674,7 +1803,6 @@ async function getTopOpportunities(arg = 10) {
     const actionOrchestration = computeActionOrchestration(oppWithAttention);
     // Step 6: Adaptive signal hook – attach recommendation outcome from evaluated
     // outcome_tracking history. This is an informational hook; no scoring changes.
-    // adaptiveSignalHints will be used by future adaptive prioritization logic.
     const rcOutcome = recommendationOutcomeBySymbol?.[o.symbol] || null;
     const adaptiveSignalHints = rcOutcome ? {
       recommendationOutcome:  rcOutcome.recommendationOutcome,
@@ -1683,21 +1811,28 @@ async function getTopOpportunities(arg = 10) {
       outcomeDataAvailable:   true,
       outcomeSampleSize:      rcOutcome.sampleSize,
     } : { outcomeDataAvailable: false };
-    return { ...oppWithAttention, actionOrchestration, adaptiveSignalHints };
+    // Step 6 Block 3: Compute adaptive priority layer from all available per-user
+    // and outcome signals. Attaches boost + reason + delivery fit + adjusted priority.
+    // Supersedes _userAffinityBonus in the sort – includes more signals at same ±3 range.
+    const oppFull = { ...oppWithAttention, actionOrchestration, adaptiveSignalHints };
+    const adaptivePriority = _computeAdaptivePriorityLayer(oppFull, userPreferenceHints);
+    return { ...oppFull, ...adaptivePriority };
   });
 
-  // Portfolio-intelligence + delta-aware + user-affinity re-sort.
+  // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
   // Conviction/confidence still dominate; combined bonus is ±3–10 pts.
-  // userPreferenceHints bonus is ±2 (only when hints passed in by caller).
+  // adaptivePriorityBoost (Step 6 Block 3) is pre-computed per opportunity;
+  // it incorporates riskSensitivity, explorationAffinity, outcome quality,
+  // notificationFatigue, and opportunitySeeker signals (max ±3).
   opportunitiesWithDelta.sort((a, b) => {
     const aAdj = safeNum(a.finalConviction, safeNum(a.hqsScore, 0))
       + _portfolioIntelligenceBonus(a.portfolioContext)
       + _deltaPriorityBonus(a.deltaContext)
-      + _userAffinityBonus(a, userPreferenceHints);
+      + safeNum(a.adaptivePriorityBoost, 0);  // Step 6 Block 3: pre-computed adaptive layer
     const bAdj = safeNum(b.finalConviction, safeNum(b.hqsScore, 0))
       + _portfolioIntelligenceBonus(b.portfolioContext)
       + _deltaPriorityBonus(b.deltaContext)
-      + _userAffinityBonus(b, userPreferenceHints);
+      + safeNum(b.adaptivePriorityBoost, 0);  // Step 6 Block 3: pre-computed adaptive layer
     if (bAdj !== aAdj) return bAdj - aAdj;
     if (b.finalConfidence !== a.finalConfidence) return b.finalConfidence - a.finalConfidence;
     return safeNum(b.hqsScore, 0) - safeNum(a.hqsScore, 0);
@@ -2093,6 +2228,7 @@ async function getTopOpportunities(arg = 10) {
     budgetConsumedPct:       budgetSummary ? budgetSummary.consumedBudgetPct : null,
     virtualPositionsOpened:  virtualOpenResults.filter((r) => r.virtualPositionOpened).length,
     userAffinityActive:      userPreferenceHints ? userPreferenceHints.riskSensitivity || null : null,
+    adaptivePriorityLayer:   userPreferenceHints ? "block3_active" : null,
     returned: out.length,
   });
 

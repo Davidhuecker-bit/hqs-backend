@@ -139,6 +139,33 @@ function _resolveEffectivePriority(stateBriefingUrgency, stockAttentionLevel) {
   return stateRank <= stockRank ? stateBriefingUrgency : stockAttentionLevel;
 }
 
+/**
+ * Step 6 Block 3: Small adaptive sort adjustment for briefing order.
+ * Returns a numeric offset: negative = higher priority (appears earlier).
+ * Only used as a third tie-breaker, after orchestration and attention ranks.
+ * Critical/high attention stocks are never demoted by this signal.
+ *
+ * @param {object}      stock – stock with _attentionLevel and _attentionReason
+ * @param {object|null} hints – computeUserPreferenceHints() result
+ * @returns {number}
+ */
+function _adaptiveBriefingBoost(stock, hints) {
+  if (!hints || (hints.sampleSize || 0) < 3) return 0;
+  const level  = stock._attentionLevel  || "low";
+  const reason = stock._attentionReason || "";
+  // risk_averse user: risk/high-attention stocks get a tighter slot in the briefing
+  if (hints.riskSensitivity === "risk_averse" &&
+      (level === "high" || level === "critical")) {
+    return -1;
+  }
+  // exploration-affinity user: new-signal or discovery-type stocks move up
+  if (hints.explorationAffinity === "high" &&
+      (reason.toLowerCase().includes("new") || reason.toLowerCase().includes("first"))) {
+    return -1;
+  }
+  return 0;
+}
+
 function buildFactsFromMarket(stocks) {
   const lines = [];
   for (const s of stocks) {
@@ -273,10 +300,13 @@ async function runDailyBriefing() {
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: attention level rank (critical → high → medium → low)
+      // Tertiary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
       stocks.sort((a, b) => {
         const orchDiff = _briefingOrchestrationRank(a, userHasOpenFollowUps) - _briefingOrchestrationRank(b, userHasOpenFollowUps);
         if (orchDiff !== 0) return orchDiff;
-        return (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
+        const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
+        if (attnDiff !== 0) return attnDiff;
+        return _adaptiveBriefingBoost(a, userPreferenceHints) - _adaptiveBriefingBoost(b, userPreferenceHints);
       });
 
       // Derive briefing priority from the highest escalation/attention level found.
