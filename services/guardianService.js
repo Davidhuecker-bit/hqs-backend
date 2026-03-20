@@ -19,26 +19,20 @@ function getClient() {
 async function analyzeStockWithGuardian(context) {
   const {
     symbol,
-    segment,
-    provider,
-    fallbackUsed,
     marketData,
   } = context;
 
   const prompt = `
 Du bist Guardian AI – ein professionelles Finanz-Analyse-System.
 
-Analysiere folgende Marktdaten:
+Erkläre die folgenden finalen Marktdaten:
 
 Symbol: ${symbol}
-Segment: ${segment}
-Provider: ${provider}
-Fallback verwendet: ${fallbackUsed ? "Ja" : "Nein"}
 
 Marktdaten:
 ${JSON.stringify(marketData, null, 2)}
 
-Erstelle eine strukturierte Analyse mit:
+Erstelle eine strukturierte Erklärung mit:
 
 1. Bewertung: Bullish / Neutral / Bearish
 2. Risiko-Level: Niedrig / Mittel / Hoch

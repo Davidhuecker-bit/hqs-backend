@@ -322,7 +322,18 @@ function buildMarketNewsPayload(symbols, stocksBySymbol = {}, generatedAt = new 
 
   safeSymbols.forEach((symbol) => {
     const sourceStock = stocksBySymbol[symbol] || { symbol };
-    newsBySymbol[symbol] = buildSyntheticNewsItems(sourceStock, generatedAt, 3);
+    const realNews = Array.isArray(sourceStock?.news)
+      ? sourceStock.news
+          .filter((entry) => entry && String(entry.title || "").trim())
+          .map((entry) => ({
+            title: String(entry.title || "").trim(),
+            link: String(entry.link || `https://finance.yahoo.com/quote/${symbol}`),
+            source: String(entry.source || "News"),
+            publishedAt: String(entry.publishedAt || generatedAt),
+          }))
+      : [];
+    newsBySymbol[symbol] =
+      realNews.length > 0 ? realNews.slice(0, 3) : buildSyntheticNewsItems(sourceStock, generatedAt, 3);
   });
 
   return {
