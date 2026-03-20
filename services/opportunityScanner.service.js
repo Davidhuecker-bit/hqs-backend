@@ -223,6 +223,113 @@ function computeDeltaContext(opp, tracked) {
   };
 }
 
+/**
+ * Derive a concrete next action from delta, portfolio and conviction signals.
+ *
+ * Uses only already-computed inputs – no extra DB calls.
+ * Rules are intentionally simple, defensive and traceable:
+ *   first match wins; order reflects risk-priority (protect before grow).
+ *
+ * @param {object} opp – opportunity enriched with portfolioContext and deltaContext
+ * @returns {{ actionType, actionPriority, actionReason, nextActionLabel }}
+ */
+function computeNextAction(opp) {
+  const fallbackScore    = safeNum(opp.hqsScore, 0);
+  const conviction       = safeNum(opp.finalConviction, fallbackScore);
+  const pCtx             = opp.portfolioContext || {};
+  const dCtx             = opp.deltaContext     || {};
+
+  const alreadyOwned       = Boolean(pCtx.alreadyOwned);
+  const concentrationRisk  = pCtx.concentrationRisk  || "none";
+  const diversification    = Boolean(pCtx.diversificationBenefit);
+  const portfolioPriority  = pCtx.portfolioPriority  || "medium";
+
+  const becameRiskier      = Boolean(dCtx.becameRiskier);
+  const lostConviction     = Boolean(dCtx.lostConviction);
+  const newToWatch         = Boolean(dCtx.newToWatch);
+  const becameMoreRelevant = Boolean(dCtx.becameMoreRelevant);
+  const deltaPriority      = dCtx.deltaPriority || "stable";
+
+  // ── Rule table (first match wins) ────────────────────────────────────────
+  // R1: existing position + high concentration + became riskier → reduce risk
+  if (alreadyOwned && concentrationRisk === "high" && becameRiskier) {
+    return {
+      actionType:      "reduce_risk",
+      actionPriority:  "high",
+      actionReason:    "Bestehende Position bei hohem Konzentrationsrisiko und gestiegenem Risiko",
+      nextActionLabel: "Risiko reduzieren",
+    };
+  }
+
+  // R2: existing position + high concentration (no becameRiskier needed) → avoid adding
+  if (alreadyOwned && concentrationRisk === "high") {
+    return {
+      actionType:      "avoid_adding",
+      actionPriority:  "medium",
+      actionReason:    "Konzentrationsrisiko bereits hoch – keine weitere Aufstockung empfohlen",
+      nextActionLabel: "Nicht aufstocken",
+    };
+  }
+
+  // R3: existing position lost conviction → rebalance review
+  if (alreadyOwned && lostConviction) {
+    return {
+      actionType:      "rebalance_review",
+      actionPriority:  "medium",
+      actionReason:    "Conviction gesunken – Rebalancing-Prüfung empfohlen",
+      nextActionLabel: "Rebalancing prüfen",
+    };
+  }
+
+  // R4: not owned + high conviction + diversification + gaining/new → starter position
+  if (!alreadyOwned && conviction >= 70 && diversification && (newToWatch || becameMoreRelevant)) {
+    return {
+      actionType:      "starter_position",
+      actionPriority:  "high",
+      actionReason:    "Hohe Conviction, Diversifikationsmehrwert und steigende Relevanz",
+      nextActionLabel: "Einstiegsposition prüfen",
+    };
+  }
+
+  // R5: not owned + decent conviction + high portfolio priority or new signal → watchlist upgrade
+  if (!alreadyOwned && conviction >= 65 && (portfolioPriority === "high" || newToWatch)) {
+    return {
+      actionType:      "watchlist_upgrade",
+      actionPriority:  "medium",
+      actionReason:    "Gutes Signal mit hoher Portfoliopriorität – Watchlist-Aufnahme empfohlen",
+      nextActionLabel: "Watchlist aufwerten",
+    };
+  }
+
+  // R6: lost conviction (not owned) or degraded delta → observe
+  if (lostConviction || deltaPriority === "degraded") {
+    return {
+      actionType:      "observe",
+      actionPriority:  "low",
+      actionReason:    "Conviction gesunken – nur beobachten",
+      nextActionLabel: "Beobachten",
+    };
+  }
+
+  // R7: stable signal, already owned → hold
+  if (alreadyOwned && deltaPriority === "stable") {
+    return {
+      actionType:      "hold",
+      actionPriority:  "low",
+      actionReason:    "Stabiles Signal ohne klare Änderung",
+      nextActionLabel: "Halten",
+    };
+  }
+
+  // R8: fallback – observe
+  return {
+    actionType:      "observe",
+    actionPriority:  "low",
+    actionReason:    "Kein klares Handlungssignal – weiter beobachten",
+    nextActionLabel: "Beobachten",
+  };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -1330,9 +1437,14 @@ async function getTopOpportunities(arg = 10) {
   // Compute per-symbol change signals using already-loaded outcome_tracking data
   // (persistedOutcomeBySymbol) and the fresh raw market score (_rawScore).
   // No extra DB calls. Attaches deltaContext to each opportunity.
+  // ── Step 4c: Next Action Layer ───────────────────────────────────────────
+  // Derive a concrete next action hint per opportunity using already-computed
+  // portfolio context and fresh delta signals. No extra DB calls.
   const opportunitiesWithDelta = opportunitiesWithCtx.map((o) => {
-    const tracked = persistedOutcomeBySymbol?.[o.symbol] || null;
-    return { ...o, deltaContext: computeDeltaContext(o, tracked) };
+    const tracked     = persistedOutcomeBySymbol?.[o.symbol] || null;
+    const deltaContext = computeDeltaContext(o, tracked);
+    const nextAction   = computeNextAction({ ...o, deltaContext });
+    return { ...o, deltaContext, nextAction };
   });
 
   // Portfolio-intelligence + delta-aware re-sort:

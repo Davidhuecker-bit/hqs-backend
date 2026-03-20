@@ -222,6 +222,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     portfolioContext: stock?.portfolioContext ?? null,
     // Step 4b: Delta/change context (pass-through from opportunityScanner).
     deltaContext: stock?.deltaContext ?? null,
+    // Step 4c: Next action hint (computed by opportunityScanner from delta + portfolio signals).
+    nextAction: stock?.nextAction ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -252,21 +254,24 @@ function buildTopSignals(stocks) {
     })
     .slice(0, 3)
     .map((stock) => {
-      const ctx   = stock.portfolioContext ?? null;
-      const delta = stock.deltaContext     ?? null;
-      // Append portfolio-context badge, intelligence label, and delta badge to summary.
-      const ctxBadge         = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
-      const intelligenceBadge = ctx?.portfolioIntelligenceLabel ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
+      const ctx        = stock.portfolioContext ?? null;
+      const delta      = stock.deltaContext     ?? null;
+      const action     = stock.nextAction       ?? null;
+      // Append portfolio-context badge, intelligence label, delta badge, and next-action badge.
+      const ctxBadge          = ctx?.portfolioContextLabel       ? ` · ${ctx.portfolioContextLabel}`       : "";
+      const intelligenceBadge = ctx?.portfolioIntelligenceLabel  ? ` [${ctx.portfolioIntelligenceLabel}]` : "";
       const deltaBadge        = delta?.changeType && delta.changeType !== "stable"
         ? ` · ${DELTA_CHANGE_BADGES[delta.changeType] || "Änderung"}`
         : "";
+      const actionBadge       = action?.nextActionLabel ? ` → ${action.nextActionLabel}` : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
+        nextAction: action,
       };
     });
 }
@@ -320,6 +325,15 @@ function buildCorrelationSeries(stocks, generatedAt) {
   };
 }
 
+function buildNextActionSummary(stocks) {
+  const counts = {};
+  stocks.forEach((s) => {
+    const t = s.nextAction?.actionType;
+    if (t) counts[t] = (counts[t] || 0) + 1;
+  });
+  return counts;
+}
+
 function buildPortfolioIntelligenceSummary(stocks) {
   const withCtx = stocks.filter((s) => s.portfolioContext?.portfolioRole
     && s.portfolioContext.portfolioRole !== "unknown");
@@ -343,6 +357,8 @@ function buildPortfolioIntelligenceSummary(stocks) {
       caution:  deltaCaution,
       degraded: deltaDegraded,
     },
+    // Next-action summary: count by actionType across all stocks with a computed action.
+    nextActionSummary: buildNextActionSummary(stocks),
   };
 }
 
