@@ -289,6 +289,35 @@ function _deriveBriefingGovernanceLabel(stock) {
   return "";
 }
 
+/**
+ * Step 8 Block 2: Derive a compact exception-hub label for briefing fact lines.
+ * Uses existing audit/decision/readiness signals – no new DB calls.
+ * Returns a short string label or empty string when no exception applies.
+ */
+function _deriveBriefingExceptionLabel(stock) {
+  const auditHints = stock._auditHints || {};
+  const ar  = stock._actionReadiness   || "monitor_only";
+  const ds  = stock._decisionStatus    || null;
+  const afs = stock._approvalFlowStatus || null;
+
+  if (auditHints.blockedByGuardrail) {
+    return " · 🛑 Exception: Guardrail-Sperre";
+  }
+  if (ar === "review_required" && ds === "approved_candidate") {
+    return " · 🔴 Exception: Risiko-Review ausstehend";
+  }
+  if (ar === "review_required") {
+    return " · 🔴 Exception: Freigabe-Review offen";
+  }
+  if (ds === "needs_more_data") {
+    return " · 🟡 Exception: Mehr Daten nötig";
+  }
+  if (afs === "deferred") {
+    return " · 🟡 Exception: Zurückgestellt";
+  }
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -398,8 +427,11 @@ function buildFactsFromMarket(stocks) {
     // Step 8 Block 1: governance role/SoD label for review-controlled signals
     const governanceRoleLabel = _deriveBriefingGovernanceLabel(s);
 
+    // Step 8 Block 2: exception-hub label for operational exceptions
+    const exceptionLabel = _deriveBriefingExceptionLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}.`
     );
   }
   return lines.join("\n");

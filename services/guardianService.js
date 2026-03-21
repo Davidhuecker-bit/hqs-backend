@@ -127,6 +127,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 8 Block 1: Governance context – actor role, SoD, tenant scope classification.
   const governanceContext = marketData?.governanceContext ?? context?.governanceContext ?? null;
 
+  // Step 8 Block 2: Exception fields – operating-console exception classification.
+  const exceptionFields = marketData?.exceptionFields ?? context?.exceptionFields ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -663,7 +666,28 @@ async function analyzeStockWithGuardian(context) {
   }
   const governanceContextBlock = buildGovernanceContextBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock]
+  // Step 8 Block 2: Operating Console / Exception Hub block – exception type and priority.
+  function buildExceptionHubBlock() {
+    if (!exceptionFields || exceptionFields.exceptionType === "normal") return "";
+    const parts = [];
+    const exceptionLabels = {
+      guardrail_blocked:   "🛑 Guardrail-Sperre: Aktion blockiert",
+      risk_review_pending: "🔴 Risiko-Review ausstehend",
+      review_required:     "🔴 Freigabe-Review offen",
+      needs_more_data:     "🟡 Mehr Daten erforderlich",
+      deferred:            "🟡 Zurückgestellt",
+      pending_approval:    "🟡 Freigabe ausstehend",
+    };
+    const label = exceptionLabels[exceptionFields.exceptionType] || exceptionFields.exceptionType;
+    parts.push(`Ausnahme-Typ: ${label}`);
+    if (exceptionFields.exceptionPriority) {
+      parts.push(`Ausnahme-Priorität: ${exceptionFields.exceptionPriority}`);
+    }
+    return parts.length ? `Operating-Console-Ausnahme (Step 8 Block 2): ${parts.join(" · ")}` : "";
+  }
+  const exceptionHubBlock = buildExceptionHubBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -808,6 +832,17 @@ Erstelle eine strukturierte Erklärung mit:
     - sodConflict=true: erkläre, warum ein Separation-of-Duties-Konflikt erkannt wurde und dass in diesem Fall keine Aktion möglich ist, bis die Rollen geklärt sind
     - Halte die Erklärung kurz (1–2 Sätze) – nur Governance-Einordnung, keine neue Analyse
     Wenn kein Governance-Kontext vorhanden, diesen Punkt weglassen.
+20. Operating-Console-Ausnahme (Step 8 Block 2): Falls eine Exception-Hub-Klassifizierung vorhanden ist, erkläre kurz den operativen Ausnahme-Zustand –
+     - exceptionType="guardrail_blocked": erkläre, dass das System eine operative Sperre gesetzt hat und keine Zustellung oder Aktion möglich ist, bis die Sperre manuell aufgehoben wird
+     - exceptionType="risk_review_pending": erkläre, dass ein Risiko-Review aussteht – der Operator muss den Fall prüfen und freigeben, bevor eine Aktion möglich ist
+     - exceptionType="review_required": erkläre, dass eine manuelle Prüfung erforderlich ist – kein automatischer Fortschritt ohne Nutzer-Bestätigung
+     - exceptionType="needs_more_data": erkläre, dass die Datenbasis noch nicht ausreicht – das System wartet auf weitere Signale oder Nutzeraktionen
+     - exceptionType="deferred": erkläre, warum der Fall zurückgestellt wurde – wann eine erneute Prüfung sinnvoll ist
+     - exceptionType="pending_approval": erkläre, dass eine Freigabe aussteht – der Nutzer muss aktiv werden
+     - exceptionPriority="critical": weise explizit auf die höchste Dringlichkeit hin – sofortiger Handlungsbedarf
+     - exceptionPriority="high": weise auf erhöhten Handlungsbedarf hin – baldige Prüfung empfohlen
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Leitstands-Einordnung, keine neue Analyse
+     Wenn kein Exception-Hub vorhanden oder exceptionType="normal", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

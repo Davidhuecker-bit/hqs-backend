@@ -67,6 +67,9 @@ function _derivePickOrchestration(pick, onWatchlist) {
       traceReason,
       safetyFlags,
       blockedByGuardrail: false,
+      // Step 8 Block 2: exception classification for operating console
+      exceptionType: hasStrongData ? "risk_review_pending" : "review_required",
+      exceptionPriority: "high",
       // Step 8 Block 1: governance classification for high-signal picks
       governanceContext: {
         requiredRole: "operator",
@@ -91,6 +94,9 @@ function _derivePickOrchestration(pick, onWatchlist) {
       traceReason: "Strukturierter Vorschlag verfügbar – Nutzer entscheidet eigenständig",
       safetyFlags: [],
       blockedByGuardrail: false,
+      // Step 8 Block 2: exception classification for operating console
+      exceptionType: "normal",
+      exceptionPriority: "low",
       // Step 8 Block 1: governance classification for proposal-level picks
       governanceContext: {
         requiredRole: "viewer",
@@ -114,6 +120,9 @@ function _derivePickOrchestration(pick, onWatchlist) {
     traceReason: "Signal zu schwach für aktive Zustellung – nur Beobachtung",
     safetyFlags: [],
     blockedByGuardrail: false,
+    // Step 8 Block 2: exception classification for operating console
+    exceptionType: "normal",
+    exceptionPriority: "low",
     // Step 8 Block 1: governance classification for monitor-only picks
     governanceContext: {
       requiredRole: "viewer",
@@ -227,6 +236,17 @@ async function runDiscoveryNotify() {
           continue;
         }
 
+        // Step 8 Block 2: defensive exception-hub gate – blockedByGuardrail picks must not
+        // be delivered automatically.  Log for operating-console observability.
+        if (orchestration.blockedByGuardrail === true) {
+          gatedOut++;
+          logger.info("discoveryNotify: user gated (exception=guardrail_blocked)", {
+            userId, symbol: pick.symbol,
+            exceptionType: orchestration.exceptionType || "guardrail_blocked",
+          });
+          continue;
+        }
+
         // Step 7 Block 2: log the review bucket for observability (no gate change).
         // review_required → risk_review bucket (high-priority, follow-up needed)
         // proposal_ready  → proposal_bucket (medium priority, no follow-up required)
@@ -246,6 +266,9 @@ async function runDiscoveryNotify() {
             // Step 8 Block 1: governance context for observability
             governanceRole: orchestration.governanceContext?.requiredRole || null,
             sodFlag: orchestration.governanceContext?.separationOfDutiesFlag || false,
+            // Step 8 Block 2: exception context for operating-console observability
+            exceptionType: orchestration.exceptionType || null,
+            exceptionPriority: orchestration.exceptionPriority || null,
           });
         }
 

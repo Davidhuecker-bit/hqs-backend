@@ -91,9 +91,13 @@ const {
 } = require("../services/signalHistory.repository");
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
 // Step 8 Block 1: Governance context for admin-level role/scope classification
-const { computeGovernanceContext } = require("../services/governance.context");
+// Step 8 Block 2: Operating Console / Exception Hub aggregate view
+const { computeGovernanceContext, computeOperatingConsoleContext } = require("../services/governance.context");
 
 const router = express.Router();
+
+// Step 8 Block 2: exception priority ordering for exception-hub sort (lower = higher priority)
+const EXCEPTION_PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function createAdminState({ insights, diagnostics, validation, tuning }) {
   return {
@@ -1892,6 +1896,64 @@ router.get("/review-queue", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin review-queue route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/exception-hub
+ * Step 8 Block 2: Operating Console / Exception Hub – read-only.
+ *
+ * Returns an aggregate view of all open operational exceptions derived from
+ * existing governance layers (actionReadiness, approvalQueueEntry,
+ * decisionLayer, controlledApprovalFlow, auditTrace, userAttentionLevel).
+ * No new signals are introduced – pure read/fold over scanner output.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/exception-hub", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Step 8 Block 2: aggregate exception/operating console view
+    const exceptionHub = computeOperatingConsoleContext(opportunities);
+
+    // Slim per-exception-entry list sorted by exception priority
+    const exceptionEntries = opportunities
+      .filter((o) => o.exceptionFields?.exceptionType !== "normal")
+      .map((o) => ({
+        symbol:              o.symbol,
+        exceptionType:       o.exceptionFields?.exceptionType     ?? "normal",
+        exceptionPriority:   o.exceptionFields?.exceptionPriority ?? "low",
+        actionReadiness:     o.actionReadiness?.actionReadiness   ?? null,
+        approvalQueueBucket: o.approvalQueueEntry?.approvalQueueBucket ?? null,
+        pendingApproval:     o.approvalQueueEntry?.pendingApproval ?? false,
+        decisionStatus:      o.decisionLayer?.decisionStatus      ?? null,
+        approvalFlowStatus:  o.controlledApprovalFlow?.approvalFlowStatus ?? null,
+        blockedByGuardrail:  o.auditTrace?.blockedByGuardrail     ?? false,
+        governanceStatus:    o.auditTrace?.governanceStatus        ?? null,
+        reviewPriority:      o.approvalQueueEntry?.reviewPriority  ?? null,
+        governanceContext:   o.governanceContext                    ?? null,
+      }))
+      .sort((a, b) =>
+        (EXCEPTION_PRIORITY_RANK[a.exceptionPriority] ?? 3) -
+        (EXCEPTION_PRIORITY_RANK[b.exceptionPriority] ?? 3)
+      );
+
+    return res.json({
+      success:        true,
+      generatedAt:    new Date().toISOString(),
+      governanceContext: governanceCtx,
+      exceptionHub,
+      exceptionEntries,
+    });
+  } catch (error) {
+    logger.error("Admin exception-hub route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
