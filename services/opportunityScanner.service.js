@@ -1308,6 +1308,52 @@ function computeAuditTraceLayer(opp) {
   };
 }
 
+/**
+ * Step 8 Block 2: Derive a compact exception descriptor for a single opportunity.
+ * Normalises existing governance / audit / decision signals into a consistent
+ * exception classification for the Operating Console / Exception Hub view.
+ *
+ * Priority order (first match wins):
+ *   guardrail_blocked > risk_review_pending > review_required >
+ *   needs_more_data   > deferred            > pending_approval > normal
+ *
+ * @param {object} opp - Opportunity enriched with actionReadiness, approvalQueueEntry,
+ *   decisionLayer, controlledApprovalFlow, and auditTrace layers.
+ * @returns {{ exceptionType: string, exceptionPriority: string, operatingBasis: string }}
+ */
+function computeExceptionFields(opp) {
+  const ar  = opp.actionReadiness        || {};
+  const aq  = opp.approvalQueueEntry     || {};
+  const dl  = opp.decisionLayer          || {};
+  const caf = opp.controlledApprovalFlow || {};
+  const at  = opp.auditTrace             || {};
+
+  let exceptionType     = "normal";
+  let exceptionPriority = "low";
+
+  if (at.blockedByGuardrail === true) {
+    exceptionType     = "guardrail_blocked";
+    exceptionPriority = "critical";
+  } else if (aq.pendingApproval === true && aq.approvalQueueBucket === "risk_review") {
+    exceptionType     = "risk_review_pending";
+    exceptionPriority = "high";
+  } else if (ar.actionReadiness === "review_required") {
+    exceptionType     = "review_required";
+    exceptionPriority = "high";
+  } else if (dl.decisionStatus === "needs_more_data") {
+    exceptionType     = "needs_more_data";
+    exceptionPriority = "medium";
+  } else if (caf.approvalFlowStatus === "deferred") {
+    exceptionType     = "deferred";
+    exceptionPriority = "medium";
+  } else if (aq.pendingApproval === true) {
+    exceptionType     = "pending_approval";
+    exceptionPriority = "medium";
+  }
+
+  return { exceptionType, exceptionPriority, operatingBasis: "step8_block2" };
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -2488,7 +2534,9 @@ async function getTopOpportunities(arg = 10) {
     const auditTrace = computeAuditTraceLayer({ ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow });
     // Step 8 Block 1: derive per-opportunity governance classification (role, SoD, tenant scope)
     const governanceContext = deriveOpportunityGovernance({ ...oppFull, auditTrace, controlledApprovalFlow, actionReadiness });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext };
+    // Step 8 Block 2: derive compact exception descriptor for Operating Console view
+    const exceptionFields = computeExceptionFields({ actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
@@ -2923,4 +2971,5 @@ module.exports = {
   computeControlledApprovalFlow,
   computeAuditTraceLayer,
   computeGovernanceContext,
+  computeExceptionFields,
 };

@@ -557,6 +557,16 @@ function buildPortfolioIntelligenceSummary(stocks) {
       blockedCount:           stocks.filter((s) => s.governanceContext?.isBlocked === true).length,
       governanceBasis:        "step8_block1",
     },
+    // Step 8 Block 2: exception hub summary – operating-console exception counts.
+    exceptionHub: {
+      openReviewCount:         stocks.filter((s) => s.actionReadiness?.actionReadiness === "review_required").length,
+      pendingApprovalCount:    stocks.filter((s) => s.approvalQueueEntry?.pendingApproval === true).length,
+      deferredCount:           stocks.filter((s) => s.controlledApprovalFlow?.approvalFlowStatus === "deferred").length,
+      needsMoreDataCount:      stocks.filter((s) => s.decisionLayer?.decisionStatus === "needs_more_data").length,
+      blockedByGuardrailCount: stocks.filter((s) => s.auditTrace?.blockedByGuardrail === true).length,
+      criticalAttentionCount:  stocks.filter((s) => s.exceptionFields?.exceptionPriority === "critical").length,
+      operatingBasis:          "step8_block2",
+    },
   };
 }
 

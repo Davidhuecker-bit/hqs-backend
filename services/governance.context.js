@@ -196,6 +196,102 @@ function deriveOpportunityGovernance(opp, govCtx) {
   };
 }
 
+/* =========================================================
+   STEP 8 BLOCK 2: OPERATING CONSOLE / EXCEPTION HUB BASIS
+
+   Aggregates existing per-opportunity governance signals into
+   a read-heavy operating-console view.  No new signals are
+   introduced – this is a pure read/fold over already-computed
+   layers (actionReadiness, approvalQueueEntry, decisionLayer,
+   controlledApprovalFlow, auditTrace, followUpContext,
+   userAttentionLevel).
+
+   operatingSummary levels:
+     normal              – no open exceptions
+     backlog_present     – deferred / needs_more_data / follow-up items
+     elevated_review_load – open reviews or pending approvals
+     critical_exceptions – guardrail blocks or critical attention items
+========================================================= */
+
+/**
+ * Compute the Operating Console / Exception Hub context for a list of
+ * already-enriched opportunities.
+ *
+ * @param {Array} opps - Opportunities with governance layers attached
+ * @returns {object} Operating console / exception hub descriptor
+ */
+function computeOperatingConsoleContext(opps) {
+  const EMPTY_BUCKETS = {
+    guardrailBlocked:  [],
+    openReview:        [],
+    pendingApproval:   [],
+    deferred:          [],
+    needsMoreData:     [],
+    followUpBacklog:   [],
+    criticalAttention: [],
+  };
+
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      openReviewCount:         0,
+      pendingApprovalCount:    0,
+      deferredCount:           0,
+      needsMoreDataCount:      0,
+      blockedByGuardrailCount: 0,
+      followUpBacklogCount:    0,
+      criticalAttentionCount:  0,
+      exceptionBuckets:        EMPTY_BUCKETS,
+      operatingSummary:        "no_data",
+      operatingBasis:          "step8_block2",
+    };
+  }
+
+  const toSymbols = (arr) => arr.map((o) => o.symbol || o.id).filter(Boolean);
+
+  const blocked          = opps.filter((o) => o.auditTrace?.blockedByGuardrail === true);
+  const openReview       = opps.filter((o) => o.actionReadiness?.actionReadiness === "review_required");
+  const pendingApproval  = opps.filter((o) => o.approvalQueueEntry?.pendingApproval === true);
+  const deferred         = opps.filter((o) => o.controlledApprovalFlow?.approvalFlowStatus === "deferred");
+  const needsMoreData    = opps.filter((o) => o.decisionLayer?.decisionStatus === "needs_more_data");
+  const followUpBacklog  = opps.filter((o) =>
+    o.followUpContext?.followUpStatus === "overdue" ||
+    o.followUpContext?.followUpStatus === "pending"
+  );
+  const criticalAttention = opps.filter((o) =>
+    o.userAttentionLevel === "critical" || o.attentionLevel === "critical"
+  );
+
+  const hasCritical = blocked.length > 0 || criticalAttention.length > 0;
+  const hasElevated = openReview.length > 0 || pendingApproval.length > 0;
+  const hasBacklog  = deferred.length > 0 || needsMoreData.length > 0 || followUpBacklog.length > 0;
+
+  let operatingSummary = "normal";
+  if (hasCritical)      operatingSummary = "critical_exceptions";
+  else if (hasElevated) operatingSummary = "elevated_review_load";
+  else if (hasBacklog)  operatingSummary = "backlog_present";
+
+  return {
+    openReviewCount:         openReview.length,
+    pendingApprovalCount:    pendingApproval.length,
+    deferredCount:           deferred.length,
+    needsMoreDataCount:      needsMoreData.length,
+    blockedByGuardrailCount: blocked.length,
+    followUpBacklogCount:    followUpBacklog.length,
+    criticalAttentionCount:  criticalAttention.length,
+    exceptionBuckets: {
+      guardrailBlocked:  toSymbols(blocked),
+      openReview:        toSymbols(openReview),
+      pendingApproval:   toSymbols(pendingApproval),
+      deferred:          toSymbols(deferred),
+      needsMoreData:     toSymbols(needsMoreData),
+      followUpBacklog:   toSymbols(followUpBacklog),
+      criticalAttention: toSymbols(criticalAttention),
+    },
+    operatingSummary,
+    operatingBasis: "step8_block2",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -204,4 +300,5 @@ module.exports = {
   resolveTenantScope,
   computeGovernanceContext,
   deriveOpportunityGovernance,
+  computeOperatingConsoleContext,
 };
