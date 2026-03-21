@@ -204,6 +204,24 @@ function _derivePickOrchestration(pick, onWatchlist) {
           : "Vorschlags-Karte bereit: Strukturierter Vorschlag verfügbar",
         preparationBasis:          "step9_block3",
       },
+      // Step 9 Block 4: partial auto-execution for high-signal picks.
+      // Strong-data (manualConfirmationRequired): queue card only – no silent execution.
+      // Weaker high-signal: update delivery mode internally.
+      partialAutoExecution: {
+        autoExecutionEligible: !hasStrongData,
+        autoExecutionType:     hasStrongData ? "queue_manual_action_card" : "update_delivery_mode",
+        autoExecutionReason:   hasStrongData
+          ? "Starke Signale – Aktionskarte eingereiht, Nutzerbestätigung erforderlich"
+          : "Hohes Signal – Zustellmodus intern angepasst",
+        autoExecutionGuarded:  hasStrongData,
+        autoExecutionSafety:   hasStrongData ? "guarded" : "safe",
+        executionIntent:       hasStrongData ? "queue_card" : "update_mode",
+        executionScope:        "internal_only",
+        executionSummary:      hasStrongData
+          ? "Aktionskarte eingereiht: Starke Signale – Nutzerbestätigung ausstehend [Ausführung gesichert – kein Marktschritt]"
+          : "Zustellmodus aktualisiert: Hohes Signal – Intern angepasst [Intern ausführbar]",
+        executionBasis:        "step9_block4",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -342,6 +360,18 @@ function _derivePickOrchestration(pick, onWatchlist) {
         preparationSummary:         "Vorschlags-Karte bereit: Strukturierter Vorschlag verfügbar",
         preparationBasis:           "step9_block3",
       },
+      // Step 9 Block 4: partial auto-execution for proposal-level picks – update delivery mode.
+      partialAutoExecution: {
+        autoExecutionEligible: true,
+        autoExecutionType:     "update_delivery_mode",
+        autoExecutionReason:   "Vorschlags-Kandidat – Zustellmodus intern angepasst",
+        autoExecutionGuarded:  false,
+        autoExecutionSafety:   "safe",
+        executionIntent:       "update_mode",
+        executionScope:        "internal_only",
+        executionSummary:      "Zustellmodus aktualisiert: Vorschlags-Kandidat – Intern angepasst [Intern ausführbar]",
+        executionBasis:        "step9_block4",
+      },
     };
   }
   return {
@@ -477,6 +507,18 @@ function _derivePickOrchestration(pick, onWatchlist) {
       manualConfirmationRequired: false,
       preparationSummary:         "Keine Vorbereitung: Signal zu schwach – keine kontrollierte Vorbereitung möglich",
       preparationBasis:           "step9_block3",
+    },
+    // Step 9 Block 4: partial auto-execution for monitor-only picks – suppress non-critical delivery.
+    partialAutoExecution: {
+      autoExecutionEligible: true,
+      autoExecutionType:     "suppress_noncritical_delivery",
+      autoExecutionReason:   "Monitor-only – nicht-kritische Zustellung intern unterdrückt",
+      autoExecutionGuarded:  false,
+      autoExecutionSafety:   "safe",
+      executionIntent:       "suppress_delivery",
+      executionScope:        "internal_only",
+      executionSummary:      "Nicht-kritische Zustellung unterdrückt: Monitor-only – Intern unterdrückt [Intern ausführbar]",
+      executionBasis:        "step9_block4",
     },
   };
 }

@@ -155,6 +155,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 9 Block 3: Controlled auto-preparation – type, priority, guarded, window, confirmation.
   const controlledAutoPreparation = marketData?.controlledAutoPreparation ?? context?.controlledAutoPreparation ?? null;
 
+  // Step 9 Block 4: Partial auto-execution – type, safety, scope, intent, summary.
+  const partialAutoExecution = marketData?.partialAutoExecution ?? context?.partialAutoExecution ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -990,7 +993,43 @@ async function analyzeStockWithGuardian(context) {
   }
   const controlledAutoPreparationBlock = buildControlledAutoPreparationBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock]
+  // Step 9 Block 4: Partial auto-execution block – execution type, safety, intent, scope.
+  function buildPartialAutoExecutionBlock() {
+    if (!partialAutoExecution) return "";
+    const { autoExecutionType, autoExecutionReason, autoExecutionGuarded,
+            autoExecutionSafety, executionIntent, executionScope, executionSummary } = partialAutoExecution;
+    if (!autoExecutionType || autoExecutionType === "no_execution") return "";
+
+    const parts = [];
+    if (autoExecutionType === "guarded_no_execution") {
+      parts.push(`🚫 Ausführung blockiert: ${autoExecutionReason || "Guardrail aktiv"}`);
+    } else if (autoExecutionType === "close_followup") {
+      parts.push("🔁 Intern: Follow-up wird geschlossen");
+    } else if (autoExecutionType === "archive_closed_case") {
+      parts.push("🗄 Intern: Abgeschlossener Fall wird archiviert");
+    } else if (autoExecutionType === "mark_reassessment_waiting") {
+      parts.push("🗓 Intern: Kandidat als Neubewertung-wartend markiert");
+    } else if (autoExecutionType === "update_delivery_mode") {
+      parts.push("📡 Intern: Zustellmodus angepasst");
+    } else if (autoExecutionType === "internal_status_advance") {
+      parts.push("▶️ Intern: Lifecycle-Status vorgerückt");
+    } else if (autoExecutionType === "suppress_noncritical_delivery") {
+      parts.push("🔕 Intern: Nicht-kritische Zustellung unterdrückt");
+    } else if (autoExecutionType === "queue_manual_action_card") {
+      parts.push("📋 Intern: Aktionskarte eingereiht – Nutzerbestätigung ausstehend");
+    }
+    if (autoExecutionSafety) parts.push(`Sicherheit: ${autoExecutionSafety}`);
+    if (executionScope)      parts.push(`Scope: ${executionScope}`);
+    if (executionIntent)     parts.push(`Intent: ${executionIntent}`);
+    if (autoExecutionGuarded && autoExecutionType !== "guarded_no_execution") {
+      parts.push("🛡 Ausführung gesichert – kein Marktschritt");
+    }
+    if (executionSummary)    parts.push(executionSummary);
+    return parts.length ? `Partial-Auto-Execution (Step 9 Block 4): ${parts.join(" · ")}` : "";
+  }
+  const partialAutoExecutionBlock = buildPartialAutoExecutionBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1220,6 +1259,22 @@ Erstelle eine strukturierte Erklärung mit:
      - Wichtig: Das System bereitet nur vor – es führt NIEMALS automatisch aus. Keine Aktion ohne menschliche Bestätigung.
      - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
      Wenn keine kontrollierte Vorbereitung vorhanden oder preparationType="no_auto_prep", diesen Punkt weglassen.
+28. Partial-Auto-Execution (Step 9 Block 4): Falls ein Partial-Auto-Execution-Signal vorhanden ist, erkläre kurz und verständlich, was das System intern selbst ausführt, warum es das darf und warum Markttransaktionen ausgeschlossen bleiben –
+     - autoExecutionType="close_followup": erkläre, dass das System einen internen Follow-up-Eintrag selbst schließt – kein Marktschritt, vollständig reversibel
+     - autoExecutionType="archive_closed_case": erkläre, dass ein abgeschlossener Fall intern archiviert wird – reine interne Systemaktion, kein Nutzereingriff nötig
+     - autoExecutionType="mark_reassessment_waiting": erkläre, dass der Kandidat intern als „wartend auf Neubewertung" markiert wird – kein Marktschritt, Nutzer behält Kontrolle
+     - autoExecutionType="update_delivery_mode": erkläre, dass der interne Zustellmodus angepasst wird – nur Delivery-Parameter, keine externe Aktion
+     - autoExecutionType="internal_status_advance": erkläre, dass der interne Lifecycle-Status vorgerückt wird – reine Systemorganisation, keine Finanzaktion
+     - autoExecutionType="suppress_noncritical_delivery": erkläre, dass nicht-kritische Zustellungen intern unterdrückt werden – Rauschreduktion, keine Marktaktion
+     - autoExecutionType="queue_manual_action_card": erkläre, dass eine Aktionskarte intern eingereiht wurde – der Nutzer muss noch explizit bestätigen
+     - autoExecutionType="guarded_no_execution": erkläre klar, warum keine Mini-Ausführung erlaubt ist – welcher Guardrail, welche Policy oder welche Drift-Bedingung blockiert
+     - autoExecutionSafety="blocked": betone, dass das System vollständig blockiert ist – keine Ausführung unter diesen Bedingungen
+     - autoExecutionSafety="guarded": erkläre, dass nur minimale defensive Schritte erlaubt sind – Soft-Guard-Bedingung aktiv
+     - autoExecutionGuarded=true: weise darauf hin, dass die Ausführung gesichert ist – kein Marktschritt, keine irreversible Aktion
+     - executionScope="internal_only": betone, dass der Scope strikt intern ist – kein Broker, kein Order, keine externe API
+     - Wichtig: Partial-Auto-Execution bedeutet ausschließlich kleine, reversible, interne Systemschritte. Keine Kauf-/Verkaufs-/Portfolio-Transaktion. Kein Policy-Eingriff. Keine Nutzerfreigabe automatisch.
+     - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
+     Wenn kein Execution-Signal vorhanden oder autoExecutionType="no_execution", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

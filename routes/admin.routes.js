@@ -99,7 +99,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 9 Block 1: Autonomy levels + drift detection basis
 // Step 9 Block 2: Action chains – state-machine basis
 // Step 9 Block 3: Controlled auto-preparation layer
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary } = require("../services/governance.context");
+// Step 9 Block 4: Partial auto-execution under policy
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2390,6 +2391,63 @@ router.get("/auto-preparation-summary", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin auto-preparation-summary route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/auto-execution-summary
+ * Step 9 Block 4: Read-only admin view of partial auto-execution status.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate execution type distribution
+ *   - guarded / blocked / eligible execution counts
+ *   - execution safety distribution
+ *   - per-opportunity execution entries (compact)
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ * No mutations – read-only observability endpoint.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/auto-execution-summary", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate auto-execution summary
+    const autoExecutionSummary = computePartialAutoExecutionSummary(opportunities);
+
+    // Per-opportunity entries (compact)
+    const autoExecutionEntries = opportunities.map((o) => {
+      const pae = o.partialAutoExecution || {};
+      return {
+        symbol:                o.symbol,
+        autoExecutionEligible: pae.autoExecutionEligible  ?? false,
+        autoExecutionType:     pae.autoExecutionType      ?? "no_execution",
+        autoExecutionReason:   pae.autoExecutionReason    ?? null,
+        autoExecutionGuarded:  pae.autoExecutionGuarded   ?? false,
+        autoExecutionSafety:   pae.autoExecutionSafety    ?? "none",
+        executionIntent:       pae.executionIntent        ?? null,
+        executionScope:        pae.executionScope         ?? "none",
+        executionSummary:      pae.executionSummary       ?? null,
+      };
+    });
+
+    return res.json({
+      success:              true,
+      generatedAt:          new Date().toISOString(),
+      governanceContext:    governanceCtx,
+      autoExecutionSummary,
+      autoExecutionEntries,
+    });
+  } catch (error) {
+    logger.error("Admin auto-execution-summary route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

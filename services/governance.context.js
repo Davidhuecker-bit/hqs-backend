@@ -1853,6 +1853,269 @@ function computeControlledAutoPreparationSummary(opps) {
   };
 }
 
+/* =========================================================
+   Step 9 – Block 4: Partial Auto-Execution under Policy
+   ─────────────────────────────────────────────────────────
+   Governance principle:
+    - Block 3 = controlled PREPARATION (no execution)
+    - Block 4 = first small INTERNAL execution steps allowed
+      under strict policy constraints
+   Safety guarantees:
+    - No market / order / broker execution ever
+    - No irreversible financial action
+    - No policy mutation
+    - No silent bypass of manualConfirmationRequired
+    - Hard-guard conditions always dominate → autoExecutionEligible = false
+    - executionScope is always "internal_only" or "none"
+    - All derived execution types are reversible internal system steps
+========================================================= */
+
+// ── Execution Types (ordered safest → most active) ──────────────────────────
+const EXECUTION_TYPES = {
+  no_execution:                { rank: 0, label: "Keine Ausführung",            description: "Keine interne Mini-Ausführung möglich oder zulässig" },
+  guarded_no_execution:        { rank: 1, label: "Ausführung blockiert",         description: "Ausführung durch Guardrail blockiert – kein interner Schritt" },
+  suppress_noncritical_delivery: { rank: 2, label: "Nicht-kritische Zustellung unterdrückt", description: "Nicht-kritische Delivery intern unterdrückt – kein Marktschritt" },
+  update_delivery_mode:        { rank: 3, label: "Zustellmodus aktualisiert",    description: "Interner Zustellmodus für Observation-Kandidat angepasst" },
+  close_followup:              { rank: 4, label: "Follow-up intern geschlossen", description: "Follow-up intern abgeschlossen – kein Marktschritt" },
+  mark_reassessment_waiting:   { rank: 5, label: "Neubewertung vorgemerkt",      description: "Kandidat intern als wartend auf Neubewertung markiert" },
+  archive_closed_case:         { rank: 6, label: "Abgeschlossener Fall archiviert", description: "Abgeschlossener Fall intern archiviert – reversibel" },
+  internal_status_advance:     { rank: 7, label: "Interner Status vorgerückt",   description: "Interner Lifecycle-Status vorgerückt – keine externe Aktion" },
+  queue_manual_action_card:    { rank: 8, label: "Aktionskarte in Warteschlange", description: "Manuelle Aktionskarte intern eingereiht – Nutzer muss noch bestätigen" },
+};
+
+/**
+ * Build a human-readable execution-blocked reason from hard-guard flags.
+ * @private
+ */
+function _buildExecutionBlockedReason({ blockedByGuardrail, hardGated, criticalGuarded, policyInvalid, sodConflict, highDrift, criticalBaseline, escalationRequired, chainBlocked, manualConfirmationRequired }) {
+  const reasons = [];
+  if (blockedByGuardrail)          reasons.push("Guardrail-Block aktiv");
+  if (hardGated)                   reasons.push("Ressource hard-gated");
+  if (criticalGuarded)             reasons.push("Kritischer Systemschutz aktiv");
+  if (policyInvalid)               reasons.push("Policy ausgesetzt");
+  if (sodConflict)                 reasons.push("Rollentrennung verletzt");
+  if (highDrift)                   reasons.push("Hohe Signaldrift erkannt");
+  if (criticalBaseline)            reasons.push("Kritische Baseline-Abweichung");
+  if (escalationRequired)          reasons.push("Eskalation erforderlich");
+  if (chainBlocked)                reasons.push("Aktionskette blockiert");
+  if (manualConfirmationRequired)  reasons.push("Manuelle Bestätigung ausstehend");
+  return reasons.length ? `Ausführung blockiert: ${reasons.join(", ")}` : "Ausführung blockiert";
+}
+
+/**
+ * Compute the partial auto-execution state for a single opportunity.
+ *
+ * Derives one safe internal execution type from ALL existing signals:
+ *   controlledAutoPreparation, actionChainState, actionReadiness,
+ *   controlledApprovalFlow, decisionLayer, auditTrace, governanceContext,
+ *   policyPlane, evidencePackage, tenantResourceGovernance,
+ *   operationalResilience, autonomyLevel, driftDetection.
+ *
+ * Safety-first: any hard-guard or manualConfirmationRequired always
+ * results in autoExecutionEligible = false.
+ *
+ * executionScope is always "internal_only" – never market/order/broker.
+ *
+ * @param {Object} opp – enriched opportunity with all Step 9 Block 3 fields
+ * @returns {Object} partialAutoExecution descriptor
+ */
+function computePartialAutoExecution(opp) {
+  const cap  = opp.controlledAutoPreparation || {};
+  const acs  = opp.actionChainState          || {};
+  const ar   = opp.actionReadiness           || {};
+  const caf  = opp.controlledApprovalFlow    || {};
+  const dl   = opp.decisionLayer             || {};
+  const at   = opp.auditTrace                || {};
+  const gov  = opp.governanceContext         || {};
+  const pp   = opp.policyPlane              || {};
+  const ep   = opp.evidencePackage           || {};
+  const trg  = opp.tenantResourceGovernance  || {};
+  const or_  = opp.operationalResilience     || {};
+  const al   = opp.autonomyLevel             || {};
+  const dd   = opp.driftDetection            || {};
+
+  // ── 1. Hard-guard conditions (block all auto-execution) ──────────────
+  const blockedByGuardrail    = at.blockedByGuardrail === true || (opp.exceptionFields || {}).blockedByGuardrail === true;
+  const hardGated             = trg.resourceGovernanceStatus === "hard_gated";
+  const criticalGuarded       = or_.degradationMode === "critical_guarded";
+  const policyInvalid         = (ep.policyValidity ?? opp.policyValidity) === "suspended";
+  const sodConflict           = gov.separationOfDutiesViolation === true;
+  const highDrift             = dd.driftLevel === "high";
+  const criticalBaseline      = dd.baselineState === "critical";
+  const escalationRequired    = al.escalationRequired === true;
+  const chainBlocked          = acs.chainBlocked === true;
+  // manualConfirmationRequired must never be silently bypassed
+  const manualConfirmationRequired = cap.manualConfirmationRequired === true;
+
+  const isBlocked = blockedByGuardrail || hardGated || criticalGuarded
+                  || policyInvalid || sodConflict || highDrift
+                  || criticalBaseline || escalationRequired || chainBlocked
+                  || manualConfirmationRequired;
+
+  // ── 2. Soft-guard conditions (defensive-only execution scope) ─────────
+  const highTenantPressure = trg.rateLimitRisk === "high" || trg.backlogPressure === "elevated";
+  const criticalHealth     = or_.operationalHealth === "critical";
+  const policyNotLive      = pp.policyMode === "shadow" || pp.policyMode === "draft";
+  const chainSafetyMode    = acs.chainSafetyMode === true;
+  const isSoftGuarded      = !isBlocked && (highTenantPressure || criticalHealth || policyNotLive || chainSafetyMode);
+
+  // ── 3. Derive safe internal execution type ────────────────────────────
+  let autoExecutionType   = "no_execution";
+  let autoExecutionReason = "Keine aktiven Signale für Partial-Auto-Execution";
+  let executionIntent     = null;
+
+  if (isBlocked) {
+    autoExecutionType   = "guarded_no_execution";
+    autoExecutionReason = _buildExecutionBlockedReason({
+      blockedByGuardrail, hardGated, criticalGuarded, policyInvalid,
+      sodConflict, highDrift, criticalBaseline, escalationRequired,
+      chainBlocked, manualConfirmationRequired,
+    });
+    executionIntent = "blocked";
+  } else if (isSoftGuarded) {
+    // Only the safest possible internal step is allowed under soft-guard
+    autoExecutionType   = "suppress_noncritical_delivery";
+    autoExecutionReason = "Soft-Guard aktiv – nur nicht-kritische Delivery-Unterdrückung erlaubt";
+    executionIntent     = "suppress_delivery";
+  } else {
+    // Derive from preparation type + chain state + decision state
+    const prepType   = cap.preparationType;
+    const chainState = acs.actionChainState;
+    const decision   = dl.decisionStatus;
+    const approval   = caf.approvalFlowStatus;
+    const closureStatus = caf.closureStatus;
+    const followUpNeeded = caf.followUpNeeded;
+
+    if (closureStatus === "closed" || decision === "rejected_candidate") {
+      // Case is fully closed – archive it internally
+      autoExecutionType   = "archive_closed_case";
+      autoExecutionReason = "Fall abgeschlossen oder abgelehnt – internes Archivieren sicher";
+      executionIntent     = "archive";
+    } else if (followUpNeeded === true && chainState === "awaiting_signal") {
+      // Follow-up is pending and chain awaits signal – close follow-up internally
+      autoExecutionType   = "close_followup";
+      autoExecutionReason = "Follow-up ausstehend + Aktionskette wartend – Follow-up intern schließen";
+      executionIntent     = "close_followup";
+    } else if (prepType === "reassessment_scheduled"
+               || decision === "deferred_review"
+               || decision === "needs_more_data"
+               || approval === "deferred") {
+      // Case needs reassessment – mark it as waiting
+      autoExecutionType   = "mark_reassessment_waiting";
+      autoExecutionReason = "Neubewertung erforderlich – Kandidat intern als wartend markieren";
+      executionIntent     = "mark_waiting";
+    } else if (prepType === "manual_action_card_ready"
+               || decision === "approved_candidate"
+               || approval === "approved_pending_action") {
+      // Manual action card is prepared – queue it for manual confirmation
+      autoExecutionType   = "queue_manual_action_card";
+      autoExecutionReason = "Freigabekandidat bereit – Aktionskarte intern einreihen (Nutzer muss noch bestätigen)";
+      executionIntent     = "queue_card";
+    } else if (prepType === "followup_prep"
+               || chainState === "preparing"
+               || chainState === "observing") {
+      // System is in observation/preparation – advance internal delivery mode
+      autoExecutionType   = "update_delivery_mode";
+      autoExecutionReason = "Beobachtungs-/Vorbereitungsphase – internen Zustellmodus anpassen";
+      executionIntent     = "update_mode";
+    } else if (ar.actionReadiness === "monitor_only"
+               || chainState === "idle") {
+      // Monitor-only or idle – suppress non-critical delivery
+      autoExecutionType   = "suppress_noncritical_delivery";
+      autoExecutionReason = "Monitor-only / inaktive Kette – nicht-kritische Zustellung intern unterdrücken";
+      executionIntent     = "suppress_delivery";
+    } else if (chainState === "completed" || closureStatus === "completed") {
+      // Chain completed – advance internal status lifecycle
+      autoExecutionType   = "internal_status_advance";
+      autoExecutionReason = "Aktionskette abgeschlossen – internen Lifecycle-Status vorrücken";
+      executionIntent     = "advance_status";
+    }
+  }
+
+  // ── 4. Execution eligibility and safety ───────────────────────────────
+  const autoExecutionGuarded   = isBlocked || isSoftGuarded;
+  const autoExecutionEligible  = !isBlocked
+    && autoExecutionType !== "no_execution"
+    && autoExecutionType !== "guarded_no_execution";
+
+  const autoExecutionSafety =
+    isBlocked    ? "blocked" :
+    isSoftGuarded ? "guarded" :
+    autoExecutionType === "no_execution" ? "none" :
+    "safe";
+
+  // ── 5. Execution scope – always internal_only ─────────────────────────
+  const executionScope = autoExecutionEligible ? "internal_only" : "none";
+
+  // ── 6. Build execution summary ────────────────────────────────────────
+  const typeInfo       = EXECUTION_TYPES[autoExecutionType] || EXECUTION_TYPES.no_execution;
+  const guardedNote    = autoExecutionGuarded    ? " [Ausführung gesichert – kein Marktschritt]" : "";
+  const eligibleNote   = autoExecutionEligible   ? " [Intern ausführbar]" : "";
+  const executionSummary = `${typeInfo.label}: ${autoExecutionReason}${guardedNote}${eligibleNote}`;
+
+  return {
+    autoExecutionEligible,
+    autoExecutionType,
+    autoExecutionReason,
+    autoExecutionGuarded,
+    autoExecutionSafety,
+    executionIntent,
+    executionScope,
+    executionSummary,
+    executionBasis: "step9_block4",
+  };
+}
+
+/**
+ * Aggregate partial auto-execution distribution across opportunities.
+ * For admin observability – no mutations, read-only summary.
+ *
+ * @param {Array} opps – array of enriched opportunities with partialAutoExecution
+ * @returns {Object} aggregate summary
+ */
+function computePartialAutoExecutionSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:    0,
+      eligibleCount:     0,
+      guardedCount:      0,
+      blockedCount:      0,
+      typeDistribution:  {},
+      safetyDistribution: {},
+      executionBasis:    "step9_block4",
+    };
+  }
+
+  const typeDist   = {};
+  const safetyDist = {};
+  let eligibleCount = 0;
+  let guardedCount  = 0;
+  let blockedCount  = 0;
+
+  for (const o of opps) {
+    const pae    = o.partialAutoExecution || {};
+    const type   = pae.autoExecutionType    || "no_execution";
+    const safety = pae.autoExecutionSafety  || "none";
+
+    typeDist[type]     = (typeDist[type]     || 0) + 1;
+    safetyDist[safety] = (safetyDist[safety] || 0) + 1;
+
+    if (pae.autoExecutionEligible)                 eligibleCount++;
+    if (pae.autoExecutionGuarded)                  guardedCount++;
+    if (pae.autoExecutionSafety === "blocked")      blockedCount++;
+  }
+
+  return {
+    totalEvaluated: opps.length,
+    eligibleCount,
+    guardedCount,
+    blockedCount,
+    typeDistribution:   typeDist,
+    safetyDistribution: safetyDist,
+    executionBasis:     "step9_block4",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -1880,4 +2143,7 @@ module.exports = {
   PREPARATION_TYPES,
   computeControlledAutoPreparation,
   computeControlledAutoPreparationSummary,
+  EXECUTION_TYPES,
+  computePartialAutoExecution,
+  computePartialAutoExecutionSummary,
 };
