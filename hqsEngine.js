@@ -33,6 +33,12 @@
   - buildScoreNarrative() builds a short structured narrative string
   - HQS output extended with explainableTags, versionReason, eventAwareness,
     eventRiskFlags, eventConfidenceImpact, scoreNarrative (backward compatible)
+  HQS 2.2 Block 5: Shadow-HQS, Modellvergleich & Point-in-Time Basis
+  - computeShadowHqs() computes an alternative score using SHADOW_WEIGHTS
+    (quality-/stability-biased profile) on the same inputs as the live path
+  - computePointInTimeContext() attaches PIT/snapshot metadata to each record
+  - HQS output extended with scoringModelId, shadowHqsAvailable, shadowHqsScore,
+    shadowDelta, comparisonMeta, pointInTimeContext (backward compatible)
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
@@ -47,10 +53,14 @@ const {
    HQS VERSION
 ========================================================= */
 
-const HQS_VERSION = "2.1";
+const HQS_VERSION = "2.2";
 
-// Human-readable reason why this version is active (Block 4 upgrade)
-const VERSION_REASON = "HQS 2.1: Explainability, Versioning & Event-Awareness (Block 4)";
+// Human-readable reason why this version is active (Block 5 upgrade)
+const VERSION_REASON = "HQS 2.2: Shadow-HQS, Modellvergleich & Point-in-Time Basis (Block 5)";
+
+// Scoring model identifiers (Block 5)
+const LIVE_SCORING_MODEL_ID   = "live_v2_2_hqs";
+const SHADOW_SCORING_MODEL_ID = "shadow_v1_quality_stability_bias";
 
 // optional logger (falls vorhanden)
 let logger = null;
@@ -727,6 +737,115 @@ function buildScoreNarrative({ finalScore, regime, explainableTags, eventAwarene
 }
 
 /* =========================================================
+   HQS 2.2 – BLOCK 5: SHADOW-HQS & MODELLVERGLEICH
+   Alternative weight profile: quality-/stability-biased
+   (more conservative, defensive model variant).
+   Used for controlled model comparison – never replaces live.
+========================================================= */
+
+const SHADOW_WEIGHTS = {
+  momentum:  0.15,
+  quality:   0.45,
+  stability: 0.30,
+  relative:  0.10,
+};
+
+// Threshold at which a delta is flagged as a major difference
+const SHADOW_MAJOR_DELTA_THRESHOLD = 10;
+
+/**
+ * computeShadowHqs()
+ * Computes an alternative HQS score using SHADOW_WEIGHTS.
+ * Same inputs as the live path; only the weight profile differs.
+ * Returns `shadowHqsAvailable = false` on any error so the live
+ * path is never affected.
+ *
+ * @param {{ momentum, quality, stability, relative }} factors
+ * @param {string} regime
+ * @param {number} liveScore
+ * @returns {{ shadowHqsAvailable, shadowHqsScore, shadowDelta, comparisonMeta }}
+ */
+function computeShadowHqs({ momentum, quality, stability, relative, regime, liquidityPenalty, liveScore }) {
+  try {
+    const w = normalizeWeights(SHADOW_WEIGHTS);
+    let shadowBase =
+      momentum  * w.momentum  +
+      quality   * w.quality   +
+      stability * w.stability +
+      relative  * w.relative;
+
+    shadowBase *= regimeMultiplier(regime);
+    const shadowScore = clamp(Math.round(shadowBase) - (liquidityPenalty || 0), 0, 100);
+
+    const shadowDelta = shadowScore - liveScore;
+
+    let deltaDirection = "equal";
+    if (shadowDelta > 2)  deltaDirection = "shadow_higher";
+    if (shadowDelta < -2) deltaDirection = "shadow_lower";
+
+    let majorDifferenceReason = null;
+    if (Math.abs(shadowDelta) >= SHADOW_MAJOR_DELTA_THRESHOLD) {
+      if (deltaDirection === "shadow_higher") {
+        majorDifferenceReason = "live_model_momentum_bias_reduces_score_relative_to_quality_focus";
+      } else {
+        majorDifferenceReason = "shadow_model_penalizes_low_quality_stability_more_heavily";
+      }
+    }
+
+    const comparisonMeta = {
+      liveModel:            LIVE_SCORING_MODEL_ID,
+      shadowModel:          SHADOW_SCORING_MODEL_ID,
+      deltaDirection,
+      majorDifferenceReason,
+    };
+
+    return {
+      shadowHqsAvailable: true,
+      shadowHqsScore:     shadowScore,
+      shadowDelta,
+      comparisonMeta,
+    };
+  } catch (_) {
+    return {
+      shadowHqsAvailable: false,
+      shadowHqsScore:     null,
+      shadowDelta:        null,
+      comparisonMeta:     null,
+    };
+  }
+}
+
+/**
+ * computePointInTimeContext()
+ * Attaches minimal PIT/snapshot metadata to a scored record.
+ * Marks whether inputs are from a live streaming feed or a
+ * historical snapshot so future backtest readers can distinguish.
+ *
+ * @param {object} item            – raw market data item
+ * @param {string} scoringTimestamp – ISO timestamp of when scoring ran
+ * @returns {object} pointInTimeContext
+ */
+function computePointInTimeContext(item, scoringTimestamp) {
+  const now = scoringTimestamp || new Date().toISOString();
+
+  // price / volume timestamps if available in the item
+  const sourceTs =
+    item.timestamp || item.lastUpdated || item.updatedAt || null;
+
+  // If the item carries an explicit snapshotAt field (backfill path),
+  // usesOnlySnapshotInputs can be set to true in future. Currently
+  // live market data is always the source.
+  const isSnapshot = Boolean(item.isSnapshot || item.snapshotAt);
+
+  return {
+    sourceTimestamp:        sourceTs ? String(sourceTs) : null,
+    snapshotTimestamp:      isSnapshot ? (item.snapshotAt || now) : null,
+    modelTimestamp:         now,
+    usesOnlySnapshotInputs: isSnapshot,
+  };
+}
+
+/* =========================================================
    MAIN ENGINE
 ========================================================= */
 
@@ -854,6 +973,21 @@ async function buildHQSResponse(
       eventAwareness: eventAwarenessResult.eventAwareness,
     });
 
+    // ── HQS 2.2 Block 5: shadow HQS & model comparison ────────────────────
+    const shadowResult = computeShadowHqs({
+      momentum,
+      quality,
+      stability,
+      relative,
+      regime,
+      liquidityPenalty: liquidityGuardrail.liquidityPenalty,
+      liveScore: finalScore,
+    });
+
+    // ── HQS 2.2 Block 5: point-in-time context ────────────────────────────
+    const scoringTimestamp = new Date().toISOString();
+    const pointInTimeContext = computePointInTimeContext(item, scoringTimestamp);
+
     await saveScoreSnapshot({
       symbol: item.symbol,
       hqsScore: finalScore,
@@ -902,6 +1036,12 @@ async function buildHQSResponse(
         eventConfidenceImpact: eventAwarenessResult.eventConfidenceImpact,
         eventSource:           eventAwarenessResult.eventSource,
       },
+      // ── HQS 2.2 Block 5: shadow HQS, model comparison & PIT context ──
+      scoringModelId:     LIVE_SCORING_MODEL_ID,
+      shadowHqsScore:     shadowResult.shadowHqsScore,
+      shadowDelta:        shadowResult.shadowDelta,
+      comparisonMeta:     shadowResult.comparisonMeta,
+      pointInTimeContext,
     });
 
     return {
@@ -956,6 +1096,13 @@ async function buildHQSResponse(
       eventRiskFlags:         eventAwarenessResult.eventRiskFlags,
       eventConfidenceImpact:  eventAwarenessResult.eventConfidenceImpact,
       scoreNarrative,
+      // ── HQS 2.2 Block 5 shadow-HQS, model comparison & PIT meta ─────
+      scoringModelId:         LIVE_SCORING_MODEL_ID,
+      shadowHqsAvailable:     shadowResult.shadowHqsAvailable,
+      shadowHqsScore:         shadowResult.shadowHqsScore,
+      shadowDelta:            shadowResult.shadowDelta,
+      comparisonMeta:         shadowResult.comparisonMeta,
+      pointInTimeContext,
     };
   } catch (error) {
     if (logger?.error)

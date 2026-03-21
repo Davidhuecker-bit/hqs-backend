@@ -95,6 +95,13 @@ async function initFactorTable() {
       version_reason TEXT,
       event_awareness_meta JSONB,
 
+      -- HQS 2.2 Block 5: Shadow-HQS, Modellvergleich & Point-in-Time Basis
+      scoring_model_id TEXT,
+      shadow_hqs_score FLOAT,
+      shadow_delta FLOAT,
+      comparison_meta JSONB,
+      point_in_time_context JSONB,
+
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -134,13 +141,74 @@ async function saveScoreSnapshot({
   explainableTags,
   versionReason,
   eventAwarenessMeta,
+  // HQS 2.2 Block 5: Shadow-HQS, model comparison & PIT context
+  scoringModelId,
+  shadowHqsScore,
+  shadowDelta,
+  comparisonMeta,
+  pointInTimeContext,
 }) {
   try {
     const normalizedRegime = normRegime(regime);
 
-    // Try the extended insert that includes HQS 2.0 Block 1 + Block 2 + Block 3 + Block 4 meta columns.
+    // Try the extended insert that includes HQS 2.0 Block 1+2+3+4 + HQS 2.2 Block 5 meta columns.
     // If the table was created before these columns existed (legacy deployment),
     // we gracefully fall back so existing flow is never broken.
+    try {
+      await pool.query(
+        `
+        INSERT INTO factor_history
+        (symbol, hqs_score, momentum, quality, stability, relative, regime,
+         market_average, volatility,
+         hqs_version, confidence_score, data_quality_meta, imputation_meta,
+         sector_template, peer_context_available, sector_scoring_meta,
+         regime_weight_profile, enhanced_stability_meta, liquidity_meta,
+         explainable_tags, version_reason, event_awareness_meta,
+         scoring_model_id, shadow_hqs_score, shadow_delta, comparison_meta, point_in_time_context)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+        `,
+        [
+          String(symbol || "").trim().toUpperCase(),
+          Number(hqsScore),
+          momentum ?? null,
+          quality ?? null,
+          stability ?? null,
+          relative ?? null,
+          normalizedRegime,
+          marketAverage ?? null,
+          volatility ?? null,
+          hqsVersion ?? null,
+          confidenceScore != null ? Number(confidenceScore) : null,
+          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
+          imputationMeta ? JSON.stringify(imputationMeta) : null,
+          sectorTemplate ?? null,
+          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
+          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
+          regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
+          enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
+          liquidityMeta ? JSON.stringify(liquidityMeta) : null,
+          explainableTags ? JSON.stringify(explainableTags) : null,
+          versionReason ?? null,
+          eventAwarenessMeta ? JSON.stringify(eventAwarenessMeta) : null,
+          scoringModelId ?? null,
+          shadowHqsScore != null ? Number(shadowHqsScore) : null,
+          shadowDelta != null ? Number(shadowDelta) : null,
+          comparisonMeta ? JSON.stringify(comparisonMeta) : null,
+          pointInTimeContext ? JSON.stringify(pointInTimeContext) : null,
+        ]
+      );
+      return;
+    } catch (extErr) {
+      // Column does not exist in this deployment – fall back to Block 4 insert.
+      // PostgreSQL error code 42703 = undefined_column.
+      if (extErr.code !== "42703") {
+        if (logger?.error) logger.error("saveScoreSnapshot: unexpected error on Block 5 insert", { message: extErr.message, code: extErr.code });
+        throw extErr;
+      }
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 5 columns not yet in table, trying Block 4 insert", { message: extErr.message });
+    }
+
+    // Block 4 fallback (table has Block 1+2+3+4 columns but not Block 5)
     try {
       await pool.query(
         `
@@ -179,14 +247,13 @@ async function saveScoreSnapshot({
         ]
       );
       return;
-    } catch (extErr) {
+    } catch (b4Err) {
       // Column does not exist in this deployment – fall back to Block 3 insert.
-      // PostgreSQL error code 42703 = undefined_column.
-      if (extErr.code !== "42703") {
-        if (logger?.error) logger.error("saveScoreSnapshot: unexpected error on Block 4 insert", { message: extErr.message, code: extErr.code });
-        throw extErr;
+      if (b4Err.code !== "42703") {
+        if (logger?.error) logger.error("saveScoreSnapshot: unexpected error on Block 4 insert", { message: b4Err.message, code: b4Err.code });
+        throw b4Err;
       }
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 4 columns not yet in table, trying Block 3 insert", { message: extErr.message });
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 4 columns not yet in table, trying Block 3 insert", { message: b4Err.message });
     }
 
     // Block 3 fallback (table has Block 1+2+3 columns but not Block 4)
@@ -769,6 +836,81 @@ async function getRecentHqsExplainabilityMeta(limit = 50) {
   }
 }
 
+/* =========================================================
+   HQS 2.2 BLOCK 5: RECENT SHADOW META
+   Returns the most recent shadow-HQS comparison records for
+   admin read-only inspection.  Falls back gracefully to a
+   minimal projection when Block 5 columns are not yet present.
+========================================================= */
+
+async function getRecentHqsShadowMeta(limit = 50) {
+  try {
+    let rows;
+    try {
+      const res = await pool.query(
+        `
+        SELECT
+          id,
+          symbol,
+          hqs_score             AS "hqsScore",
+          regime,
+          hqs_version           AS "hqsVersion",
+          scoring_model_id      AS "scoringModelId",
+          shadow_hqs_score      AS "shadowHqsScore",
+          shadow_delta          AS "shadowDelta",
+          comparison_meta       AS "comparisonMeta",
+          point_in_time_context AS "pointInTimeContext",
+          created_at            AS "createdAt"
+        FROM factor_history
+        WHERE symbol <> 'PORTFOLIO'
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+      rows = res.rows;
+    } catch (extErr) {
+      if (extErr.code === "42703") {
+        if (logger?.warn) logger.warn("getRecentHqsShadowMeta: Block 5 columns not present, using fallback projection");
+      } else {
+        throw extErr;
+      }
+
+      // Fallback projection (no Block 5 columns)
+      const fallback = await pool.query(
+        `
+        SELECT
+          id,
+          symbol,
+          hqs_score  AS "hqsScore",
+          regime,
+          hqs_version AS "hqsVersion",
+          created_at AS "createdAt"
+        FROM factor_history
+        WHERE symbol <> 'PORTFOLIO'
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+      return fallback.rows.map((row) => ({
+        ...row,
+        scoringModelId:     null,
+        shadowHqsScore:     null,
+        shadowDelta:        null,
+        comparisonMeta:     null,
+        pointInTimeContext: null,
+      }));
+    }
+
+    return rows;
+  } catch (err) {
+    if (logger?.error) logger.error("getRecentHqsShadowMeta error", { message: err.message });
+    else console.error("❌ getRecentHqsShadowMeta error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initFactorTable,
   saveScoreSnapshot,
@@ -780,4 +922,5 @@ module.exports = {
   getRecentHqsSectorMeta,
   getRecentHqsRegimeMeta,
   getRecentHqsExplainabilityMeta,
+  getRecentHqsShadowMeta,
 };

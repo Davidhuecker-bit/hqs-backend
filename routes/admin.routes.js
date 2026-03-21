@@ -106,7 +106,7 @@ const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyP
 // HQS 2.0 Block 2: Sector / Peer-Group Normalization meta from factor history
 // HQS 2.0 Block 3: Regime / Stability / Liquidity meta from factor history
 // HQS 2.1 Block 4: Explainability, Versioning & Event-Awareness meta from factor history
-const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta, getRecentHqsExplainabilityMeta } = require("../services/factorHistory.repository");
+const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta, getRecentHqsExplainabilityMeta, getRecentHqsShadowMeta } = require("../services/factorHistory.repository");
 
 const router = express.Router();
 
@@ -2899,6 +2899,112 @@ router.get("/hqs-explainability-meta", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin hqs-explainability-meta route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* =========================================================
+   HQS 2.2 BLOCK 5: SHADOW-HQS META (read-only)
+   GET /api/admin/hqs-shadow-meta
+   Returns model distribution, shadow availability, average
+   shadow delta and point-in-time readiness summary.
+========================================================= */
+router.get("/hqs-shadow-meta", requireAdmin, async (req, res) => {
+  try {
+    const governanceCtx = computeGovernanceContext(req);
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+    const rows = await getRecentHqsShadowMeta(limit);
+    const total = rows.length;
+
+    const modelCounts      = {};
+    const shadowDeltaSum   = { sum: 0, count: 0 };
+    let   shadowAvailable  = 0;
+    let   pitReady         = 0;
+    let   pitSnapshotBased = 0;
+    const deltaDirectionCounts = {};
+
+    for (const row of rows) {
+      // ── Model distribution ─────────────────────────────────────────
+      const modelId = row.scoringModelId || "unknown";
+      modelCounts[modelId] = (modelCounts[modelId] || 0) + 1;
+
+      // ── Shadow availability ────────────────────────────────────────
+      if (row.shadowHqsScore != null) {
+        shadowAvailable++;
+        if (row.shadowDelta != null) {
+          shadowDeltaSum.sum   += Number(row.shadowDelta);
+          shadowDeltaSum.count += 1;
+        }
+      }
+
+      // ── Comparison meta: delta direction distribution ──────────────
+      const cm = row.comparisonMeta || {};
+      if (cm.deltaDirection) {
+        deltaDirectionCounts[cm.deltaDirection] = (deltaDirectionCounts[cm.deltaDirection] || 0) + 1;
+      }
+
+      // ── Point-in-time readiness ────────────────────────────────────
+      const pit = row.pointInTimeContext || {};
+      if (pit.modelTimestamp) {
+        pitReady++;
+      }
+      if (pit.usesOnlySnapshotInputs === true) {
+        pitSnapshotBased++;
+      }
+    }
+
+    const avgShadowDelta =
+      shadowDeltaSum.count > 0
+        ? Math.round((shadowDeltaSum.sum / shadowDeltaSum.count) * 100) / 100
+        : null;
+
+    const toDistribution = (counts) =>
+      Object.entries(counts)
+        .map(([label, count]) => ({
+          label,
+          count,
+          pct: total > 0 ? Math.round((count / total) * 100) : 0,
+        }))
+        .sort((a, b) => b.count - a.count);
+
+    const summary = {
+      total,
+      modelDistribution:       toDistribution(modelCounts),
+      shadowAvailableCount:    shadowAvailable,
+      shadowAvailablePct:      total > 0 ? Math.round((shadowAvailable / total) * 100) : 0,
+      avgShadowDelta,
+      deltaDirectionDistribution: toDistribution(deltaDirectionCounts),
+      pointInTimeReadiness: {
+        pitReadyCount:       pitReady,
+        pitReadyPct:         total > 0 ? Math.round((pitReady / total) * 100) : 0,
+        snapshotBasedCount:  pitSnapshotBased,
+        snapshotBasedPct:    total > 0 ? Math.round((pitSnapshotBased / total) * 100) : 0,
+      },
+    };
+
+    const entries = rows.map((row) => ({
+      symbol:             row.symbol,
+      hqsScore:           row.hqsScore,
+      regime:             row.regime,
+      hqsVersion:         row.hqsVersion ?? null,
+      scoringModelId:     row.scoringModelId ?? null,
+      shadowHqsScore:     row.shadowHqsScore ?? null,
+      shadowDelta:        row.shadowDelta ?? null,
+      comparisonMeta:     row.comparisonMeta ?? null,
+      pointInTimeContext: row.pointInTimeContext ?? null,
+      createdAt:          row.createdAt,
+    }));
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin hqs-shadow-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
