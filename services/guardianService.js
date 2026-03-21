@@ -158,6 +158,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 9 Block 4: Partial auto-execution – type, safety, scope, intent, summary.
   const partialAutoExecution = marketData?.partialAutoExecution ?? context?.partialAutoExecution ?? null;
 
+  // Step 9 Block 5: Recovery/stop/override/promotion-safety layer.
+  const recoverySafetyLayer = marketData?.recoverySafetyLayer ?? context?.recoverySafetyLayer ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -1029,7 +1032,38 @@ async function analyzeStockWithGuardian(context) {
   }
   const partialAutoExecutionBlock = buildPartialAutoExecutionBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock]
+  // Step 9 Block 5: Recovery/stop/override/promotion-safety block – stop eligible, degrade, resume,
+  // operator intervention, kill-switch scope, recovery action, promotion blocked.
+  function buildRecoverySafetyBlock() {
+    if (!recoverySafetyLayer) return "";
+    const { stopEligible, overrideAllowed, killSwitchScope, recoveryAction,
+            rollbackSuggested, promotionBlocked, degradeRequired, resumeAllowed,
+            operatorInterventionRequired, safetyControlSummary } = recoverySafetyLayer;
+
+    // Only surface if any notable condition is active
+    const anyActive = stopEligible || degradeRequired || promotionBlocked
+      || operatorInterventionRequired || rollbackSuggested || recoveryAction;
+    if (!anyActive) return "";
+
+    const parts = [];
+    if (stopEligible)                 parts.push("🛑 Stop-Bedingung aktiv");
+    if (degradeRequired)              parts.push("⬇️ Degradierung erforderlich");
+    if (operatorInterventionRequired) parts.push("👷 Operator-Eingriff nötig");
+    if (promotionBlocked)             parts.push("🚫 Promotion zu mehr Autonomie blockiert");
+    if (resumeAllowed)                parts.push("✅ Resume erlaubt");
+    else if (stopEligible)            parts.push("⏸ Resume noch nicht erlaubt");
+    if (rollbackSuggested)            parts.push("↩️ Rollback empfohlen");
+    if (overrideAllowed)              parts.push("🔓 Override strukturell erlaubt (Governance-Aussage)");
+    if (recoveryAction)               parts.push(`🔄 Recovery-Hinweis: ${recoveryAction}`);
+    if (killSwitchScope && killSwitchScope !== "none") {
+      parts.push(`⚡ Kill-Switch-Scope-Einordnung: ${killSwitchScope}`);
+    }
+    if (safetyControlSummary)         parts.push(safetyControlSummary);
+    return parts.length ? `Recovery & Safety (Step 9 Block 5): ${parts.join(" · ")}` : "";
+  }
+  const recoverySafetyBlock = buildRecoverySafetyBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1275,6 +1309,22 @@ Erstelle eine strukturierte Erklärung mit:
      - Wichtig: Partial-Auto-Execution bedeutet ausschließlich kleine, reversible, interne Systemschritte. Keine Kauf-/Verkaufs-/Portfolio-Transaktion. Kein Policy-Eingriff. Keine Nutzerfreigabe automatisch.
      - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
      Wenn kein Execution-Signal vorhanden oder autoExecutionType="no_execution", diesen Punkt weglassen.
+29. Recovery, Stop & Promotion Safety (Step 9 Block 5): Falls ein Recovery-/Safety-Kontext vorhanden ist, erkläre kurz und verständlich, warum das System gerade gestoppt, gedeckelt oder guarded bleibt, warum mehr Autonomie blockiert ist und welcher sichere nächste Schritt empfohlen wird –
+     - stopEligible=true: erkläre klar, warum das System aktuell gestoppt werden kann – welche Bedingung (Guardrail, Policy, Drift, SoD, kritischer Zustand) den Stop auslöst
+     - degradeRequired=true: erkläre, dass ein Downgrade des Betriebsmodus erforderlich ist – das System soll in einen sichereren, reduzierten Modus wechseln
+     - promotionBlocked=true: erkläre, warum eine Erhöhung der Autonomie gerade blockiert ist – welche Signale (Drift, Tenant-Druck, Guardrail, Policy) das verhindern
+     - operatorInterventionRequired=true: weise darauf hin, dass ein menschlicher Eingriff erforderlich ist – kein automatischer Fortschritt erlaubt
+     - resumeAllowed=true: erkläre kurz, dass der normale Betrieb wieder aufgenommen werden kann – alle kritischen Bedingungen sind aufgelöst
+     - resumeAllowed=false mit stopEligible=true: erkläre, warum der normale Betrieb noch nicht wiederhergestellt werden kann
+     - rollbackSuggested=true: weise darauf hin, dass ein Rollback empfohlen wird – das System war aktiv und eine Rücknahme ist sicherer als Fortfahren
+     - overrideAllowed=true: erkläre, dass ein Override strukturell governance-konform möglich wäre – aber nur als explizite Operator-Entscheidung, kein automatischer Schritt
+     - recoveryAction vorhanden: erkläre den empfohlenen Recovery-Pfad klar und handlungsorientiert
+     - killSwitchScope="case": erkläre, dass der Einzelfall isoliert werden sollte
+     - killSwitchScope="tenant": erkläre, dass eine tenant-weite Vorsicht angeraten ist
+     - killSwitchScope="global": erkläre, dass ein plattformweiter Defensiv-Modus in Betracht gezogen werden sollte
+     - Wichtig: Keine echte Infrastruktur-Steuerung. Nur Governance-Aussagen und strukturierte Empfehlungen.
+     - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
+     Wenn kein Recovery-/Safety-Kontext vorhanden oder alle Felder false/none, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

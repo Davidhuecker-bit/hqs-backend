@@ -222,6 +222,24 @@ function _derivePickOrchestration(pick, onWatchlist) {
           : "Zustellmodus aktualisiert: Hohes Signal – Intern angepasst [Intern ausführbar]",
         executionBasis:        "step9_block4",
       },
+      // Step 9 Block 5: recovery/stop/override/promotion-safety for high-signal picks.
+      // High-signal tier: manualConfirmationRequired picks are stop-eligible and promotion-blocked;
+      // weaker high-signal picks allow resume and override.
+      recoverySafetyLayer: {
+        stopEligible:                 hasStrongData,
+        overrideAllowed:              !hasStrongData,
+        killSwitchScope:              hasStrongData ? "case" : "none",
+        recoveryAction:               hasStrongData ? "Starke Signale – manuelle Bestätigung ausstehend, kein automatischer Fortschritt" : null,
+        rollbackSuggested:            false,
+        promotionBlocked:             hasStrongData,
+        degradeRequired:              false,
+        resumeAllowed:                !hasStrongData,
+        operatorInterventionRequired: hasStrongData,
+        safetyControlSummary:         hasStrongData
+          ? "🛑 Stop möglich · 🚫 Promotion blockiert · 👷 Operator-Eingriff nötig · ⚡ Kill-Switch-Scope: case"
+          : "✅ Resume erlaubt · 🔓 Override strukturell erlaubt (Governance-Aussage)",
+        safetyBasis:                  "step9_block5",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -372,6 +390,21 @@ function _derivePickOrchestration(pick, onWatchlist) {
         executionSummary:      "Zustellmodus aktualisiert: Vorschlags-Kandidat – Intern angepasst [Intern ausführbar]",
         executionBasis:        "step9_block4",
       },
+      // Step 9 Block 5: recovery/stop/override/promotion-safety for proposal-level picks.
+      // Proposal tier: stable conditions – resume and override allowed, no stop/degrade.
+      recoverySafetyLayer: {
+        stopEligible:                 false,
+        overrideAllowed:              true,
+        killSwitchScope:              "none",
+        recoveryAction:               null,
+        rollbackSuggested:            false,
+        promotionBlocked:             false,
+        degradeRequired:              false,
+        resumeAllowed:                true,
+        operatorInterventionRequired: false,
+        safetyControlSummary:         "✅ Resume erlaubt · 🔓 Override strukturell erlaubt (Governance-Aussage)",
+        safetyBasis:                  "step9_block5",
+      },
     };
   }
   return {
@@ -519,6 +552,21 @@ function _derivePickOrchestration(pick, onWatchlist) {
       executionScope:        "internal_only",
       executionSummary:      "Nicht-kritische Zustellung unterdrückt: Monitor-only – Intern unterdrückt [Intern ausführbar]",
       executionBasis:        "step9_block4",
+    },
+    // Step 9 Block 5: recovery/stop/override/promotion-safety for monitor-only picks.
+    // Monitor tier: minimal conditions – resume allowed, no stop/degrade, override allowed.
+    recoverySafetyLayer: {
+      stopEligible:                 false,
+      overrideAllowed:              true,
+      killSwitchScope:              "none",
+      recoveryAction:               null,
+      rollbackSuggested:            false,
+      promotionBlocked:             false,
+      degradeRequired:              false,
+      resumeAllowed:                true,
+      operatorInterventionRequired: false,
+      safetyControlSummary:         "✅ Keine aktiven Sicherheits-/Stoppbedingungen",
+      safetyBasis:                  "step9_block5",
     },
   };
 }

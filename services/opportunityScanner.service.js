@@ -53,7 +53,8 @@ const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 9 Block 2: Action chains – state-machine basis
 // Step 9 Block 3: Controlled auto-preparation layer
 // Step 9 Block 4: Partial auto-execution under policy
-const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance, computeOperationalResilienceContext, computeAutonomyLevelContext, computeDriftDetectionBasis, computeActionChainState, computeControlledAutoPreparation, computePartialAutoExecution } = require("./governance.context");
+// Step 9 Block 5: Recovery, stop, override & promotion safety layer
+const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance, computeOperationalResilienceContext, computeAutonomyLevelContext, computeDriftDetectionBasis, computeActionChainState, computeControlledAutoPreparation, computePartialAutoExecution, computeRecoverySafetyLayer } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2577,7 +2578,11 @@ async function getTopOpportunities(arg = 10) {
     const partialAutoExecution = computePartialAutoExecution(
       { ...oppFull, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection, actionChainState, controlledAutoPreparation },
     );
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection, actionChainState, controlledAutoPreparation, partialAutoExecution };
+    // Step 9 Block 5: derive recovery/stop/override/promotion-safety layer from all governance layers
+    const recoverySafetyLayer = computeRecoverySafetyLayer(
+      { ...oppFull, governanceContext, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection, actionChainState, controlledAutoPreparation, partialAutoExecution, auditTrace, decisionLayer, controlledApprovalFlow },
+    );
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection, actionChainState, controlledAutoPreparation, partialAutoExecution, recoverySafetyLayer };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

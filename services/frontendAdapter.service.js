@@ -264,6 +264,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     controlledAutoPreparation: stock?.controlledAutoPreparation ?? null,
     // Step 9 Block 4: Partial auto-execution – type, safety, scope, intent, summary.
     partialAutoExecution: stock?.partialAutoExecution ?? null,
+    // Step 9 Block 5: Recovery/stop/override/promotion-safety layer.
+    recoverySafetyLayer: stock?.recoverySafetyLayer ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -428,6 +430,8 @@ function buildTopSignals(stocks) {
         controlledAutoPreparation: stock.controlledAutoPreparation ?? null,
         // Step 9 Block 4: partial auto-execution meta for downstream execution rendering
         partialAutoExecution: stock.partialAutoExecution ?? null,
+        // Step 9 Block 5: recovery/stop/override/promotion-safety meta for downstream safety rendering
+        recoverySafetyLayer: stock.recoverySafetyLayer ?? null,
       };
     });
 }
@@ -698,6 +702,17 @@ function buildPortfolioIntelligenceSummary(stocks) {
       queueCardCount:      stocks.filter((s) => s.partialAutoExecution?.autoExecutionType === "queue_manual_action_card").length,
       suppressCount:       stocks.filter((s) => s.partialAutoExecution?.autoExecutionType === "suppress_noncritical_delivery").length,
       executionBasis:      "step9_block4",
+    },
+    // Step 9 Block 5: recovery/stop/override/promotion-safety summary
+    recoverySafetyLayer: {
+      stopEligibleCount:             stocks.filter((s) => s.recoverySafetyLayer?.stopEligible === true).length,
+      degradeRequiredCount:          stocks.filter((s) => s.recoverySafetyLayer?.degradeRequired === true).length,
+      promotionBlockedCount:         stocks.filter((s) => s.recoverySafetyLayer?.promotionBlocked === true).length,
+      operatorInterventionCount:     stocks.filter((s) => s.recoverySafetyLayer?.operatorInterventionRequired === true).length,
+      resumeAllowedCount:            stocks.filter((s) => s.recoverySafetyLayer?.resumeAllowed === true).length,
+      rollbackSuggestedCount:        stocks.filter((s) => s.recoverySafetyLayer?.rollbackSuggested === true).length,
+      overrideAllowedCount:          stocks.filter((s) => s.recoverySafetyLayer?.overrideAllowed === true).length,
+      safetyBasis:                   "step9_block5",
     },
   };
 }
