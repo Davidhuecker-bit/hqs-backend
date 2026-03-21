@@ -428,6 +428,25 @@ function _deriveBriefingActionChainLabel(stock) {
   return "";
 }
 
+/**
+ * Step 9 Block 3: Derive a compact auto-preparation label for briefing fact lines.
+ * Only surfaces actionable or guarded prep types – omits no_auto_prep (default).
+ * Returns a short string label or empty string for no_auto_prep.
+ */
+function _deriveBriefingAutoPreparationLabel(stock) {
+  const cap = stock.controlledAutoPreparation || null;
+  if (!cap) return "";
+  const type = cap.preparationType;
+  if (!type || type === "no_auto_prep") return "";
+  if (type === "guarded_hold")             return " · 🛡 Vorb.: Gesicherter Halt";
+  if (type === "manual_action_card_ready") return " · ✅ Vorb.: Aktions-Karte bereit";
+  if (type === "review_packet")            return " · 📋 Vorb.: Review-Paket";
+  if (type === "proposal_card_ready")      return " · 📄 Vorb.: Vorschlags-Karte";
+  if (type === "followup_prep")            return " · 🔁 Vorb.: Follow-up";
+  if (type === "reassessment_scheduled")   return " · 🗓 Vorb.: Neubewertung";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -561,8 +580,11 @@ function buildFactsFromMarket(stocks) {
     // Step 9 Block 2: action chain label for non-default chain states
     const actionChainLabel = _deriveBriefingActionChainLabel(s);
 
+    // Step 9 Block 3: controlled auto-preparation label for actionable prep types
+    const autoPreparationLabel = _deriveBriefingAutoPreparationLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}.`
     );
   }
   return lines.join("\n");

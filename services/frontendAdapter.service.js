@@ -260,6 +260,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     driftDetection: stock?.driftDetection ?? null,
     // Step 9 Block 2: Action chain – state-machine state, stage, next step, block/escalation.
     actionChainState: stock?.actionChainState ?? null,
+    // Step 9 Block 3: Controlled auto-preparation – type, priority, guarded, window, confirmation.
+    controlledAutoPreparation: stock?.controlledAutoPreparation ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -420,6 +422,8 @@ function buildTopSignals(stocks) {
         driftDetection: stock.driftDetection ?? null,
         // Step 9 Block 2: action chain meta for downstream state-machine rendering
         actionChainState: stock.actionChainState ?? null,
+        // Step 9 Block 3: controlled auto-preparation meta for downstream prep rendering
+        controlledAutoPreparation: stock.controlledAutoPreparation ?? null,
       };
     });
 }
@@ -669,6 +673,16 @@ function buildPortfolioIntelligenceSummary(stocks) {
       conflictRiskCount:  stocks.filter((s) => s.actionChainState?.chainConflictRisk === true).length,
       safetyModeCount:    stocks.filter((s) => s.actionChainState?.chainSafetyMode === true).length,
       chainBasis:         "step9_block2",
+    },
+    // Step 9 Block 3: controlled auto-preparation summary
+    autoPreparation: {
+      eligibleCount:                   stocks.filter((s) => s.controlledAutoPreparation?.autoPreparationEligible === true).length,
+      guardedCount:                    stocks.filter((s) => s.controlledAutoPreparation?.preparationGuarded === true).length,
+      manualConfirmationRequiredCount: stocks.filter((s) => s.controlledAutoPreparation?.manualConfirmationRequired === true).length,
+      reviewPacketCount:               stocks.filter((s) => s.controlledAutoPreparation?.preparationType === "review_packet").length,
+      manualActionCardCount:           stocks.filter((s) => s.controlledAutoPreparation?.preparationType === "manual_action_card_ready").length,
+      proposalCardCount:               stocks.filter((s) => s.controlledAutoPreparation?.preparationType === "proposal_card_ready").length,
+      preparationBasis:                "step9_block3",
     },
   };
 }

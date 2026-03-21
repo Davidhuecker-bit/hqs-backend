@@ -98,7 +98,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery/pressure summary
 // Step 9 Block 1: Autonomy levels + drift detection basis
 // Step 9 Block 2: Action chains – state-machine basis
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary } = require("../services/governance.context");
+// Step 9 Block 3: Controlled auto-preparation layer
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2333,6 +2334,62 @@ router.get("/action-chain-summary", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin action-chain-summary route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/auto-preparation-summary
+ * Step 9 Block 3: Read-only admin view of controlled auto-preparation status.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate preparation type distribution
+ *   - guarded / eligible / manual-confirmation-required counts
+ *   - per-opportunity preparation entries (compact)
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ * No mutations – read-only observability endpoint.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/auto-preparation-summary", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate auto-preparation summary
+    const autoPreparationSummary = computeControlledAutoPreparationSummary(opportunities);
+
+    // Per-opportunity entries (compact)
+    const autoPreparationEntries = opportunities.map((o) => {
+      const cap = o.controlledAutoPreparation || {};
+      return {
+        symbol:                    o.symbol,
+        autoPreparationEligible:   cap.autoPreparationEligible        ?? false,
+        preparationType:           cap.preparationType                ?? "no_auto_prep",
+        preparationReason:         cap.preparationReason              ?? null,
+        preparationPriority:       cap.preparationPriority            ?? "none",
+        preparationGuarded:        cap.preparationGuarded             ?? false,
+        preparationWindow:         cap.preparationWindow              ?? null,
+        manualConfirmationRequired: cap.manualConfirmationRequired    ?? false,
+        preparationSummary:        cap.preparationSummary             ?? null,
+      };
+    });
+
+    return res.json({
+      success:                true,
+      generatedAt:            new Date().toISOString(),
+      governanceContext:      governanceCtx,
+      autoPreparationSummary,
+      autoPreparationEntries,
+    });
+  } catch (error) {
+    logger.error("Admin auto-preparation-summary route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
