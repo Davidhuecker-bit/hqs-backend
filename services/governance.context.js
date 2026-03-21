@@ -29,8 +29,9 @@
 
 // ── Actor-Role Definitions ─────────────────────────────────────────────────
 // Each role has a clearly bounded set of permissions.
-// Separation-of-Duties: no role combines policy mutation + approval action + audit read
-// at full privilege level simultaneously.
+// Separation-of-Duties: no role combines policy mutation + approval action.
+// Policy read (audit) may coexist with policy mutation (admin) since
+// reading policies does not create an operational conflict.
 const ACTOR_ROLES = {
   platform_admin: {
     label: "Platform Admin",
@@ -174,8 +175,9 @@ function deriveOpportunityGovernance(opp, govCtx) {
   let actorCanReadAudit = gc.auditReadAllowed;
 
   // Separation-of-Duties enforcement:
-  // If the opportunity requires approval AND policy mutation in the same step,
-  // no single actor should be able to do both.
+  // With the built-in roles this is always false (no role has both permissions).
+  // This guard exists for future IAM integration where external identity providers
+  // might assign custom roles that violate SoD constraints.
   const sodConflict = requiresApproval && gc.policyMutationAllowed && gc.approvalActionAllowed;
 
   return {
