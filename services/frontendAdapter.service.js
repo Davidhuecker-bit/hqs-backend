@@ -252,6 +252,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     policyValidity:      stock?.policyValidity      ?? null,
     // Step 8 Block 5: Tenant/resource governance – load band, quota, guardrail.
     tenantResourceGovernance: stock?.tenantResourceGovernance ?? null,
+    // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery state.
+    operationalResilience: stock?.operationalResilience ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -404,6 +406,8 @@ function buildTopSignals(stocks) {
         policyValidity:    stock.policyValidity    ?? null,
         // Step 8 Block 5: tenant/resource governance meta for downstream load/quota rendering
         tenantResourceGovernance: stock.tenantResourceGovernance ?? null,
+        // Step 8 Block 6: operational resilience meta for downstream degradation/recovery rendering
+        operationalResilience: stock.operationalResilience ?? null,
       };
     });
 }
@@ -612,6 +616,16 @@ function buildPortfolioIntelligenceSummary(stocks) {
       backlogPressureElevatedCount: stocks.filter((s) => s.tenantResourceGovernance?.backlogPressure === "elevated").length,
       resourceGuardrailActiveCount: stocks.filter((s) => s.tenantResourceGovernance?.resourceGuardrail === "active").length,
       tenantResourceBasis:          "step8_block5",
+    },
+    // Step 8 Block 6: operational resilience distribution.
+    operationalResilience: {
+      criticalGuardedCount: stocks.filter((s) => s.operationalResilience?.degradationMode === "critical_guarded").length,
+      constrainedCount:     stocks.filter((s) => s.operationalResilience?.degradationMode === "constrained").length,
+      elevatedLoadCount:    stocks.filter((s) => s.operationalResilience?.degradationMode === "elevated_load").length,
+      criticalHealthCount:  stocks.filter((s) => s.operationalResilience?.operationalHealth === "critical").length,
+      degradedHealthCount:  stocks.filter((s) => s.operationalResilience?.operationalHealth === "degraded").length,
+      resumeReadyCount:     stocks.filter((s) => s.operationalResilience?.resumeReady === true).length,
+      resilienceBasis:      "step8_block6",
     },
   };
 }

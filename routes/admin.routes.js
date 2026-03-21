@@ -95,7 +95,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
 // Step 8 Block 4: Evidence Packages & Policy Versioning – policyFingerprint, evidencePackage, operatorActionTrace
 // Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail summary
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary } = require("../services/governance.context");
+// Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery/pressure summary
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2158,6 +2159,65 @@ router.get("/tenant-resource-governance", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin tenant-resource-governance route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/operational-resilience
+ * Step 8 Block 6: Read-only admin view of operational resilience state.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate resilience summary (degradation modes, health, pressure level)
+ *   - per-opportunity resilience entries (compact)
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/operational-resilience", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate operational resilience summary
+    const resilienceSummary = computeOperationalResilienceContextSummary(opportunities);
+
+    // Per-opportunity resilience entries (compact)
+    const resilienceEntries = opportunities.map((o) => {
+      const or_ = o.operationalResilience || {};
+      const trg = o.tenantResourceGovernance || {};
+      return {
+        symbol:               o.symbol,
+        degradationMode:      or_.degradationMode      ?? "normal",
+        operationalHealth:    or_.operationalHealth    ?? "healthy",
+        fallbackTier:         or_.fallbackTier         ?? "full_context",
+        recoveryState:        or_.recoveryState        ?? "stable",
+        resumeReady:          or_.resumeReady          ?? true,
+        resilienceFlags:      or_.resilienceFlags      ?? [],
+        systemPressureSummary: or_.systemPressureSummary ?? null,
+        // Surface key pressure inputs for admin observability
+        tenantLoadBand:       trg.tenantLoadBand       ?? null,
+        backlogPressure:      trg.backlogPressure      ?? null,
+        rateLimitRisk:        trg.rateLimitRisk        ?? null,
+        quotaWarning:         trg.quotaWarning         ?? false,
+      };
+    });
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      resilienceSummary,
+      resilienceEntries,
+    });
+  } catch (error) {
+    logger.error("Admin operational-resilience route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
