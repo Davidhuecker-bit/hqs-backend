@@ -103,7 +103,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 9 Block 5: Recovery, stop, override & promotion safety layer
 // Step 10 Block 2: Attention Management / Delivery Intelligence aggregate
 // Step 10 Block 3: Autonomy Preview / Companion Trust Layer aggregate
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary, computeAttentionDeliveryMeta, computeAutonomyPreviewSummary } = require("../services/governance.context");
+// Step 10 Block 4: Adaptive UX / Feedback Layer aggregate
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary, computeAttentionDeliveryMeta, computeAutonomyPreviewSummary, computeAdaptiveUXSummary } = require("../services/governance.context");
 // HQS 2.0 Block 1: Data Quality summary from factor history
 // HQS 2.0 Block 2: Sector / Peer-Group Normalization meta from factor history
 // HQS 2.0 Block 3: Regime / Stability / Liquidity meta from factor history
@@ -3215,6 +3216,56 @@ router.get("/autonomy-preview-meta", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin autonomy-preview-meta route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+// ── Step 10 Block 4: Adaptive UX / Feedback Layer meta ─────────────────────────
+// Read-only endpoint: delivers style-profile distribution, density/tone/fit summary
+// and feedback signal counts for admin observability.
+// No execution, no write, defensive defaults.
+//
+// GET /api/admin/adaptive-ux-meta
+router.get("/adaptive-ux-meta", async (req, res) => {
+  try {
+    const governanceCtx = computeGovernanceContext({ role: req.user?.role, tenantScope: req.user?.tenantScope });
+
+    // Fetch top opportunities (re-uses existing pipeline, same as other admin meta endpoints).
+    let opps = [];
+    try {
+      opps = await getTopOpportunities({ limit: 50, userId: null, actorRole: "viewer" });
+    } catch (oppErr) {
+      logger.warn("Admin adaptive-ux-meta: getTopOpportunities failed (ignored)", { message: oppErr.message });
+    }
+
+    // Aggregate adaptive UX / feedback meta from opportunity signals.
+    const summary = computeAdaptiveUXSummary(opps);
+
+    // Build per-opportunity adaptive UX entries for admin visibility.
+    const entries = opps.slice(0, 30).map((o) => {
+      const aux = o.adaptiveUXOutput ?? null;
+      return {
+        symbol:              o.symbol ?? null,
+        styleProfile:        aux?.styleProfile        ?? "analyst",
+        communicationDensity: aux?.communicationDensity ?? "medium",
+        adaptiveTone:        aux?.adaptiveTone        ?? "neutral",
+        outputFit:           aux?.outputFit           ?? "standard",
+        adaptationReason:    aux?.adaptationReason    ?? null,
+        userPreferenceHint:  aux?.userPreferenceHint  ?? null,
+        adaptiveUXSummary:   aux?.adaptiveUXSummary   ?? null,
+        feedbackSignal:      aux?.feedbackSignal       ?? null,
+      };
+    });
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin adaptive-ux-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

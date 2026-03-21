@@ -287,6 +287,25 @@ function _derivePickOrchestration(pick, onWatchlist) {
           : `Gebremst · Vertrauen: medium · Vorsichtsmodus aktiv`,
         autonomyBasis:         "step10_block3",
       },
+      // Step 10 Block 4: adaptive UX / feedback output for high-signal picks.
+      // Strong-data picks need confirmation → coach style with high density.
+      // Other high-signal picks are guarded → coach style with calm tone.
+      adaptiveUXOutput: {
+        styleProfile:        "coach",
+        communicationDensity: hasStrongData ? "high" : "medium",
+        feedbackSignal:      null,
+        feedbackSummary:     { acted: 0, dismissed: 0, positive: 0, negative: 0, followUpOverdue: 0, followUpPending: 0 },
+        adaptiveTone:        hasStrongData ? "alert" : "calm",
+        outputFit:           hasStrongData ? "high_signal_alert" : "guarded_calm",
+        adaptationReason:    hasStrongData
+          ? "Bestätigung ausstehend – strukturierte Entscheidungshilfe empfohlen"
+          : "Gebremster Modus – einfache Sprache, keine Alarmierung",
+        userPreferenceHint:  "eher ruhige, erklärende Einordnung bevorzugt",
+        adaptiveUXSummary:   hasStrongData
+          ? "Hochsignal · coach · high · alert · high_signal_alert"
+          : "Hochsignal · coach · medium · calm · guarded_calm",
+        adaptiveUXBasis:     "step10_block4",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -489,6 +508,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
         previewSummary:        "Vorbereitet · Vertrauen: medium · Vorbereitung liegt bereit",
         autonomyBasis:         "step10_block3",
       },
+      // Step 10 Block 4: adaptive UX / feedback output for proposal-level picks.
+      // Proposal tier: analyst style, medium density, neutral tone – balanced output.
+      adaptiveUXOutput: {
+        styleProfile:        "analyst",
+        communicationDensity: "medium",
+        feedbackSignal:      null,
+        feedbackSummary:     { acted: 0, dismissed: 0, positive: 0, negative: 0, followUpOverdue: 0, followUpPending: 0 },
+        adaptiveTone:        "neutral",
+        outputFit:           "standard_analysis",
+        adaptationReason:    "Standardmäßige Ausgabe – keine besonderen Anpassungshinweise",
+        userPreferenceHint:  "eher sachliche Analyse mit etwas Begründung bevorzugt",
+        adaptiveUXSummary:   "Vorschlag · analyst · medium · neutral · standard_analysis",
+        adaptiveUXBasis:     "step10_block4",
+      },
     };
   }
   return {
@@ -688,6 +721,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
       needsUserConfirmation: false,
       previewSummary:        "Vorschlag · Vertrauen: low · Signal zu schwach – nur Beobachtung",
       autonomyBasis:         "step10_block3",
+    },
+    // Step 10 Block 4: adaptive UX / feedback output for monitor-only picks.
+    // Monitor tier: coach style, low density, calm tone – quiet, unobtrusive output.
+    adaptiveUXOutput: {
+      styleProfile:        "coach",
+      communicationDensity: "low",
+      feedbackSignal:      null,
+      feedbackSummary:     { acted: 0, dismissed: 0, positive: 0, negative: 0, followUpOverdue: 0, followUpPending: 0 },
+      adaptiveTone:        "calm",
+      outputFit:           "quiet_monitor",
+      adaptationReason:    "Kein aktiver Hinweis nötig – kurze Einordnung ausreichend",
+      userPreferenceHint:  "eher ruhige, erklärende Einordnung bevorzugt",
+      adaptiveUXSummary:   "Monitor · coach · low · calm · quiet_monitor",
+      adaptiveUXBasis:     "step10_block4",
     },
   };
 }

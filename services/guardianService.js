@@ -167,6 +167,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 10 Block 3: Autonomy Preview / Companion Trust output.
   const autonomyPreview = marketData?.autonomyPreview ?? context?.autonomyPreview ?? null;
 
+  // Step 10 Block 4: Adaptive UX / Feedback Layer output.
+  const adaptiveUXOutput = marketData?.adaptiveUXOutput ?? context?.adaptiveUXOutput ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -1146,7 +1149,42 @@ async function analyzeStockWithGuardian(context) {
   }
   const autonomyPreviewBlock = buildAutonomyPreviewBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock, attentionDeliveryBlock, autonomyPreviewBlock]
+  // Step 10 Block 4: Adaptive UX / Feedback Layer block – explains how the system
+  // adapts style, density and tone based on existing feedback and signal conditions.
+  // No new analysis – only surfaces the derived adaptive configuration.
+  function buildAdaptiveUXBlock() {
+    if (!adaptiveUXOutput) return "";
+    const { styleProfile, communicationDensity, adaptiveTone, outputFit,
+            adaptationReason, userPreferenceHint } = adaptiveUXOutput;
+    if (!styleProfile) return "";
+
+    const STYLE_EXPLAIN = {
+      coach:     "Ruhige, erklärende Einordnung – einfache Sprache, keine Alarmierung",
+      analyst:   "Sachliche Analyse mit etwas Begründung – ausgewogener Ton",
+      executive: "Knappe Entscheidungshilfe – direkt und handlungsorientiert",
+    };
+    const TONE_EXPLAIN = {
+      calm:    "Beruhigend – System erklärt ruhig, auch wenn eine Einschränkung aktiv ist",
+      neutral: "Neutral – keine besondere Anpassung in eine Richtung",
+      alert:   "Klar und direkt – akuter Hinweis, ohne zu alarmieren",
+    };
+
+    const parts = [];
+    parts.push(`Stil: ${styleProfile}`);
+    if (communicationDensity) parts.push(`Dichte: ${communicationDensity}`);
+    if (adaptiveTone)         parts.push(`Ton: ${adaptiveTone}`);
+    if (outputFit)            parts.push(`Output-Fit: ${outputFit}`);
+    const styleExp = STYLE_EXPLAIN[styleProfile];
+    if (styleExp)             parts.push(styleExp);
+    const toneExp  = TONE_EXPLAIN[adaptiveTone];
+    if (toneExp)              parts.push(toneExp);
+    if (adaptationReason)     parts.push(`Grund: ${adaptationReason}`);
+    if (userPreferenceHint)   parts.push(`Hinweis: ${userPreferenceHint}`);
+    return parts.length ? `Adaptiver Stil (Step 10 Block 4): ${parts.join(" · ")}` : "";
+  }
+  const adaptiveUXBlock = buildAdaptiveUXBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock, attentionDeliveryBlock, autonomyPreviewBlock, adaptiveUXBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1447,6 +1485,23 @@ Erstelle eine strukturierte Erklärung mit:
      - Wichtig: Keine Blackbox – das System soll erklärbar und nachvollziehbar bleiben; keine aggressiven Formulierungen, keine Werbesprache
      - Halte die Erklärung kurz (1–3 Sätze) – klar, defensiv, vertrauensbildend
      Wenn kein Autonomie-Vorschau-Kontext vorhanden oder autonomyState="suggestion" ohne weitere Einschränkungen, diesen Punkt weglassen.
+33. Adaptiver Stil & Output-Anpassung (Step 10 Block 4): Falls ein adaptiver UX-/Feedback-Kontext vorhanden ist, erkläre kurz und nachvollziehbar, wie und warum das System seinen Ausgabe-Stil anpasst – ohne aufdringlich oder unverständlich zu werden –
+     - styleProfile="coach": erkläre, dass das System gerade einen ruhigeren, erklärenden Ton wählt – einfache Sprache, mehr Einordnung, keine Alarmierung
+     - styleProfile="executive": erkläre, dass das System gerade knapper und entscheidungsnaher formuliert – direkter Ton, weniger Erklärung, mehr Handlungsfokus
+     - styleProfile="analyst": erkläre, dass das System einen sachlichen, ausgewogenen Ton wählt – etwas Begründung, kein Extremstil
+     - communicationDensity="high": weise darauf hin, dass das System gerade mehr Information ausgibt – überfällige Wiedervorlage, Bestätigung nötig, oder komplexe Signallage
+     - communicationDensity="low": erkläre, dass das System sich kurz hält – kein Handlungsbedarf, stilles Monitoring ausreichend
+     - adaptiveTone="calm": erkläre, dass das System beruhigend formuliert – eine Einschränkung ist aktiv, aber kein Grund zur Alarmierung
+     - adaptiveTone="alert": erkläre, dass das System klar und direkt spricht – akutes Signal oder überfällige Reaktion nötig
+     - outputFit="guarded_calm": erkläre, dass die Ausgabe ruhig und erklärend ist, weil das System aktuell gebremst oder gesichert ist
+     - outputFit="high_signal_alert": erkläre, dass eine knappe, direkte Entscheidungshilfe sinnvoll ist, weil ein akutes Signal vorliegt
+     - outputFit="quiet_monitor": erkläre, dass die Ausgabe kurz gehalten wird, weil kein aktiver Hinweis nötig ist
+     - outputFit="standard_analysis": erkläre, dass eine ausgewogene Analyse mit etwas Begründung sinnvoll ist
+     - adaptationReason vorhanden: nutze es als direkte Erklärung der Stil-Entscheidung
+     - userPreferenceHint vorhanden: erkläre kurz, welche Art von Ausgabe für den aktuellen Signalzustand bevorzugt wird
+     - Wichtig: Keine aggressive Personalisierung, keine intime Interpretation, keine Werbung; nur nachvollziehbare Hinweise
+     - Halte die Erklärung kurz (1–2 Sätze) – klar, defensiv und kompatibel
+     Wenn kein adaptiver UX-Kontext vorhanden oder styleProfile="analyst" ohne besondere Anpassungen, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
