@@ -102,6 +102,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 9 Block 4: Partial auto-execution under policy
 // Step 9 Block 5: Recovery, stop, override & promotion safety layer
 const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary } = require("../services/governance.context");
+// HQS 2.0 Block 1: Data Quality summary from factor history
+const { getRecentHqsDataQuality } = require("../services/factorHistory.repository");
 
 const router = express.Router();
 
@@ -2508,6 +2510,105 @@ router.get("/recovery-safety-summary", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin recovery-safety-summary route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/hqs-data-quality
+ * HQS 2.0 Block 1: Read-only meta view of Data Quality, Confidence &
+ * Imputation status across recent HQS score snapshots.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate summary: avg confidence, imputation rate, stale flags
+ *   - per-symbol compact entries with version + quality meta
+ *
+ * All derived from factor_history table – no new DB calls beyond that.
+ * No mutations – read-only observability endpoint.
+ *
+ * Query params:
+ *   ?limit=50  – number of recent snapshots to evaluate (1–200)
+ * ───────────────────────────────────────────────────────── */
+router.get("/hqs-data-quality", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const rows = await getRecentHqsDataQuality(limit);
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate summary
+    const total = rows.length;
+    let confidenceSum = 0;
+    let confidenceCount = 0;
+    let imputedCount = 0;
+    let staleCount = 0;
+    let missingFundamentalsCount = 0;
+    let hqsVersions = new Set();
+
+    for (const row of rows) {
+      if (row.hqsVersion) hqsVersions.add(row.hqsVersion);
+
+      if (row.confidenceScore != null) {
+        confidenceSum += Number(row.confidenceScore);
+        confidenceCount++;
+      }
+
+      const dqm = row.dataQualityMeta || {};
+      const imp = row.imputationMeta || {};
+
+      const dqFlags = Array.isArray(dqm.dataQualityFlags) ? dqm.dataQualityFlags : [];
+      const impFlags = Array.isArray(imp.imputationFlags) ? imp.imputationFlags : [];
+      const freshFlags = Array.isArray(dqm.freshnessFlags) ? dqm.freshnessFlags : [];
+
+      if (impFlags.length > 0)                          imputedCount++;
+      if (freshFlags.length > 0)                        staleCount++;
+      if (dqFlags.includes("missing_fundamentals"))     missingFundamentalsCount++;
+    }
+
+    const avgConfidence = confidenceCount > 0
+      ? Math.round(confidenceSum / confidenceCount)
+      : null;
+
+    const summary = {
+      total,
+      avgConfidence,
+      imputedCount,
+      imputationRate: total > 0 ? Math.round((imputedCount / total) * 100) : 0,
+      staleCount,
+      staleRate: total > 0 ? Math.round((staleCount / total) * 100) : 0,
+      missingFundamentalsCount,
+      hqsVersions: Array.from(hqsVersions),
+    };
+
+    // Compact per-entry view
+    const entries = rows.map((row) => {
+      const dqm = row.dataQualityMeta || {};
+      const imp = row.imputationMeta || {};
+      return {
+        symbol:           row.symbol,
+        hqsScore:         row.hqsScore,
+        regime:           row.regime,
+        hqsVersion:       row.hqsVersion ?? null,
+        confidenceScore:  row.confidenceScore ?? null,
+        dataQualityFlags: dqm.dataQualityFlags || [],
+        imputationFlags:  imp.imputationFlags  || [],
+        freshnessFlags:   dqm.freshnessFlags   || [],
+        confidenceReason: dqm.confidenceReason   ?? null,
+        createdAt:        row.createdAt,
+      };
+    });
+
+    return res.json({
+      success:          true,
+      generatedAt:      new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin hqs-data-quality route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

@@ -50,7 +50,7 @@ async function initFactorTable() {
   // HQS-Backend and hqs-scraping-service start concurrently.
   //
   // All columns must be defined in the CREATE TABLE IF NOT EXISTS statement below.
-  
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS factor_history (
       id SERIAL PRIMARY KEY,
@@ -74,6 +74,12 @@ async function initFactorTable() {
       portfolio_return FLOAT,
       factors JSONB,
 
+      -- HQS 2.0 Block 1: Data Quality, Confidence & Imputation meta
+      hqs_version TEXT,
+      confidence_score FLOAT,
+      data_quality_meta JSONB,
+      imputation_meta JSONB,
+
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -84,6 +90,10 @@ async function initFactorTable() {
 
 /* =========================================================
    SAVE SINGLE STOCK SNAPSHOT
+   HQS 2.0: accepts optional hqsVersion, confidenceScore,
+   dataQualityMeta, imputationMeta for quality-layer storage.
+   Falls back gracefully to legacy insert if HQS 2.0 columns
+   are not yet present in an existing deployment.
 ========================================================= */
 
 async function saveScoreSnapshot({
@@ -96,10 +106,54 @@ async function saveScoreSnapshot({
   regime,
   marketAverage,
   volatility,
+  hqsVersion,
+  confidenceScore,
+  dataQualityMeta,
+  imputationMeta,
 }) {
   try {
     const normalizedRegime = normRegime(regime);
 
+    // Try the extended insert that includes HQS 2.0 quality meta columns.
+    // If the table was created before these columns existed (legacy deployment),
+    // we gracefully fall back to the original insert so existing flow is never broken.
+    try {
+      await pool.query(
+        `
+        INSERT INTO factor_history
+        (symbol, hqs_score, momentum, quality, stability, relative, regime,
+         market_average, volatility,
+         hqs_version, confidence_score, data_quality_meta, imputation_meta)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        `,
+        [
+          String(symbol || "").trim().toUpperCase(),
+          Number(hqsScore),
+          momentum ?? null,
+          quality ?? null,
+          stability ?? null,
+          relative ?? null,
+          normalizedRegime,
+          marketAverage ?? null,
+          volatility ?? null,
+          hqsVersion ?? null,
+          confidenceScore != null ? Number(confidenceScore) : null,
+          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
+          imputationMeta ? JSON.stringify(imputationMeta) : null,
+        ]
+      );
+      return;
+    } catch (extErr) {
+      // Column does not exist in this deployment – fall back to legacy insert.
+      // PostgreSQL error code 42703 = undefined_column.
+      if (extErr.code === "42703") {
+        if (logger?.warn) logger.warn("saveScoreSnapshot: HQS 2.0 columns not yet in table, using legacy insert", { message: extErr.message });
+      } else {
+        throw extErr;
+      }
+    }
+
+    // Legacy fallback (pre-HQS-2.0 table schema)
     await pool.query(
       `
       INSERT INTO factor_history
@@ -284,6 +338,79 @@ async function getBacktestHistory(symbol, limit = 200) {
   }
 }
 
+/* =========================================================
+   HQS 2.0: DATA QUALITY SUMMARY (admin read-only)
+   Returns recent factor_history rows with quality meta,
+   trying HQS 2.0 columns first and falling back to legacy
+   projection if they are not yet present.
+========================================================= */
+
+async function getRecentHqsDataQuality(limit = 50) {
+  try {
+    // Try with HQS 2.0 columns
+    try {
+      const res = await pool.query(
+        `
+        SELECT
+          id,
+          symbol,
+          hqs_score        AS "hqsScore",
+          regime,
+          hqs_version      AS "hqsVersion",
+          confidence_score AS "confidenceScore",
+          data_quality_meta AS "dataQualityMeta",
+          imputation_meta   AS "imputationMeta",
+          created_at        AS "createdAt"
+        FROM factor_history
+        WHERE symbol <> 'PORTFOLIO'
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+
+      return res.rows;
+    } catch (extErr) {
+      // Column does not exist in this deployment – fall back to legacy projection.
+      // PostgreSQL error code 42703 = undefined_column.
+      if (extErr.code === "42703") {
+        if (logger?.warn) logger.warn("getRecentHqsDataQuality: HQS 2.0 columns not present, using legacy projection");
+      } else {
+        throw extErr;
+      }
+    }
+
+    // Legacy fallback projection (no quality meta columns)
+    const res = await pool.query(
+      `
+      SELECT
+        id,
+        symbol,
+        hqs_score  AS "hqsScore",
+        regime,
+        created_at AS "createdAt"
+      FROM factor_history
+      WHERE symbol <> 'PORTFOLIO'
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return res.rows.map((row) => ({
+      ...row,
+      hqsVersion: null,
+      confidenceScore: null,
+      dataQualityMeta: null,
+      imputationMeta: null,
+    }));
+  } catch (err) {
+    if (logger?.error) logger.error("getRecentHqsDataQuality error", { message: err.message });
+    else console.error("❌ getRecentHqsDataQuality error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initFactorTable,
   saveScoreSnapshot,
@@ -291,4 +418,5 @@ module.exports = {
   loadFactorHistory,
   updateForwardReturns,
   getBacktestHistory,
+  getRecentHqsDataQuality,
 };

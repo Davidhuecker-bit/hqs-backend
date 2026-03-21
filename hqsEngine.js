@@ -6,11 +6,21 @@
   - accepts adaptiveWeights (3rd param)
   - accepts regimeHint (4th param) from advanced regime engines
   - keeps DB-first weights as fallback
+  HQS 2.0 Block 1: Data Quality, Confidence & Imputation Basis
+  - computeDataQuality() derives confidenceScore, dataQualityFlags,
+    imputationFlags, freshnessFlags and confidenceReason from live data
+  - HQS output extended with these meta fields (backward compatible)
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
 const { saveScoreSnapshot } = require("./services/factorHistory.repository");
 const { loadLastWeights } = require("./services/weightHistory.repository");
+
+/* =========================================================
+   HQS VERSION
+========================================================= */
+
+const HQS_VERSION = "2.0";
 
 // optional logger (falls vorhanden)
 let logger = null;
@@ -161,6 +171,106 @@ function calculateRelativeStrength(symbolChange, marketAverage) {
 }
 
 /* =========================================================
+   HQS 2.0 – DATA QUALITY, CONFIDENCE & IMPUTATION LAYER
+   Derives a transparent confidence score (0–100) and explicit
+   flags from the available market and fundamental data.
+   Rules are intentionally simple and auditable.
+========================================================= */
+
+function computeDataQuality(item, fundamentals) {
+  const dataQualityFlags = [];
+  const imputationFlags = [];
+  const freshnessFlags = [];
+  const confidenceReasons = [];
+
+  // ── Market field checks ──────────────────────────────────────────────────
+  const missingMarketFields = [];
+  if (item.price == null)             missingMarketFields.push("price");
+  if (item.changesPercentage == null) missingMarketFields.push("changesPercentage");
+  if (item.high == null)              missingMarketFields.push("high");
+  if (item.low == null)               missingMarketFields.push("low");
+  if (item.open == null)              missingMarketFields.push("open");
+
+  if (missingMarketFields.length > 0) {
+    dataQualityFlags.push("missing_market_fields");
+    confidenceReasons.push(`Missing market fields: ${missingMarketFields.join(", ")}`);
+  }
+
+  // ── Stability imputation check (calculateStability falls back to 50 when open=0) ──
+  if (!safe(item.open)) {
+    imputationFlags.push("stability_imputed_no_open");
+    confidenceReasons.push("Stability estimated: open price unavailable");
+  }
+
+  // ── Price range anomaly (high == low or low > high → stale/snapshot issue) ──
+  const high = safe(item.high);
+  const low = safe(item.low);
+  if (high > 0 && low > 0 && high === low) {
+    freshnessFlags.push("price_range_static");
+    confidenceReasons.push("High == Low: possible stale snapshot");
+  }
+
+  // ── Fundamental data checks ──────────────────────────────────────────────
+  const hasFundamentals = !!fundamentals;
+
+  if (!hasFundamentals) {
+    dataQualityFlags.push("missing_fundamentals");
+    imputationFlags.push("quality_factor_imputed");
+    confidenceReasons.push("Fundamentals unavailable: quality factor uses default 50");
+  } else {
+    // Check if fundamentals came from an estimated/fallback source
+    const meta = fundamentals._meta || {};
+    if (meta.isEstimated) {
+      imputationFlags.push("fundamentals_estimated");
+      confidenceReasons.push("Fundamentals marked as estimated by data provider");
+    }
+    if (meta.missingFields && meta.missingFields.length > 0) {
+      dataQualityFlags.push("fundamentals_partial");
+      confidenceReasons.push(`Fundamental fields missing: ${meta.missingFields.join(", ")}`);
+    }
+  }
+
+  // ── Freshness check via _qualityMeta from normalizer ────────────────────
+  if (item._qualityMeta) {
+    const qm = item._qualityMeta;
+    if (qm.missingFields && qm.missingFields.length > 0) {
+      dataQualityFlags.push("normalizer_missing_fields");
+    }
+    if (!qm.hasMinimal) {
+      freshnessFlags.push("no_minimal_price_data");
+      confidenceReasons.push("Normalizer: no valid price available");
+    }
+  }
+
+  // ── Confidence score: start at 100, deduct for each quality issue ────────
+  let confidenceScore = 100;
+
+  // Missing core market data is a significant confidence hit
+  confidenceScore -= missingMarketFields.length * 8;
+
+  // Missing fundamentals reduces quality-factor reliability
+  if (!hasFundamentals) confidenceScore -= 15;
+
+  // Imputed values lower confidence
+  confidenceScore -= imputationFlags.length * 5;
+
+  // Freshness issues
+  confidenceScore -= freshnessFlags.length * 7;
+
+  confidenceScore = clamp(Math.round(confidenceScore), 0, 100);
+
+  return {
+    confidenceScore,
+    dataQualityFlags,
+    imputationFlags,
+    freshnessFlags,
+    confidenceReason: confidenceReasons.length > 0
+      ? confidenceReasons.join("; ")
+      : "All core data fields present",
+  };
+}
+
+/* =========================================================
    MAIN ENGINE
 ========================================================= */
 
@@ -202,7 +312,10 @@ async function buildHQSResponse(
 
     const momentum = calculateMomentum(item.changesPercentage, item.trend);
     const stability = calculateStability(item);
-    const quality = calculateQuality(fundamentals);
+
+    // calculateQuality uses first element if fundamentals is an array (Finnhub format)
+    const fundamentalsRecord = Array.isArray(fundamentals) ? fundamentals[0] : fundamentals;
+    const quality = calculateQuality(fundamentalsRecord);
     const relative = calculateRelativeStrength(
       item.changesPercentage,
       marketAverage
@@ -218,6 +331,9 @@ async function buildHQSResponse(
 
     const finalScore = clamp(Math.round(baseScore), 0, 100);
 
+    // ── HQS 2.0: derive data quality meta ────────────────────────────────
+    const dataQuality = computeDataQuality(item, fundamentalsRecord);
+
     await saveScoreSnapshot({
       symbol: item.symbol,
       hqsScore: finalScore,
@@ -226,6 +342,16 @@ async function buildHQSResponse(
       stability,
       relative,
       regime,
+      hqsVersion: HQS_VERSION,
+      confidenceScore: dataQuality.confidenceScore,
+      dataQualityMeta: {
+        dataQualityFlags: dataQuality.dataQualityFlags,
+        freshnessFlags: dataQuality.freshnessFlags,
+        confidenceReason: dataQuality.confidenceReason,
+      },
+      imputationMeta: {
+        imputationFlags: dataQuality.imputationFlags,
+      },
     });
 
     return {
@@ -252,6 +378,13 @@ async function buildHQSResponse(
           ? "HALTEN"
           : "NICHT KAUFEN",
       timestamp: new Date().toISOString(),
+      // ── HQS 2.0 meta fields ──────────────────────────────────────────
+      hqsVersion: HQS_VERSION,
+      confidenceScore: dataQuality.confidenceScore,
+      dataQualityFlags: dataQuality.dataQualityFlags,
+      imputationFlags: dataQuality.imputationFlags,
+      freshnessFlags: dataQuality.freshnessFlags,
+      confidenceReason: dataQuality.confidenceReason,
     };
   } catch (error) {
     if (logger?.error)
@@ -261,6 +394,7 @@ async function buildHQSResponse(
     return {
       symbol: item?.symbol || null,
       hqsScore: null,
+      hqsVersion: HQS_VERSION,
       error: "HQS calculation failed",
     };
   }
