@@ -3009,4 +3009,114 @@ router.get("/hqs-shadow-meta", requireAdmin, async (req, res) => {
   }
 });
 
+/* =========================================================
+   STEP 10 BLOCK 1: COMPANION OUTPUT META (read-only)
+   GET /api/admin/companion-meta
+   Returns clarity mode distribution, companion status summary,
+   and output reason tags across recent HQS explainability data.
+========================================================= */
+router.get("/companion-meta", requireAdmin, async (req, res) => {
+  try {
+    const governanceCtx = computeGovernanceContext(req);
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+
+    const rows = await getRecentHqsExplainabilityMeta(limit);
+    const total = rows.length;
+
+    // ── Tag distribution (from explainableTags) ───────────────────────────
+    const tagCounts = {};
+    const COMPANION_TAG_LABELS = {
+      quality_leader:     "Qualitätsführer im Sektor",
+      stable_uptrend:     "stabiler Aufwärtstrend",
+      regime_tailwind:    "Marktlage unterstützt das Signal",
+      regime_headwind:    "Marktlage belastet das Signal",
+      liquidity_watch:    "Liquidität wird beobachtet",
+      low_confidence:     "Datenlage noch unsicher",
+      sector_adjusted:    "sektorbereinigt bewertet",
+      event_caution:      "kurzfristig erhöhte Unsicherheit",
+      elevated_volatility:"erhöhte Schwankungsbreite",
+      data_imputed:       "Datenlücken wurden geschlossen",
+    };
+    for (const row of rows) {
+      const tags = Array.isArray(row.explainableTags) ? row.explainableTags : [];
+      for (const tag of tags) {
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+      }
+    }
+
+    // ── Companion status distribution (derived from HQS scores) ──────────
+    let highSignalCount    = 0;
+    let neutralSignalCount = 0;
+    let weakSignalCount    = 0;
+    let lowConfidenceCount = 0;
+    let eventCautionCount  = 0;
+
+    for (const row of rows) {
+      const score = Number(row.hqsScore) || 50;
+      const tags  = Array.isArray(row.explainableTags) ? row.explainableTags : [];
+      if (tags.includes("low_confidence"))     lowConfidenceCount++;
+      if (tags.includes("event_caution"))      eventCautionCount++;
+      if (score >= 70)                         highSignalCount++;
+      else if (score >= 50)                    neutralSignalCount++;
+      else                                     weakSignalCount++;
+    }
+
+    // ── Plain-language reason tag summary ────────────────────────────────
+    const reasonTagSummary = Object.entries(tagCounts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([tag, count]) => ({
+        tag,
+        plainLabel: COMPANION_TAG_LABELS[tag] ?? tag,
+        count,
+        pct: total > 0 ? Math.round((count / total) * 100) : 0,
+      }));
+
+    const summary = {
+      total,
+      // Companion status distribution across scored stocks
+      companionStatusDistribution: {
+        highSignal:    highSignalCount,
+        neutralSignal: neutralSignalCount,
+        weakSignal:    weakSignalCount,
+        highSignalPct:    total > 0 ? Math.round((highSignalCount    / total) * 100) : 0,
+        neutralSignalPct: total > 0 ? Math.round((neutralSignalCount / total) * 100) : 0,
+        weakSignalPct:    total > 0 ? Math.round((weakSignalCount    / total) * 100) : 0,
+      },
+      // Clarity signal distribution
+      claritySignals: {
+        lowConfidenceCount,
+        eventCautionCount,
+        lowConfidencePct: total > 0 ? Math.round((lowConfidenceCount / total) * 100) : 0,
+        eventCautionPct:  total > 0 ? Math.round((eventCautionCount  / total) * 100) : 0,
+      },
+      // Top plain-language output reason tags
+      reasonTagSummary,
+      companionBasis: "step10_block1",
+    };
+
+    const entries = rows.map((row) => ({
+      symbol:          row.symbol,
+      hqsScore:        row.hqsScore,
+      hqsVersion:      row.hqsVersion ?? null,
+      explainableTags: row.explainableTags ?? [],
+      plainReasonTags: (row.explainableTags ?? [])
+        .map((t) => COMPANION_TAG_LABELS[t])
+        .filter(Boolean),
+      createdAt:       row.createdAt,
+    }));
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin companion-meta route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
 module.exports = router;

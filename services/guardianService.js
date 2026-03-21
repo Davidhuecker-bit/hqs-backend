@@ -1063,7 +1063,22 @@ async function analyzeStockWithGuardian(context) {
   }
   const recoverySafetyBlock = buildRecoverySafetyBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock]
+  // Step 10 Block 1: Companion Output block – plain-language translation of key signal state.
+  // Reads from already-computed marketData companion output or derives from core signals.
+  function buildCompanionExplanationBlock() {
+    const co = marketData?.companionOutput ?? null;
+    if (!co) return "";
+    const parts = [];
+    if (co.companionStatus)     parts.push(`Status: ${co.companionStatus}`);
+    if (co.isItGoodOrBad)       parts.push(`Einschätzung: ${co.isItGoodOrBad}`);
+    if (co.doINeedToAct)        parts.push(`Handlungsbedarf: ${co.doINeedToAct}`);
+    if (co.plainLanguageReason) parts.push(`Grund: ${co.plainLanguageReason}`);
+    if (co.companionNextStep)   parts.push(`Nächster Schritt: ${co.companionNextStep}`);
+    return parts.length ? `Nutzer-Einordnung (Step 10 Block 1): ${parts.join(" · ")}` : "";
+  }
+  const companionExplanationBlock = buildCompanionExplanationBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1325,6 +1340,16 @@ Erstelle eine strukturierte Erklärung mit:
      - Wichtig: Keine echte Infrastruktur-Steuerung. Nur Governance-Aussagen und strukturierte Empfehlungen.
      - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
      Wenn kein Recovery-/Safety-Kontext vorhanden oder alle Felder false/none, diesen Punkt weglassen.
+30. Nutzerfreundliche Einordnung (Step 10 Block 1): Falls eine Nutzer-Einordnung vorhanden ist, fasse kurz und verständlich zusammen, was das Signal für einen normalen Nutzer bedeutet –
+     - Antworte auf drei einfache Fragen, falls die Daten vorhanden sind: Was ist das Signal? Ist es gut oder schlecht? Muss ich etwas tun?
+     - Verwende einfache Alltagssprache – keine Fachbegriffe, keine technischen Codes
+     - companionStatus vorhanden: erkläre kurz, was der aktuelle Systemstatus für den Nutzer bedeutet (z. B. "braucht Prüfung" = das System empfiehlt, dieses Signal genauer anzuschauen)
+     - isItGoodOrBad vorhanden: erkläre kurz, warum das Signal positiv, gemischt oder schwach ist
+     - doINeedToAct vorhanden: erkläre klar, ob und wie der Nutzer aktiv werden sollte
+     - companionNextStep vorhanden: erkläre den empfohlenen nächsten Schritt in einfacher Sprache
+     - Wichtig: Keine Versprechen, keine Garantien, keine Handlungsaufforderungen zu Transaktionen
+     - Halte die Erklärung kurz (1–3 Sätze) – ruhig, orientierend und klar
+     Wenn keine Nutzer-Einordnung vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
