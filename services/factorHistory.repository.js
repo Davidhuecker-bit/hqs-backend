@@ -80,6 +80,11 @@ async function initFactorTable() {
       data_quality_meta JSONB,
       imputation_meta JSONB,
 
+      -- HQS 2.0 Block 2: Sector / Peer-Group Normalization meta
+      sector_template TEXT,
+      peer_context_available BOOLEAN,
+      sector_scoring_meta JSONB,
+
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -110,13 +115,54 @@ async function saveScoreSnapshot({
   confidenceScore,
   dataQualityMeta,
   imputationMeta,
+  sectorTemplate,
+  peerContextAvailable,
+  sectorScoringMeta,
 }) {
   try {
     const normalizedRegime = normRegime(regime);
 
-    // Try the extended insert that includes HQS 2.0 quality meta columns.
+    // Try the extended insert that includes HQS 2.0 Block 1 + Block 2 meta columns.
     // If the table was created before these columns existed (legacy deployment),
-    // we gracefully fall back to the original insert so existing flow is never broken.
+    // we gracefully fall back so existing flow is never broken.
+    try {
+      await pool.query(
+        `
+        INSERT INTO factor_history
+        (symbol, hqs_score, momentum, quality, stability, relative, regime,
+         market_average, volatility,
+         hqs_version, confidence_score, data_quality_meta, imputation_meta,
+         sector_template, peer_context_available, sector_scoring_meta)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        `,
+        [
+          String(symbol || "").trim().toUpperCase(),
+          Number(hqsScore),
+          momentum ?? null,
+          quality ?? null,
+          stability ?? null,
+          relative ?? null,
+          normalizedRegime,
+          marketAverage ?? null,
+          volatility ?? null,
+          hqsVersion ?? null,
+          confidenceScore != null ? Number(confidenceScore) : null,
+          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
+          imputationMeta ? JSON.stringify(imputationMeta) : null,
+          sectorTemplate ?? null,
+          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
+          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
+        ]
+      );
+      return;
+    } catch (extErr) {
+      // Column does not exist in this deployment – fall back to Block 1 insert first.
+      // PostgreSQL error code 42703 = undefined_column.
+      if (extErr.code !== "42703") throw extErr;
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 2 columns not yet in table, trying Block 1 insert", { message: extErr.message });
+    }
+
+    // Block 1 fallback (table has Block 1 columns but not Block 2)
     try {
       await pool.query(
         `
@@ -143,14 +189,10 @@ async function saveScoreSnapshot({
         ]
       );
       return;
-    } catch (extErr) {
+    } catch (b1Err) {
       // Column does not exist in this deployment – fall back to legacy insert.
-      // PostgreSQL error code 42703 = undefined_column.
-      if (extErr.code === "42703") {
-        if (logger?.warn) logger.warn("saveScoreSnapshot: HQS 2.0 columns not yet in table, using legacy insert", { message: extErr.message });
-      } else {
-        throw extErr;
-      }
+      if (b1Err.code !== "42703") throw b1Err;
+      if (logger?.warn) logger.warn("saveScoreSnapshot: HQS 2.0 columns not yet in table, using legacy insert", { message: b1Err.message });
     }
 
     // Legacy fallback (pre-HQS-2.0 table schema)
@@ -411,6 +453,77 @@ async function getRecentHqsDataQuality(limit = 50) {
   }
 }
 
+/* =========================================================
+   HQS 2.0 Block 2: SECTOR META SUMMARY (admin read-only)
+   Returns recent factor_history rows with sector scoring meta.
+   Tries Block 2 columns first, falls back gracefully.
+========================================================= */
+
+async function getRecentHqsSectorMeta(limit = 50) {
+  try {
+    // Try with HQS 2.0 Block 2 columns
+    try {
+      const res = await pool.query(
+        `
+        SELECT
+          id,
+          symbol,
+          hqs_score              AS "hqsScore",
+          regime,
+          hqs_version            AS "hqsVersion",
+          sector_template        AS "sectorTemplate",
+          peer_context_available AS "peerContextAvailable",
+          sector_scoring_meta    AS "sectorScoringMeta",
+          created_at             AS "createdAt"
+        FROM factor_history
+        WHERE symbol <> 'PORTFOLIO'
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+
+      return res.rows;
+    } catch (extErr) {
+      // Block 2 columns not yet present – fall back to partial projection.
+      if (extErr.code === "42703") {
+        if (logger?.warn) logger.warn("getRecentHqsSectorMeta: Block 2 columns not present, using fallback projection");
+      } else {
+        throw extErr;
+      }
+    }
+
+    // Fallback projection (no sector columns)
+    const res = await pool.query(
+      `
+      SELECT
+        id,
+        symbol,
+        hqs_score  AS "hqsScore",
+        regime,
+        created_at AS "createdAt"
+      FROM factor_history
+      WHERE symbol <> 'PORTFOLIO'
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return res.rows.map((row) => ({
+      ...row,
+      hqsVersion: null,
+      sectorTemplate: null,
+      peerContextAvailable: null,
+      sectorScoringMeta: null,
+    }));
+  } catch (err) {
+    if (logger?.error) logger.error("getRecentHqsSectorMeta error", { message: err.message });
+    else console.error("❌ getRecentHqsSectorMeta error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initFactorTable,
   saveScoreSnapshot,
@@ -419,4 +532,5 @@ module.exports = {
   updateForwardReturns,
   getBacktestHistory,
   getRecentHqsDataQuality,
+  getRecentHqsSectorMeta,
 };

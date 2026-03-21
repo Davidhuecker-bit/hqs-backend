@@ -1131,7 +1131,11 @@ async function buildMarketSnapshot() {
         normalized,
         0,
         adaptiveWeights,
-        regime
+        regime,
+        // HQS 2.0 Block 2: pass sector/industry from normalizer for sector-aware scoring
+        normalized.sector || normalized.industry
+          ? { sector: normalized.sector || null, industry: normalized.industry || null }
+          : null
       );
 
       const newsContext = newsContextBySymbol?.[symbol] || null;
