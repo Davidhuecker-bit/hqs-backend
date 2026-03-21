@@ -105,7 +105,8 @@ const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyP
 // HQS 2.0 Block 1: Data Quality summary from factor history
 // HQS 2.0 Block 2: Sector / Peer-Group Normalization meta from factor history
 // HQS 2.0 Block 3: Regime / Stability / Liquidity meta from factor history
-const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta } = require("../services/factorHistory.repository");
+// HQS 2.1 Block 4: Explainability, Versioning & Event-Awareness meta from factor history
+const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta, getRecentHqsExplainabilityMeta } = require("../services/factorHistory.repository");
 
 const router = express.Router();
 
@@ -2799,6 +2800,105 @@ router.get("/hqs-regime-meta", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin hqs-regime-meta route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/hqs-explainability-meta
+ * HQS 2.1 Block 4: Read-only explainable tags, version & event-awareness view.
+ *
+ * Surfaces:
+ *   - explainable tag distribution across recent HQS snapshots
+ *   - hqs version summary
+ *   - event awareness distribution (nominal / event_caution / event_high_caution)
+ *   - event risk flag frequency
+ *   - per-entry Block 4 meta
+ *
+ * All derived from factor_history table – no mutations.
+ *
+ * Query params:
+ *   ?limit=50  – number of recent snapshots to evaluate (1–200)
+ * ───────────────────────────────────────────────────────── */
+router.get("/hqs-explainability-meta", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const rows = await getRecentHqsExplainabilityMeta(limit);
+
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    const total = rows.length;
+    const tagCounts = {};
+    const versionCounts = {};
+    const eventAwarenessCounts = {};
+    const eventRiskFlagCounts = {};
+
+    for (const row of rows) {
+      // ── Tag distribution ────────────────────────────────────────────────
+      const tags = Array.isArray(row.explainableTags) ? row.explainableTags : [];
+      for (const tag of tags) {
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+      }
+
+      // ── Version distribution ────────────────────────────────────────────
+      const version = row.hqsVersion || "unknown";
+      versionCounts[version] = (versionCounts[version] || 0) + 1;
+
+      // ── Event awareness distribution ────────────────────────────────────
+      const eam = row.eventAwarenessMeta || {};
+      const awareness = eam.eventAwareness || "unknown";
+      eventAwarenessCounts[awareness] = (eventAwarenessCounts[awareness] || 0) + 1;
+
+      // ── Event risk flag frequency ───────────────────────────────────────
+      const flags = Array.isArray(eam.eventRiskFlags) ? eam.eventRiskFlags : [];
+      for (const flag of flags) {
+        eventRiskFlagCounts[flag] = (eventRiskFlagCounts[flag] || 0) + 1;
+      }
+    }
+
+    const toDistribution = (counts) =>
+      Object.entries(counts)
+        .map(([label, count]) => ({
+          label,
+          count,
+          pct: total > 0 ? Math.round((count / total) * 100) : 0,
+        }))
+        .sort((a, b) => b.count - a.count);
+
+    const summary = {
+      total,
+      tagDistribution:          toDistribution(tagCounts),
+      versionDistribution:      toDistribution(versionCounts),
+      eventAwarenessDistribution: toDistribution(eventAwarenessCounts),
+      eventRiskFlagDistribution: toDistribution(eventRiskFlagCounts),
+    };
+
+    const entries = rows.map((row) => {
+      const eam = row.eventAwarenessMeta || {};
+      return {
+        symbol:             row.symbol,
+        hqsScore:           row.hqsScore,
+        regime:             row.regime,
+        hqsVersion:         row.hqsVersion ?? null,
+        versionReason:      row.versionReason ?? null,
+        explainableTags:    Array.isArray(row.explainableTags) ? row.explainableTags : [],
+        eventAwareness:     eam.eventAwareness ?? null,
+        eventRiskFlags:     Array.isArray(eam.eventRiskFlags) ? eam.eventRiskFlags : [],
+        eventConfidenceImpact: eam.eventConfidenceImpact ?? null,
+        eventSource:        eam.eventSource ?? null,
+        createdAt:          row.createdAt,
+      };
+    });
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin hqs-explainability-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
