@@ -266,6 +266,20 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     partialAutoExecution: stock?.partialAutoExecution ?? null,
     // Step 9 Block 5: Recovery/stop/override/promotion-safety layer.
     recoverySafetyLayer: stock?.recoverySafetyLayer ?? null,
+    // Step 10 Block 1: Companion Output / Human Translation Layer.
+    companionOutput: buildCompanionOutput({
+      symbol,
+      category: stock?.category || meta.category || null,
+      finalConviction: stock?.finalConviction ?? null,
+      hqsScore,
+      explainableTags: stock?.explainableTags ?? [],
+      actionReadiness: stock?.actionReadiness ?? null,
+      decisionLayer:   stock?.decisionLayer   ?? null,
+      controlledApprovalFlow: stock?.controlledApprovalFlow ?? null,
+      recoverySafetyLayer:    stock?.recoverySafetyLayer    ?? null,
+      auditTrace:             stock?.auditTrace             ?? null,
+      operationalResilience:  stock?.operationalResilience  ?? null,
+    }),
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -275,6 +289,173 @@ function average(values, fallback = 0) {
   const numeric = values.map((value) => toFiniteNumber(value, Number.NaN)).filter(Number.isFinite);
   if (numeric.length === 0) return fallback;
   return numeric.reduce((acc, value) => acc + value, 0) / numeric.length;
+}
+
+// ── Step 10 Block 1: Companion Output / Human Translation Layer ──────────────
+// Translates existing technical HQS/governance/autonomy/risk signals into
+// simple, plain-language fields for everyday users.
+// No new scoring logic – only reads from already-computed per-stock fields.
+
+const COMPANION_STATUS_MAP = {
+  review_required:         "braucht Prüfung",
+  proposal_ready:          "Vorschlag liegt bereit",
+  monitor_only:            "unter Beobachtung",
+  insufficient_confidence: "Datenlage noch unsicher",
+};
+
+const COMPANION_EXPLAINABLE_TAG_MAP = {
+  quality_leader:     "Qualitätsführer im Sektor",
+  stable_uptrend:     "stabiler Aufwärtstrend",
+  regime_tailwind:    "Marktlage unterstützt das Signal",
+  regime_headwind:    "Marktlage belastet das Signal",
+  liquidity_watch:    "Liquidität wird beobachtet",
+  low_confidence:     "Datenlage noch unsicher",
+  sector_adjusted:    "sektorbereinigt bewertet",
+  event_caution:      "kurzfristig erhöhte Unsicherheit",
+  elevated_volatility:"erhöhte Schwankungsbreite",
+  data_imputed:       "Datenlücken wurden geschlossen",
+};
+
+/**
+ * Step 10 Block 1: Build a plain-language companion output block for a single stock.
+ * Reads only from already-computed signals on the stock object – no new logic, no DB calls.
+ *
+ * @param {object} stock – normalized stock object (post normalizeStockForFrontend fields)
+ * @param {string} [clarityLevel] – 'beginner' | 'standard' | 'advanced' (default: 'standard')
+ * @returns {object} companionOutput fields
+ */
+function buildCompanionOutput(stock, clarityLevel = "standard") {
+  const score = toFiniteNumber(stock?.finalConviction ?? stock?.hqsScore, 50);
+  const ar     = stock?.actionReadiness?.actionReadiness ?? null;
+  const dl     = stock?.decisionLayer?.decisionStatus   ?? null;
+  const caf    = stock?.controlledApprovalFlow?.approvalFlowStatus ?? null;
+  const rsl    = stock?.recoverySafetyLayer  ?? null;
+  const audit  = stock?.auditTrace           ?? null;
+  const opRes  = stock?.operationalResilience ?? null;
+  const tags   = Array.isArray(stock?.explainableTags) ? stock.explainableTags : [];
+
+  // ── Companion Status ─────────────────────────────────────────────────────
+  // Derive a single plain-language status from the most relevant technical state.
+  let companionStatus = "unter Beobachtung";
+  const isGuarded = rsl?.stopEligible || rsl?.degradeRequired
+    || audit?.blockedByGuardrail
+    || opRes?.degradationMode === "critical_guarded";
+  if (isGuarded) {
+    companionStatus = "aktuell gebremst";
+  } else if (ar && COMPANION_STATUS_MAP[ar]) {
+    companionStatus = COMPANION_STATUS_MAP[ar];
+  } else if (caf === "approved_pending_action") {
+    companionStatus = "bereit zur Prüfung";
+  } else if (caf === "proposal_available") {
+    companionStatus = "Vorschlag liegt bereit";
+  }
+
+  // ── Companion Tone ───────────────────────────────────────────────────────
+  // 'active' = there's something worth acting on now
+  // 'watchful' = worth monitoring, no immediate action
+  // 'calm' = nothing notable
+  let companionTone = "calm";
+  if (isGuarded || ar === "review_required" || dl === "pending_review") {
+    companionTone = "watchful";
+  }
+  if (ar === "proposal_ready" || dl === "approved_candidate"
+      || caf === "approved_pending_action") {
+    companionTone = "active";
+  }
+
+  // ── Is It Good Or Bad ────────────────────────────────────────────────────
+  let isItGoodOrBad;
+  if (tags.includes("quality_leader") || tags.includes("stable_uptrend") || score >= 72) {
+    isItGoodOrBad = "eher gut – starkes Signal";
+  } else if (tags.includes("regime_headwind") || tags.includes("elevated_volatility") || score < 42) {
+    isItGoodOrBad = "eher schwach – defensiv behandeln";
+  } else if (tags.includes("event_caution") || tags.includes("low_confidence") || score < 55) {
+    isItGoodOrBad = "gemischt – mit Vorsicht beobachten";
+  } else {
+    isItGoodOrBad = "neutral – solides Signal";
+  }
+
+  // ── Do I Need To Act ─────────────────────────────────────────────────────
+  let doINeedToAct;
+  if (isGuarded) {
+    doINeedToAct = "Nein – das System ist aktuell gebremst";
+  } else if (ar === "review_required" || dl === "pending_review") {
+    doINeedToAct = "Ja – eine Prüfung ist sinnvoll";
+  } else if (ar === "proposal_ready" || caf === "proposal_available"
+             || dl === "approved_candidate" || caf === "approved_pending_action") {
+    doINeedToAct = "Nein, aber ein Vorschlag liegt bereit";
+  } else if (ar === "insufficient_confidence" || dl === "needs_more_data") {
+    doINeedToAct = "Nein – Datenlage noch nicht ausreichend";
+  } else {
+    doINeedToAct = "Nein – kein Handlungsbedarf";
+  }
+
+  // ── What Is It ───────────────────────────────────────────────────────────
+  const symbol   = stock?.symbol ?? "?";
+  const category = stock?.category ?? null;
+  const tagHints = tags.slice(0, 2).map((t) => COMPANION_EXPLAINABLE_TAG_MAP[t]).filter(Boolean);
+  const tagSuffix = tagHints.length ? ` (${tagHints.join(", ")})` : "";
+  const whatIsIt = category
+    ? `${symbol} – ${category}${tagSuffix}`
+    : `${symbol}${tagSuffix}`;
+
+  // ── Plain Language Reason ────────────────────────────────────────────────
+  // Use the first explainable tag, or fall back to score-based description.
+  let plainLanguageReason;
+  if (tags.length > 0 && COMPANION_EXPLAINABLE_TAG_MAP[tags[0]]) {
+    plainLanguageReason = COMPANION_EXPLAINABLE_TAG_MAP[tags[0]];
+  } else if (score >= 70) {
+    plainLanguageReason = "Signal auf hohem Niveau";
+  } else if (score >= 55) {
+    plainLanguageReason = "Signal im mittleren Bereich";
+  } else {
+    plainLanguageReason = "Signal aktuell schwach";
+  }
+  // Append guarded reason if applicable
+  if (isGuarded && audit?.blockedByGuardrail) {
+    plainLanguageReason += " – Schutzregel aktiv";
+  } else if (rsl?.stopEligible) {
+    plainLanguageReason += " – System aktuell gebremst";
+  }
+
+  // ── Companion Next Step ──────────────────────────────────────────────────
+  let companionNextStep;
+  if (isGuarded) {
+    companionNextStep = "Abwarten – das System prüft intern";
+  } else if (caf === "approved_pending_action" || dl === "approved_candidate") {
+    companionNextStep = "Vorschlag ansehen und eigenständig entscheiden";
+  } else if (ar === "review_required" || dl === "pending_review") {
+    companionNextStep = "Signal prüfen – Freigabe oder Ablehnung";
+  } else if (ar === "proposal_ready" || caf === "proposal_available") {
+    companionNextStep = "Vorschlag ansehen – keine Pflicht zur Freigabe";
+  } else if (ar === "insufficient_confidence" || dl === "needs_more_data") {
+    companionNextStep = "Warten – mehr Daten werden erwartet";
+  } else {
+    companionNextStep = "Beobachten – kein Schritt nötig";
+  }
+
+  // ── Companion Summary (single sentence) ──────────────────────────────────
+  const companionSummary = `${symbol}: ${companionStatus} · ${isItGoodOrBad} · ${doINeedToAct}`;
+
+  // ── Clarity-level-aware description ─────────────────────────────────────
+  // beginner: very short and direct
+  // standard: concise but informative (default)
+  // advanced: includes additional technical context
+  const userClarityLevel = ["beginner", "standard", "advanced"].includes(clarityLevel)
+    ? clarityLevel
+    : "standard";
+
+  return {
+    companionSummary,
+    companionStatus,
+    companionTone,
+    userClarityLevel,
+    whatIsIt,
+    isItGoodOrBad,
+    doINeedToAct,
+    plainLanguageReason,
+    companionNextStep,
+  };
 }
 
 function buildTopSignals(stocks) {
@@ -432,6 +613,8 @@ function buildTopSignals(stocks) {
         partialAutoExecution: stock.partialAutoExecution ?? null,
         // Step 9 Block 5: recovery/stop/override/promotion-safety meta for downstream safety rendering
         recoverySafetyLayer: stock.recoverySafetyLayer ?? null,
+        // Step 10 Block 1: Companion Output – plain-language translation of the signal
+        companionOutput: stock.companionOutput ?? null,
       };
     });
 }
@@ -856,6 +1039,25 @@ function buildGuardianPayload(rawStocks, options = {}) {
     }
   }
 
+  // Step 10 Block 1: Companion Output aggregate – distribution and clarity overview across all stocks.
+  const companionMeta = {
+    statusDistribution: {
+      reviewRequired:      stocks.filter((s) => s.companionOutput?.companionStatus === "braucht Prüfung").length,
+      proposalReady:       stocks.filter((s) => s.companionOutput?.companionStatus === "Vorschlag liegt bereit").length,
+      underObservation:    stocks.filter((s) => s.companionOutput?.companionStatus === "unter Beobachtung").length,
+      dataUncertain:       stocks.filter((s) => s.companionOutput?.companionStatus === "Datenlage noch unsicher").length,
+      currentlyGuarded:    stocks.filter((s) => s.companionOutput?.companionStatus === "aktuell gebremst").length,
+      readyForReview:      stocks.filter((s) => s.companionOutput?.companionStatus === "bereit zur Prüfung").length,
+    },
+    toneDistribution: {
+      active:   stocks.filter((s) => s.companionOutput?.companionTone === "active").length,
+      watchful: stocks.filter((s) => s.companionOutput?.companionTone === "watchful").length,
+      calm:     stocks.filter((s) => s.companionOutput?.companionTone === "calm").length,
+    },
+    doINeedToActCount: stocks.filter((s) => s.companionOutput?.doINeedToAct?.startsWith("Ja")).length,
+    companionBasis: "step10_block1",
+  };
+
   return {
     success: true,
     stabilityScore,
@@ -878,6 +1080,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     productSignals,
     // Step 6 Block 3: Adaptive priority insights (active signals + adjustment direction).
     adaptivePriorityInsights,
+    // Step 10 Block 1: Companion Output aggregate – clarity and status distribution.
+    companionMeta,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
@@ -896,4 +1100,5 @@ module.exports = {
   buildGuardianPayload,
   hasCanonicalFields,
   CANONICAL_FIELDS,
+  buildCompanionOutput,
 };

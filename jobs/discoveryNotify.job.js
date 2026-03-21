@@ -240,6 +240,17 @@ function _derivePickOrchestration(pick, onWatchlist) {
           : "✅ Resume erlaubt · 🔓 Override strukturell erlaubt (Governance-Aussage)",
         safetyBasis:                  "step9_block5",
       },
+      // Step 10 Block 1: companion output for high-signal picks – plain-language translation.
+      companionOutput: {
+        companionStatus:     hasStrongData ? "braucht Prüfung" : "Vorschlag liegt bereit",
+        companionTone:       hasStrongData ? "watchful" : "active",
+        userClarityLevel:    "standard",
+        isItGoodOrBad:       "eher gut – starkes Signal",
+        doINeedToAct:        hasStrongData ? "Ja – eine Prüfung ist sinnvoll" : "Nein, aber ein Vorschlag liegt bereit",
+        plainLanguageReason: hasStrongData ? "Signal auf hohem Niveau" : "Vorschlag verfügbar",
+        companionNextStep:   hasStrongData ? "Signal prüfen – Freigabe oder Ablehnung" : "Vorschlag ansehen – keine Pflicht zur Freigabe",
+        companionBasis:      "step10_block1",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -405,6 +416,17 @@ function _derivePickOrchestration(pick, onWatchlist) {
         safetyControlSummary:         "✅ Resume erlaubt · 🔓 Override strukturell erlaubt (Governance-Aussage)",
         safetyBasis:                  "step9_block5",
       },
+      // Step 10 Block 1: companion output for proposal-level picks – plain-language translation.
+      companionOutput: {
+        companionStatus:     "Vorschlag liegt bereit",
+        companionTone:       "active",
+        userClarityLevel:    "standard",
+        isItGoodOrBad:       "neutral – solides Signal",
+        doINeedToAct:        "Nein, aber ein Vorschlag liegt bereit",
+        plainLanguageReason: "Signal im mittleren Bereich – Vorschlag verfügbar",
+        companionNextStep:   "Vorschlag ansehen – keine Pflicht zur Freigabe",
+        companionBasis:      "step10_block1",
+      },
     };
   }
   return {
@@ -567,6 +589,17 @@ function _derivePickOrchestration(pick, onWatchlist) {
       operatorInterventionRequired: false,
       safetyControlSummary:         "✅ Keine aktiven Sicherheits-/Stoppbedingungen",
       safetyBasis:                  "step9_block5",
+    },
+    // Step 10 Block 1: companion output for monitor-only picks – plain-language translation.
+    companionOutput: {
+      companionStatus:     "unter Beobachtung",
+      companionTone:       "calm",
+      userClarityLevel:    "standard",
+      isItGoodOrBad:       "gemischt – mit Vorsicht beobachten",
+      doINeedToAct:        "Nein – kein Handlungsbedarf",
+      plainLanguageReason: "Signal aktuell schwach – nur Beobachtung",
+      companionNextStep:   "Beobachten – kein Schritt nötig",
+      companionBasis:      "step10_block1",
     },
   };
 }

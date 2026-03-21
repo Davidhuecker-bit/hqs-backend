@@ -486,6 +486,21 @@ function _deriveBriefingRecoverySafetyLabel(stock) {
   return parts.length ? ` · Safety: ${parts.join(", ")}` : "";
 }
 
+/**
+ * Step 10 Block 1: Derive a compact companion/plain-language label for briefing fact lines.
+ * Surfaces the user-facing companion status and next-step hint when notable.
+ * Returns a short string label or empty string.
+ */
+function _deriveBriefingCompanionLabel(stock) {
+  const co = stock.companionOutput || null;
+  if (!co) return "";
+  // Only surface when the companion status is actionable or guarded (not routine monitoring)
+  const notableStatuses = ["braucht Prüfung", "Vorschlag liegt bereit", "aktuell gebremst", "bereit zur Prüfung"];
+  if (!notableStatuses.includes(co.companionStatus)) return "";
+  const step = co.companionNextStep ? ` → ${co.companionNextStep}` : "";
+  return ` · 💬 ${co.companionStatus}${step}`;
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -628,8 +643,11 @@ function buildFactsFromMarket(stocks) {
     // Step 9 Block 5: recovery/safety label for notable stop/degrade/operator conditions
     const recoverySafetyLabel = _deriveBriefingRecoverySafetyLabel(s);
 
+    // Step 10 Block 1: companion label for plain-language status when actionable
+    const companionLabel = _deriveBriefingCompanionLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}${recoverySafetyLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}${recoverySafetyLabel}${companionLabel}.`
     );
   }
   return lines.join("\n");
