@@ -2116,6 +2116,272 @@ function computePartialAutoExecutionSummary(opps) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 9 Block 5 – Recovery, Stop, Override & Promotion Safety Layer
+//
+// Governance principle:
+//   Blocks 1–4 established autonomy levels, drift detection, action-chain
+//   states, controlled preparation and safe internal mini-execution.
+//   Block 5 adds the first structured safety-control layer: clear rules for
+//   when the system should stop, degrade, require operator intervention,
+//   allow controlled recovery/resume, and block unsafe promotions to higher
+//   autonomy.
+//
+//   Crucially:
+//   - No real market/broker/order execution.
+//   - No new workflow or execution engine.
+//   - No real kill-switch infrastructure – killSwitchScope is only a
+//     classification token.
+//   - overrideAllowed is only a governance assertion, NOT a mutation action.
+//   - All derived purely from existing Block 1–4 + upstream governance signals.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Kill-switch scope classification tokens.
+ * Purely descriptive – no real infrastructure kill-switch is built.
+ *   none   – no safety concern requiring scope classification
+ *   case   – single-case level isolation is sufficient
+ *   tenant – tenant-wide caution should be considered
+ *   global – platform-wide defensive posture should be considered
+ */
+const KILL_SWITCH_SCOPES = {
+  none:   { rank: 0, label: "Kein Kill-Switch-Scope" },
+  case:   { rank: 1, label: "Fall-Ebene (Einzelfall-Isolation)" },
+  tenant: { rank: 2, label: "Tenant-Ebene (Tenant-weite Vorsicht)" },
+  global: { rank: 3, label: "Globale Ebene (Plattform-weiter Defensiv-Modus)" },
+};
+
+/**
+ * Derive a single Recovery, Stop, Override & Promotion Safety context for one
+ * opportunity. All inputs are consumed defensively (safe defaults on null/undefined).
+ *
+ * @param {Object} ctx – enriched opportunity object carrying all Block 1–4 layers
+ * @returns {Object} recoverySafetyLayer fields
+ */
+function computeRecoverySafetyLayer(ctx) {
+  if (!ctx || typeof ctx !== "object") {
+    return {
+      stopEligible:                 false,
+      overrideAllowed:              false,
+      killSwitchScope:              "none",
+      recoveryAction:               null,
+      rollbackSuggested:            false,
+      promotionBlocked:             false,
+      degradeRequired:              false,
+      resumeAllowed:                false,
+      operatorInterventionRequired: false,
+      safetyControlSummary:         "Kein Kontext verfügbar – Sicherheitslayer nicht ableitbar",
+      safetyBasis:                  "step9_block5",
+    };
+  }
+
+  // ── Destructure key upstream signals ─────────────────────────────────────
+  const gc  = ctx.governanceContext            || {};
+  const pp  = ctx.policyPlane                  || {};
+  const ep  = ctx.evidencePackage              || {};
+  const trg = ctx.tenantResourceGovernance     || {};
+  const or_ = ctx.operationalResilience        || {};
+  const al  = ctx.autonomyLevel                || {};
+  const dd  = ctx.driftDetection               || {};
+  const acs = ctx.actionChainState             || {};
+  const cap = ctx.controlledAutoPreparation    || {};
+  const pae = ctx.partialAutoExecution         || {};
+  const at  = ctx.auditTrace                   || {};
+  const dl  = ctx.decisionLayer                || {};
+  const caf = ctx.controlledApprovalFlow       || {};
+
+  // ── 1. Hard-block signals ─────────────────────────────────────────────────
+  const blockedByGuardrail    = at.blockedByGuardrail === true || ctx.blockedByGuardrail === true;
+  const hardGated             = gc.hardGated === true;
+  const criticalGuarded       = or_.degradationMode === "critical_guarded";
+  const policyInvalid         = ep.policyValidity === "suspended" || pp.policyStatus === "shadow";
+  const sodConflict           = gc.sodConflict === true;
+  const criticalBaseline      = dd.baselineState === "critical";
+  const highDrift             = dd.driftLevel === "high";
+  const escalationRequired    = al.escalationRequired === true;
+  const chainBlocked          = acs.chainBlocked === true;
+  const executionBlocked      = pae.autoExecutionSafety === "blocked";
+  const manualConfirmRequired = cap.manualConfirmationRequired === true;
+
+  // ── 2. Elevated-pressure signals ─────────────────────────────────────────
+  const mediumDrift           = dd.driftLevel === "medium";
+  const criticalHealth        = or_.operationalHealth === "critical";
+  const degradedHealth        = or_.operationalHealth === "degraded";
+  const highTenantPressure    = trg.rateLimitRisk === "high" || trg.backlogPressure === "elevated";
+  const resourceGuardrail     = trg.resourceGuardrail === "active";
+  const policyNotLive         = pp.policyMode === "draft";
+  const chainEscalated        = acs.actionChainState === "escalated";
+  const awaitingSignal        = acs.actionChainState === "awaiting_signal";
+  const tenantMaxRestricted   = trg.tenantMaxAutonomyLevel === "restricted";
+
+  // ── 3. stopEligible ───────────────────────────────────────────────────────
+  // True when hard-block conditions indicate the current flow must stop.
+  const stopEligible = blockedByGuardrail || hardGated || criticalGuarded
+    || policyInvalid || sodConflict || criticalBaseline || highDrift
+    || escalationRequired || chainBlocked || executionBlocked;
+
+  // ── 4. degradeRequired ────────────────────────────────────────────────────
+  // True when the system should operate in degraded/reduced mode.
+  const degradeRequired = criticalHealth || criticalBaseline || hardGated
+    || policyInvalid || criticalGuarded || (highDrift && blockedByGuardrail);
+
+  // ── 5. promotionBlocked ───────────────────────────────────────────────────
+  // Blocks promotion to a higher autonomy level when unsafe conditions exist.
+  const promotionBlocked = stopEligible || degradeRequired || mediumDrift
+    || highTenantPressure || resourceGuardrail || tenantMaxRestricted
+    || policyNotLive || chainEscalated || degradedHealth;
+
+  // ── 6. resumeAllowed ─────────────────────────────────────────────────────
+  // Resume to normal flow is allowed only when all hard conditions are clear.
+  const resumeAllowed = !stopEligible && !degradeRequired
+    && or_.recoveryState !== "at_risk"
+    && or_.operationalHealth !== "critical"
+    && !chainBlocked
+    && !blockedByGuardrail;
+
+  // ── 7. operatorInterventionRequired ──────────────────────────────────────
+  const operatorInterventionRequired = stopEligible || escalationRequired
+    || criticalHealth || policyInvalid || sodConflict || chainEscalated;
+
+  // ── 8. recoveryAction ────────────────────────────────────────────────────
+  // Descriptive safe-next-step hint when the flow is blocked or awaiting.
+  let recoveryAction = null;
+  if (chainBlocked || chainEscalated) {
+    recoveryAction = "Aktionskette entsperren oder Eskalation auflösen – Operateurprüfung erforderlich";
+  } else if (awaitingSignal) {
+    recoveryAction = "Auf fehlendes Signal warten – kein automatischer Fortschritt";
+  } else if (caf.approvalFlowStatus === "waiting_for_more_data") {
+    recoveryAction = "Fehlende Daten ergänzen – dann erneut prüfen";
+  } else if (policyInvalid) {
+    recoveryAction = "Policy-Freigabe / -Reaktivierung erforderlich – Operator einbeziehen";
+  } else if (blockedByGuardrail) {
+    recoveryAction = "Guardrail-Bedingung klären und Sperre administrativ aufheben";
+  } else if (sodConflict) {
+    recoveryAction = "SoD-Konflikt auflösen – keine automatische Maßnahme erlaubt";
+  } else if (criticalHealth || criticalGuarded) {
+    recoveryAction = "Betriebszustand stabilisieren – Systembetrieb im kritischen Modus";
+  } else if (criticalBaseline || highDrift) {
+    recoveryAction = "Drift-Signale normalisieren – Baseline-Recovery abwarten";
+  }
+
+  // ── 9. rollbackSuggested ─────────────────────────────────────────────────
+  // Suggest rollback when a recovery is needed and execution was active.
+  const wasExecuting = acs.actionChainState === "executing"
+    || acs.actionChainState === "completed"
+    || pae.autoExecutionEligible === true;
+  const rollbackSuggested = recoveryAction !== null && wasExecuting;
+
+  // ── 10. overrideAllowed ──────────────────────────────────────────────────
+  // Purely a governance assertion – not a mutation action.
+  // Allowed when: no hard SoD conflict, no hard-gated lock, operator context.
+  const overrideAllowed = !sodConflict && !hardGated && !criticalGuarded
+    && gc.callerRole !== "viewer";
+
+  // ── 11. killSwitchScope (classification only, no real infra) ─────────────
+  let killSwitchScope = "none";
+  if (stopEligible || operatorInterventionRequired) {
+    const globalCondition  = (sodConflict || criticalGuarded || policyInvalid)
+      && (criticalHealth || criticalBaseline);
+    const tenantCondition  = highTenantPressure || resourceGuardrail || tenantMaxRestricted;
+    if (globalCondition) {
+      killSwitchScope = "global";
+    } else if (tenantCondition) {
+      killSwitchScope = "tenant";
+    } else {
+      killSwitchScope = "case";
+    }
+  }
+
+  // ── 12. safetyControlSummary ─────────────────────────────────────────────
+  const summaryParts = [];
+  if (stopEligible)                 summaryParts.push("🛑 Stop möglich");
+  if (degradeRequired)              summaryParts.push("⬇️ Degradierung erforderlich");
+  if (operatorInterventionRequired) summaryParts.push("👷 Operator-Eingriff nötig");
+  if (promotionBlocked)             summaryParts.push("🚫 Promotion blockiert");
+  if (resumeAllowed)                summaryParts.push("✅ Resume erlaubt");
+  if (rollbackSuggested)            summaryParts.push("↩️ Rollback empfohlen");
+  if (overrideAllowed)              summaryParts.push("🔓 Override strukturell erlaubt");
+  if (recoveryAction)               summaryParts.push(`🔄 Recovery: ${recoveryAction}`);
+  if (killSwitchScope !== "none")   summaryParts.push(`⚡ Kill-Switch-Scope: ${killSwitchScope}`);
+
+  const safetyControlSummary = summaryParts.length
+    ? summaryParts.join(" · ")
+    : "✅ Keine aktiven Sicherheits-/Stoppbedingungen";
+
+  return {
+    stopEligible,
+    overrideAllowed,
+    killSwitchScope,
+    recoveryAction,
+    rollbackSuggested,
+    promotionBlocked,
+    degradeRequired,
+    resumeAllowed,
+    operatorInterventionRequired,
+    safetyControlSummary,
+    safetyBasis: "step9_block5",
+  };
+}
+
+/**
+ * Aggregate recovery-safety distribution across opportunities.
+ * For admin observability – no mutations, read-only summary.
+ *
+ * @param {Array} opps – array of enriched opportunities with recoverySafetyLayer
+ * @returns {Object} aggregate summary
+ */
+function computeRecoverySafetyLayerSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:                0,
+      stopEligibleCount:             0,
+      degradeRequiredCount:          0,
+      promotionBlockedCount:         0,
+      operatorInterventionCount:     0,
+      resumeAllowedCount:            0,
+      rollbackSuggestedCount:        0,
+      overrideAllowedCount:          0,
+      killSwitchScopeDistribution:   {},
+      safetyBasis:                   "step9_block5",
+    };
+  }
+
+  let stopEligibleCount         = 0;
+  let degradeRequiredCount      = 0;
+  let promotionBlockedCount     = 0;
+  let operatorInterventionCount = 0;
+  let resumeAllowedCount        = 0;
+  let rollbackSuggestedCount    = 0;
+  let overrideAllowedCount      = 0;
+  const scopeDist               = {};
+
+  for (const o of opps) {
+    const rsl = o.recoverySafetyLayer || {};
+    if (rsl.stopEligible)                 stopEligibleCount++;
+    if (rsl.degradeRequired)              degradeRequiredCount++;
+    if (rsl.promotionBlocked)             promotionBlockedCount++;
+    if (rsl.operatorInterventionRequired) operatorInterventionCount++;
+    if (rsl.resumeAllowed)                resumeAllowedCount++;
+    if (rsl.rollbackSuggested)            rollbackSuggestedCount++;
+    if (rsl.overrideAllowed)              overrideAllowedCount++;
+    const scope = rsl.killSwitchScope || "none";
+    scopeDist[scope] = (scopeDist[scope] || 0) + 1;
+  }
+
+  return {
+    totalEvaluated:                opps.length,
+    stopEligibleCount,
+    degradeRequiredCount,
+    promotionBlockedCount,
+    operatorInterventionCount,
+    resumeAllowedCount,
+    rollbackSuggestedCount,
+    overrideAllowedCount,
+    killSwitchScopeDistribution:   scopeDist,
+    safetyBasis:                   "step9_block5",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -2146,4 +2412,7 @@ module.exports = {
   EXECUTION_TYPES,
   computePartialAutoExecution,
   computePartialAutoExecutionSummary,
+  KILL_SWITCH_SCOPES,
+  computeRecoverySafetyLayer,
+  computeRecoverySafetyLayerSummary,
 };

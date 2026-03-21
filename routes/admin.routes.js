@@ -100,7 +100,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 9 Block 2: Action chains – state-machine basis
 // Step 9 Block 3: Controlled auto-preparation layer
 // Step 9 Block 4: Partial auto-execution under policy
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary } = require("../services/governance.context");
+// Step 9 Block 5: Recovery, stop, override & promotion safety layer
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2448,6 +2449,65 @@ router.get("/auto-execution-summary", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin auto-execution-summary route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/recovery-safety-summary
+ * Step 9 Block 5: Read-only admin view of recovery/stop/override/promotion-safety status.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate safety counts (stop, degrade, promotion blocked, operator
+ *     intervention, resume allowed, rollback suggested, override allowed)
+ *   - kill-switch scope distribution
+ *   - per-opportunity safety entries (compact)
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ * No mutations – read-only observability endpoint.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/recovery-safety-summary", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate recovery-safety summary
+    const recoverySafetySummary = computeRecoverySafetyLayerSummary(opportunities);
+
+    // Per-opportunity entries (compact)
+    const recoverySafetyEntries = opportunities.map((o) => {
+      const rsl = o.recoverySafetyLayer || {};
+      return {
+        symbol:                        o.symbol,
+        stopEligible:                  rsl.stopEligible                 ?? false,
+        overrideAllowed:               rsl.overrideAllowed              ?? false,
+        killSwitchScope:               rsl.killSwitchScope              ?? "none",
+        recoveryAction:                rsl.recoveryAction               ?? null,
+        rollbackSuggested:             rsl.rollbackSuggested            ?? false,
+        promotionBlocked:              rsl.promotionBlocked             ?? false,
+        degradeRequired:               rsl.degradeRequired              ?? false,
+        resumeAllowed:                 rsl.resumeAllowed                ?? false,
+        operatorInterventionRequired:  rsl.operatorInterventionRequired ?? false,
+        safetyControlSummary:          rsl.safetyControlSummary        ?? null,
+      };
+    });
+
+    return res.json({
+      success:               true,
+      generatedAt:           new Date().toISOString(),
+      governanceContext:     governanceCtx,
+      recoverySafetySummary,
+      recoverySafetyEntries,
+    });
+  } catch (error) {
+    logger.error("Admin recovery-safety-summary route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
