@@ -244,6 +244,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     auditTrace: stock?.auditTrace ?? null,
     // Step 8 Block 1: Per-opportunity governance classification (role, scope, SoD).
     governanceContext: stock?.governanceContext ?? null,
+    // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis.
+    policyPlane: stock?.policyPlane ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -388,6 +390,8 @@ function buildTopSignals(stocks) {
         auditTrace: audit,
         // Step 8 Block 1: governance context for downstream role/scope rendering
         governanceContext: stock.governanceContext ?? null,
+        // Step 8 Block 3: policy-plane for downstream policy/shadow/four-eyes rendering
+        policyPlane: stock.policyPlane ?? null,
       };
     });
 }
@@ -566,6 +570,15 @@ function buildPortfolioIntelligenceSummary(stocks) {
       blockedByGuardrailCount: stocks.filter((s) => s.auditTrace?.blockedByGuardrail === true).length,
       criticalAttentionCount:  stocks.filter((s) => s.exceptionFields?.exceptionPriority === "critical").length,
       operatingBasis:          "step8_block2",
+    },
+    // Step 8 Block 3: policy-plane summary – version/status/mode/four-eyes/shadow counts.
+    policyPlane: {
+      secondApprovalRequiredCount: stocks.filter((s) => s.policyPlane?.requiresSecondApproval === true).length,
+      shadowModeCount:             stocks.filter((s) => s.policyPlane?.policyMode === "shadow").length,
+      draftModeCount:              stocks.filter((s) => s.policyPlane?.policyMode === "draft").length,
+      shadowEligibleCount:         stocks.filter((s) => s.policyPlane?.shadowModeEligible === true).length,
+      pendingApprovalPolicyCount:  stocks.filter((s) => s.policyPlane?.policyStatus === "pending_approval").length,
+      policyPlaneBasis:            "step8_block3",
     },
   };
 }

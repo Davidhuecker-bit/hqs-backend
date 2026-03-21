@@ -292,6 +292,117 @@ function computeOperatingConsoleContext(opps) {
   };
 }
 
+/* =========================================================
+   STEP 8 BLOCK 3: POLICY PLANE / SHADOW MODE / FOUR-EYES BASIS
+
+   Derives a first-class policy-plane descriptor per opportunity.
+   No external policy engine – only structured internal context
+   with version, status, mode, shadow-readiness and four-eyes
+   (second-approval) classification.
+
+   policyStatus values:
+     active           – policy is live and operative
+     pending_approval – policy mutation awaiting (first) approval
+     shadow           – policy in what-if / shadow evaluation
+     draft            – policy prepared but not yet active
+
+   policyMode values:
+     live   – normal execution path
+     shadow – what-if observation only, no real action
+     draft  – not yet promoted to any execution path
+
+   requiresSecondApproval / approvalState:
+     Only for critical policy mutations (approved_candidate +
+     review_required, or guardrail-blocked): signals that a second
+     independent actor must confirm before any mutation proceeds.
+     No digital signature or workflow engine – structural readiness only.
+========================================================= */
+
+/**
+ * Compute the Policy Plane context for a single opportunity.
+ * Derives policy version, status, mode, shadow-mode readiness,
+ * and four-eyes / dual-approval classification from existing
+ * governance signals.  No new DB calls.
+ *
+ * @param {object} opp    - Opportunity with governance layers attached
+ * @param {object} [govCtx] - Pre-computed governance context
+ * @returns {object} Policy plane descriptor
+ */
+function computePolicyPlaneContext(opp, govCtx) {
+  const gc = govCtx || computeGovernanceContext();
+
+  const auditTrace           = opp?.auditTrace           || {};
+  const decisionLayer        = opp?.decisionLayer        || {};
+  const actionReadiness      = opp?.actionReadiness      || {};
+  const controlledApprovalFlow = opp?.controlledApprovalFlow || {};
+
+  const isBlocked          = auditTrace.blockedByGuardrail === true;
+  const isApprovedCandidate = decisionLayer.decisionStatus === "approved_candidate";
+  const isReviewRequired   = actionReadiness.actionReadiness === "review_required";
+  const isDeferred         = controlledApprovalFlow.approvalFlowStatus === "deferred";
+  const isPendingApproval  =
+    controlledApprovalFlow.approvalFlowStatus === "approved_pending_action" ||
+    controlledApprovalFlow.approvalFlowStatus === "awaiting_review";
+
+  // ── Policy status ─────────────────────────────────────────────────────────
+  // Derived from existing operational state; no new signals introduced.
+  let policyStatus = "active";
+  if (isBlocked) {
+    // Blocked = policy-level gate: must receive approval before re-activation
+    policyStatus = "pending_approval";
+  } else if (isDeferred) {
+    // Deferred = policy evaluated in shadow mode first before going live
+    policyStatus = "shadow";
+  } else if (isPendingApproval) {
+    policyStatus = "pending_approval";
+  }
+
+  // ── Policy mode ───────────────────────────────────────────────────────────
+  // live by default; shadow for deferred/what-if cases; draft for blocked
+  let policyMode = "live";
+  if (isDeferred) policyMode = "shadow";
+  if (isBlocked)  policyMode = "draft";
+
+  // ── Four-eyes / dual-approval ─────────────────────────────────────────────
+  // Required when the decision is critical: approved_candidate + review_required,
+  // or when a guardrail blocks further progress.
+  const requiresSecondApproval = (isApprovedCandidate && isReviewRequired) || isBlocked;
+
+  // approvalState: structural readiness – no workflow engine, classification only
+  const approvalState = requiresSecondApproval ? "awaiting_second" : "none";
+
+  // secondApprovalReady: current governance actor can perform the second approval
+  const secondApprovalReady = requiresSecondApproval && gc.approvalActionAllowed === true;
+
+  // ── Shadow-mode eligibility ───────────────────────────────────────────────
+  // True when the policy could be evaluated in shadow mode (not hard-blocked,
+  // not already in draft, and in a review or proposal state).
+  const shadowModeEligible =
+    !isBlocked &&
+    policyMode !== "draft" &&
+    (isReviewRequired || isApprovedCandidate || isPendingApproval);
+
+  // shadowReason: only set when the policy is actively in shadow mode
+  const shadowReason =
+    policyMode === "shadow"
+      ? "Deferred pending re-evaluation – shadow observation active"
+      : null;
+
+  return {
+    policyVersion:         "v1",
+    policyStatus,
+    policyMode,
+    requiresSecondApproval,
+    approvalState,
+    secondApprovalReady,
+    shadowModeEligible,
+    shadowReason,
+    policyScope:           "per_opportunity",
+    policyMutationAllowed: gc.policyMutationAllowed === true,
+    policyPlaneBasis:      "step8_block3",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -301,4 +412,5 @@ module.exports = {
   computeGovernanceContext,
   deriveOpportunityGovernance,
   computeOperatingConsoleContext,
+  computePolicyPlaneContext,
 };

@@ -46,7 +46,8 @@ const {
 // Step 5: User attention level – derived from portfolio/delta/action signals
 const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 8 Block 1: Governance context – actor-role, SoD, tenant scope classification
-const { deriveOpportunityGovernance, computeGovernanceContext } = require("./governance.context");
+// Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
+const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2536,7 +2537,9 @@ async function getTopOpportunities(arg = 10) {
     const governanceContext = deriveOpportunityGovernance({ ...oppFull, auditTrace, controlledApprovalFlow, actionReadiness });
     // Step 8 Block 2: derive compact exception descriptor for Operating Console view
     const exceptionFields = computeExceptionFields({ actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields };
+    // Step 8 Block 3: derive policy-plane descriptor (version/status/mode/four-eyes/shadow)
+    const policyPlane = computePolicyPlaneContext({ ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, governanceContext });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

@@ -130,6 +130,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 8 Block 2: Exception fields – operating-console exception classification.
   const exceptionFields = marketData?.exceptionFields ?? context?.exceptionFields ?? null;
 
+  // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis.
+  const policyPlane = marketData?.policyPlane ?? context?.policyPlane ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -687,7 +690,42 @@ async function analyzeStockWithGuardian(context) {
   }
   const exceptionHubBlock = buildExceptionHubBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock]
+  // Step 8 Block 3: Policy Plane block – policy version/status/mode, shadow, four-eyes.
+  function buildPolicyPlaneBlock() {
+    if (!policyPlane) return "";
+    const parts = [];
+    if (policyPlane.policyVersion) {
+      parts.push(`Policy-Version: ${policyPlane.policyVersion}`);
+    }
+    if (policyPlane.policyStatus && policyPlane.policyStatus !== "active") {
+      const statusLabels = {
+        pending_approval: "⏳ Freigabe ausstehend",
+        shadow:           "👁 Shadow-Modus (Beobachtung)",
+        draft:            "📝 Entwurf (nicht aktiv)",
+      };
+      parts.push(`Policy-Status: ${statusLabels[policyPlane.policyStatus] || policyPlane.policyStatus}`);
+    }
+    if (policyPlane.policyMode && policyPlane.policyMode !== "live") {
+      const modeLabels = {
+        shadow: "Shadow-Modus – keine reale Aktion",
+        draft:  "Entwurfsmodus – noch nicht aktiv",
+      };
+      parts.push(`Policy-Modus: ${modeLabels[policyPlane.policyMode] || policyPlane.policyMode}`);
+    }
+    if (policyPlane.requiresSecondApproval) {
+      parts.push(`Vier-Augen-Freigabe erforderlich: ${policyPlane.secondApprovalReady ? "Zweiter Genehmiger verfügbar" : "Zweiter Genehmiger ausstehend"}`);
+    }
+    if (policyPlane.shadowModeEligible && policyPlane.policyMode === "live") {
+      parts.push("Shadow-Test möglich: Policy kann im Shadow-Modus evaluiert werden");
+    }
+    if (policyPlane.shadowReason) {
+      parts.push(`Shadow-Grund: ${policyPlane.shadowReason}`);
+    }
+    return parts.length ? `Policy-Plane (Step 8 Block 3): ${parts.join(" · ")}` : "";
+  }
+  const policyPlaneBlock = buildPolicyPlaneBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -843,6 +881,18 @@ Erstelle eine strukturierte Erklärung mit:
      - exceptionPriority="high": weise auf erhöhten Handlungsbedarf hin – baldige Prüfung empfohlen
      - Halte die Erklärung kurz (1–2 Sätze) – nur Leitstands-Einordnung, keine neue Analyse
      Wenn kein Exception-Hub vorhanden oder exceptionType="normal", diesen Punkt weglassen.
+21. Policy-Plane (Step 8 Block 3): Falls ein Policy-Plane-Kontext vorhanden ist, erkläre kurz die Policy-Ebene –
+     - policyStatus="pending_approval": erkläre, dass eine Policy-Mutation oder -Aktivierung noch eine Freigabe benötigt – kein automatischer Fortschritt
+     - policyStatus="shadow": erkläre, dass diese Policy im Shadow-Modus evaluiert wird – nur Beobachtung, keine reale Aktion
+     - policyStatus="draft": erkläre, dass diese Policy noch im Entwurfsstadium ist – noch nicht aktiv, noch nicht freigegeben
+     - policyMode="shadow": weise darauf hin, dass die aktuelle Bewertung im Shadow-Modus stattfindet – was-wäre-wenn-Basis, keine Auswirkung auf echte Aktionen
+     - policyMode="draft": weise darauf hin, dass die Policy im Entwurfsmodus ist – aktive Sperrung verhindert Weitergang
+     - requiresSecondApproval=true: erkläre, dass eine Vier-Augen-Freigabe erforderlich ist – eine zweite unabhängige Bestätigung muss vorliegen, bevor die Policy-Mutation vollzogen werden kann
+     - secondApprovalReady=true: bestätige, dass ein geeigneter zweiter Genehmiger verfügbar ist
+     - secondApprovalReady=false (bei requiresSecondApproval=true): weise darauf hin, dass noch kein zweiter Genehmiger vorhanden ist
+     - shadowModeEligible=true (bei policyMode="live"): nenne kurz, dass ein Shadow-Test für diese Policy möglich wäre, bevor sie live geht
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Policy-Ebenen-Einordnung, keine neue Analyse
+     Wenn kein Policy-Plane-Kontext vorhanden oder policyMode="live" und policyStatus="active", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

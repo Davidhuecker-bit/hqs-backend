@@ -92,7 +92,8 @@ const {
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
 // Step 8 Block 1: Governance context for admin-level role/scope classification
 // Step 8 Block 2: Operating Console / Exception Hub aggregate view
-const { computeGovernanceContext, computeOperatingConsoleContext } = require("../services/governance.context");
+// Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -1954,6 +1955,77 @@ router.get("/exception-hub", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin exception-hub route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/policy-plane
+ * Step 8 Block 3: Policy Plane / Shadow Mode / Four-Eyes – read-only.
+ *
+ * Returns a governance-level summary of policy versions, statuses, modes,
+ * shadow-mode eligibility and four-eyes (second-approval) classification
+ * derived from existing opportunity layers.  No new signals introduced.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/policy-plane", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate policy-plane summary from enriched opportunities
+    const secondApprovalRequired = opportunities.filter((o) => o.policyPlane?.requiresSecondApproval === true);
+    const shadowMode              = opportunities.filter((o) => o.policyPlane?.policyMode === "shadow");
+    const draftMode               = opportunities.filter((o) => o.policyPlane?.policyMode === "draft");
+    const shadowEligible          = opportunities.filter((o) => o.policyPlane?.shadowModeEligible === true);
+    const pendingApprovalPolicy   = opportunities.filter((o) => o.policyPlane?.policyStatus === "pending_approval");
+
+    const policyPlaneSummary = {
+      totalEvaluated:            opportunities.length,
+      secondApprovalRequiredCount: secondApprovalRequired.length,
+      shadowModeCount:           shadowMode.length,
+      draftModeCount:            draftMode.length,
+      shadowEligibleCount:       shadowEligible.length,
+      pendingApprovalPolicyCount: pendingApprovalPolicy.length,
+      policyPlaneBasis:          "step8_block3",
+    };
+
+    // Slim per-entry list for non-live / non-normal policy states
+    const policyEntries = opportunities
+      .filter((o) => o.policyPlane && o.policyPlane.policyMode !== "live")
+      .map((o) => ({
+        symbol:                o.symbol,
+        policyVersion:         o.policyPlane.policyVersion,
+        policyStatus:          o.policyPlane.policyStatus,
+        policyMode:            o.policyPlane.policyMode,
+        requiresSecondApproval: o.policyPlane.requiresSecondApproval,
+        approvalState:         o.policyPlane.approvalState,
+        secondApprovalReady:   o.policyPlane.secondApprovalReady,
+        shadowModeEligible:    o.policyPlane.shadowModeEligible,
+        shadowReason:          o.policyPlane.shadowReason ?? null,
+        policyScope:           o.policyPlane.policyScope,
+        policyMutationAllowed: o.policyPlane.policyMutationAllowed,
+        // Relevant cross-layer context
+        decisionStatus:        o.decisionLayer?.decisionStatus         ?? null,
+        approvalFlowStatus:    o.controlledApprovalFlow?.approvalFlowStatus ?? null,
+        blockedByGuardrail:    o.auditTrace?.blockedByGuardrail        ?? false,
+        governanceContext:     o.governanceContext                      ?? null,
+      }));
+
+    return res.json({
+      success:         true,
+      generatedAt:     new Date().toISOString(),
+      governanceContext: governanceCtx,
+      policyPlaneSummary,
+      policyEntries,
+    });
+  } catch (error) {
+    logger.error("Admin policy-plane route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
