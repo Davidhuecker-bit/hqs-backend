@@ -447,6 +447,27 @@ function _deriveBriefingAutoPreparationLabel(stock) {
   return "";
 }
 
+/**
+ * Step 9 Block 4: Derive a compact partial-auto-execution label for briefing fact lines.
+ * Only surfaces active execution types – omits no_execution / guarded_no_execution defaults silently.
+ * Returns a short string label or empty string.
+ */
+function _deriveBriefingAutoExecutionLabel(stock) {
+  const pae = stock.partialAutoExecution || null;
+  if (!pae) return "";
+  const type = pae.autoExecutionType;
+  if (!type || type === "no_execution") return "";
+  if (type === "guarded_no_execution")          return " · 🚫 Exec.: Blockiert";
+  if (type === "close_followup")                return " · 🔁 Exec.: Follow-up geschlossen";
+  if (type === "archive_closed_case")           return " · 🗄 Exec.: Fall archiviert";
+  if (type === "mark_reassessment_waiting")     return " · 🗓 Exec.: Neubewertung vorgemerkt";
+  if (type === "update_delivery_mode")          return " · 📡 Exec.: Zustellmodus aktualisiert";
+  if (type === "internal_status_advance")       return " · ▶️ Exec.: Status vorgerückt";
+  if (type === "suppress_noncritical_delivery") return " · 🔕 Exec.: Zustellung unterdrückt";
+  if (type === "queue_manual_action_card")      return " · 📋 Exec.: Aktionskarte eingereiht";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -583,8 +604,11 @@ function buildFactsFromMarket(stocks) {
     // Step 9 Block 3: controlled auto-preparation label for actionable prep types
     const autoPreparationLabel = _deriveBriefingAutoPreparationLabel(s);
 
+    // Step 9 Block 4: partial auto-execution label for active execution types
+    const autoExecutionLabel = _deriveBriefingAutoExecutionLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}.`
     );
   }
   return lines.join("\n");
