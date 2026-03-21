@@ -355,6 +355,21 @@ function _deriveBriefingEvidenceLabel(stock) {
   return "";
 }
 
+/**
+ * Step 8 Block 5: Derive a compact tenant/resource governance label for briefing fact lines.
+ * Only surfaces elevated resource states (quota warning, high load, guardrail, rate-limit risk).
+ * Returns a short string label or empty string when resource state is normal.
+ */
+function _deriveBriefingTenantResourceLabel(stock) {
+  const trg = stock.tenantResourceGovernance || null;
+  if (!trg) return "";
+  if (trg.resourceGovernanceStatus === "hard_gated") return " · 🔒 Ressource gesperrt";
+  if (trg.quotaWarning === true)                      return ` · ⚠️ Quota-Last: ${trg.tenantLoadBand}`;
+  if (trg.rateLimitRisk === "high")                   return " · 🚦 Rate-Limit-Risiko hoch";
+  if (trg.backlogPressure === "elevated")             return " · 📋 Backlog erhöht";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -473,8 +488,11 @@ function buildFactsFromMarket(stocks) {
     // Step 8 Block 4: evidence-package label for non-valid policy validity or four-eyes evidence
     const evidenceLabel = _deriveBriefingEvidenceLabel(s);
 
+    // Step 8 Block 5: tenant/resource governance label for elevated resource states
+    const tenantResourceLabel = _deriveBriefingTenantResourceLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}.`
     );
   }
   return lines.join("\n");

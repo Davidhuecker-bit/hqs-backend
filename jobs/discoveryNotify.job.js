@@ -119,6 +119,22 @@ function _derivePickOrchestration(pick, onWatchlist) {
         ],
         evidenceBasis: "step8_block4",
       },
+      // Step 8 Block 5: tenant/resource governance for high-signal picks
+      tenantResourceGovernance: {
+        tenantId:                 "tenant_default",
+        tenantPolicyScope:        "per_opportunity",
+        tenantMaxAutonomyLevel:   "restricted",
+        tenantQuotaProfile:       "elevated",
+        resourceGovernanceStatus: "controlled",
+        rateLimitRisk:            "medium",
+        noisyNeighborRisk:        "low",
+        quotaUsage:               hasStrongData ? 0.75 : 0.4,
+        backlogPressure:          hasStrongData ? "elevated" : "moderate",
+        tenantLoadBand:           hasStrongData ? "high" : "medium",
+        quotaWarning:             hasStrongData,
+        resourceGuardrail:        "standby",
+        tenantResourceBasis:      "step8_block5",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -184,6 +200,22 @@ function _derivePickOrchestration(pick, onWatchlist) {
         ],
         evidenceBasis: "step8_block4",
       },
+      // Step 8 Block 5: tenant/resource governance for proposal-level picks
+      tenantResourceGovernance: {
+        tenantId:                 "tenant_default",
+        tenantPolicyScope:        "per_opportunity",
+        tenantMaxAutonomyLevel:   "standard",
+        tenantQuotaProfile:       "standard",
+        resourceGovernanceStatus: "monitored",
+        rateLimitRisk:            "low",
+        noisyNeighborRisk:        "low",
+        quotaUsage:               0.4,
+        backlogPressure:          "none",
+        tenantLoadBand:           "medium",
+        quotaWarning:             false,
+        resourceGuardrail:        "inactive",
+        tenantResourceBasis:      "step8_block5",
+      },
     };
   }
   return {
@@ -246,6 +278,22 @@ function _derivePickOrchestration(pick, onWatchlist) {
         { trace: "action_readiness", value: "monitor_only" },
       ],
       evidenceBasis: "step8_block4",
+    },
+    // Step 8 Block 5: tenant/resource governance for monitor-only picks
+    tenantResourceGovernance: {
+      tenantId:                 "tenant_default",
+      tenantPolicyScope:        "per_opportunity",
+      tenantMaxAutonomyLevel:   "permissive",
+      tenantQuotaProfile:       "relaxed",
+      resourceGovernanceStatus: "open",
+      rateLimitRisk:            "low",
+      noisyNeighborRisk:        "low",
+      quotaUsage:               0.1,
+      backlogPressure:          "none",
+      tenantLoadBand:           "low",
+      quotaWarning:             false,
+      resourceGuardrail:        "inactive",
+      tenantResourceBasis:      "step8_block5",
     },
   };
 }

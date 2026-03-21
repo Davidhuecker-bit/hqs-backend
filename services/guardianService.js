@@ -137,6 +137,9 @@ async function analyzeStockWithGuardian(context) {
   const evidencePackage = marketData?.evidencePackage ?? context?.evidencePackage ?? null;
   const policyValidity  = marketData?.policyValidity  ?? context?.policyValidity  ?? null;
 
+  // Step 8 Block 5: Tenant/resource governance – load band, quota, guardrail.
+  const tenantResourceGovernance = marketData?.tenantResourceGovernance ?? context?.tenantResourceGovernance ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -759,7 +762,41 @@ async function analyzeStockWithGuardian(context) {
   }
   const evidencePackageBlock = buildEvidencePackageBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock]
+  // Step 8 Block 5: Tenant/resource governance block – load band, quota, guardrail.
+  function buildTenantResourceGovernanceBlock() {
+    if (!tenantResourceGovernance) return "";
+    const parts = [];
+    const { tenantLoadBand, resourceGovernanceStatus, resourceGuardrail, quotaWarning, rateLimitRisk, backlogPressure, tenantMaxAutonomyLevel } = tenantResourceGovernance;
+
+    if (resourceGovernanceStatus === "hard_gated") {
+      parts.push("🔒 Ressource gesperrt (hard-gated) – manuelle Freigabe erforderlich");
+    } else if (resourceGovernanceStatus === "controlled") {
+      parts.push("⚙️ Ressource kontrolliert – aktive Governance-Überwachung");
+    }
+    if (quotaWarning) {
+      parts.push(`⚠️ Quota-Warnung: Tenant-Last hoch (Band: ${tenantLoadBand})`);
+    }
+    if (rateLimitRisk === "high") {
+      parts.push("🚦 Rate-Limit-Risiko: hoch");
+    } else if (rateLimitRisk === "medium") {
+      parts.push("🚦 Rate-Limit-Risiko: mittel");
+    }
+    if (backlogPressure === "elevated") {
+      parts.push("📋 Backlog-Druck erhöht – offene Nachverfolgung und ausstehende Entscheidung");
+    }
+    if (tenantMaxAutonomyLevel === "restricted") {
+      parts.push("🛡 Maximale Autonomie eingeschränkt (restricted) – erhöhte Governance-Kontrolle");
+    }
+    if (resourceGuardrail === "active") {
+      parts.push("Ressource-Guardrail: aktiv");
+    } else if (resourceGuardrail === "standby") {
+      parts.push("Ressource-Guardrail: Bereitschaft");
+    }
+    return parts.length ? `Tenant/Ressource-Governance (Step 8 Block 5): ${parts.join(" · ")}` : "";
+  }
+  const tenantResourceGovernanceBlock = buildTenantResourceGovernanceBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -935,6 +972,16 @@ Erstelle eine strukturierte Erklärung mit:
      - requiresSecondApproval=true in approvalSummary: bestätige, dass die Vier-Augen-Anforderung im Evidence-Paket verankert ist
      - Halte die Erklärung kurz (1–2 Sätze) – nur Evidence-Einordnung, keine neue Analyse
      Wenn kein Evidence-Paket vorhanden oder policyValidity="valid", diesen Punkt weglassen.
+23. Tenant/Ressource-Governance (Step 8 Block 5): Falls ein Tenant/Ressource-Governance-Kontext vorhanden ist, erkläre kurz den Ressourcen- und Plattform-Schutzstatus –
+     - resourceGovernanceStatus="hard_gated": erkläre, dass die Ressource durch einen aktiven Guardrail gesperrt ist – keine automatische Verarbeitung oder Zustellung möglich, bis die Sperre manuell aufgehoben wird
+     - resourceGovernanceStatus="controlled": erkläre, dass die Ressource unter aktiver Governance-Kontrolle steht – Reviews und Freigaben sind erforderlich
+     - quotaWarning=true: weise kurz darauf hin, dass der Tenant-Lastpegel erhöht ist und eine Quota-Warnung aktiv ist – das System arbeitet defensiv
+     - rateLimitRisk="high": erkläre, dass ein hohes Rate-Limit-Risiko besteht – das System kann Zustellungen oder Verarbeitungsschritte defensiv drosseln
+     - backlogPressure="elevated": erkläre, dass ein erhöhter Backlog-Druck vorliegt – offene Nachverfolgung und ausstehende Entscheidungen belasten die Plattform
+     - tenantMaxAutonomyLevel="restricted": weise darauf hin, dass die maximale Autonomie eingeschränkt ist – erhöhte menschliche Kontrolle ist in diesem Kontext erforderlich
+     - resourceGuardrail="active": bestätige, dass der Ressource-Guardrail aktiv ist und Schutzmaßnahmen greifen
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Ressourcen-/Tenant-Einordnung, keine neue Analyse
+     Wenn kein Tenant/Ressource-Governance-Kontext vorhanden oder resourceGovernanceStatus="open" und keine Quota-Warnung, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
