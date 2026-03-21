@@ -161,6 +161,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 9 Block 5: Recovery/stop/override/promotion-safety layer.
   const recoverySafetyLayer = marketData?.recoverySafetyLayer ?? context?.recoverySafetyLayer ?? null;
 
+  // Step 10 Block 2: Attention Management / Delivery Intelligence output.
+  const attentionDeliveryOutput = marketData?.attentionDeliveryOutput ?? context?.attentionDeliveryOutput ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -1078,7 +1081,35 @@ async function analyzeStockWithGuardian(context) {
   }
   const companionExplanationBlock = buildCompanionExplanationBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock]
+  // Step 10 Block 2: Attention/Delivery Intelligence block – explain when/why the system speaks,
+  // bundles, or stays silent.  No new analysis – only surfaces the derived delivery decision.
+  function buildAttentionDeliveryBlock() {
+    if (!attentionDeliveryOutput) return "";
+    const { deliveryMode, attentionStatus, deliveryUrgency, shouldInterrupt,
+            bundleCandidate, quietModeRecommended, deliveryReason } = attentionDeliveryOutput;
+    if (!deliveryMode) return "";
+
+    const DELIVERY_MODE_EXPLAIN = {
+      interrupt_now:       "Das System empfiehlt eine sofortige Aufmerksamkeit – kein Bündeln, kein Warten",
+      include_in_briefing: "Das Signal gehört ins nächste Briefing – kein Sofort-Interrupt nötig",
+      bundle_for_digest:   "Das Signal kann mit anderen gebündelt werden – ruhige Orientierung statt Alarm",
+      monitor_silently:    "Das System beobachtet still – kein aktiver Hinweis, kein Interrupt",
+    };
+
+    const parts = [];
+    parts.push(`Modus: ${attentionStatus || deliveryMode}`);
+    parts.push(`Dringlichkeit: ${deliveryUrgency}`);
+    if (deliveryReason) parts.push(`Grund: ${deliveryReason}`);
+    const explain = DELIVERY_MODE_EXPLAIN[deliveryMode];
+    if (explain) parts.push(explain);
+    if (shouldInterrupt)      parts.push("⚡ Sofortiger Interrupt empfohlen");
+    if (bundleCandidate)      parts.push("📦 Bündelung mit anderen Signalen möglich");
+    if (quietModeRecommended) parts.push("🔇 Stilles Monitoring – kein Alarm");
+    return parts.length ? `Aufmerksamkeit & Zustellung (Step 10 Block 2): ${parts.join(" · ")}` : "";
+  }
+  const attentionDeliveryBlock = buildAttentionDeliveryBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock, attentionDeliveryBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1350,6 +1381,19 @@ Erstelle eine strukturierte Erklärung mit:
      - Wichtig: Keine Versprechen, keine Garantien, keine Handlungsaufforderungen zu Transaktionen
      - Halte die Erklärung kurz (1–3 Sätze) – ruhig, orientierend und klar
      Wenn keine Nutzer-Einordnung vorhanden, diesen Punkt weglassen.
+31. Aufmerksamkeit & Zustellung (Step 10 Block 2): Falls ein Attention-Management-/Delivery-Intelligence-Kontext vorhanden ist, erkläre kurz und nachvollziehbar, warum das System jetzt spricht, bündelt, ins Briefing einordnet oder bewusst still bleibt –
+     - deliveryMode="interrupt_now": erkläre, warum sofortige Aufmerksamkeit nötig ist – welches Signal (Guardrail, kritische Ausnahme, überfälliges Follow-up) einen Interrupt rechtfertigt
+     - deliveryMode="include_in_briefing": erkläre, warum das Signal im nächsten Briefing ausreicht – es ist wichtig, aber kein sofortiger Interrupt nötig
+     - deliveryMode="bundle_for_digest": erkläre, warum dieses Signal mit anderen gebündelt werden kann – mittleres Signalniveau, ruhige Orientierung statt Alarm
+     - deliveryMode="monitor_silently": erkläre, warum das System hier bewusst still bleibt – kein Handlungsbedarf, kein akuter Grund für einen Hinweis
+     - shouldInterrupt=true: weise darauf hin, dass ein sofortiger Interrupt empfohlen ist – und warum (Guardrail, kritisch, überfällig)
+     - bundleCandidate=true: erkläre, dass dieses Signal für die nächste Zusammenfassung vorgemerkt ist – kein Einzelalarm nötig
+     - quietModeRecommended=true: erkläre, dass stilles Monitoring empfohlen ist – der Nutzer muss jetzt nichts tun
+     - deliveryReason vorhanden: nutze es als direkte Erklärung für die Systementscheidung
+     - deliveryUrgency="critical" oder "high": weise auf erhöhte Dringlichkeit hin, wenn das Signal über stilles Monitoring hinausgeht
+     - Wichtig: Keine neue Analyse – nur die Systementscheidung erklären, warum jetzt gesprochen, gebündelt oder geschwiegen wird
+     - Halte die Erklärung kurz (1–2 Sätze) – ruhig, orientierend, governance-kompatibel
+     Wenn kein Attention-Management-/Delivery-Kontext vorhanden oder deliveryMode="monitor_silently", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

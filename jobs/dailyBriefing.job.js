@@ -501,6 +501,20 @@ function _deriveBriefingCompanionLabel(stock) {
   return ` · 💬 ${co.companionStatus}${step}`;
 }
 
+/**
+ * Step 10 Block 2: Derive a compact attention/delivery label for briefing fact lines.
+ * Only surfaces non-silent delivery modes – omits monitor_silently silently.
+ * Returns a short string label or empty string.
+ */
+function _deriveBriefingAttentionDeliveryLabel(stock) {
+  const ado = stock.attentionDeliveryOutput || null;
+  if (!ado) return "";
+  if (ado.deliveryMode === "interrupt_now")       return " · 🔴 Jetzt – sofortiger Handlungsbedarf";
+  if (ado.deliveryMode === "include_in_briefing") return " · 📋 Ins Briefing";
+  if (ado.deliveryMode === "bundle_for_digest")   return " · 📦 Bündeln";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -646,8 +660,11 @@ function buildFactsFromMarket(stocks) {
     // Step 10 Block 1: companion label for plain-language status when actionable
     const companionLabel = _deriveBriefingCompanionLabel(s);
 
+    // Step 10 Block 2: attention/delivery label for interrupt/bundle/briefing decisions
+    const attentionDeliveryLabel = _deriveBriefingAttentionDeliveryLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}${recoverySafetyLabel}${companionLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}${recoverySafetyLabel}${companionLabel}${attentionDeliveryLabel}.`
     );
   }
   return lines.join("\n");
@@ -763,13 +780,40 @@ async function runDailyBriefing() {
         s._approvalFlowStatus = _deriveBriefingApprovalFlowStatus(s);
         // Step 7 Block 5: derive compact audit/safety hints for fact-line and ordering
         s._auditHints = _deriveBriefingAuditHints(s);
+        // Step 10 Block 2: derive attention/delivery output for briefing fact lines.
+        // Uses already-computed attention level, audit hints, and follow-up context (no new DB call).
+        const _ado_isBlocked   = s._auditHints?.blockedByGuardrail === true;
+        const _ado_isCritical  = s._attentionLevel === "critical";
+        const _ado_isHigh      = s._attentionLevel === "high";
+        const _ado_isOverdue   = s._approvalFlowStatus === "deferred" && s._attentionLevel !== "low";
+        let _ado_mode;
+        if (_ado_isBlocked || _ado_isCritical || _ado_isOverdue) {
+          _ado_mode = "interrupt_now";
+        } else if (_ado_isHigh) {
+          _ado_mode = "include_in_briefing";
+        } else if (s._attentionLevel === "medium" || s._actionReadiness === "proposal_ready") {
+          _ado_mode = "bundle_for_digest";
+        } else {
+          _ado_mode = "monitor_silently";
+        }
+        s.attentionDeliveryOutput = {
+          deliveryMode:        _ado_mode,
+          attentionStatus:     { interrupt_now: "Sofortiger Handlungsbedarf", include_in_briefing: "Für das Tages-Briefing", bundle_for_digest: "Bündeln", monitor_silently: "Still beobachten" }[_ado_mode] || _ado_mode,
+          deliveryUrgency:     _ado_isCritical ? "critical" : _ado_isHigh ? "medium" : _ado_mode === "bundle_for_digest" ? "low" : "minimal",
+          shouldInterrupt:     _ado_mode === "interrupt_now",
+          bundleCandidate:     _ado_mode === "bundle_for_digest",
+          quietModeRecommended: _ado_mode === "monitor_silently",
+          attentionBasis:      "step10_block2_briefing",
+        };
       }
       // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
       // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)
       // Tertiary sort: Step 7 Block 3 decision-status (approved_candidate > pending_review > deferred > needs_more_data)
       // Step 7 Block 4: approval-flow-status as additional tie-breaker after decision-status
       // Quaternary sort: attention level rank (critical → high → medium → low)
+      // Step 10 Block 2: attention/delivery mode tie-breaker (interrupt_now > include_in_briefing > bundle > silent)
       // Quinary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
+      const ATTENTION_DELIVERY_RANK = { interrupt_now: 0, include_in_briefing: 1, bundle_for_digest: 2, monitor_silently: 3 };
       stocks.sort((a, b) => {
         const orchDiff = _briefingOrchestrationRank(a, userHasOpenFollowUps) - _briefingOrchestrationRank(b, userHasOpenFollowUps);
         if (orchDiff !== 0) return orchDiff;
@@ -783,6 +827,9 @@ async function runDailyBriefing() {
         if (afsDiff !== 0) return afsDiff;
         const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
         if (attnDiff !== 0) return attnDiff;
+        // Step 10 Block 2: attention/delivery mode tie-breaker
+        const adDiff = (ATTENTION_DELIVERY_RANK[a.attentionDeliveryOutput?.deliveryMode] ?? 3) - (ATTENTION_DELIVERY_RANK[b.attentionDeliveryOutput?.deliveryMode] ?? 3);
+        if (adDiff !== 0) return adDiff;
         return _adaptiveBriefingBoost(a, userPreferenceHints) - _adaptiveBriefingBoost(b, userPreferenceHints);
       });
 

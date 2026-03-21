@@ -280,6 +280,18 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
       auditTrace:             stock?.auditTrace             ?? null,
       operationalResilience:  stock?.operationalResilience  ?? null,
     }),
+    // Step 10 Block 2: Attention Management / Delivery Intelligence.
+    // Derives delivery-mode recommendation from existing attention/governance/companion signals.
+    attentionDeliveryOutput: buildAttentionDeliveryOutput({
+      symbol,
+      userAttentionLevel:   stock?.userAttentionLevel   ?? null,
+      companionTone:        null, // derived internally from recoverySafetyLayer + actionReadiness
+      recoverySafetyLayer:  stock?.recoverySafetyLayer  ?? null,
+      auditTrace:           stock?.auditTrace           ?? null,
+      exceptionFields:      stock?.exceptionFields      ?? null,
+      followUpContext:      stock?.followUpContext       ?? null,
+      operationalResilience: stock?.operationalResilience ?? null,
+    }),
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -458,6 +470,123 @@ function buildCompanionOutput(stock, clarityLevel = "standard") {
   };
 }
 
+// ── Step 10 Block 2: Attention Management / Delivery Intelligence ─────────────
+// Derives simple, transparent delivery-mode recommendations from already-computed
+// per-stock signals.  No new scoring – reads existing governance/companion/
+// attention/exception/follow-up/resilience fields and applies conservative rules.
+
+const ATTENTION_DELIVERY_MODE_LABELS = {
+  interrupt_now:       "Sofortiger Handlungsbedarf",
+  include_in_briefing: "Für das Tages-Briefing",
+  bundle_for_digest:   "Bündeln",
+  monitor_silently:    "Still beobachten",
+};
+
+/**
+ * Step 10 Block 2: Build an attention/delivery output block for a single stock.
+ * Reads only from already-computed signals – no new DB calls, no new scoring.
+ *
+ * Delivery mode rules (first match wins – conservative by design):
+ *   interrupt_now       ← guardrail/stop active, critical attention, operator intervention, overdue follow-up
+ *   include_in_briefing ← high attention, high exception priority
+ *   bundle_for_digest   ← medium attention or active companion tone, follow-up pending
+ *   monitor_silently    ← default (no active signal)
+ *
+ * @param {object} params – relevant signal fields (already computed on the stock)
+ * @returns {object} attentionDeliveryOutput
+ */
+function buildAttentionDeliveryOutput(params) {
+  const {
+    symbol,
+    userAttentionLevel,
+    companionTone,
+    recoverySafetyLayer,
+    auditTrace,
+    exceptionFields,
+    followUpContext,
+    operationalResilience,
+  } = params;
+
+  // ── Risk/guardrail signals always dominate ────────────────────────────────
+  const isBlocked = auditTrace?.blockedByGuardrail === true
+    || recoverySafetyLayer?.stopEligible === true
+    || recoverySafetyLayer?.degradeRequired === true
+    || operationalResilience?.degradationMode === "critical_guarded";
+
+  const isCritical = userAttentionLevel === "critical"
+    || exceptionFields?.exceptionPriority === "critical"
+    || recoverySafetyLayer?.operatorInterventionRequired === true;
+
+  const isHigh = userAttentionLevel === "high"
+    || exceptionFields?.exceptionPriority === "high";
+
+  const isFollowUpOverdue = followUpContext?.followUpStatus === "overdue"
+    || followUpContext?.reviewDue === true;
+
+  const isFollowUpPending = followUpContext?.followUpStatus === "pending"
+    || followUpContext?.reminderEligible === true;
+
+  // ── Derive delivery mode (first match wins) ───────────────────────────────
+  let deliveryMode;
+  if (isBlocked || isCritical || isFollowUpOverdue) {
+    deliveryMode = "interrupt_now";
+  } else if (isHigh) {
+    deliveryMode = "include_in_briefing";
+  } else if (userAttentionLevel === "medium" || companionTone === "active" || isFollowUpPending) {
+    deliveryMode = "bundle_for_digest";
+  } else {
+    deliveryMode = "monitor_silently";
+  }
+
+  // ── Derive output fields ─────────────────────────────────────────────────
+  const shouldInterrupt      = deliveryMode === "interrupt_now";
+  const bundleCandidate      = deliveryMode === "bundle_for_digest";
+  const quietModeRecommended = deliveryMode === "monitor_silently";
+
+  const urgencyMap = {
+    interrupt_now:       isCritical ? "critical" : "high",
+    include_in_briefing: "medium",
+    bundle_for_digest:   "low",
+    monitor_silently:    "minimal",
+  };
+  const deliveryUrgency = urgencyMap[deliveryMode] || "low";
+
+  const attentionStatus = ATTENTION_DELIVERY_MODE_LABELS[deliveryMode] || deliveryMode;
+
+  // deliveryReason: first relevant plain-language explanation (transparent rule)
+  let deliveryReason;
+  if (isBlocked) {
+    deliveryReason = "Guardrail oder Stop-Bedingung aktiv – sofortige Aufmerksamkeit nötig";
+  } else if (isCritical && exceptionFields?.exceptionPriority === "critical") {
+    deliveryReason = "Kritische Ausnahme erkannt – Operator-Eingriff empfohlen";
+  } else if (isCritical) {
+    deliveryReason = "Kritisches Aufmerksamkeitsniveau – sofortiger Handlungsbedarf";
+  } else if (isFollowUpOverdue) {
+    deliveryReason = "Überfällige Wiedervorlage – Prüfung erforderlich";
+  } else if (isHigh) {
+    deliveryReason = "Erhöhtes Aufmerksamkeitsniveau – für Briefing vorgemerkt";
+  } else if (bundleCandidate) {
+    deliveryReason = "Mittleres Signal – kann mit anderen Meldungen gebündelt werden";
+  } else {
+    deliveryReason = "Kein akuter Handlungsbedarf – stilles Monitoring";
+  }
+
+  const sym = symbol ?? "?";
+  const attentionSummary = `${sym}: ${attentionStatus} · ${deliveryUrgency} · ${deliveryReason}`;
+
+  return {
+    deliveryMode,
+    attentionStatus,
+    deliveryUrgency,
+    shouldInterrupt,
+    bundleCandidate,
+    quietModeRecommended,
+    deliveryReason,
+    attentionSummary,
+    attentionBasis: "step10_block2",
+  };
+}
+
 function buildTopSignals(stocks) {
   const DELTA_CHANGE_BADGES = {
     new_signal:               "Neu",
@@ -567,11 +696,22 @@ function buildTopSignals(stocks) {
       const auditBadge        = audit?.blockedByGuardrail
         ? " 🛡 Guardrail"
         : (audit?.governanceStatus === "data_limited" ? " 📊 Datenbasis begrenzt" : "");
+      // Step 10 Block 2: attention/delivery badge – surface interrupt or bundle mode compactly
+      const attDel = stock.attentionDeliveryOutput ?? null;
+      const ATTENTION_DELIVERY_BADGES = {
+        interrupt_now:       "🔴 Jetzt",
+        include_in_briefing: "📋 Briefing",
+        bundle_for_digest:   "📦 Bündeln",
+        monitor_silently:    null,
+      };
+      const attDelBadge = attDel?.deliveryMode && ATTENTION_DELIVERY_BADGES[attDel.deliveryMode]
+        ? ` ${ATTENTION_DELIVERY_BADGES[attDel.deliveryMode]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}${attDelBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -615,6 +755,8 @@ function buildTopSignals(stocks) {
         recoverySafetyLayer: stock.recoverySafetyLayer ?? null,
         // Step 10 Block 1: Companion Output – plain-language translation of the signal
         companionOutput: stock.companionOutput ?? null,
+        // Step 10 Block 2: Attention/Delivery Intelligence – delivery mode recommendation
+        attentionDeliveryOutput: stock.attentionDeliveryOutput ?? null,
       };
     });
 }
@@ -897,6 +1039,19 @@ function buildPortfolioIntelligenceSummary(stocks) {
       overrideAllowedCount:          stocks.filter((s) => s.recoverySafetyLayer?.overrideAllowed === true).length,
       safetyBasis:                   "step9_block5",
     },
+    // Step 10 Block 2: Attention Management / Delivery Intelligence distribution.
+    attentionDelivery: {
+      interruptNowCount:        stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "interrupt_now").length,
+      includeInBriefingCount:   stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "include_in_briefing").length,
+      bundleForDigestCount:     stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "bundle_for_digest").length,
+      monitorSilentlyCount:     stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "monitor_silently").length,
+      shouldInterruptCount:     stocks.filter((s) => s.attentionDeliveryOutput?.shouldInterrupt === true).length,
+      bundleCandidateCount:     stocks.filter((s) => s.attentionDeliveryOutput?.bundleCandidate === true).length,
+      quietModeCount:           stocks.filter((s) => s.attentionDeliveryOutput?.quietModeRecommended === true).length,
+      criticalUrgencyCount:     stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "critical").length,
+      highUrgencyCount:         stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "high" || s.attentionDeliveryOutput?.deliveryUrgency === "medium").length,
+      attentionDeliveryBasis:   "step10_block2",
+    },
   };
 }
 
@@ -1058,6 +1213,27 @@ function buildGuardianPayload(rawStocks, options = {}) {
     companionBasis: "step10_block1",
   };
 
+  // Step 10 Block 2: Attention Management / Delivery Intelligence aggregate.
+  const attentionDeliveryMeta = {
+    deliveryModeDistribution: {
+      interruptNow:        stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "interrupt_now").length,
+      includeInBriefing:   stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "include_in_briefing").length,
+      bundleForDigest:     stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "bundle_for_digest").length,
+      monitorSilently:     stocks.filter((s) => s.attentionDeliveryOutput?.deliveryMode === "monitor_silently").length,
+    },
+    urgencyDistribution: {
+      critical: stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "critical").length,
+      high:     stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "high").length,
+      medium:   stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "medium").length,
+      low:      stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "low").length,
+      minimal:  stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "minimal").length,
+    },
+    shouldInterruptCount:     stocks.filter((s) => s.attentionDeliveryOutput?.shouldInterrupt === true).length,
+    bundleCandidateCount:     stocks.filter((s) => s.attentionDeliveryOutput?.bundleCandidate === true).length,
+    quietModeCount:           stocks.filter((s) => s.attentionDeliveryOutput?.quietModeRecommended === true).length,
+    attentionDeliveryBasis:   "step10_block2",
+  };
+
   return {
     success: true,
     stabilityScore,
@@ -1082,6 +1258,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     adaptivePriorityInsights,
     // Step 10 Block 1: Companion Output aggregate – clarity and status distribution.
     companionMeta,
+    // Step 10 Block 2: Attention/Delivery Intelligence aggregate – mode distribution.
+    attentionDeliveryMeta,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
@@ -1101,4 +1279,5 @@ module.exports = {
   hasCanonicalFields,
   CANONICAL_FIELDS,
   buildCompanionOutput,
+  buildAttentionDeliveryOutput,
 };

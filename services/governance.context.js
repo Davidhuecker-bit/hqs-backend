@@ -2382,6 +2382,109 @@ function computeRecoverySafetyLayerSummary(opps) {
   };
 }
 
+// ── Step 10 Block 2: Attention Management / Delivery Intelligence ─────────────
+// Aggregates attention/delivery state from existing per-opp signals.
+// No new scoring, no new data access – reads from already-computed opp fields.
+
+/**
+ * Derive a delivery mode from a single opportunity's existing signals.
+ * Conservative rules: risk/guardrail signals dominate; defaults to monitor_silently.
+ *
+ * @param {object} opp – opportunity object with existing governance/exception/follow-up fields
+ * @returns {string} deliveryMode
+ */
+function _deriveOppDeliveryMode(opp) {
+  const rsl         = opp.recoverySafetyLayer       ?? null;
+  const audit       = opp.auditTrace                ?? null;
+  const opRes       = opp.operationalResilience     ?? null;
+  const exFields    = opp.exceptionFields           ?? null;
+  const attnLevel   = opp.userAttentionLevel        ?? null;
+  const followUp    = opp.followUpContext           ?? null;
+
+  const isBlocked  = audit?.blockedByGuardrail === true
+    || rsl?.stopEligible === true
+    || rsl?.degradeRequired === true
+    || opRes?.degradationMode === "critical_guarded";
+  const isCritical = attnLevel === "critical"
+    || exFields?.exceptionPriority === "critical"
+    || rsl?.operatorInterventionRequired === true;
+  const isHigh     = attnLevel === "high" || exFields?.exceptionPriority === "high";
+  const isOverdue  = followUp?.followUpStatus === "overdue" || followUp?.reviewDue === true;
+  const isPending  = followUp?.followUpStatus === "pending" || followUp?.reminderEligible === true;
+
+  if (isBlocked || isCritical || isOverdue) return "interrupt_now";
+  if (isHigh)                               return "include_in_briefing";
+  if (attnLevel === "medium" || isPending)  return "bundle_for_digest";
+  return "monitor_silently";
+}
+
+/**
+ * Step 10 Block 2: Compute an Attention-Management / Delivery-Intelligence aggregate
+ * across a set of opportunity objects.
+ *
+ * Reads from already-computed per-opp fields:
+ *   - userAttentionLevel, exceptionFields, auditTrace, recoverySafetyLayer,
+ *     operationalResilience, followUpContext
+ *
+ * @param {Array} opps – array of opportunity objects (already scored/classified)
+ * @returns {object} attention/delivery aggregate summary
+ */
+function computeAttentionDeliveryMeta(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:        0,
+      interruptNowCount:     0,
+      includeInBriefingCount: 0,
+      bundleForDigestCount:  0,
+      monitorSilentlyCount:  0,
+      shouldInterruptCount:  0,
+      bundleCandidateCount:  0,
+      quietModeCount:        0,
+      criticalUrgencyCount:  0,
+      highUrgencyCount:      0,
+      deliveryModeDistribution: {},
+      attentionDeliveryBasis: "step10_block2",
+    };
+  }
+
+  let interruptNowCount      = 0;
+  let includeInBriefingCount = 0;
+  let bundleForDigestCount   = 0;
+  let monitorSilentlyCount   = 0;
+  let criticalUrgencyCount   = 0;
+  let highUrgencyCount       = 0;
+  const modeDist             = {};
+
+  for (const o of opps) {
+    // Use already-computed attentionDeliveryOutput if present; derive otherwise.
+    const mode = o.attentionDeliveryOutput?.deliveryMode ?? _deriveOppDeliveryMode(o);
+    modeDist[mode] = (modeDist[mode] || 0) + 1;
+    if (mode === "interrupt_now")       interruptNowCount++;
+    else if (mode === "include_in_briefing") includeInBriefingCount++;
+    else if (mode === "bundle_for_digest")   bundleForDigestCount++;
+    else                                     monitorSilentlyCount++;
+
+    const urgency = o.attentionDeliveryOutput?.deliveryUrgency ?? null;
+    if (urgency === "critical")                          criticalUrgencyCount++;
+    else if (urgency === "high" || urgency === "medium") highUrgencyCount++;
+  }
+
+  return {
+    totalEvaluated:          opps.length,
+    interruptNowCount,
+    includeInBriefingCount,
+    bundleForDigestCount,
+    monitorSilentlyCount,
+    shouldInterruptCount:    interruptNowCount,
+    bundleCandidateCount:    bundleForDigestCount,
+    quietModeCount:          monitorSilentlyCount,
+    criticalUrgencyCount,
+    highUrgencyCount,
+    deliveryModeDistribution: modeDist,
+    attentionDeliveryBasis:  "step10_block2",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -2415,4 +2518,5 @@ module.exports = {
   KILL_SWITCH_SCOPES,
   computeRecoverySafetyLayer,
   computeRecoverySafetyLayerSummary,
+  computeAttentionDeliveryMeta,
 };

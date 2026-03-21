@@ -251,6 +251,24 @@ function _derivePickOrchestration(pick, onWatchlist) {
         companionNextStep:   hasStrongData ? "Signal prüfen – Freigabe oder Ablehnung" : "Vorschlag ansehen – keine Pflicht zur Freigabe",
         companionBasis:      "step10_block1",
       },
+      // Step 10 Block 2: attention/delivery output for high-signal picks.
+      // Strong-data picks with operator intervention → interrupt_now.
+      // Other high-signal picks → include_in_briefing.
+      attentionDeliveryOutput: {
+        deliveryMode:         hasStrongData ? "interrupt_now" : "include_in_briefing",
+        attentionStatus:      hasStrongData ? "Sofortiger Handlungsbedarf" : "Für das Tages-Briefing",
+        deliveryUrgency:      hasStrongData ? "critical" : "high",
+        shouldInterrupt:      hasStrongData,
+        bundleCandidate:      false,
+        quietModeRecommended: false,
+        deliveryReason:       hasStrongData
+          ? "Kritische Signalstärke und Operator-Eingriff nötig – sofortiger Interrupt empfohlen"
+          : "Hohes Signal – gehört ins nächste Briefing, kein sofortiger Interrupt",
+        attentionSummary:     hasStrongData
+          ? "Sofortiger Handlungsbedarf · critical · Kritische Signalstärke und Operator-Eingriff nötig"
+          : "Für das Tages-Briefing · high · Hohes Signal – Briefing-Priorität",
+        attentionBasis:       "step10_block2",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -427,6 +445,19 @@ function _derivePickOrchestration(pick, onWatchlist) {
         companionNextStep:   "Vorschlag ansehen – keine Pflicht zur Freigabe",
         companionBasis:      "step10_block1",
       },
+      // Step 10 Block 2: attention/delivery output for proposal-level picks.
+      // Proposal picks → bundle_for_digest (no interrupt, no solo alarm).
+      attentionDeliveryOutput: {
+        deliveryMode:         "bundle_for_digest",
+        attentionStatus:      "Bündeln",
+        deliveryUrgency:      "low",
+        shouldInterrupt:      false,
+        bundleCandidate:      true,
+        quietModeRecommended: false,
+        deliveryReason:       "Mittleres Signal – kann mit anderen Vorschlägen gebündelt werden",
+        attentionSummary:     "Bündeln · low · Mittleres Signal – Bündelung empfohlen",
+        attentionBasis:       "step10_block2",
+      },
     };
   }
   return {
@@ -601,6 +632,19 @@ function _derivePickOrchestration(pick, onWatchlist) {
       companionNextStep:   "Beobachten – kein Schritt nötig",
       companionBasis:      "step10_block1",
     },
+    // Step 10 Block 2: attention/delivery output for monitor-only picks.
+    // Monitor tier → monitor_silently (no interrupt, no bundle, no alarm).
+    attentionDeliveryOutput: {
+      deliveryMode:         "monitor_silently",
+      attentionStatus:      "Still beobachten",
+      deliveryUrgency:      "minimal",
+      shouldInterrupt:      false,
+      bundleCandidate:      false,
+      quietModeRecommended: true,
+      deliveryReason:       "Kein akuter Handlungsbedarf – stilles Monitoring",
+      attentionSummary:     "Still beobachten · minimal · Kein akuter Handlungsbedarf",
+      attentionBasis:       "step10_block2",
+    },
   };
 }
 
@@ -743,6 +787,10 @@ async function runDiscoveryNotify() {
             policyMode: orchestration.policyPlane?.policyMode || null,
             policyStatus: orchestration.policyPlane?.policyStatus || null,
             requiresSecondApproval: orchestration.policyPlane?.requiresSecondApproval || false,
+            // Step 10 Block 2: attention/delivery mode for observability
+            attentionDeliveryMode: orchestration.attentionDeliveryOutput?.deliveryMode || null,
+            deliveryUrgency: orchestration.attentionDeliveryOutput?.deliveryUrgency || null,
+            shouldInterrupt: orchestration.attentionDeliveryOutput?.shouldInterrupt || false,
           });
         }
 
