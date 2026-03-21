@@ -101,7 +101,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 9 Block 3: Controlled auto-preparation layer
 // Step 9 Block 4: Partial auto-execution under policy
 // Step 9 Block 5: Recovery, stop, override & promotion safety layer
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary } = require("../services/governance.context");
+// Step 10 Block 2: Attention Management / Delivery Intelligence aggregate
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary, computeAttentionDeliveryMeta } = require("../services/governance.context");
 // HQS 2.0 Block 1: Data Quality summary from factor history
 // HQS 2.0 Block 2: Sector / Peer-Group Normalization meta from factor history
 // HQS 2.0 Block 3: Regime / Stability / Liquidity meta from factor history
@@ -3115,6 +3116,54 @@ router.get("/companion-meta", requireAdmin, async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin companion-meta route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+// ── Step 10 Block 2: Attention Management / Delivery Intelligence meta ────────
+// Read-only endpoint: delivers interrupt vs briefing vs bundle vs silent distribution
+// and attention summary tags. No execution, no write, defensive defaults.
+//
+// GET /api/admin/attention-delivery-meta
+router.get("/attention-delivery-meta", async (req, res) => {
+  try {
+    const governanceCtx = computeGovernanceContext({ role: req.user?.role, tenantScope: req.user?.tenantScope });
+
+    // Fetch top opportunities (re-uses existing pipeline, same as other admin meta endpoints).
+    let opps = [];
+    try {
+      opps = await getTopOpportunities({ limit: 50, userId: null, actorRole: "viewer" });
+    } catch (oppErr) {
+      logger.warn("Admin attention-delivery-meta: getTopOpportunities failed (ignored)", { message: oppErr.message });
+    }
+
+    // Aggregate attention/delivery meta from opportunity signals.
+    const summary = computeAttentionDeliveryMeta(opps);
+
+    // Build per-opportunity delivery reason tags for admin visibility.
+    const entries = opps.slice(0, 30).map((o) => {
+      const ado = o.attentionDeliveryOutput ?? null;
+      return {
+        symbol:          o.symbol ?? null,
+        deliveryMode:    ado?.deliveryMode    ?? "monitor_silently",
+        deliveryUrgency: ado?.deliveryUrgency ?? null,
+        shouldInterrupt: ado?.shouldInterrupt ?? false,
+        bundleCandidate: ado?.bundleCandidate ?? false,
+        quietMode:       ado?.quietModeRecommended ?? true,
+        attentionReason: ado?.deliveryReason  ?? null,
+        attentionSummary: ado?.attentionSummary ?? null,
+      };
+    });
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin attention-delivery-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
