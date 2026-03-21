@@ -143,6 +143,12 @@ async function analyzeStockWithGuardian(context) {
   // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery state.
   const operationalResilience = marketData?.operationalResilience ?? context?.operationalResilience ?? null;
 
+  // Step 9 Block 1: Autonomy level – effective level, cap, escalation, basis.
+  const autonomyLevel = marketData?.autonomyLevel ?? context?.autonomyLevel ?? null;
+
+  // Step 9 Block 1: Drift detection – drift signals, level, metronom deviation, baseline state.
+  const driftDetection = marketData?.driftDetection ?? context?.driftDetection ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -840,7 +846,65 @@ async function analyzeStockWithGuardian(context) {
   }
   const operationalResilienceBlock = buildOperationalResilienceBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock]
+  // Step 9 Block 1: Autonomy level block – effective level, cap, escalation.
+  function buildAutonomyLevelBlock() {
+    if (!autonomyLevel) return "";
+    const parts = [];
+    const { effectiveLevel, levelLabel, levelCap, escalationRequired, levelBasis } = autonomyLevel;
+
+    if (effectiveLevel === "manual") {
+      parts.push("🔒 Autonomie-Level: Manuell – vollständige menschliche Kontrolle erforderlich");
+    } else if (effectiveLevel === "assisted") {
+      parts.push("🤝 Autonomie-Level: Assistiert – System schlägt vor, Mensch entscheidet");
+    } else if (effectiveLevel === "supervised") {
+      parts.push("👁 Autonomie-Level: Überwacht – System führt nach Freigabe aus");
+    }
+    if (escalationRequired) {
+      parts.push("⬆️ Eskalation erforderlich");
+    }
+    if (levelBasis) {
+      parts.push(`Grund: ${levelBasis}`);
+    }
+    if (levelCap) {
+      parts.push(`Autonomie-Cap: ${levelCap}`);
+    }
+    return parts.length ? `Autonomie-Level (Step 9 Block 1): ${parts.join(" · ")}` : "";
+  }
+  const autonomyLevelBlock = buildAutonomyLevelBlock();
+
+  // Step 9 Block 1: Drift detection block – drift signals, level, baseline state.
+  function buildDriftDetectionBlock() {
+    if (!driftDetection) return "";
+    const parts = [];
+    const { driftLevel, driftSignalCount, metronomDeviation, baselineState, driftSignals } = driftDetection;
+
+    if (driftLevel === "high") {
+      parts.push("🔴 Drift-Level: Hoch – kritische Abweichungen erkannt");
+    } else if (driftLevel === "medium") {
+      parts.push("🟡 Drift-Level: Mittel – moderate Abweichungen erkannt");
+    } else if (driftLevel === "low") {
+      parts.push("🟢 Drift-Level: Niedrig – geringfügige Abweichungen");
+    }
+    if (metronomDeviation) {
+      parts.push("Metronom-Abweichung erkannt");
+    }
+    if (baselineState === "critical") {
+      parts.push("Baseline: Kritisch");
+    } else if (baselineState === "drifting") {
+      parts.push("Baseline: Driftend");
+    }
+    if (driftSignalCount > 0) {
+      parts.push(`${driftSignalCount} Drift-Signal(e)`);
+    }
+    if (Array.isArray(driftSignals) && driftSignals.length > 0) {
+      const top = driftSignals.slice(0, 3).map((s) => s.detail || s.signal).join(", ");
+      parts.push(`Top-Signale: ${top}`);
+    }
+    return parts.length ? `Drift-Erkennung (Step 9 Block 1): ${parts.join(" · ")}` : "";
+  }
+  const driftDetectionBlock = buildDriftDetectionBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1039,6 +1103,22 @@ Erstelle eine strukturierte Erklärung mit:
      - resumeReady=false: erkläre, dass der Normalbetrieb noch nicht wiederhergestellt ist – offene Sperren oder Backlog-Druck verhindern den Übergang
      - Halte die Erklärung kurz (1–2 Sätze) – nur Resilienz-Einordnung, keine neue Analyse
      Wenn kein Betriebsresilienz-Kontext vorhanden oder degradationMode="normal", diesen Punkt weglassen.
+25. Autonomie-Level (Step 9 Block 1): Falls ein Autonomie-Level-Kontext vorhanden ist, erkläre kurz, in welchem Autonomie-Modus die Opportunity aktuell verarbeitet wird –
+     - effectiveLevel="manual": erkläre, dass vollständige menschliche Kontrolle erforderlich ist – kein automatisierter Schritt ohne Eingriff
+     - effectiveLevel="assisted": erkläre, dass das System Vorschläge macht, aber der Mensch entscheidet und ausführt
+     - effectiveLevel="supervised": erkläre, dass das System nach menschlicher Freigabe ausführt – überwachte Automatisierung
+     - escalationRequired=true: weise darauf hin, dass eine Eskalation erforderlich ist – der Autonomie-Level erfordert erweiterte menschliche Kontrolle
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Autonomie-Einordnung, keine neue Analyse
+     Wenn kein Autonomie-Level-Kontext vorhanden oder effectiveLevel="assisted" (Standard), diesen Punkt weglassen.
+26. Drift-Erkennung (Step 9 Block 1): Falls ein Drift-Erkennungs-Kontext vorhanden ist, erkläre kurz, ob Abweichungen vom normalen Betriebszustand erkannt wurden –
+     - driftLevel="high": erkläre, dass kritische Abweichungen erkannt wurden – Governance-, Policy- oder Resilienzsignale weichen erheblich ab
+     - driftLevel="medium": erkläre, dass moderate Abweichungen vorliegen – einige Signale weichen vom Normalzustand ab
+     - driftLevel="low": weise darauf hin, dass geringfügige Abweichungen erkannt wurden – Beobachtung empfohlen
+     - metronomDeviation=true: erkläre, dass mindestens ein Signal vom erwarteten Normalbetrieb abweicht
+     - baselineState="critical": weise darauf hin, dass die Baseline kritisch abweicht
+     - baselineState="drifting": weise darauf hin, dass die Baseline driftet – Normalisierung erwartet, aber Überwachung erforderlich
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Drift-Einordnung, keine neue Analyse
+     Wenn kein Drift-Kontext vorhanden oder driftLevel="none", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

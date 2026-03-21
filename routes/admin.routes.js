@@ -96,7 +96,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 8 Block 4: Evidence Packages & Policy Versioning – policyFingerprint, evidencePackage, operatorActionTrace
 // Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail summary
 // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery/pressure summary
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary } = require("../services/governance.context");
+// Step 9 Block 1: Autonomy levels + drift detection basis
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2218,6 +2219,63 @@ router.get("/operational-resilience", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin operational-resilience route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/autonomy-drift
+ * Step 9 Block 1: Read-only admin view of autonomy levels and drift detection.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate autonomy-level + drift-detection summary
+ *   - per-opportunity autonomy-level and drift entries (compact)
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/autonomy-drift", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate autonomy + drift summary
+    const autonomyDriftSummary = computeAutonomyDriftSummary(opportunities);
+
+    // Per-opportunity entries (compact)
+    const autonomyDriftEntries = opportunities.map((o) => {
+      const al = o.autonomyLevel   || {};
+      const dd = o.driftDetection  || {};
+      return {
+        symbol:             o.symbol,
+        effectiveLevel:     al.effectiveLevel    ?? "assisted",
+        levelLabel:         al.levelLabel        ?? "Assistiert",
+        levelCap:           al.levelCap          ?? "supervised",
+        escalationRequired: al.escalationRequired ?? false,
+        levelBasis:         al.levelBasis        ?? null,
+        driftLevel:         dd.driftLevel        ?? "none",
+        driftSignalCount:   dd.driftSignalCount  ?? 0,
+        metronomDeviation:  dd.metronomDeviation ?? false,
+        baselineState:      dd.baselineState     ?? "stable",
+        driftSignals:       dd.driftSignals      ?? [],
+      };
+    });
+
+    return res.json({
+      success:              true,
+      generatedAt:          new Date().toISOString(),
+      governanceContext:    governanceCtx,
+      autonomyDriftSummary,
+      autonomyDriftEntries,
+    });
+  } catch (error) {
+    logger.error("Admin autonomy-drift route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
