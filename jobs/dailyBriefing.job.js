@@ -384,6 +384,33 @@ function _deriveBriefingResilienceLabel(stock) {
   return "";
 }
 
+/**
+ * Step 9 Block 1: Derive a compact autonomy-level label for briefing fact lines.
+ * Only surfaces non-default levels (manual, supervised).
+ * Returns a short string label or empty string for "assisted" (default).
+ */
+function _deriveBriefingAutonomyLabel(stock) {
+  const al = stock.autonomyLevel || null;
+  if (!al) return "";
+  if (al.effectiveLevel === "manual")     return " · 🔒 Autonomie: Manuell";
+  if (al.effectiveLevel === "supervised") return " · 👁 Autonomie: Überwacht";
+  return "";
+}
+
+/**
+ * Step 9 Block 1: Derive a compact drift-detection label for briefing fact lines.
+ * Only surfaces non-none drift levels (high, medium, low).
+ * Returns a short string label or empty string when no drift detected.
+ */
+function _deriveBriefingDriftLabel(stock) {
+  const dd = stock.driftDetection || null;
+  if (!dd) return "";
+  if (dd.driftLevel === "high")   return " · 🔴 Drift: Hoch";
+  if (dd.driftLevel === "medium") return " · 🟡 Drift: Mittel";
+  if (dd.driftLevel === "low")    return " · 🟢 Drift: Niedrig";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -508,8 +535,14 @@ function buildFactsFromMarket(stocks) {
     // Step 8 Block 6: operational resilience label for non-normal degradation states
     const resilienceLabel = _deriveBriefingResilienceLabel(s);
 
+    // Step 9 Block 1: autonomy level label for non-default autonomy modes
+    const autonomyLabel = _deriveBriefingAutonomyLabel(s);
+
+    // Step 9 Block 1: drift detection label for non-none drift levels
+    const driftLabel = _deriveBriefingDriftLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}.`
     );
   }
   return lines.join("\n");

@@ -1034,6 +1034,300 @@ function computeOperationalResilienceContextSummary(opps) {
   };
 }
 
+/* =========================================================
+   STEP 9 BLOCK 1: AUTONOMY LEVELS + DRIFT DETECTION BASIS
+   (Teilautonome Orchestrierung – Enterprise-Framework)
+
+   First foundation layer for controlled autonomy:
+   - Defines discrete autonomy levels with a hard cap at "supervised"
+     (no autonomous execution yet).
+   - Derives the effective autonomy level per opportunity from
+     all existing governance, policy, resilience, tenant, evidence
+     and exception signals (Step 7 + Step 8).
+   - Computes a first drift/deviation detection layer that surfaces
+     any signal that deviates from the expected "normal" baseline
+     (governance drift, policy drift, resilience drift, evidence
+     drift, tenant drift).
+   - Provides an aggregate summary for admin observability.
+
+   Design principles:
+   - NO autonomous execution – this block only classifies and detects
+   - Hard cap: the highest autonomy level emitted is "supervised"
+   - Defensive: absent signals always resolve to the safest level
+   - Governance-compatible: uses only signals from Step 7 + Step 8
+   - Nachvollziehbar: every level decision includes a human-readable reason
+========================================================= */
+
+// ── Autonomy-Level Definitions ─────────────────────────────────────────────
+// Ordered from most restrictive to most permissive.
+// Step 9 Block 1 caps at "supervised" – "conditional" and "autonomous"
+// are defined for forward compatibility but never emitted.
+const AUTONOMY_LEVELS = {
+  manual:      { rank: 0, label: "Manuell",     description: "Vollständige menschliche Kontrolle – kein automatisierter Schritt" },
+  assisted:    { rank: 1, label: "Assistiert",   description: "System schlägt vor, Mensch entscheidet und führt aus" },
+  supervised:  { rank: 2, label: "Überwacht",    description: "System führt nach menschlicher Freigabe aus" },
+  conditional: { rank: 3, label: "Bedingt",      description: "System führt innerhalb vordefinierter Grenzen aus (noch nicht aktiv)" },
+  autonomous:  { rank: 4, label: "Autonom",      description: "Vollautonome Ausführung (noch nicht aktiv)" },
+};
+
+// Hard cap for Step 9 Block 1 – never emit a level above this.
+const AUTONOMY_LEVEL_CAP = "supervised";
+const AUTONOMY_LEVEL_CAP_REASON = "step9_block1_basis_only";
+
+/**
+ * Compute the effective autonomy level for a single opportunity.
+ * Uses all existing governance layers (Step 7 + Step 8) to derive
+ * the safest applicable level.  Hard-capped at "supervised".
+ *
+ * @param {object} opp - Opportunity with governance layers attached
+ * @returns {object} Autonomy level descriptor
+ */
+function computeAutonomyLevelContext(opp) {
+  const gov   = opp?.governanceContext          || {};
+  const pp    = opp?.policyPlane                || {};
+  const trg   = opp?.tenantResourceGovernance   || {};
+  const or_   = opp?.operationalResilience      || {};
+  const exc   = opp?.exceptionFields            || {};
+  const caf   = opp?.controlledApprovalFlow     || {};
+  const evid  = opp?.evidencePackage            || {};
+
+  // ── 1. Hard gates → manual ──────────────────────────────────────────────
+  if (or_.degradationMode === "critical_guarded") {
+    return _buildAutonomyResult("manual", "System kritisch abgesichert – kein automatischer Fortschritt");
+  }
+  if (trg.resourceGovernanceStatus === "hard_gated") {
+    return _buildAutonomyResult("manual", "Ressource durch Guardrail gesperrt");
+  }
+  if (exc.exceptionType === "blocked_by_guardrail" || exc.exceptionPriority === "critical") {
+    return _buildAutonomyResult("manual", "Guardrail-Sperre oder kritische Ausnahme aktiv");
+  }
+  if (gov.sodConflict === true) {
+    return _buildAutonomyResult("manual", "Separation-of-Duties-Konflikt erkannt");
+  }
+
+  // ── 2. Elevated caution → assisted ──────────────────────────────────────
+  if (or_.degradationMode === "constrained" || or_.degradationMode === "elevated_load") {
+    return _buildAutonomyResult("assisted", `System im Modus ${or_.degradationMode} – erhöhte menschliche Kontrolle`);
+  }
+  if (pp.policyStatus === "pending_approval" || pp.policyStatus === "shadow" || pp.policyStatus === "draft") {
+    return _buildAutonomyResult("assisted", `Policy-Status ${pp.policyStatus} – Freigabe erforderlich`);
+  }
+  if (gov.requiresApproval === true) {
+    return _buildAutonomyResult("assisted", "Opportunity erfordert Genehmigung");
+  }
+  if (trg.tenantMaxAutonomyLevel === "restricted") {
+    return _buildAutonomyResult("assisted", "Tenant-Autonomie eingeschränkt");
+  }
+  if (trg.rateLimitRisk === "high" || trg.backlogPressure === "elevated") {
+    return _buildAutonomyResult("assisted", "Erhöhtes Rate-Limit-/Backlog-Risiko");
+  }
+  if (evid.policyValidity === "suspended" || evid.policyValidity === "pending") {
+    return _buildAutonomyResult("assisted", `Policy-Validität ${evid.policyValidity} – manuelle Prüfung`);
+  }
+
+  // ── 3. Approved + clear signals → supervised (cap) ─────────────────────
+  if (caf.approvalFlowStatus === "approved_pending_action" && pp.policyStatus === "active") {
+    return _buildAutonomyResult("supervised", "Genehmigt und Policy aktiv – überwachte Ausführung");
+  }
+
+  // ── 4. Default: assisted (safe fallback) ────────────────────────────────
+  return _buildAutonomyResult("assisted", "Standard-Fallback – assistierter Modus");
+}
+
+/** @private Build a normalised autonomy-level result object. */
+function _buildAutonomyResult(level, reason) {
+  return {
+    effectiveLevel: level,
+    levelRank:      AUTONOMY_LEVELS[level]?.rank ?? 1,
+    levelLabel:     AUTONOMY_LEVELS[level]?.label ?? "Assistiert",
+    levelCap:       AUTONOMY_LEVEL_CAP,
+    capReason:      AUTONOMY_LEVEL_CAP_REASON,
+    escalationRequired: level === "manual",
+    levelBasis:     reason,
+    autonomyBasis:  "step9_block1",
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DRIFT DETECTION BASIS
+
+   First drift/deviation detection layer.  Checks every governance signal
+   against its expected "normal" baseline and surfaces deviations as
+   typed drift signals.  No corrective action – observation only.
+
+   Drift signal types:
+     governance_drift  – SoD conflict, role anomaly
+     policy_drift      – policy not active/live, shadow/pending
+     resilience_drift  – degradation mode not normal, health not healthy
+     evidence_drift    – policy validity not valid
+     tenant_drift      – resource governance not open, quota warning, high load
+     exception_drift   – non-normal exception type or elevated priority
+   ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Compute a first drift-detection descriptor for a single opportunity.
+ * Pure observation – no corrective action, no side-effects.
+ *
+ * @param {object} opp - Opportunity with governance layers attached
+ * @returns {object} Drift detection descriptor
+ */
+function computeDriftDetectionBasis(opp) {
+  const gov   = opp?.governanceContext          || {};
+  const pp    = opp?.policyPlane                || {};
+  const trg   = opp?.tenantResourceGovernance   || {};
+  const or_   = opp?.operationalResilience      || {};
+  const exc   = opp?.exceptionFields            || {};
+  const evid  = opp?.evidencePackage            || {};
+
+  const signals = [];
+
+  // ── Governance drift ────────────────────────────────────────────────────
+  if (gov.sodConflict === true) {
+    signals.push({ type: "governance_drift", signal: "sod_conflict", severity: "high", detail: "Separation-of-Duties-Konflikt" });
+  }
+  if (gov.isBlocked === true) {
+    signals.push({ type: "governance_drift", signal: "blocked", severity: "high", detail: "Opportunity durch Governance blockiert" });
+  }
+
+  // ── Policy drift ────────────────────────────────────────────────────────
+  if (pp.policyStatus && pp.policyStatus !== "active") {
+    signals.push({ type: "policy_drift", signal: `policy_status_${pp.policyStatus}`, severity: pp.policyStatus === "pending_approval" ? "medium" : "low", detail: `Policy-Status: ${pp.policyStatus}` });
+  }
+  if (pp.policyMode && pp.policyMode !== "live") {
+    signals.push({ type: "policy_drift", signal: `policy_mode_${pp.policyMode}`, severity: "low", detail: `Policy-Modus: ${pp.policyMode}` });
+  }
+
+  // ── Resilience drift ───────────────────────────────────────────────────
+  if (or_.degradationMode && or_.degradationMode !== "normal") {
+    const sev = or_.degradationMode === "critical_guarded" ? "high" : or_.degradationMode === "constrained" ? "medium" : "low";
+    signals.push({ type: "resilience_drift", signal: `degradation_${or_.degradationMode}`, severity: sev, detail: `Degradation: ${or_.degradationMode}` });
+  }
+  if (or_.operationalHealth && or_.operationalHealth !== "healthy") {
+    signals.push({ type: "resilience_drift", signal: `health_${or_.operationalHealth}`, severity: or_.operationalHealth === "critical" ? "high" : "medium", detail: `Betriebszustand: ${or_.operationalHealth}` });
+  }
+
+  // ── Evidence drift ─────────────────────────────────────────────────────
+  if (evid.policyValidity && evid.policyValidity !== "valid") {
+    signals.push({ type: "evidence_drift", signal: `validity_${evid.policyValidity}`, severity: evid.policyValidity === "suspended" ? "high" : "medium", detail: `Policy-Validität: ${evid.policyValidity}` });
+  }
+
+  // ── Tenant drift ───────────────────────────────────────────────────────
+  if (trg.resourceGovernanceStatus === "hard_gated") {
+    signals.push({ type: "tenant_drift", signal: "hard_gated", severity: "high", detail: "Ressource durch Guardrail gesperrt" });
+  } else if (trg.resourceGovernanceStatus === "controlled") {
+    signals.push({ type: "tenant_drift", signal: "controlled", severity: "medium", detail: "Ressource unter aktiver Governance-Kontrolle" });
+  }
+  if (trg.quotaWarning === true) {
+    signals.push({ type: "tenant_drift", signal: "quota_warning", severity: "medium", detail: "Quota-Warnung aktiv" });
+  }
+  if (trg.rateLimitRisk === "high") {
+    signals.push({ type: "tenant_drift", signal: "rate_limit_high", severity: "medium", detail: "Hohes Rate-Limit-Risiko" });
+  }
+
+  // ── Exception drift ────────────────────────────────────────────────────
+  if (exc.exceptionType && exc.exceptionType !== "normal") {
+    signals.push({ type: "exception_drift", signal: `exception_${exc.exceptionType}`, severity: exc.exceptionPriority === "critical" ? "high" : exc.exceptionPriority === "high" ? "medium" : "low", detail: `Ausnahme: ${exc.exceptionType}` });
+  }
+
+  // ── Aggregate drift level ──────────────────────────────────────────────
+  const highCount   = signals.filter((s) => s.severity === "high").length;
+  const mediumCount = signals.filter((s) => s.severity === "medium").length;
+  let driftLevel = "none";
+  if (highCount > 0)        driftLevel = "high";
+  else if (mediumCount >= 2) driftLevel = "medium";
+  else if (signals.length > 0) driftLevel = "low";
+
+  const metronomDeviation = signals.length > 0;
+  let baselineState = "stable";
+  if (highCount > 0)              baselineState = "critical";
+  else if (mediumCount > 0)       baselineState = "drifting";
+
+  return {
+    driftSignals:       signals,
+    driftSignalCount:   signals.length,
+    driftLevel,
+    metronomDeviation,
+    baselineState,
+    driftBasis:         "step9_block1",
+  };
+}
+
+/**
+ * Aggregate autonomy-level and drift-detection summary across opportunities.
+ * For the admin /autonomy-drift endpoint.
+ *
+ * @param {Array<object>} opps - Array of enriched opportunities
+ * @returns {object} Aggregate summary
+ */
+function computeAutonomyDriftSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated: 0,
+      autonomyDistribution: { manual: 0, assisted: 0, supervised: 0 },
+      driftDistribution:    { none: 0, low: 0, medium: 0, high: 0 },
+      metronomDeviationCount: 0,
+      baselineStateCounts:  { stable: 0, drifting: 0, critical: 0 },
+      dominantAutonomyLevel: "assisted",
+      dominantDriftLevel:    "none",
+      summaryBasis:          "step9_block1",
+    };
+  }
+
+  let manualCount     = 0;
+  let assistedCount   = 0;
+  let supervisedCount = 0;
+  let driftNone       = 0;
+  let driftLow        = 0;
+  let driftMedium     = 0;
+  let driftHigh       = 0;
+  let metronomCount   = 0;
+  let stableCount     = 0;
+  let driftingCount   = 0;
+  let criticalCount   = 0;
+
+  for (const o of opps) {
+    const al = o.autonomyLevel || {};
+    const dd = o.driftDetection || {};
+
+    if (al.effectiveLevel === "manual")           manualCount++;
+    else if (al.effectiveLevel === "supervised")   supervisedCount++;
+    else                                           assistedCount++;
+
+    if (dd.driftLevel === "high")        driftHigh++;
+    else if (dd.driftLevel === "medium") driftMedium++;
+    else if (dd.driftLevel === "low")    driftLow++;
+    else                                 driftNone++;
+
+    if (dd.metronomDeviation === true) metronomCount++;
+
+    if (dd.baselineState === "critical")      criticalCount++;
+    else if (dd.baselineState === "drifting")  driftingCount++;
+    else                                       stableCount++;
+  }
+
+  // Dominant autonomy level: lowest (most restrictive) level present.
+  let dominantAutonomyLevel = "supervised";
+  if (manualCount > 0)        dominantAutonomyLevel = "manual";
+  else if (assistedCount > 0) dominantAutonomyLevel = "assisted";
+
+  // Dominant drift level: highest severity present.
+  let dominantDriftLevel = "none";
+  if (driftHigh > 0)        dominantDriftLevel = "high";
+  else if (driftMedium > 0) dominantDriftLevel = "medium";
+  else if (driftLow > 0)    dominantDriftLevel = "low";
+
+  return {
+    totalEvaluated: opps.length,
+    autonomyDistribution: { manual: manualCount, assisted: assistedCount, supervised: supervisedCount },
+    driftDistribution:    { none: driftNone, low: driftLow, medium: driftMedium, high: driftHigh },
+    metronomDeviationCount: metronomCount,
+    baselineStateCounts:  { stable: stableCount, drifting: driftingCount, critical: criticalCount },
+    dominantAutonomyLevel,
+    dominantDriftLevel,
+    summaryBasis: "step9_block1",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -1050,4 +1344,9 @@ module.exports = {
   computeOperationalResilienceContext,
   computeOperationalResilienceContextSummary,
   PRESSURE_SUMMARY,
+  AUTONOMY_LEVELS,
+  AUTONOMY_LEVEL_CAP,
+  computeAutonomyLevelContext,
+  computeDriftDetectionBasis,
+  computeAutonomyDriftSummary,
 };

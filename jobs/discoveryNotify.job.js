@@ -151,6 +151,28 @@ function _derivePickOrchestration(pick, onWatchlist) {
         systemPressureSummary: hasStrongData ? "Erhöhte Last – defensiver Betrieb empfohlen" : "Normalbetrieb – kein erhöhter Systemdruck",
         resilienceBasis:       "step8_block6",
       },
+      // Step 9 Block 1: autonomy level for high-signal picks.
+      // High-signal picks with strong data require human review (assisted).
+      // Picks with strong data and elevated governance are capped at assisted.
+      autonomyLevel: {
+        effectiveLevel:     hasStrongData ? "assisted" : "assisted",
+        levelRank:          1,
+        levelLabel:         "Assistiert",
+        levelCap:           "supervised",
+        capReason:          "step9_block1_basis_only",
+        escalationRequired: hasStrongData,
+        levelBasis:         hasStrongData ? "Starke Signale – erhöhte menschliche Kontrolle" : "Standard-Fallback – assistierter Modus",
+        autonomyBasis:      "step9_block1",
+      },
+      // Step 9 Block 1: drift detection for high-signal picks.
+      driftDetection: {
+        driftSignals:     hasStrongData ? [{ type: "resilience_drift", signal: "degradation_elevated_load", severity: "low", detail: "Degradation: elevated_load" }] : [],
+        driftSignalCount: hasStrongData ? 1 : 0,
+        driftLevel:       hasStrongData ? "low" : "none",
+        metronomDeviation: hasStrongData,
+        baselineState:    hasStrongData ? "drifting" : "stable",
+        driftBasis:       "step9_block1",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -243,6 +265,26 @@ function _derivePickOrchestration(pick, onWatchlist) {
         systemPressureSummary: "Normalbetrieb – kein erhöhter Systemdruck",
         resilienceBasis:       "step8_block6",
       },
+      // Step 9 Block 1: autonomy level for proposal-level picks – standard assisted mode
+      autonomyLevel: {
+        effectiveLevel:     "assisted",
+        levelRank:          1,
+        levelLabel:         "Assistiert",
+        levelCap:           "supervised",
+        capReason:          "step9_block1_basis_only",
+        escalationRequired: false,
+        levelBasis:         "Standard-Fallback – assistierter Modus",
+        autonomyBasis:      "step9_block1",
+      },
+      // Step 9 Block 1: drift detection for proposal-level picks – no drift
+      driftDetection: {
+        driftSignals:      [],
+        driftSignalCount:  0,
+        driftLevel:        "none",
+        metronomDeviation: false,
+        baselineState:     "stable",
+        driftBasis:        "step9_block1",
+      },
     };
   }
   return {
@@ -332,6 +374,26 @@ function _derivePickOrchestration(pick, onWatchlist) {
       resumeReady:           true,
       systemPressureSummary: "Normalbetrieb – kein erhöhter Systemdruck",
       resilienceBasis:       "step8_block6",
+    },
+    // Step 9 Block 1: autonomy level for monitor-only picks – standard assisted mode
+    autonomyLevel: {
+      effectiveLevel:     "assisted",
+      levelRank:          1,
+      levelLabel:         "Assistiert",
+      levelCap:           "supervised",
+      capReason:          "step9_block1_basis_only",
+      escalationRequired: false,
+      levelBasis:         "Standard-Fallback – assistierter Modus",
+      autonomyBasis:      "step9_block1",
+    },
+    // Step 9 Block 1: drift detection for monitor-only picks – no drift
+    driftDetection: {
+      driftSignals:      [],
+      driftSignalCount:  0,
+      driftLevel:        "none",
+      metronomDeviation: false,
+      baselineState:     "stable",
+      driftBasis:        "step9_block1",
     },
   };
 }

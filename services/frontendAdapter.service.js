@@ -254,6 +254,10 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     tenantResourceGovernance: stock?.tenantResourceGovernance ?? null,
     // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery state.
     operationalResilience: stock?.operationalResilience ?? null,
+    // Step 9 Block 1: Autonomy level – effective level, cap, escalation, basis.
+    autonomyLevel: stock?.autonomyLevel ?? null,
+    // Step 9 Block 1: Drift detection – drift signals, level, metronom deviation, baseline state.
+    driftDetection: stock?.driftDetection ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -408,6 +412,10 @@ function buildTopSignals(stocks) {
         tenantResourceGovernance: stock.tenantResourceGovernance ?? null,
         // Step 8 Block 6: operational resilience meta for downstream degradation/recovery rendering
         operationalResilience: stock.operationalResilience ?? null,
+        // Step 9 Block 1: autonomy level meta for downstream autonomy/escalation rendering
+        autonomyLevel: stock.autonomyLevel ?? null,
+        // Step 9 Block 1: drift detection meta for downstream drift/baseline rendering
+        driftDetection: stock.driftDetection ?? null,
       };
     });
 }
@@ -626,6 +634,23 @@ function buildPortfolioIntelligenceSummary(stocks) {
       degradedHealthCount:  stocks.filter((s) => s.operationalResilience?.operationalHealth === "degraded").length,
       resumeReadyCount:     stocks.filter((s) => s.operationalResilience?.resumeReady === true).length,
       resilienceBasis:      "step8_block6",
+    },
+    // Step 9 Block 1: autonomy level distribution.
+    autonomyLevel: {
+      manualCount:     stocks.filter((s) => s.autonomyLevel?.effectiveLevel === "manual").length,
+      assistedCount:   stocks.filter((s) => s.autonomyLevel?.effectiveLevel === "assisted").length,
+      supervisedCount: stocks.filter((s) => s.autonomyLevel?.effectiveLevel === "supervised").length,
+      escalationRequiredCount: stocks.filter((s) => s.autonomyLevel?.escalationRequired === true).length,
+      autonomyBasis:   "step9_block1",
+    },
+    // Step 9 Block 1: drift detection distribution.
+    driftDetection: {
+      driftNoneCount:   stocks.filter((s) => (s.driftDetection?.driftLevel ?? "none") === "none").length,
+      driftLowCount:    stocks.filter((s) => s.driftDetection?.driftLevel === "low").length,
+      driftMediumCount: stocks.filter((s) => s.driftDetection?.driftLevel === "medium").length,
+      driftHighCount:   stocks.filter((s) => s.driftDetection?.driftLevel === "high").length,
+      metronomDeviationCount: stocks.filter((s) => s.driftDetection?.metronomDeviation === true).length,
+      driftBasis:       "step9_block1",
     },
   };
 }
