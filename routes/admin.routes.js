@@ -97,7 +97,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail summary
 // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery/pressure summary
 // Step 9 Block 1: Autonomy levels + drift detection basis
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary } = require("../services/governance.context");
+// Step 9 Block 2: Action chains – state-machine basis
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2276,6 +2277,62 @@ router.get("/autonomy-drift", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin autonomy-drift route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/action-chain-summary
+ * Step 9 Block 2: Read-only admin view of action-chain / state-machine status.
+ *
+ * Surfaces:
+ *   - governance context for the calling admin actor
+ *   - aggregate action-chain state distribution
+ *   - blocked / escalated / conflict-risk counts
+ *   - per-opportunity chain state entries (compact)
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/action-chain-summary", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate action-chain summary
+    const actionChainSummary = computeActionChainSummary(opportunities);
+
+    // Per-opportunity entries (compact)
+    const actionChainEntries = opportunities.map((o) => {
+      const acs = o.actionChainState || {};
+      return {
+        symbol:            o.symbol,
+        actionChainState:  acs.actionChainState   ?? "idle",
+        actionChainLabel:  acs.actionChainLabel   ?? "Inaktiv",
+        actionChainStage:  acs.actionChainStage   ?? "no_signal",
+        nextChainStep:     acs.nextChainStep      ?? null,
+        chainBlocked:      acs.chainBlocked       ?? false,
+        chainBlockReason:  acs.chainBlockReason   ?? null,
+        escalationPath:    acs.escalationPath     ?? null,
+        chainConflictRisk: acs.chainConflictRisk  ?? false,
+        chainSafetyMode:   acs.chainSafetyMode   ?? false,
+      };
+    });
+
+    return res.json({
+      success:            true,
+      generatedAt:        new Date().toISOString(),
+      governanceContext:  governanceCtx,
+      actionChainSummary,
+      actionChainEntries,
+    });
+  } catch (error) {
+    logger.error("Admin action-chain-summary route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

@@ -173,6 +173,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
         baselineState:    hasStrongData ? "drifting" : "stable",
         driftBasis:       "step9_block1",
       },
+      // Step 9 Block 2: action chain state for high-signal picks.
+      actionChainState: {
+        actionChainState:  hasStrongData ? "preparing" : "observing",
+        actionChainStage:  hasStrongData ? "proposal_consolidation" : "monitoring",
+        actionChainLabel:  hasStrongData ? "Vorbereitend" : "Beobachtend",
+        actionChainRank:   hasStrongData ? 2 : 1,
+        nextChainStep:     hasStrongData ? "Vorschlag konsolidieren – Review einleiten" : "Signale beobachten",
+        chainBlocked:      false,
+        chainBlockReason:  null,
+        escalationPath:    null,
+        chainConflictRisk: false,
+        chainSafetyMode:   hasStrongData,
+        chainBasis:        "step9_block2",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -285,6 +299,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
         baselineState:     "stable",
         driftBasis:        "step9_block1",
       },
+      // Step 9 Block 2: action chain state for proposal-level picks – observing
+      actionChainState: {
+        actionChainState:  "observing",
+        actionChainStage:  "monitoring",
+        actionChainLabel:  "Beobachtend",
+        actionChainRank:   1,
+        nextChainStep:     "Signale beobachten – keine Aktion geplant",
+        chainBlocked:      false,
+        chainBlockReason:  null,
+        escalationPath:    null,
+        chainConflictRisk: false,
+        chainSafetyMode:   false,
+        chainBasis:        "step9_block2",
+      },
     };
   }
   return {
@@ -394,6 +422,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
       metronomDeviation: false,
       baselineState:     "stable",
       driftBasis:        "step9_block1",
+    },
+    // Step 9 Block 2: action chain state for monitor-only picks – observing
+    actionChainState: {
+      actionChainState:  "observing",
+      actionChainStage:  "monitoring",
+      actionChainLabel:  "Beobachtend",
+      actionChainRank:   1,
+      nextChainStep:     "Signale beobachten – keine Aktion geplant",
+      chainBlocked:      false,
+      chainBlockReason:  null,
+      escalationPath:    null,
+      chainConflictRisk: false,
+      chainSafetyMode:   false,
+      chainBasis:        "step9_block2",
     },
   };
 }

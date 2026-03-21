@@ -258,6 +258,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     autonomyLevel: stock?.autonomyLevel ?? null,
     // Step 9 Block 1: Drift detection – drift signals, level, metronom deviation, baseline state.
     driftDetection: stock?.driftDetection ?? null,
+    // Step 9 Block 2: Action chain – state-machine state, stage, next step, block/escalation.
+    actionChainState: stock?.actionChainState ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -416,6 +418,8 @@ function buildTopSignals(stocks) {
         autonomyLevel: stock.autonomyLevel ?? null,
         // Step 9 Block 1: drift detection meta for downstream drift/baseline rendering
         driftDetection: stock.driftDetection ?? null,
+        // Step 9 Block 2: action chain meta for downstream state-machine rendering
+        actionChainState: stock.actionChainState ?? null,
       };
     });
 }
@@ -651,6 +655,20 @@ function buildPortfolioIntelligenceSummary(stocks) {
       driftHighCount:   stocks.filter((s) => s.driftDetection?.driftLevel === "high").length,
       metronomDeviationCount: stocks.filter((s) => s.driftDetection?.metronomDeviation === true).length,
       driftBasis:       "step9_block1",
+    },
+    // Step 9 Block 2: action chain state distribution.
+    actionChain: {
+      observingCount:     stocks.filter((s) => s.actionChainState?.actionChainState === "observing").length,
+      preparingCount:     stocks.filter((s) => s.actionChainState?.actionChainState === "preparing").length,
+      awaitingSignalCount: stocks.filter((s) => s.actionChainState?.actionChainState === "awaiting_signal").length,
+      executingCount:     stocks.filter((s) => s.actionChainState?.actionChainState === "executing").length,
+      completedCount:     stocks.filter((s) => s.actionChainState?.actionChainState === "completed").length,
+      abortedCount:       stocks.filter((s) => s.actionChainState?.actionChainState === "aborted").length,
+      escalatedCount:     stocks.filter((s) => s.actionChainState?.actionChainState === "escalated").length,
+      blockedCount:       stocks.filter((s) => s.actionChainState?.chainBlocked === true).length,
+      conflictRiskCount:  stocks.filter((s) => s.actionChainState?.chainConflictRisk === true).length,
+      safetyModeCount:    stocks.filter((s) => s.actionChainState?.chainSafetyMode === true).length,
+      chainBasis:         "step9_block2",
     },
   };
 }

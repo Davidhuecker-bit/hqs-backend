@@ -411,6 +411,23 @@ function _deriveBriefingDriftLabel(stock) {
   return "";
 }
 
+/**
+ * Step 9 Block 2: Derive a compact action-chain label for briefing fact lines.
+ * Only surfaces non-default chain states (escalated, aborted, blocked, executing).
+ * Returns a short string label or empty string for observing/idle (default).
+ */
+function _deriveBriefingActionChainLabel(stock) {
+  const acs = stock.actionChainState || null;
+  if (!acs) return "";
+  if (acs.actionChainState === "escalated")       return " · ⬆️ Kette: Eskaliert";
+  if (acs.actionChainState === "aborted")          return " · 🛑 Kette: Abgebrochen";
+  if (acs.chainBlocked)                            return " · 🚫 Kette: Blockiert";
+  if (acs.actionChainState === "executing")        return " · ▶️ Kette: Ausführungsintent";
+  if (acs.actionChainState === "awaiting_signal")  return " · ⏳ Kette: Signal erwartet";
+  if (acs.actionChainState === "preparing")        return " · 🔧 Kette: Vorbereitend";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -541,8 +558,11 @@ function buildFactsFromMarket(stocks) {
     // Step 9 Block 1: drift detection label for non-none drift levels
     const driftLabel = _deriveBriefingDriftLabel(s);
 
+    // Step 9 Block 2: action chain label for non-default chain states
+    const actionChainLabel = _deriveBriefingActionChainLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}.`
     );
   }
   return lines.join("\n");

@@ -50,7 +50,8 @@ const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail
 // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery state
 // Step 9 Block 1: Autonomy levels + drift detection basis
-const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance, computeOperationalResilienceContext, computeAutonomyLevelContext, computeDriftDetectionBasis } = require("./governance.context");
+// Step 9 Block 2: Action chains – state-machine basis
+const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance, computeOperationalResilienceContext, computeAutonomyLevelContext, computeDriftDetectionBasis, computeActionChainState } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2562,7 +2563,11 @@ async function getTopOpportunities(arg = 10) {
     const driftDetection = computeDriftDetectionBasis(
       { ...oppFull, governanceContext, policyPlane, tenantResourceGovernance, operationalResilience, exceptionFields, ...evidencePackageResult },
     );
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection };
+    // Step 9 Block 2: derive action-chain state from all governance layers
+    const actionChainState = computeActionChainState(
+      { ...oppFull, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection },
+    );
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection, actionChainState };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

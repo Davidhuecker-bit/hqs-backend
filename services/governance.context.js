@@ -1328,6 +1328,262 @@ function computeAutonomyDriftSummary(opps) {
   };
 }
 
+/* =========================================================
+   STEP 9 BLOCK 2: ACTION CHAINS – STATE-MACHINE BASIS
+   (Kontrollierte Aktionsketten-Grundlage)
+
+   Builds a first structured state-machine layer on top of the
+   autonomy levels and drift detection from Block 1.
+
+   Purpose:
+   - Map every opportunity to exactly ONE controlled chain state
+     (idle / observing / preparing / awaiting_signal / executing /
+      completed / aborted / escalated)
+   - Derive the chain state defensively from ALL existing signals
+     (Step 7 + Step 8 + Step 9 Block 1) – no new data sources
+   - Provide safety-first conflict resolution: guardrail/block/drift
+     signals always dominate growth/opportunity signals
+   - Surface chain-blocking reasons and escalation paths
+   - NO real execution engine – states only classify and recommend
+   - NO autonomous market action – "executing" means "intent declared,
+     awaiting human action"
+
+   Design principles:
+   - Defensive: missing signals → safest chain state (observing)
+   - Safety-first: any conflict between risk-signals and growth-signals
+     resolves in favour of the risk/review/guardrail path
+   - Governance-compatible: all inputs come from Step 7-9 Block 1
+   - Nachvollziehbar: every state decision includes a human-readable reason
+========================================================= */
+
+// ── Chain States (ordered from safest to most active) ──────────────────────
+const ACTION_CHAIN_STATES = {
+  idle:             { rank: 0, label: "Inaktiv",           description: "Kein aktiver Kettenzustand – Einstiegspunkt" },
+  observing:        { rank: 1, label: "Beobachtend",       description: "System beobachtet Signale – keine Aktion geplant" },
+  preparing:        { rank: 2, label: "Vorbereitend",      description: "Signal-Vorbereitung – Daten werden konsolidiert" },
+  awaiting_signal:  { rank: 3, label: "Signal erwartet",   description: "Wartet auf menschliche Freigabe oder externe Daten" },
+  executing:        { rank: 4, label: "Ausführungsintent",  description: "Handlungsabsicht erklärt – wartet auf menschliche Ausführung" },
+  completed:        { rank: 5, label: "Abgeschlossen",     description: "Kette abgeschlossen – kein weiterer Schritt" },
+  aborted:          { rank: 6, label: "Abgebrochen",       description: "Kette abgebrochen – Ablehnungs- oder Schließungsgrund" },
+  escalated:        { rank: 7, label: "Eskaliert",         description: "Eskalation erforderlich – übergeordnete Prüfung nötig" },
+};
+
+/**
+ * Compute the action-chain state for a single opportunity.
+ *
+ * Derives one chain state and supporting metadata from ALL existing signals:
+ *   actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow,
+ *   auditTrace, governanceContext, exceptionFields, policyPlane, evidencePackage,
+ *   tenantResourceGovernance, operationalResilience, autonomyLevel, driftDetection.
+ *
+ * Safety-first: guardrail / block / high-drift signals always win.
+ *
+ * @param {Object} opp – enriched opportunity with all Step 7-9 Block 1 fields
+ * @returns {Object} actionChainState descriptor
+ */
+function computeActionChainState(opp) {
+  const ar   = opp.actionReadiness       || {};
+  const aq   = opp.approvalQueueEntry    || {};
+  const dl   = opp.decisionLayer         || {};
+  const caf  = opp.controlledApprovalFlow || {};
+  const at   = opp.auditTrace            || {};
+  const gov  = opp.governanceContext      || {};
+  const exc  = opp.exceptionFields       || {};
+  const pp   = opp.policyPlane           || {};
+  const ep   = opp.evidencePackage       || {};
+  const trg  = opp.tenantResourceGovernance || {};
+  const or_  = opp.operationalResilience || {};
+  const al   = opp.autonomyLevel         || {};
+  const dd   = opp.driftDetection        || {};
+
+  // ── 1. Hard-block gates (chainBlocked = true) ─────────────────────────
+  // Any of these forces the chain into a blocked/safety state.
+  const blockedByGuardrail  = at.blockedByGuardrail === true || exc.blockedByGuardrail === true;
+  const hardGated           = trg.resourceGovernanceStatus === "hard_gated";
+  const criticalGuarded     = or_.degradationMode === "critical_guarded";
+  const policyInvalid       = (ep.policyValidity ?? opp.policyValidity) === "suspended";
+  const sodConflict         = gov.separationOfDutiesViolation === true;
+  const highDrift           = dd.driftLevel === "high";
+  const criticalBaseline    = dd.baselineState === "critical";
+  const manualAutonomy      = al.effectiveLevel === "manual";
+
+  const chainBlocked = blockedByGuardrail || hardGated || criticalGuarded || policyInvalid || sodConflict;
+
+  // ── 2. Build block-reason list (human-readable) ───────────────────────
+  const blockReasons = [];
+  if (blockedByGuardrail) blockReasons.push("Guardrail-Block aktiv");
+  if (hardGated)          blockReasons.push("Ressource hart gesperrt (hard_gated)");
+  if (criticalGuarded)    blockReasons.push("System kritisch abgesichert (critical_guarded)");
+  if (policyInvalid)      blockReasons.push("Policy ungültig/suspendiert");
+  if (sodConflict)        blockReasons.push("SoD-Konflikt erkannt");
+
+  // ── 3. Conflict-risk assessment ───────────────────────────────────────
+  // A conflict exists when growth/opportunity signals clash with risk/review signals.
+  const hasGrowthSignal = (ar.actionReadiness === "proposal_ready" || ar.actionReadiness === "review_required")
+                       && (dl.decisionStatus === "approved_candidate" || caf.approvalFlowStatus === "approved_pending_action");
+  const hasRiskSignal   = highDrift || criticalBaseline || chainBlocked
+                       || (trg.rateLimitRisk === "high") || (trg.backlogPressure === "elevated")
+                       || (or_.operationalHealth === "critical" || or_.operationalHealth === "degraded")
+                       || (pp.policyMode === "shadow" || pp.policyMode === "draft");
+
+  const chainConflictRisk = hasGrowthSignal && hasRiskSignal;
+
+  // ── 4. Safety mode ────────────────────────────────────────────────────
+  // Safety mode is active when any block, high drift, or conflict is detected.
+  const chainSafetyMode = chainBlocked || highDrift || criticalBaseline || chainConflictRisk
+                        || manualAutonomy || (al.escalationRequired === true);
+
+  // ── 5. Derive chain state from signal constellation ───────────────────
+  let actionChainState  = "observing";
+  let actionChainStage  = "signal_evaluation";
+  let nextChainStep     = "Signale weiter beobachten";
+  let escalationPath    = null;
+  let chainBlockReason  = blockReasons.length > 0 ? blockReasons.join("; ") : null;
+
+  // Priority 1: Blocked → escalated or aborted
+  if (chainBlocked) {
+    if (al.escalationRequired || exc.escalationLevel === "critical" || exc.escalationLevel === "high") {
+      actionChainState = "escalated";
+      actionChainStage = "blocked_escalation";
+      nextChainStep    = "Eskalation an übergeordnete Instanz – manuelles Review erforderlich";
+      escalationPath   = "governance_review";
+    } else {
+      actionChainState = "aborted";
+      actionChainStage = "blocked_abort";
+      nextChainStep    = "Kette blockiert – Blockierungsgrund beheben";
+      escalationPath   = "manual_intervention";
+    }
+  }
+  // Priority 2: High drift or critical baseline → escalated
+  else if (highDrift || criticalBaseline) {
+    actionChainState = "escalated";
+    actionChainStage = "drift_escalation";
+    nextChainStep    = "Drift-Eskalation – Baseline-Abweichung prüfen";
+    escalationPath   = "drift_review";
+  }
+  // Priority 3: Decision = rejected / closed → aborted / completed
+  else if (dl.decisionStatus === "rejected_candidate" || caf.closureStatus === "closed") {
+    actionChainState = "aborted";
+    actionChainStage = "decision_closed";
+    nextChainStep    = "Fall abgeschlossen – keine weiteren Schritte";
+    escalationPath   = null;
+  }
+  // Priority 4: Completed lifecycle
+  else if (caf.actionLifecycleStage === "completed" || caf.approvalFlowStatus === "completed") {
+    actionChainState = "completed";
+    actionChainStage = "lifecycle_complete";
+    nextChainStep    = "Kette abgeschlossen";
+    escalationPath   = null;
+  }
+  // Priority 5: Awaiting review / approval / signal
+  else if (dl.decisionStatus === "pending_review" || dl.decisionStatus === "needs_more_data"
+        || caf.approvalFlowStatus === "awaiting_review" || caf.approvalFlowStatus === "waiting_for_more_data"
+        || dl.decisionStatus === "deferred_review" || caf.approvalFlowStatus === "deferred") {
+    actionChainState = "awaiting_signal";
+    actionChainStage = "review_pending";
+    nextChainStep    = dl.decisionStatus === "needs_more_data"
+      ? "Weitere Daten erforderlich – beobachten"
+      : "Review/Freigabe abwarten";
+    escalationPath   = (exc.escalationLevel === "critical" || exc.escalationLevel === "high")
+      ? "priority_review" : null;
+  }
+  // Priority 6: Approved + ready for manual action → executing (intent only)
+  else if ((dl.decisionStatus === "approved_candidate" || caf.approvalFlowStatus === "approved_pending_action")
+        && !chainConflictRisk) {
+    actionChainState = "executing";
+    actionChainStage = "approved_intent";
+    nextChainStep    = "Handlungsabsicht erklärt – menschliche Ausführung ausstehend";
+    escalationPath   = null;
+  }
+  // Priority 7: Proposal ready → preparing
+  else if (ar.actionReadiness === "proposal_ready" || ar.actionReadiness === "review_required") {
+    actionChainState = "preparing";
+    actionChainStage = "proposal_consolidation";
+    nextChainStep    = chainConflictRisk
+      ? "Konflikt erkannt – Safety-First: Review priorisieren"
+      : "Vorschlag konsolidieren – Review einleiten";
+    escalationPath   = chainConflictRisk ? "conflict_resolution" : null;
+  }
+  // Priority 8: Monitor only / insufficient → observing
+  else if (ar.actionReadiness === "monitor_only" || ar.actionReadiness === "insufficient_confidence") {
+    actionChainState = "observing";
+    actionChainStage = "monitoring";
+    nextChainStep    = "Signale beobachten – keine Aktion geplant";
+    escalationPath   = null;
+  }
+  // Default: idle
+  else {
+    actionChainState = "idle";
+    actionChainStage = "no_signal";
+    nextChainStep    = "Keine aktiven Signale";
+    escalationPath   = null;
+  }
+
+  const stateInfo = ACTION_CHAIN_STATES[actionChainState] || ACTION_CHAIN_STATES.observing;
+
+  return {
+    actionChainState,
+    actionChainStage,
+    actionChainLabel: stateInfo.label,
+    actionChainRank:  stateInfo.rank,
+    nextChainStep,
+    chainBlocked,
+    chainBlockReason,
+    escalationPath,
+    chainConflictRisk,
+    chainSafetyMode,
+    chainBasis: "step9_block2",
+  };
+}
+
+/**
+ * Aggregate action-chain state distribution across opportunities.
+ * For admin observability – no mutations, read-only summary.
+ *
+ * @param {Array} opps – array of enriched opportunities with actionChainState
+ * @returns {Object} aggregate summary
+ */
+function computeActionChainSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated: 0,
+      stateDistribution: {},
+      blockedCount: 0,
+      escalatedCount: 0,
+      conflictRiskCount: 0,
+      safetyModeCount: 0,
+      summaryBasis: "step9_block2",
+    };
+  }
+
+  const dist = {};
+  let blockedCount     = 0;
+  let escalatedCount   = 0;
+  let conflictRiskCount = 0;
+  let safetyModeCount  = 0;
+
+  for (const o of opps) {
+    const acs = o.actionChainState || {};
+    const state = acs.actionChainState || "idle";
+    dist[state] = (dist[state] || 0) + 1;
+
+    if (acs.chainBlocked)       blockedCount++;
+    if (state === "escalated")  escalatedCount++;
+    if (acs.chainConflictRisk)  conflictRiskCount++;
+    if (acs.chainSafetyMode)    safetyModeCount++;
+  }
+
+  return {
+    totalEvaluated:    opps.length,
+    stateDistribution: dist,
+    blockedCount,
+    escalatedCount,
+    conflictRiskCount,
+    safetyModeCount,
+    summaryBasis: "step9_block2",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -1349,4 +1605,7 @@ module.exports = {
   computeAutonomyLevelContext,
   computeDriftDetectionBasis,
   computeAutonomyDriftSummary,
+  ACTION_CHAIN_STATES,
+  computeActionChainState,
+  computeActionChainSummary,
 };
