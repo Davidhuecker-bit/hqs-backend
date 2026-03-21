@@ -318,6 +318,26 @@ function _deriveBriefingExceptionLabel(stock) {
   return "";
 }
 
+/**
+ * Step 8 Block 3: Derive a compact policy-plane label for briefing fact lines.
+ * Only surfaces non-live / non-active policy states and four-eyes requirements.
+ * Returns a short string label or empty string when no policy exception applies.
+ */
+function _deriveBriefingPolicyPlaneLabel(stock) {
+  const pp = stock.policyPlane || null;
+  if (!pp) return "";
+  if (pp.policyMode === "draft" || pp.policyStatus === "pending_approval") {
+    return " · 📋 Policy: Entwurf/Freigabe ausstehend";
+  }
+  if (pp.policyMode === "shadow") {
+    return " · 👁 Policy: Shadow-Modus";
+  }
+  if (pp.requiresSecondApproval) {
+    return " · 🔐 Policy: Vier-Augen erforderlich";
+  }
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -430,8 +450,11 @@ function buildFactsFromMarket(stocks) {
     // Step 8 Block 2: exception-hub label for operational exceptions
     const exceptionLabel = _deriveBriefingExceptionLabel(s);
 
+    // Step 8 Block 3: policy-plane label for non-live/non-active policy states
+    const policyPlaneLabel = _deriveBriefingPolicyPlaneLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}.`
     );
   }
   return lines.join("\n");

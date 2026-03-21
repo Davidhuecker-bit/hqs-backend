@@ -78,6 +78,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
         policyMutationAllowed: false,
         governanceBasis: "step8_block1",
       },
+      // Step 8 Block 3: policy-plane context for high-signal picks
+      policyPlane: {
+        policyVersion: "v1",
+        policyStatus: "pending_approval",
+        policyMode: "live",
+        requiresSecondApproval: hasStrongData,
+        approvalState: hasStrongData ? "awaiting_second" : "none",
+        secondApprovalReady: false,
+        shadowModeEligible: !hasStrongData,
+        shadowReason: null,
+        policyScope: "per_opportunity",
+        policyMutationAllowed: false,
+        policyPlaneBasis: "step8_block3",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -105,6 +119,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
         policyMutationAllowed: false,
         governanceBasis: "step8_block1",
       },
+      // Step 8 Block 3: policy-plane context for proposal-level picks
+      policyPlane: {
+        policyVersion: "v1",
+        policyStatus: "active",
+        policyMode: "live",
+        requiresSecondApproval: false,
+        approvalState: "none",
+        secondApprovalReady: false,
+        shadowModeEligible: true,
+        shadowReason: null,
+        policyScope: "per_opportunity",
+        policyMutationAllowed: false,
+        policyPlaneBasis: "step8_block3",
+      },
     };
   }
   return {
@@ -130,6 +158,20 @@ function _derivePickOrchestration(pick, onWatchlist) {
       approvalActionAllowed: false,
       policyMutationAllowed: false,
       governanceBasis: "step8_block1",
+    },
+    // Step 8 Block 3: policy-plane context for monitor-only picks
+    policyPlane: {
+      policyVersion: "v1",
+      policyStatus: "active",
+      policyMode: "live",
+      requiresSecondApproval: false,
+      approvalState: "none",
+      secondApprovalReady: false,
+      shadowModeEligible: false,
+      shadowReason: null,
+      policyScope: "per_opportunity",
+      policyMutationAllowed: false,
+      policyPlaneBasis: "step8_block3",
     },
   };
 }
@@ -269,6 +311,10 @@ async function runDiscoveryNotify() {
             // Step 8 Block 2: exception context for operating-console observability
             exceptionType: orchestration.exceptionType || null,
             exceptionPriority: orchestration.exceptionPriority || null,
+            // Step 8 Block 3: policy-plane context for observability
+            policyMode: orchestration.policyPlane?.policyMode || null,
+            policyStatus: orchestration.policyPlane?.policyStatus || null,
+            requiresSecondApproval: orchestration.policyPlane?.requiresSecondApproval || false,
           });
         }
 
