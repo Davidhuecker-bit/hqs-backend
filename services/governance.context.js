@@ -578,6 +578,249 @@ function computeEvidencePackage(opp, govCtx) {
   };
 }
 
+/* =========================================================
+   STEP 8 BLOCK 5: TENANT-AWARE POLICIES & RESOURCE GOVERNANCE BASIS
+
+   Builds a first tenant-aware resource- and policy-layer from
+   existing governance signals.  No real Multi-Tenant DB isolation,
+   no global quota engine – only structured internal classification
+   that gives the platform a defensible, traceable first resource-
+   governance layer.
+
+   Fields derived per-opportunity:
+     tenantId               – resolved from ctx (defaults to "tenant_default")
+     tenantPolicyScope      – scope of applicable policies
+     tenantMaxAutonomyLevel – max permitted action autonomy for this tenant context
+     tenantQuotaProfile     – rough quota risk tier (high_risk / elevated / standard / relaxed)
+     resourceGovernanceStatus – hard_gated / controlled / monitored / open
+     rateLimitRisk          – high / medium / low
+     noisyNeighborRisk      – high / medium / low (load-relative)
+     quotaUsage             – 0.0–1.0 normalised load estimate
+     backlogPressure        – elevated / moderate / none
+     tenantLoadBand         – critical / high / medium / low
+     quotaWarning           – boolean flag when load band is high/critical
+     resourceGuardrail      – active / standby / inactive
+
+   All derived from already-computed layers:
+     actionReadiness, decisionLayer, controlledApprovalFlow,
+     auditTrace, exceptionFields, governanceContext, policyPlane
+   No new DB calls.  No quota database.  No rate-limit engine.
+========================================================= */
+
+// ── Autonomy-level mapping by action-readiness tier ───────────────────────
+const AUTONOMY_BY_READINESS = {
+  review_required:        "restricted",
+  proposal_ready:         "standard",
+  monitor_only:           "permissive",
+  insufficient_confidence: "minimal",
+};
+
+// ── Quota profile mapping by exception priority ────────────────────────────
+const QUOTA_BY_EXCEPTION_PRIORITY = {
+  critical: "high_risk",
+  high:     "elevated",
+  medium:   "standard",
+  low:      "relaxed",
+};
+
+/**
+ * Compute a per-opportunity tenant/resource governance descriptor.
+ * All fields are derived from already-computed governance layers –
+ * no new DB calls, no real quota engine.
+ *
+ * @param {object} opp    - Opportunity with governance layers attached
+ * @param {object} [govCtx] - Pre-computed governance context
+ * @returns {object} Tenant/resource governance descriptor
+ */
+function computeTenantResourceGovernance(opp, govCtx) {
+  const gc = govCtx || computeGovernanceContext();
+
+  const actionReadiness        = opp?.actionReadiness        || {};
+  const decisionLayer          = opp?.decisionLayer          || {};
+  const controlledApprovalFlow = opp?.controlledApprovalFlow || {};
+  const auditTrace             = opp?.auditTrace             || {};
+  const exceptionFields        = opp?.exceptionFields        || {};
+  const policyPlane            = opp?.policyPlane            || {};
+
+  // ── Tenant identification (preparatory – no real IAM yet) ─────────────────
+  // Falls back to a deterministic per-user slug when no explicit tenantId
+  // is available.  Designed as an integration point for future IAM.
+  const tenantId =
+    opp?.tenantId ||
+    gc?.tenantId ||
+    (opp?.userId ? `tenant_user_${opp.userId}` : "tenant_default");
+
+  // ── Tenant policy scope (from existing policyPlane / governance scope) ─────
+  const tenantPolicyScope =
+    policyPlane.policyScope || gc.tenantScope || DEFAULT_TENANT_SCOPE;
+
+  // ── Tenant max autonomy level – derived from action-readiness tier ─────────
+  const readinessTier = actionReadiness.actionReadiness || "insufficient_confidence";
+  const tenantMaxAutonomyLevel =
+    AUTONOMY_BY_READINESS[readinessTier] || "minimal";
+
+  // ── Tenant quota profile – derived from exception priority ────────────────
+  const exceptionPriority = exceptionFields.exceptionPriority || "low";
+  const tenantQuotaProfile =
+    QUOTA_BY_EXCEPTION_PRIORITY[exceptionPriority] || "standard";
+
+  // ── Resource governance status ────────────────────────────────────────────
+  // hard_gated: guardrail blocks progress – requires manual release
+  // controlled: review/approval required – governed path
+  // monitored:  proposal tier – user-driven, observed
+  // open:       observation only – no active governance gate
+  let resourceGovernanceStatus = "open";
+  if (auditTrace.blockedByGuardrail === true) {
+    resourceGovernanceStatus = "hard_gated";
+  } else if (
+    readinessTier === "review_required" ||
+    controlledApprovalFlow.approvalFlowStatus === "awaiting_review" ||
+    controlledApprovalFlow.approvalFlowStatus === "approved_pending_action"
+  ) {
+    resourceGovernanceStatus = "controlled";
+  } else if (readinessTier === "proposal_ready") {
+    resourceGovernanceStatus = "monitored";
+  }
+
+  // ── Rate-limit risk – from exception priority / governance pressure ────────
+  let rateLimitRisk = "low";
+  if (exceptionPriority === "critical" || auditTrace.blockedByGuardrail === true) {
+    rateLimitRisk = "high";
+  } else if (exceptionPriority === "high" || readinessTier === "review_required") {
+    rateLimitRisk = "medium";
+  }
+
+  // ── Noisy-neighbor risk (per-opp: structural, not load-based) ─────────────
+  // Per-opportunity this is always low; aggregate variant computes actual load.
+  const noisyNeighborRisk = "low";
+
+  // ── Backlog pressure ─────────────────────────────────────────────────────
+  // elevated: follow-up needed + open decision pending
+  // moderate: deferred or needs-more-data without critical flag
+  // none:     no backlog signals
+  let backlogPressure = "none";
+  const followUpNeeded = opp?.followUpContext?.followUpStatus === "overdue" ||
+    opp?.followUpContext?.followUpStatus === "pending" ||
+    opp?.actionOrchestration?.followUpNeeded === true;
+  const hasPendingDecision =
+    decisionLayer.decisionStatus === "pending_review" ||
+    decisionLayer.decisionStatus === "needs_more_data";
+  const isDeferred =
+    controlledApprovalFlow.approvalFlowStatus === "deferred";
+
+  if (followUpNeeded && hasPendingDecision) {
+    backlogPressure = "elevated";
+  } else if (isDeferred || decisionLayer.decisionStatus === "needs_more_data") {
+    backlogPressure = "moderate";
+  }
+
+  // ── Tenant load band (per-opp structural estimate) ────────────────────────
+  let tenantLoadBand = "low";
+  if (resourceGovernanceStatus === "hard_gated" || rateLimitRisk === "high") {
+    tenantLoadBand = "critical";
+  } else if (rateLimitRisk === "medium" || backlogPressure === "elevated") {
+    tenantLoadBand = "high";
+  } else if (backlogPressure === "moderate" || readinessTier === "proposal_ready") {
+    tenantLoadBand = "medium";
+  }
+
+  // ── Quota signals ─────────────────────────────────────────────────────────
+  // quotaUsage: rough 0.0–1.0 signal derived from load band (not a real counter)
+  const LOAD_BAND_QUOTA = { critical: 1.0, high: 0.75, medium: 0.4, low: 0.1 };
+  const quotaUsage = LOAD_BAND_QUOTA[tenantLoadBand] ?? 0.1;
+
+  const quotaWarning = tenantLoadBand === "high" || tenantLoadBand === "critical";
+
+  // ── Resource guardrail ────────────────────────────────────────────────────
+  // active:   hard_gated – explicit governance block
+  // standby:  controlled – under active governance supervision
+  // inactive: monitored / open – no active guardrail
+  let resourceGuardrail = "inactive";
+  if (resourceGovernanceStatus === "hard_gated") {
+    resourceGuardrail = "active";
+  } else if (resourceGovernanceStatus === "controlled") {
+    resourceGuardrail = "standby";
+  }
+
+  return {
+    tenantId,
+    tenantPolicyScope,
+    tenantMaxAutonomyLevel,
+    tenantQuotaProfile,
+    resourceGovernanceStatus,
+    rateLimitRisk,
+    noisyNeighborRisk,
+    quotaUsage,
+    backlogPressure,
+    tenantLoadBand,
+    quotaWarning,
+    resourceGuardrail,
+    tenantResourceBasis: "step8_block5",
+  };
+}
+
+/**
+ * Compute an aggregate tenant/resource governance summary across a list of
+ * already-enriched opportunities.  Used by the admin endpoint and
+ * frontendAdapter portfolio summary.  No new DB calls.
+ *
+ * @param {Array} opps - Opportunities with tenantResourceGovernance attached
+ * @returns {object} Aggregate tenant/resource governance summary
+ */
+function computeTenantResourceGovernanceSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:       0,
+      hardGatedCount:       0,
+      controlledCount:      0,
+      quotaWarningCount:    0,
+      highLoadCount:        0,
+      rateLimitRiskHighCount: 0,
+      noisyNeighborRisk:    "low",
+      backlogPressureElevatedCount: 0,
+      tenantLoadBandSummary: { critical: 0, high: 0, medium: 0, low: 0 },
+      resourceGuardrailActiveCount: 0,
+      tenantResourceBasis: "step8_block5",
+    };
+  }
+
+  const trg = (o) => o.tenantResourceGovernance || {};
+
+  const hardGatedCount    = opps.filter((o) => trg(o).resourceGovernanceStatus === "hard_gated").length;
+  const controlledCount   = opps.filter((o) => trg(o).resourceGovernanceStatus === "controlled").length;
+  const quotaWarningCount = opps.filter((o) => trg(o).quotaWarning === true).length;
+  const highLoadCount     = opps.filter((o) => trg(o).tenantLoadBand === "high" || trg(o).tenantLoadBand === "critical").length;
+  const rateLimitHighCount = opps.filter((o) => trg(o).rateLimitRisk === "high").length;
+  const backlogElevated   = opps.filter((o) => trg(o).backlogPressure === "elevated").length;
+  const guardrailActive   = opps.filter((o) => trg(o).resourceGuardrail === "active").length;
+
+  const loadBandCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const o of opps) {
+    const band = trg(o).tenantLoadBand || "low";
+    if (band in loadBandCounts) loadBandCounts[band]++;
+  }
+
+  // Noisy-neighbor risk at aggregate level: elevated when >25% of opps are high/critical load
+  const highLoadRatio = opps.length > 0 ? highLoadCount / opps.length : 0;
+  let noisyNeighborRisk = "low";
+  if (highLoadRatio >= 0.5) noisyNeighborRisk = "high";
+  else if (highLoadRatio >= 0.25) noisyNeighborRisk = "medium";
+
+  return {
+    totalEvaluated:               opps.length,
+    hardGatedCount,
+    controlledCount,
+    quotaWarningCount,
+    highLoadCount,
+    rateLimitRiskHighCount:       rateLimitHighCount,
+    noisyNeighborRisk,
+    backlogPressureElevatedCount: backlogElevated,
+    tenantLoadBandSummary:        loadBandCounts,
+    resourceGuardrailActiveCount: guardrailActive,
+    tenantResourceBasis:          "step8_block5",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -589,4 +832,6 @@ module.exports = {
   computeOperatingConsoleContext,
   computePolicyPlaneContext,
   computeEvidencePackage,
+  computeTenantResourceGovernance,
+  computeTenantResourceGovernanceSummary,
 };

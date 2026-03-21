@@ -47,7 +47,8 @@ const {
 const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 8 Block 1: Governance context – actor-role, SoD, tenant scope classification
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
-const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage } = require("./governance.context");
+// Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail
+const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2542,7 +2543,12 @@ async function getTopOpportunities(arg = 10) {
     // Step 8 Block 4: derive evidence package + policy-versioning descriptor
     const oppWithPolicy = { ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, approvalQueueEntry, policyPlane, governanceContext };
     const evidencePackageResult = computeEvidencePackage(oppWithPolicy, governanceContext);
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult };
+    // Step 8 Block 5: derive tenant/resource governance layer (load band, quota, guardrail)
+    const tenantResourceGovernance = computeTenantResourceGovernance(
+      { ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, exceptionFields, policyPlane, governanceContext },
+      governanceContext,
+    );
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

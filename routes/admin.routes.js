@@ -94,7 +94,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 8 Block 2: Operating Console / Exception Hub aggregate view
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
 // Step 8 Block 4: Evidence Packages & Policy Versioning – policyFingerprint, evidencePackage, operatorActionTrace
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage } = require("../services/governance.context");
+// Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail summary
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2097,6 +2098,66 @@ router.get("/evidence-packages", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin evidence-packages route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/tenant-resource-governance
+ * Step 8 Block 5: Read-only admin view of tenant/resource governance state.
+ *
+ * Surfaces:
+ *   - tenant summary (load band distribution, quota warnings)
+ *   - backlog pressure aggregate
+ *   - quota / load distribution counts
+ *   - noisy-neighbor risk at platform level
+ *   - resource guardrail / hard-gated counts
+ *
+ * All derived from existing opportunity layers – no new DB calls.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/tenant-resource-governance", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate tenant/resource governance summary
+    const tenantSummary = computeTenantResourceGovernanceSummary(opportunities);
+
+    // Per-opportunity tenant/resource governance entries (compact)
+    const tenantEntries = opportunities.map((o) => {
+      const trg = o.tenantResourceGovernance || {};
+      return {
+        symbol:                   o.symbol,
+        tenantId:                 trg.tenantId                 ?? "tenant_default",
+        tenantPolicyScope:        trg.tenantPolicyScope        ?? null,
+        tenantMaxAutonomyLevel:   trg.tenantMaxAutonomyLevel   ?? null,
+        tenantQuotaProfile:       trg.tenantQuotaProfile       ?? null,
+        resourceGovernanceStatus: trg.resourceGovernanceStatus ?? null,
+        rateLimitRisk:            trg.rateLimitRisk            ?? null,
+        noisyNeighborRisk:        trg.noisyNeighborRisk        ?? null,
+        quotaUsage:               trg.quotaUsage               ?? null,
+        backlogPressure:          trg.backlogPressure          ?? null,
+        tenantLoadBand:           trg.tenantLoadBand           ?? null,
+        quotaWarning:             trg.quotaWarning             ?? false,
+        resourceGuardrail:        trg.resourceGuardrail        ?? null,
+      };
+    });
+
+    return res.json({
+      success:          true,
+      generatedAt:      new Date().toISOString(),
+      governanceContext: governanceCtx,
+      tenantSummary,
+      tenantEntries,
+    });
+  } catch (error) {
+    logger.error("Admin tenant-resource-governance route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

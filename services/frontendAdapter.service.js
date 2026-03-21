@@ -250,6 +250,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     evidencePackage:     stock?.evidencePackage     ?? null,
     policyFingerprint:   stock?.policyFingerprint   ?? null,
     policyValidity:      stock?.policyValidity      ?? null,
+    // Step 8 Block 5: Tenant/resource governance – load band, quota, guardrail.
+    tenantResourceGovernance: stock?.tenantResourceGovernance ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -400,6 +402,8 @@ function buildTopSignals(stocks) {
         evidencePackage:   stock.evidencePackage   ?? null,
         policyFingerprint: stock.policyFingerprint ?? null,
         policyValidity:    stock.policyValidity    ?? null,
+        // Step 8 Block 5: tenant/resource governance meta for downstream load/quota rendering
+        tenantResourceGovernance: stock.tenantResourceGovernance ?? null,
       };
     });
 }
@@ -597,6 +601,17 @@ function buildPortfolioIntelligenceSummary(stocks) {
       withGuardrailCount:    stocks.filter((s) => s.evidencePackage?.governanceStatus === "review_controlled" ||
                                                    s.auditTrace?.blockedByGuardrail === true).length,
       evidenceBasis:         "step8_block4",
+    },
+    // Step 8 Block 5: tenant/resource governance distribution.
+    tenantResourceGovernance: {
+      hardGatedCount:               stocks.filter((s) => s.tenantResourceGovernance?.resourceGovernanceStatus === "hard_gated").length,
+      controlledCount:              stocks.filter((s) => s.tenantResourceGovernance?.resourceGovernanceStatus === "controlled").length,
+      quotaWarningCount:            stocks.filter((s) => s.tenantResourceGovernance?.quotaWarning === true).length,
+      highLoadCount:                stocks.filter((s) => s.tenantResourceGovernance?.tenantLoadBand === "high" || s.tenantResourceGovernance?.tenantLoadBand === "critical").length,
+      rateLimitRiskHighCount:       stocks.filter((s) => s.tenantResourceGovernance?.rateLimitRisk === "high").length,
+      backlogPressureElevatedCount: stocks.filter((s) => s.tenantResourceGovernance?.backlogPressure === "elevated").length,
+      resourceGuardrailActiveCount: stocks.filter((s) => s.tenantResourceGovernance?.resourceGuardrail === "active").length,
+      tenantResourceBasis:          "step8_block5",
     },
   };
 }
