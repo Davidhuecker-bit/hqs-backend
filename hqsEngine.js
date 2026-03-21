@@ -24,6 +24,15 @@
   - computeLiquidityGuardrail() derives liquidityTier, slippageRisk and
     illiquidity penalty from available volume/price fields
   - 6th param worldStateCtx passed from marketService for regime context
+  HQS 2.1 Block 4: Explainable HQS, Versioning & Event-Awareness Basis
+  - computeEventAwareness() derives event risk flags and confidence impact
+    from world state context, gap/volume signals and macro cycle indicators
+  - computeExplainableTags() generates rule-based, auditable reason tags
+    from all available HQS sub-layers (quality, momentum, regime, liquidity,
+    sector, confidence, event signals)
+  - buildScoreNarrative() builds a short structured narrative string
+  - HQS output extended with explainableTags, versionReason, eventAwareness,
+    eventRiskFlags, eventConfidenceImpact, scoreNarrative (backward compatible)
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
@@ -38,7 +47,10 @@ const {
    HQS VERSION
 ========================================================= */
 
-const HQS_VERSION = "2.0";
+const HQS_VERSION = "2.1";
+
+// Human-readable reason why this version is active (Block 4 upgrade)
+const VERSION_REASON = "HQS 2.1: Explainability, Versioning & Event-Awareness (Block 4)";
 
 // optional logger (falls vorhanden)
 let logger = null;
@@ -510,6 +522,211 @@ function computeLiquidityGuardrail(item) {
 }
 
 /* =========================================================
+   HQS 2.1 – BLOCK 4: EVENT AWARENESS BASIS
+   Derives event risk flags and a confidence impact modifier
+   from the available world state context and per-symbol
+   stability signals.  Only uses directly readable signals –
+   no external calendar or news engine is required.
+   Defensive default (no_context) when worldStateCtx is absent.
+   Fields:
+     eventAwareness       – "nominal" / "event_caution" / "event_high_caution" / "no_context"
+     eventRiskFlags       – string array of active risk signals
+     eventConfidenceImpact – negative modifier (0 to −20) applied on top of confidence
+     eventSource          – how the context was derived
+========================================================= */
+
+function computeEventAwareness(worldStateCtx, enhancedStabilityMeta) {
+  if (!worldStateCtx) {
+    return {
+      eventAwareness: "no_context",
+      eventRiskFlags: [],
+      eventConfidenceImpact: 0,
+      eventSource: "none",
+    };
+  }
+
+  const eventRiskFlags = [];
+  let eventConfidenceImpact = 0;
+
+  // ── Macro risk mode ─────────────────────────────────────────────────────
+  const riskMode = String(worldStateCtx.risk_mode || "").toLowerCase();
+  if (riskMode === "risk_off") {
+    eventRiskFlags.push("macro_risk_off");
+    eventConfidenceImpact -= 5;
+  }
+
+  // ── Volatility state ────────────────────────────────────────────────────
+  const volState = String(worldStateCtx.volatility_state || "").toLowerCase();
+  if (volState === "high") {
+    eventRiskFlags.push("elevated_volatility");
+    eventConfidenceImpact -= 5;
+  } else if (volState === "elevated") {
+    eventRiskFlags.push("volatility_elevated");
+    eventConfidenceImpact -= 3;
+  }
+
+  // ── Macro cycle: contraction signals upcoming earnings/rate pressure ────
+  const macroCycle = worldStateCtx.macro_context?.macro_cycle;
+  if (macroCycle === "contraction") {
+    eventRiskFlags.push("macro_contraction");
+    eventConfidenceImpact -= 5;
+  }
+
+  // ── News pulse: negative aggregate sentiment ─────────────────────────────
+  const newsPulse = worldStateCtx.news_pulse;
+  if (newsPulse && typeof newsPulse.sentiment === "number" && newsPulse.sentiment < -0.3) {
+    eventRiskFlags.push("negative_news_pulse");
+    eventConfidenceImpact -= 3;
+  }
+
+  // ── Inter-market early warning ───────────────────────────────────────────
+  if (worldStateCtx.inter_market?.early_warning) {
+    eventRiskFlags.push("inter_market_warning");
+    eventConfidenceImpact -= 4;
+  }
+
+  // ── Per-symbol signals: volume spike → possible earnings/corporate event ──
+  const stabilityReasons = enhancedStabilityMeta?.stabilityReasons || [];
+  if (stabilityReasons.includes("volume_spike_ratio")) {
+    eventRiskFlags.push("volume_spike_event");
+    eventConfidenceImpact -= 3;
+  }
+
+  // ── Gap stress: overnight gap suggests earnings release or macro event ────
+  // GAP_STRESS_THRESHOLD = 2 (%) defined at the top of this module alongside
+  // other Block 3 thresholds.
+  const gapStress = enhancedStabilityMeta?.gapStress;
+  if (gapStress != null && gapStress > GAP_STRESS_THRESHOLD) {
+    eventRiskFlags.push("gap_stress_detected");
+    eventConfidenceImpact -= 3;
+  }
+
+  const eventAwareness =
+    eventRiskFlags.length === 0
+      ? "nominal"
+      : eventRiskFlags.length >= 3
+      ? "event_high_caution"
+      : "event_caution";
+
+  return {
+    eventAwareness,
+    eventRiskFlags,
+    eventConfidenceImpact: clamp(eventConfidenceImpact, -20, 0),
+    eventSource: "world_state_derived",
+  };
+}
+
+/* =========================================================
+   HQS 2.1 – BLOCK 4: EXPLAINABLE TAGS
+   Generates rule-based, auditable reason tags from all
+   available HQS sub-layers.  No generative AI – every tag
+   maps to a named, deterministic rule.
+   Possible tags:
+     quality_leader       quality score ≥ 70 with fundamentals
+     stable_uptrend       momentum ≥ 65 AND stability ≥ 60
+     regime_tailwind      bull or expansion regime
+     regime_headwind      bear or crash regime
+     liquidity_watch      low liquidity tier
+     low_confidence       confidence score < 60
+     sector_adjusted      non-default sector template active
+     event_caution        ≥ 1 event risk flag present
+     elevated_volatility  volatile stability band
+     data_imputed         ≥ 1 imputation flag active
+========================================================= */
+
+function computeExplainableTags({
+  momentum,
+  quality,
+  stability,
+  regime,
+  confidenceScore,
+  dataQuality,
+  sectorCtx,
+  enhancedStabilityMeta,
+  liquidityGuardrail,
+  eventAwarenessResult,
+}) {
+  const tags = [];
+
+  // ── Quality leader ────────────────────────────────────────────────────────
+  if (quality >= 70 && !dataQuality.dataQualityFlags.includes("missing_fundamentals")) {
+    tags.push("quality_leader");
+  }
+
+  // ── Stable uptrend ────────────────────────────────────────────────────────
+  if (momentum >= 65 && stability >= 60) {
+    tags.push("stable_uptrend");
+  }
+
+  // ── Regime direction ──────────────────────────────────────────────────────
+  if (regime === "expansion" || regime === "bull") {
+    tags.push("regime_tailwind");
+  } else if (regime === "crash" || regime === "bear") {
+    tags.push("regime_headwind");
+  }
+
+  // ── Liquidity watch ───────────────────────────────────────────────────────
+  if (liquidityGuardrail.liquidityTier === "low") {
+    tags.push("liquidity_watch");
+  }
+
+  // ── Low confidence ────────────────────────────────────────────────────────
+  if (confidenceScore < 60) {
+    tags.push("low_confidence");
+  }
+
+  // ── Sector adjusted ───────────────────────────────────────────────────────
+  if (sectorCtx.sectorTemplate && sectorCtx.sectorTemplate !== "default") {
+    tags.push("sector_adjusted");
+  }
+
+  // ── Event caution ─────────────────────────────────────────────────────────
+  if (eventAwarenessResult.eventRiskFlags.length > 0) {
+    tags.push("event_caution");
+  }
+
+  // ── Elevated volatility ───────────────────────────────────────────────────
+  if (enhancedStabilityMeta.stabilityBand === "volatile") {
+    tags.push("elevated_volatility");
+  }
+
+  // ── Data imputation active ────────────────────────────────────────────────
+  if (dataQuality.imputationFlags.length > 0) {
+    tags.push("data_imputed");
+  }
+
+  return tags;
+}
+
+/* =========================================================
+   HQS 2.1 – BLOCK 4: SCORE NARRATIVE
+   Builds a short, structured narrative string from key
+   signals.  Not marketing copy – factual signal summary.
+========================================================= */
+
+function buildScoreNarrative({ finalScore, regime, explainableTags, eventAwareness }) {
+  const ratingLabel =
+    finalScore >= 85 ? "Strong Buy"
+    : finalScore >= 70 ? "Buy"
+    : finalScore >= 50 ? "Hold"
+    : "Risk";
+
+  const regimeLabel = regime || "neutral";
+
+  const tagSummary =
+    explainableTags.length > 0
+      ? explainableTags.slice(0, 4).join(", ")
+      : "no_tags";
+
+  const eventNote =
+    eventAwareness !== "nominal" && eventAwareness !== "no_context"
+      ? ` | ${eventAwareness}`
+      : "";
+
+  return `HQS ${finalScore} (${ratingLabel}) | ${regimeLabel}${eventNote} | ${tagSummary}`;
+}
+
+/* =========================================================
    MAIN ENGINE
 ========================================================= */
 
@@ -612,6 +829,31 @@ async function buildHQSResponse(
     // ── HQS 2.0 Block 1: derive data quality meta ─────────────────────────
     const dataQuality = computeDataQuality(item, fundamentalsRecord);
 
+    // ── HQS 2.1 Block 4: event awareness ──────────────────────────────────
+    const eventAwarenessResult = computeEventAwareness(worldStateCtx, enhancedStabilityMeta);
+
+    // ── HQS 2.1 Block 4: explainable tags ─────────────────────────────────
+    const explainableTags = computeExplainableTags({
+      momentum,
+      quality,
+      stability,
+      regime,
+      confidenceScore: dataQuality.confidenceScore,
+      dataQuality,
+      sectorCtx,
+      enhancedStabilityMeta,
+      liquidityGuardrail,
+      eventAwarenessResult,
+    });
+
+    // ── HQS 2.1 Block 4: score narrative ──────────────────────────────────
+    const scoreNarrative = buildScoreNarrative({
+      finalScore,
+      regime,
+      explainableTags,
+      eventAwareness: eventAwarenessResult.eventAwareness,
+    });
+
     await saveScoreSnapshot({
       symbol: item.symbol,
       hqsScore: finalScore,
@@ -650,6 +892,15 @@ async function buildHQSResponse(
         liquidityPenalty: liquidityGuardrail.liquidityPenalty,
         liquidityReason:  liquidityGuardrail.liquidityReason,
         dollarVolume:     liquidityGuardrail.dollarVolume,
+      },
+      // ── HQS 2.1 Block 4: explainability, versioning & event-awareness ──
+      explainableTags,
+      versionReason: VERSION_REASON,
+      eventAwarenessMeta: {
+        eventAwareness:        eventAwarenessResult.eventAwareness,
+        eventRiskFlags:        eventAwarenessResult.eventRiskFlags,
+        eventConfidenceImpact: eventAwarenessResult.eventConfidenceImpact,
+        eventSource:           eventAwarenessResult.eventSource,
       },
     });
 
@@ -698,6 +949,13 @@ async function buildHQSResponse(
       slippageRisk:           liquidityGuardrail.slippageRisk,
       liquidityPenalty:       liquidityGuardrail.liquidityPenalty,
       liquidityReason:        liquidityGuardrail.liquidityReason,
+      // ── HQS 2.1 Block 4 explainability / versioning / event meta ─────
+      explainableTags,
+      versionReason:          VERSION_REASON,
+      eventAwareness:         eventAwarenessResult.eventAwareness,
+      eventRiskFlags:         eventAwarenessResult.eventRiskFlags,
+      eventConfidenceImpact:  eventAwarenessResult.eventConfidenceImpact,
+      scoreNarrative,
     };
   } catch (error) {
     if (logger?.error)

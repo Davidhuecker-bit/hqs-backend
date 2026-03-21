@@ -90,6 +90,11 @@ async function initFactorTable() {
       enhanced_stability_meta JSONB,
       liquidity_meta JSONB,
 
+      -- HQS 2.1 Block 4: Explainable HQS, Versioning & Event-Awareness
+      explainable_tags JSONB,
+      version_reason TEXT,
+      event_awareness_meta JSONB,
+
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -126,13 +131,65 @@ async function saveScoreSnapshot({
   regimeWeightProfile,
   enhancedStabilityMeta,
   liquidityMeta,
+  explainableTags,
+  versionReason,
+  eventAwarenessMeta,
 }) {
   try {
     const normalizedRegime = normRegime(regime);
 
-    // Try the extended insert that includes HQS 2.0 Block 1 + Block 2 + Block 3 meta columns.
+    // Try the extended insert that includes HQS 2.0 Block 1 + Block 2 + Block 3 + Block 4 meta columns.
     // If the table was created before these columns existed (legacy deployment),
     // we gracefully fall back so existing flow is never broken.
+    try {
+      await pool.query(
+        `
+        INSERT INTO factor_history
+        (symbol, hqs_score, momentum, quality, stability, relative, regime,
+         market_average, volatility,
+         hqs_version, confidence_score, data_quality_meta, imputation_meta,
+         sector_template, peer_context_available, sector_scoring_meta,
+         regime_weight_profile, enhanced_stability_meta, liquidity_meta,
+         explainable_tags, version_reason, event_awareness_meta)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+        `,
+        [
+          String(symbol || "").trim().toUpperCase(),
+          Number(hqsScore),
+          momentum ?? null,
+          quality ?? null,
+          stability ?? null,
+          relative ?? null,
+          normalizedRegime,
+          marketAverage ?? null,
+          volatility ?? null,
+          hqsVersion ?? null,
+          confidenceScore != null ? Number(confidenceScore) : null,
+          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
+          imputationMeta ? JSON.stringify(imputationMeta) : null,
+          sectorTemplate ?? null,
+          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
+          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
+          regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
+          enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
+          liquidityMeta ? JSON.stringify(liquidityMeta) : null,
+          explainableTags ? JSON.stringify(explainableTags) : null,
+          versionReason ?? null,
+          eventAwarenessMeta ? JSON.stringify(eventAwarenessMeta) : null,
+        ]
+      );
+      return;
+    } catch (extErr) {
+      // Column does not exist in this deployment – fall back to Block 3 insert.
+      // PostgreSQL error code 42703 = undefined_column.
+      if (extErr.code !== "42703") {
+        if (logger?.error) logger.error("saveScoreSnapshot: unexpected error on Block 4 insert", { message: extErr.message, code: extErr.code });
+        throw extErr;
+      }
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 4 columns not yet in table, trying Block 3 insert", { message: extErr.message });
+    }
+
+    // Block 3 fallback (table has Block 1+2+3 columns but not Block 4)
     try {
       await pool.query(
         `
@@ -167,11 +224,10 @@ async function saveScoreSnapshot({
         ]
       );
       return;
-    } catch (extErr) {
+    } catch (b3Err) {
       // Column does not exist in this deployment – fall back to Block 2 insert.
-      // PostgreSQL error code 42703 = undefined_column.
-      if (extErr.code !== "42703") throw extErr;
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 3 columns not yet in table, trying Block 2 insert", { message: extErr.message });
+      if (b3Err.code !== "42703") throw b3Err;
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 3 columns not yet in table, trying Block 2 insert", { message: b3Err.message });
     }
 
     // Block 2 fallback (table has Block 1+2 columns but not Block 3)
@@ -642,6 +698,77 @@ async function getRecentHqsRegimeMeta(limit = 50) {
   }
 }
 
+/* =========================================================
+   HQS 2.1 Block 4: EXPLAINABILITY / EVENT-AWARENESS META (admin read-only)
+   Returns recent factor_history rows with explainable tags,
+   version reason and event awareness meta.
+   Tries Block 4 columns first, falls back gracefully.
+========================================================= */
+
+async function getRecentHqsExplainabilityMeta(limit = 50) {
+  try {
+    // Try with HQS 2.1 Block 4 columns
+    try {
+      const res = await pool.query(
+        `
+        SELECT
+          id,
+          symbol,
+          hqs_score            AS "hqsScore",
+          regime,
+          hqs_version          AS "hqsVersion",
+          explainable_tags     AS "explainableTags",
+          version_reason       AS "versionReason",
+          event_awareness_meta AS "eventAwarenessMeta",
+          created_at           AS "createdAt"
+        FROM factor_history
+        WHERE symbol <> 'PORTFOLIO'
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+      return res.rows;
+    } catch (extErr) {
+      // Block 4 columns not yet present – fall back to partial projection.
+      if (extErr.code === "42703") {
+        if (logger?.warn) logger.warn("getRecentHqsExplainabilityMeta: Block 4 columns not present, using fallback projection");
+      } else {
+        throw extErr;
+      }
+    }
+
+    // Fallback projection (no Block 4 columns)
+    const res = await pool.query(
+      `
+      SELECT
+        id,
+        symbol,
+        hqs_score  AS "hqsScore",
+        regime,
+        hqs_version AS "hqsVersion",
+        created_at AS "createdAt"
+      FROM factor_history
+      WHERE symbol <> 'PORTFOLIO'
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return res.rows.map((row) => ({
+      ...row,
+      explainableTags: null,
+      versionReason: null,
+      eventAwarenessMeta: null,
+    }));
+  } catch (err) {
+    if (logger?.error) logger.error("getRecentHqsExplainabilityMeta error", { message: err.message });
+    else console.error("❌ getRecentHqsExplainabilityMeta error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initFactorTable,
   saveScoreSnapshot,
@@ -652,4 +779,5 @@ module.exports = {
   getRecentHqsDataQuality,
   getRecentHqsSectorMeta,
   getRecentHqsRegimeMeta,
+  getRecentHqsExplainabilityMeta,
 };
