@@ -242,6 +242,8 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     approvalQueueEntry: stock?.approvalQueueEntry ?? null,
     // Step 7 Block 5: Audit/trace/safety layer – governanceStatus, traceReason, safetyFlags, auditSummary.
     auditTrace: stock?.auditTrace ?? null,
+    // Step 8 Block 1: Per-opportunity governance classification (role, scope, SoD).
+    governanceContext: stock?.governanceContext ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -384,6 +386,8 @@ function buildTopSignals(stocks) {
         controlledApprovalFlow: caf,
         // Step 7 Block 5: audit/trace/safety layer for downstream governance rendering
         auditTrace: audit,
+        // Step 8 Block 1: governance context for downstream role/scope rendering
+        governanceContext: stock.governanceContext ?? null,
       };
     });
 }
@@ -545,6 +549,13 @@ function buildPortfolioIntelligenceSummary(stocks) {
       observation:       stocks.filter((s) => s.auditTrace?.governanceStatus === "observation").length,
       closed:            stocks.filter((s) => s.auditTrace?.governanceStatus === "closed").length,
       blockedByGuardrail: stocks.filter((s) => s.auditTrace?.blockedByGuardrail === true).length,
+    },
+    // Step 8 Block 1: governance context summary – role/scope/SoD basis for portfolio.
+    governanceBasis: {
+      requiresApprovalCount:  stocks.filter((s) => s.governanceContext?.requiresApproval === true).length,
+      reviewControlledCount:  stocks.filter((s) => s.governanceContext?.isReviewControlled === true).length,
+      blockedCount:           stocks.filter((s) => s.governanceContext?.isBlocked === true).length,
+      governanceBasis:        "step8_block1",
     },
   };
 }

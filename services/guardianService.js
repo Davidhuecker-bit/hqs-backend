@@ -124,6 +124,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 7 Block 5: Audit/trace/safety layer – condensed governance and guardrail state.
   const auditTrace = marketData?.auditTrace ?? context?.auditTrace ?? null;
 
+  // Step 8 Block 1: Governance context – actor role, SoD, tenant scope classification.
+  const governanceContext = marketData?.governanceContext ?? context?.governanceContext ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -628,7 +631,39 @@ async function analyzeStockWithGuardian(context) {
   }
   const auditTraceBlock = buildAuditTraceBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock]
+  // Step 8 Block 1: Governance context block – actor role, SoD, tenant scope classification.
+  function buildGovernanceContextBlock() {
+    if (!governanceContext) return "";
+    const parts = [];
+    if (governanceContext.actorRole) {
+      const roleLabels = {
+        platform_admin: "Plattform-Admin (Policy-Verwaltung, keine Freigabe-Rechte)",
+        operator:       "Operator (Review & Freigabe, kein Policy-Zugriff)",
+        auditor:        "Auditor (Audit-Einsicht, keine Änderungs- oder Freigabe-Rechte)",
+        viewer:         "Betrachter (Nur-Lesen, keine Governance-Rechte)",
+      };
+      parts.push(`Akteurrolle: ${roleLabels[governanceContext.actorRole] || governanceContext.actorRole}`);
+    }
+    if (governanceContext.governanceRole) {
+      parts.push(`Governance-Rolle: ${governanceContext.governanceRole}`);
+    }
+    if (governanceContext.separationOfDutiesFlag) {
+      parts.push("Separation-of-Duties: aktiv");
+    }
+    if (governanceContext.requiresApproval) {
+      parts.push(`Freigabe erforderlich: ${governanceContext.actorCanApprove ? "Akteur darf freigeben" : "Akteur darf nicht freigeben"}`);
+    }
+    if (governanceContext.isBlocked) {
+      parts.push("⚠ Governance-Sperre: Aktion blockiert");
+    }
+    if (governanceContext.sodConflict) {
+      parts.push("⚠ SoD-Konflikt: Gleichzeitige Policy- und Freigabe-Rechte erkannt");
+    }
+    return parts.length ? `Governance-Kontext (Step 8 Block 1): ${parts.join(" · ")}` : "";
+  }
+  const governanceContextBlock = buildGovernanceContextBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -764,6 +799,15 @@ Erstelle eine strukturierte Erklärung mit:
     - Wichtig: Kein Hinweis in diesem Block bedeutet eine automatische Genehmigung oder Ausführung. Das System handelt nie selbstständig – jeder Schritt erfordert menschliche Einschätzung.
     - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
     Wenn kein Audit-Trace vorhanden, diesen Punkt weglassen.
+19. Governance-Kontext (Step 8 Block 1): Falls ein Governance-Kontext vorhanden ist, erkläre kurz und nachvollziehbar die Rollen- und Verantwortungsstruktur –
+    - actorRole="platform_admin": erkläre, dass dieser Akteur Plattform-Policies verwalten kann, aber keine operativen Freigaben erteilen darf (Separation of Duties)
+    - actorRole="operator": erkläre, dass dieser Akteur operative Reviews und Freigaben durchführen kann, aber keine Policies ändern darf
+    - actorRole="auditor": erkläre, dass dieser Akteur Audit- und Governance-Daten einsehen kann, aber weder Änderungen noch Freigaben vornehmen darf
+    - actorRole="viewer": erkläre, dass dieser Akteur nur Lese-Zugriff auf Signale und Portfolio-Daten hat – keine Governance-Rechte
+    - separationOfDutiesFlag=true: weise darauf hin, dass Trennung von Verantwortlichkeiten aktiv ist – kein Akteur kann gleichzeitig Policies ändern UND Freigaben erteilen
+    - sodConflict=true: erkläre, warum ein Separation-of-Duties-Konflikt erkannt wurde und dass in diesem Fall keine Aktion möglich ist, bis die Rollen geklärt sind
+    - Halte die Erklärung kurz (1–2 Sätze) – nur Governance-Einordnung, keine neue Analyse
+    Wenn kein Governance-Kontext vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
