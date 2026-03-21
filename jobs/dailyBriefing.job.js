@@ -266,6 +266,29 @@ function _deriveBriefingAuditHints(stock) {
   return { governanceStatus, traceReason, blockedByGuardrail };
 }
 
+/**
+ * Step 8 Block 1: Derive a compact governance label for briefing fact lines.
+ * Uses safe defaults when no real identity data is available.
+ * Returns a short string label or empty string if no governance insight applies.
+ */
+function _deriveBriefingGovernanceLabel(stock) {
+  const ar  = stock._actionReadiness  || "monitor_only";
+  const ds  = stock._decisionStatus   || null;
+  const afs = stock._approvalFlowStatus || null;
+
+  // Only surface governance labels for review-controlled or approval-requiring signals
+  if (ar === "review_required" && ds === "approved_candidate") {
+    return " · 🏛 Governance: Freigabe-Kandidat (Operator-Review)";
+  }
+  if (ar === "review_required") {
+    return " · 🏛 Governance: Review-pflichtig (SoD aktiv)";
+  }
+  if (afs === "closed") {
+    return " · 🏛 Governance: Abgeschlossen";
+  }
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -372,8 +395,11 @@ function buildFactsFromMarket(stocks) {
       ? " · 🛡 Guardrail aktiv"
       : "";
 
+    // Step 8 Block 1: governance role/SoD label for review-controlled signals
+    const governanceRoleLabel = _deriveBriefingGovernanceLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}.`
     );
   }
   return lines.join("\n");

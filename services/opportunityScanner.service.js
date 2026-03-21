@@ -45,6 +45,8 @@ const {
 } = require("./portfolioContext.service");
 // Step 5: User attention level – derived from portfolio/delta/action signals
 const { computeUserAttentionLevel } = require("./notifications.repository");
+// Step 8 Block 1: Governance context – actor-role, SoD, tenant scope classification
+const { deriveOpportunityGovernance, computeGovernanceContext } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2484,7 +2486,9 @@ async function getTopOpportunities(arg = 10) {
     const controlledApprovalFlow = computeControlledApprovalFlow({ ...oppFull, actionReadiness, decisionLayer });
     // Step 7 Block 5: derive audit/safety/traceability layer from all governance signals
     const auditTrace = computeAuditTraceLayer({ ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace };
+    // Step 8 Block 1: derive per-opportunity governance classification (role, SoD, tenant scope)
+    const governanceContext = deriveOpportunityGovernance({ ...oppFull, auditTrace, controlledApprovalFlow, actionReadiness });
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.
@@ -2918,4 +2922,5 @@ module.exports = {
   computeDecisionLayer,
   computeControlledApprovalFlow,
   computeAuditTraceLayer,
+  computeGovernanceContext,
 };

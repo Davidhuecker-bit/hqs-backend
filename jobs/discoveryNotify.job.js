@@ -67,6 +67,14 @@ function _derivePickOrchestration(pick, onWatchlist) {
       traceReason,
       safetyFlags,
       blockedByGuardrail: false,
+      // Step 8 Block 1: governance classification for high-signal picks
+      governanceContext: {
+        requiredRole: "operator",
+        separationOfDutiesFlag: true,
+        approvalActionAllowed: true,
+        policyMutationAllowed: false,
+        governanceBasis: "step8_block1",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -83,6 +91,14 @@ function _derivePickOrchestration(pick, onWatchlist) {
       traceReason: "Strukturierter Vorschlag verfügbar – Nutzer entscheidet eigenständig",
       safetyFlags: [],
       blockedByGuardrail: false,
+      // Step 8 Block 1: governance classification for proposal-level picks
+      governanceContext: {
+        requiredRole: "viewer",
+        separationOfDutiesFlag: false,
+        approvalActionAllowed: false,
+        policyMutationAllowed: false,
+        governanceBasis: "step8_block1",
+      },
     };
   }
   return {
@@ -98,6 +114,14 @@ function _derivePickOrchestration(pick, onWatchlist) {
     traceReason: "Signal zu schwach für aktive Zustellung – nur Beobachtung",
     safetyFlags: [],
     blockedByGuardrail: false,
+    // Step 8 Block 1: governance classification for monitor-only picks
+    governanceContext: {
+      requiredRole: "viewer",
+      separationOfDutiesFlag: false,
+      approvalActionAllowed: false,
+      policyMutationAllowed: false,
+      governanceBasis: "step8_block1",
+    },
   };
 }
 
@@ -219,6 +243,9 @@ async function runDiscoveryNotify() {
             governanceStatus: orchestration.governanceStatus || null,
             traceReason: orchestration.traceReason || null,
             safetyFlags: orchestration.safetyFlags?.length ? orchestration.safetyFlags : null,
+            // Step 8 Block 1: governance context for observability
+            governanceRole: orchestration.governanceContext?.requiredRole || null,
+            sodFlag: orchestration.governanceContext?.separationOfDutiesFlag || false,
           });
         }
 

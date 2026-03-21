@@ -90,6 +90,8 @@ const {
   getSignalKPIs,
 } = require("../services/signalHistory.repository");
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
+// Step 8 Block 1: Governance context for admin-level role/scope classification
+const { computeGovernanceContext } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -1793,6 +1795,9 @@ router.get("/review-queue", async (req, res) => {
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
     const opportunities = await getTopOpportunities({ limit });
 
+    // Step 8 Block 1: compute governance context for admin caller
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
     const pendingApproval = [];
     const proposalBucket  = [];
     const insufficientData = [];
@@ -1834,6 +1839,8 @@ router.get("/review-queue", async (req, res) => {
         traceReason:         opp.auditTrace?.traceReason         ?? null,
         safetyFlags:         opp.auditTrace?.safetyFlags         ?? [],
         auditSummary:        opp.auditTrace?.auditSummary        ?? null,
+        // Step 8 Block 1: per-opportunity governance classification
+        governanceContext:   opp.governanceContext ?? null,
       };
 
       if (aq.pendingApproval) {
@@ -1877,6 +1884,8 @@ router.get("/review-queue", async (req, res) => {
         reviewControlledCount:     [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.governanceStatus === "review_controlled").length,
         dataLimitedCount:          [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.governanceStatus === "data_limited").length,
       },
+      // Step 8 Block 1: governance context for admin caller (role, scope, SoD)
+      governanceContext: governanceCtx,
       pendingApproval,
       proposalBucket,
       insufficientData,
