@@ -103,7 +103,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 9 Block 5: Recovery, stop, override & promotion safety layer
 const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary } = require("../services/governance.context");
 // HQS 2.0 Block 1: Data Quality summary from factor history
-const { getRecentHqsDataQuality } = require("../services/factorHistory.repository");
+// HQS 2.0 Block 2: Sector / Peer-Group Normalization meta from factor history
+const { getRecentHqsDataQuality, getRecentHqsSectorMeta } = require("../services/factorHistory.repository");
 
 const router = express.Router();
 
@@ -2609,6 +2610,84 @@ router.get("/hqs-data-quality", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin hqs-data-quality route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/hqs-sector-meta
+ * HQS 2.0 Block 2: Read-only sector template & peer-group normalization view.
+ *
+ * Surfaces:
+ *   - sector template distribution across recent HQS score snapshots
+ *   - peer context availability rate
+ *   - normalization summary per template
+ *   - per-entry sector scoring meta
+ *
+ * All derived from factor_history table – no mutations.
+ *
+ * Query params:
+ *   ?limit=50  – number of recent snapshots to evaluate (1–200)
+ * ───────────────────────────────────────────────────────── */
+router.get("/hqs-sector-meta", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const rows = await getRecentHqsSectorMeta(limit);
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    const total = rows.length;
+    const templateCounts = {};
+    let peerContextCount = 0;
+
+    for (const row of rows) {
+      const tmpl = row.sectorTemplate || "unknown";
+      templateCounts[tmpl] = (templateCounts[tmpl] || 0) + 1;
+      if (row.peerContextAvailable === true) peerContextCount++;
+    }
+
+    const templateDistribution = Object.entries(templateCounts).map(([template, count]) => ({
+      template,
+      count,
+      pct: total > 0 ? Math.round((count / total) * 100) : 0,
+    })).sort((a, b) => b.count - a.count);
+
+    const summary = {
+      total,
+      templateDistribution,
+      peerContextCount,
+      peerContextRate: total > 0 ? Math.round((peerContextCount / total) * 100) : 0,
+    };
+
+    const entries = rows.map((row) => {
+      const ssm = row.sectorScoringMeta || {};
+      return {
+        symbol:               row.symbol,
+        hqsScore:             row.hqsScore,
+        regime:               row.regime,
+        hqsVersion:           row.hqsVersion ?? null,
+        sectorTemplate:       row.sectorTemplate ?? null,
+        sectorLabel:          ssm.sectorLabel ?? null,
+        sectorScoringFlags:   ssm.sectorScoringFlags ?? [],
+        peerContextAvailable: row.peerContextAvailable ?? null,
+        normalizationMeta:    ssm.normalizationMeta ?? null,
+        sectorReason:         ssm.sectorReason ?? null,
+        baseQuality:          ssm.baseQuality ?? null,
+        appliedAdjustments:   ssm.appliedAdjustments ?? [],
+        createdAt:            row.createdAt,
+      };
+    });
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin hqs-sector-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

@@ -10,11 +10,21 @@
   - computeDataQuality() derives confidenceScore, dataQualityFlags,
     imputationFlags, freshnessFlags and confidenceReason from live data
   - HQS output extended with these meta fields (backward compatible)
+  HQS 2.0 Block 2: Sector / Peer-Group Normalization & Sector Templates
+  - buildSectorContext() derives sectorTemplate, sectorScoringFlags,
+    peerContextAvailable, normalizationMeta, sectorReason from entity meta
+  - applySectorQualityAdjustment() applies sector-aware quality scoring
+  - HQS output extended with sector meta fields (backward compatible)
+  - 5th param entityMeta = { sector, industry } passed from marketService
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
 const { saveScoreSnapshot } = require("./services/factorHistory.repository");
 const { loadLastWeights } = require("./services/weightHistory.repository");
+const {
+  buildSectorContext,
+  applySectorQualityAdjustment,
+} = require("./services/sectorTemplate");
 
 /* =========================================================
    HQS VERSION
@@ -278,7 +288,8 @@ async function buildHQSResponse(
   item = {},
   marketAverage = 0,
   adaptiveWeights = null,
-  regimeHint = null
+  regimeHint = null,
+  entityMeta = null
 ) {
   try {
     if (!item.symbol) throw new Error("Missing symbol");
@@ -315,7 +326,21 @@ async function buildHQSResponse(
 
     // calculateQuality uses first element if fundamentals is an array (Finnhub format)
     const fundamentalsRecord = Array.isArray(fundamentals) ? fundamentals[0] : fundamentals;
-    const quality = calculateQuality(fundamentalsRecord);
+    const baseQuality = calculateQuality(fundamentalsRecord);
+
+    // ── HQS 2.0 Block 2: sector context & sector-aware quality adjustment ──
+    // entityMeta may come from 5th param (passed by marketService) or fall back
+    // to sector hint embedded in item itself (e.g. normalized.sector).
+    const resolvedEntityMeta = entityMeta || (item.sector ? { sector: item.sector, industry: item.industry || null } : null);
+    const sectorCtx = buildSectorContext(resolvedEntityMeta, fundamentalsRecord);
+    const { adjustedQuality, appliedAdjustments } = applySectorQualityAdjustment(
+      baseQuality,
+      fundamentalsRecord,
+      sectorCtx.sectorTemplate
+    );
+    // Use sector-adjusted quality for final score
+    const quality = adjustedQuality;
+
     const relative = calculateRelativeStrength(
       item.changesPercentage,
       marketAverage
@@ -331,7 +356,7 @@ async function buildHQSResponse(
 
     const finalScore = clamp(Math.round(baseScore), 0, 100);
 
-    // ── HQS 2.0: derive data quality meta ────────────────────────────────
+    // ── HQS 2.0 Block 1: derive data quality meta ─────────────────────────
     const dataQuality = computeDataQuality(item, fundamentalsRecord);
 
     await saveScoreSnapshot({
@@ -351,6 +376,17 @@ async function buildHQSResponse(
       },
       imputationMeta: {
         imputationFlags: dataQuality.imputationFlags,
+      },
+      // ── HQS 2.0 Block 2: sector scoring meta ──────────────────────────
+      sectorTemplate: sectorCtx.sectorTemplate,
+      peerContextAvailable: sectorCtx.peerContextAvailable,
+      sectorScoringMeta: {
+        sectorLabel: sectorCtx.sectorLabel,
+        sectorScoringFlags: sectorCtx.sectorScoringFlags,
+        normalizationMeta: sectorCtx.normalizationMeta,
+        sectorReason: sectorCtx.sectorReason,
+        baseQuality,
+        appliedAdjustments,
       },
     });
 
@@ -378,13 +414,19 @@ async function buildHQSResponse(
           ? "HALTEN"
           : "NICHT KAUFEN",
       timestamp: new Date().toISOString(),
-      // ── HQS 2.0 meta fields ──────────────────────────────────────────
+      // ── HQS 2.0 Block 1 meta fields ──────────────────────────────────
       hqsVersion: HQS_VERSION,
       confidenceScore: dataQuality.confidenceScore,
       dataQualityFlags: dataQuality.dataQualityFlags,
       imputationFlags: dataQuality.imputationFlags,
       freshnessFlags: dataQuality.freshnessFlags,
       confidenceReason: dataQuality.confidenceReason,
+      // ── HQS 2.0 Block 2 sector meta fields ───────────────────────────
+      sectorTemplate: sectorCtx.sectorTemplate,
+      sectorScoringFlags: sectorCtx.sectorScoringFlags,
+      peerContextAvailable: sectorCtx.peerContextAvailable,
+      normalizationMeta: sectorCtx.normalizationMeta,
+      sectorReason: sectorCtx.sectorReason,
     };
   } catch (error) {
     if (logger?.error)
