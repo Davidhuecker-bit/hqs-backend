@@ -187,6 +187,23 @@ function _derivePickOrchestration(pick, onWatchlist) {
         chainSafetyMode:   hasStrongData,
         chainBasis:        "step9_block2",
       },
+      // Step 9 Block 3: controlled auto-preparation for high-signal picks.
+      // Strong-data picks prepare a review_packet (review required); weaker picks prepare a proposal_card.
+      controlledAutoPreparation: {
+        autoPreparationEligible:   true,
+        preparationType:           hasStrongData ? "review_packet" : "proposal_card_ready",
+        preparationReason:         hasStrongData
+          ? "Starke Signale – Review-Paket wird vorbereitet"
+          : "Strukturierter Vorschlag verfügbar – Vorschlags-Karte vorbereitet",
+        preparationPriority:       hasStrongData ? "high" : "medium",
+        preparationGuarded:        false,
+        preparationWindow:         hasStrongData ? "immediate" : "short_term",
+        manualConfirmationRequired: hasStrongData,
+        preparationSummary:        hasStrongData
+          ? "Review-Paket: Starke Signale – Review-Paket wird vorbereitet [Manuelle Bestätigung erforderlich]"
+          : "Vorschlags-Karte bereit: Strukturierter Vorschlag verfügbar",
+        preparationBasis:          "step9_block3",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -313,6 +330,18 @@ function _derivePickOrchestration(pick, onWatchlist) {
         chainSafetyMode:   false,
         chainBasis:        "step9_block2",
       },
+      // Step 9 Block 3: controlled auto-preparation for proposal-level picks – proposal card ready.
+      controlledAutoPreparation: {
+        autoPreparationEligible:    true,
+        preparationType:            "proposal_card_ready",
+        preparationReason:          "Strukturierter Vorschlag verfügbar – Vorschlags-Karte vorbereitet",
+        preparationPriority:        "medium",
+        preparationGuarded:         false,
+        preparationWindow:          "short_term",
+        manualConfirmationRequired: false,
+        preparationSummary:         "Vorschlags-Karte bereit: Strukturierter Vorschlag verfügbar",
+        preparationBasis:           "step9_block3",
+      },
     };
   }
   return {
@@ -436,6 +465,18 @@ function _derivePickOrchestration(pick, onWatchlist) {
       chainConflictRisk: false,
       chainSafetyMode:   false,
       chainBasis:        "step9_block2",
+    },
+    // Step 9 Block 3: controlled auto-preparation for monitor-only picks – no preparation eligible.
+    controlledAutoPreparation: {
+      autoPreparationEligible:    false,
+      preparationType:            "no_auto_prep",
+      preparationReason:          "Signal zu schwach – keine kontrollierte Vorbereitung möglich",
+      preparationPriority:        "none",
+      preparationGuarded:         false,
+      preparationWindow:          null,
+      manualConfirmationRequired: false,
+      preparationSummary:         "Keine Vorbereitung: Signal zu schwach – keine kontrollierte Vorbereitung möglich",
+      preparationBasis:           "step9_block3",
     },
   };
 }

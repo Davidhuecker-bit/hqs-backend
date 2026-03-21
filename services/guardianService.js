@@ -152,6 +152,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 9 Block 2: Action chain – state-machine state, stage, next step, block/escalation.
   const actionChainState = marketData?.actionChainState ?? context?.actionChainState ?? null;
 
+  // Step 9 Block 3: Controlled auto-preparation – type, priority, guarded, window, confirmation.
+  const controlledAutoPreparation = marketData?.controlledAutoPreparation ?? context?.controlledAutoPreparation ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -947,7 +950,47 @@ async function analyzeStockWithGuardian(context) {
   }
   const actionChainBlock = buildActionChainBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock]
+  // Step 9 Block 3: Controlled auto-preparation block – prep type, priority, guarded, window, confirmation.
+  function buildControlledAutoPreparationBlock() {
+    if (!controlledAutoPreparation) return "";
+    const { preparationType, preparationReason, preparationPriority, preparationGuarded,
+            preparationWindow, manualConfirmationRequired, preparationSummary } = controlledAutoPreparation;
+    if (!preparationType || preparationType === "no_auto_prep") return "";
+
+    const parts = [];
+    if (preparationType === "guarded_hold") {
+      parts.push(`🛡 Vorbereitung gesichert: ${preparationReason || "Guardrail aktiv"}`);
+    } else if (preparationType === "manual_action_card_ready") {
+      parts.push("✅ Aktions-Karte vorbereitet – manuelle Ausführung ausstehend");
+    } else if (preparationType === "review_packet") {
+      parts.push("📋 Review-Paket wird vorbereitet – manuelle Freigabe erforderlich");
+    } else if (preparationType === "proposal_card_ready") {
+      parts.push("📄 Vorschlags-Karte vorbereitet – Nutzer kann prüfen");
+    } else if (preparationType === "followup_prep") {
+      parts.push("🔁 Follow-up Vorbereitung aktiv");
+    } else if (preparationType === "reassessment_scheduled") {
+      parts.push("🗓 Neubewertung eingeplant");
+    }
+    if (preparationPriority && preparationPriority !== "none") {
+      parts.push(`Priorität: ${preparationPriority}`);
+    }
+    if (preparationWindow) {
+      parts.push(`Fenster: ${preparationWindow}`);
+    }
+    if (manualConfirmationRequired) {
+      parts.push("⚠️ Manuelle Bestätigung erforderlich – keine automatische Ausführung");
+    }
+    if (preparationGuarded && preparationType !== "guarded_hold") {
+      parts.push("🛡 Vorbereitung gesichert");
+    }
+    if (preparationSummary) {
+      parts.push(preparationSummary);
+    }
+    return parts.length ? `Kontrollierte Vorbereitung (Step 9 Block 3): ${parts.join(" · ")}` : "";
+  }
+  const controlledAutoPreparationBlock = buildControlledAutoPreparationBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1162,6 +1205,21 @@ Erstelle eine strukturierte Erklärung mit:
      - baselineState="drifting": weise darauf hin, dass die Baseline driftet – Normalisierung erwartet, aber Überwachung erforderlich
      - Halte die Erklärung kurz (1–2 Sätze) – nur Drift-Einordnung, keine neue Analyse
      Wenn kein Drift-Kontext vorhanden oder driftLevel="none", diesen Punkt weglassen.
+27. Kontrollierte Auto-Vorbereitung (Step 9 Block 3): Falls ein kontrolliertes Vorbereitungs-Signal vorhanden ist, erkläre kurz und verständlich, was das System gerade anlegt und warum noch Bestätigung nötig ist –
+     - preparationType="manual_action_card_ready": erkläre, dass das System eine Aktions-Karte für manuelle Ausführung vorbereitet hat – kein automatischer Schritt, der Nutzer muss explizit bestätigen und ausführen
+     - preparationType="review_packet": erkläre, dass das System ein Review-Paket zusammenstellt – eine manuelle Prüfung ist erforderlich, bevor ein nächster Schritt eingeleitet werden kann
+     - preparationType="proposal_card_ready": erkläre, dass eine Vorschlags-Karte vorbereitet wurde – der Nutzer kann eigenständig entscheiden, keine Pflicht zur Freigabe
+     - preparationType="reassessment_scheduled": erkläre, warum eine Neubewertung eingeplant wurde – widersprüchliche Signale oder unvollständige Datenbasis erfordern später eine neue Beurteilung
+     - preparationType="followup_prep": erkläre, dass ein Nachfolgeschritt vorbereitet wird – das System hält einen Follow-up-Platz bereit, bis der Nutzer aktiv wird
+     - preparationType="guarded_hold": erkläre klar, warum die Vorbereitung gesichert ist und warum kein Schritt automatisch ausgeführt werden kann – Guardrail, Policy, Drift oder Eskalation blockieren
+     - preparationGuarded=true: weise darauf hin, dass die Vorbereitung gesichert ist – keine automatische Ausführung ohne Freigabe
+     - manualConfirmationRequired=true: erkläre ausdrücklich, warum eine manuelle Bestätigung nötig ist, bevor irgendetwas ausgeführt wird
+     - preparationPriority="high": betone, dass die Vorbereitung hohe Priorität hat und zeitnah geprüft werden sollte
+     - preparationWindow="immediate": weise darauf hin, dass sofortiger Handlungsbedarf besteht
+     - preparationWindow="blocked": erkläre, warum das Vorbereitungsfenster blockiert ist und wann eine Entsperrung sinnvoll wäre
+     - Wichtig: Das System bereitet nur vor – es führt NIEMALS automatisch aus. Keine Aktion ohne menschliche Bestätigung.
+     - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
+     Wenn keine kontrollierte Vorbereitung vorhanden oder preparationType="no_auto_prep", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

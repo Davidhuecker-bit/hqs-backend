@@ -1584,6 +1584,275 @@ function computeActionChainSummary(opps) {
   };
 }
 
+/* =========================================================
+   STEP 9 BLOCK 3: CONTROLLED AUTO-PREPARATION LAYER
+   (Kontrollierte automatische Vorbereitungsschicht)
+
+   Builds the first controlled automatic preparation layer on top of
+   the action-chain state-machine from Block 2.
+
+   Purpose:
+   - Derive ONE preparation type per opportunity from existing signals
+   - Assign preparation priority, guarded state, window, and confirmation need
+   - NO real execution – only pre-computation of what could be prepared
+   - Safety-first: guardrail/block/drift signals always block auto-prep
+   - Governance-compatible: all inputs from Step 7-9 Block 2
+
+   Preparation types (ranked from safest / most blocked to most active):
+     no_auto_prep             – no preparation eligible (idle/insufficient)
+     guarded_hold             – preparation blocked by guardrail/safety gate
+     review_packet            – review_required/pending_review → prepare review packet
+     reassessment_scheduled   – deferred_review/needs_more_data → schedule reassessment
+     followup_prep            – followUpNeeded/awaiting_signal → prepare follow-up
+     proposal_card_ready      – proposal_ready → prepare proposal card
+     manual_action_card_ready – approved_candidate → prepare manual action card
+
+   Design principles:
+   - Defensive: missing signals → no_auto_prep (safest)
+   - Safety-first: any guardrail/block/drift resolves as guarded_hold
+   - Risk-/review-/guardrail paths dominate opportunity-/growth paths
+   - manualConfirmationRequired: always true for action-card and review types
+   - No hidden automatic releases – system only PREPARES, never EXECUTES
+========================================================= */
+
+// ── Preparation Types (ordered from safest to most active) ─────────────────
+const PREPARATION_TYPES = {
+  no_auto_prep:             { rank: 0, label: "Keine Vorbereitung",         description: "Keine kontrollierte Vorbereitung möglich" },
+  guarded_hold:             { rank: 1, label: "Gesicherter Halt",           description: "Vorbereitung durch Guardrail blockiert" },
+  review_packet:            { rank: 2, label: "Review-Paket",               description: "Prüfungspaket wird vorbereitet – manuelle Freigabe erforderlich" },
+  reassessment_scheduled:   { rank: 3, label: "Neubewertung geplant",       description: "Neubewertungs-Zeitfenster wird eingeplant" },
+  followup_prep:            { rank: 4, label: "Follow-up Vorbereitung",     description: "Nachfolgeschritt wird vorbereitet" },
+  proposal_card_ready:      { rank: 5, label: "Vorschlags-Karte bereit",    description: "Vorschlags-Karte für manuelle Prüfung vorbereitet" },
+  manual_action_card_ready: { rank: 6, label: "Aktions-Karte bereit",       description: "Manuelle Aktionskarte vorbereitet – Bestätigung erforderlich" },
+};
+
+/**
+ * Build a human-readable guarded reason string from hard-guard flags.
+ * @private
+ */
+function _buildGuardedReason({ blockedByGuardrail, hardGated, criticalGuarded, policyInvalid, sodConflict, highDrift, criticalBaseline, escalationRequired, chainBlocked }) {
+  const reasons = [];
+  if (blockedByGuardrail) reasons.push("Guardrail-Block aktiv");
+  if (hardGated)          reasons.push("Ressource hard-gated");
+  if (criticalGuarded)    reasons.push("Kritischer Systemschutz aktiv");
+  if (policyInvalid)      reasons.push("Policy ausgesetzt");
+  if (sodConflict)        reasons.push("Rollentrennung verletzt");
+  if (highDrift)          reasons.push("Hohe Signaldrift erkannt");
+  if (criticalBaseline)   reasons.push("Kritische Baseline-Abweichung");
+  if (escalationRequired) reasons.push("Eskalation erforderlich");
+  if (chainBlocked)       reasons.push("Aktionskette blockiert");
+  return reasons.length ? `Vorbereitung gesichert: ${reasons.join(", ")}` : "Vorbereitung gesichert";
+}
+
+/**
+ * Build a human-readable suppression reason string from soft-suppress flags.
+ * @private
+ */
+function _buildSuppressedReason({ highTenantPressure, criticalHealth, policyNotLive }) {
+  const reasons = [];
+  if (highTenantPressure) reasons.push("Hoher Tenant-/Ressourcendruck");
+  if (criticalHealth)     reasons.push("Kritischer Systemzustand");
+  if (policyNotLive)      reasons.push("Policy nicht im Live-Modus");
+  return reasons.length ? `Vorbereitung unterdrückt: ${reasons.join(", ")}` : "Vorbereitung unterdrückt";
+}
+
+/**
+ * Compute the controlled auto-preparation state for a single opportunity.
+ *
+ * Derives one preparation type and supporting metadata from ALL existing signals:
+ *   actionChainState, actionReadiness, approvalQueueEntry, decisionLayer,
+ *   controlledApprovalFlow, auditTrace, governanceContext, exceptionFields,
+ *   policyPlane, evidencePackage, tenantResourceGovernance, operationalResilience,
+ *   autonomyLevel, driftDetection.
+ *
+ * Safety-first: guardrail / block / high-drift signals always block auto-prep.
+ *
+ * @param {Object} opp – enriched opportunity with all Step 7-9 Block 2 fields
+ * @returns {Object} controlledAutoPreparation descriptor
+ */
+function computeControlledAutoPreparation(opp) {
+  const ar   = opp.actionReadiness        || {};
+  const aq   = opp.approvalQueueEntry     || {};
+  const dl   = opp.decisionLayer          || {};
+  const caf  = opp.controlledApprovalFlow || {};
+  const at   = opp.auditTrace             || {};
+  const gov  = opp.governanceContext      || {};
+  const exc  = opp.exceptionFields        || {};
+  const pp   = opp.policyPlane            || {};
+  const ep   = opp.evidencePackage        || {};
+  const trg  = opp.tenantResourceGovernance || {};
+  const or_  = opp.operationalResilience  || {};
+  const al   = opp.autonomyLevel          || {};
+  const dd   = opp.driftDetection         || {};
+  const acs  = opp.actionChainState       || {};
+
+  // ── 1. Hard-guard conditions (block all auto-prep) ───────────────────
+  const blockedByGuardrail = at.blockedByGuardrail === true || exc.blockedByGuardrail === true;
+  const hardGated          = trg.resourceGovernanceStatus === "hard_gated";
+  const criticalGuarded    = or_.degradationMode === "critical_guarded";
+  const policyInvalid      = (ep.policyValidity ?? opp.policyValidity) === "suspended";
+  const sodConflict        = gov.separationOfDutiesViolation === true;
+  const highDrift          = dd.driftLevel === "high";
+  const criticalBaseline   = dd.baselineState === "critical";
+  const escalationRequired    = al.escalationRequired === true;
+  const chainBlocked       = acs.chainBlocked === true;
+
+  const isGuarded = blockedByGuardrail || hardGated || criticalGuarded
+                  || policyInvalid || sodConflict || highDrift
+                  || criticalBaseline || escalationRequired || chainBlocked;
+
+  // ── 2. Soft-suppress conditions (reduce but not fully block) ─────────
+  const highTenantPressure = trg.rateLimitRisk === "high" || trg.backlogPressure === "elevated";
+  const criticalHealth     = or_.operationalHealth === "critical";
+  const policyNotLive      = pp.policyMode === "shadow" || pp.policyMode === "draft";
+  const isSuppressed       = !isGuarded && (highTenantPressure || criticalHealth || policyNotLive);
+
+  // ── 3. Derive preparation type ────────────────────────────────────────
+  let preparationType            = "no_auto_prep";
+  let preparationReason          = "Keine aktiven Signale für kontrollierte Vorbereitung";
+  let preparationPriority        = "none";
+  let preparationWindow          = null;
+  let manualConfirmationRequired = false;
+
+  if (isGuarded) {
+    preparationType   = "guarded_hold";
+    preparationReason = _buildGuardedReason({ blockedByGuardrail, hardGated, criticalGuarded, policyInvalid, sodConflict, highDrift, criticalBaseline, escalationRequired, chainBlocked });
+    preparationWindow = "blocked";
+    manualConfirmationRequired = true;
+  } else if (isSuppressed) {
+    preparationType   = "guarded_hold";
+    preparationReason = _buildSuppressedReason({ highTenantPressure, criticalHealth, policyNotLive });
+    preparationWindow = "blocked";
+    manualConfirmationRequired = true;
+  } else {
+    // Priority 1 (highest risk path): review_required / pending_review → review_packet
+    if (ar.actionReadiness === "review_required"
+        || dl.decisionStatus === "pending_review"
+        || caf.approvalFlowStatus === "awaiting_review") {
+      preparationType   = "review_packet";
+      preparationReason = "Review erforderlich – Prüfungspaket wird vorbereitet";
+      preparationPriority = (exc.exceptionPriority === "critical" || exc.exceptionPriority === "high"
+                             || aq.reviewPriority === "high") ? "high" : "medium";
+      preparationWindow          = "immediate";
+      manualConfirmationRequired = true;
+    }
+    // Priority 2: deferred_review / needs_more_data → reassessment_scheduled
+    else if (dl.decisionStatus === "deferred_review"
+             || dl.decisionStatus === "needs_more_data"
+             || caf.approvalFlowStatus === "deferred") {
+      preparationType            = "reassessment_scheduled";
+      preparationReason          = "Prüfung zurückgestellt oder Datenbasis unvollständig – Neubewertung geplant";
+      preparationPriority        = "low";
+      preparationWindow          = "deferred";
+      manualConfirmationRequired = false;
+    }
+    // Priority 3: approved_candidate / approved_pending_action → manual_action_card_ready
+    else if (dl.decisionStatus === "approved_candidate"
+             || caf.approvalFlowStatus === "approved_pending_action") {
+      preparationType            = "manual_action_card_ready";
+      preparationReason          = "Freigabekandidat bestätigt – Aktions-Karte für manuelle Ausführung vorbereitet";
+      preparationPriority        = "high";
+      preparationWindow          = "short_term";
+      manualConfirmationRequired = true;
+    }
+    // Priority 4: followUpNeeded / awaiting_signal → followup_prep
+    else if (caf.followUpNeeded === true
+             || acs.actionChainState === "awaiting_signal") {
+      preparationType            = "followup_prep";
+      preparationReason          = "Nachfolgeschritt erforderlich – Follow-up wird vorbereitet";
+      preparationPriority        = "medium";
+      preparationWindow          = "short_term";
+      manualConfirmationRequired = false;
+    }
+    // Priority 5: proposal_ready → proposal_card_ready
+    else if (ar.actionReadiness === "proposal_ready"
+             || caf.approvalFlowStatus === "proposal_available") {
+      preparationType            = "proposal_card_ready";
+      preparationReason          = "Strukturierter Vorschlag verfügbar – Vorschlags-Karte vorbereitet";
+      preparationPriority        = "medium";
+      preparationWindow          = "short_term";
+      manualConfirmationRequired = false;
+    }
+  }
+
+  // ── 4. Preparation guarded flag ───────────────────────────────────────
+  const preparationGuarded = isGuarded || isSuppressed;
+
+  // ── 5. Auto-preparation eligible ──────────────────────────────────────
+  // Eligible only if not guarded and an actionable prep type was derived.
+  const autoPreparationEligible = !preparationGuarded
+    && preparationType !== "no_auto_prep"
+    && preparationType !== "guarded_hold";
+
+  // ── 6. Build preparation summary ─────────────────────────────────────
+  const typeInfo     = PREPARATION_TYPES[preparationType] || PREPARATION_TYPES.no_auto_prep;
+  const guardedNote  = preparationGuarded        ? " [Vorbereitung gesichert – keine automatische Ausführung]" : "";
+  const confirmNote  = manualConfirmationRequired ? " [Manuelle Bestätigung erforderlich]" : "";
+  const preparationSummary = `${typeInfo.label}: ${preparationReason}${guardedNote}${confirmNote}`;
+
+  return {
+    autoPreparationEligible,
+    preparationType,
+    preparationReason,
+    preparationPriority,
+    preparationGuarded,
+    preparationWindow,
+    manualConfirmationRequired,
+    preparationSummary,
+    preparationBasis: "step9_block3",
+  };
+}
+
+/**
+ * Aggregate controlled auto-preparation distribution across opportunities.
+ * For admin observability – no mutations, read-only summary.
+ *
+ * @param {Array} opps – array of enriched opportunities with controlledAutoPreparation
+ * @returns {Object} aggregate summary
+ */
+function computeControlledAutoPreparationSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:                  0,
+      eligibleCount:                   0,
+      guardedCount:                    0,
+      manualConfirmationRequiredCount: 0,
+      typeDistribution:                {},
+      priorityDistribution:            {},
+      preparationBasis:                "step9_block3",
+    };
+  }
+
+  const typeDist     = {};
+  const priorityDist = {};
+  let eligibleCount                    = 0;
+  let guardedCount                     = 0;
+  let manualConfirmationRequiredCount  = 0;
+
+  for (const o of opps) {
+    const cap      = o.controlledAutoPreparation || {};
+    const type     = cap.preparationType         || "no_auto_prep";
+    const priority = cap.preparationPriority     || "none";
+
+    typeDist[type]         = (typeDist[type]         || 0) + 1;
+    priorityDist[priority] = (priorityDist[priority] || 0) + 1;
+
+    if (cap.autoPreparationEligible)        eligibleCount++;
+    if (cap.preparationGuarded)             guardedCount++;
+    if (cap.manualConfirmationRequired)     manualConfirmationRequiredCount++;
+  }
+
+  return {
+    totalEvaluated: opps.length,
+    eligibleCount,
+    guardedCount,
+    manualConfirmationRequiredCount,
+    typeDistribution:     typeDist,
+    priorityDistribution: priorityDist,
+    preparationBasis:     "step9_block3",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -1608,4 +1877,7 @@ module.exports = {
   ACTION_CHAIN_STATES,
   computeActionChainState,
   computeActionChainSummary,
+  PREPARATION_TYPES,
+  computeControlledAutoPreparation,
+  computeControlledAutoPreparationSummary,
 };
