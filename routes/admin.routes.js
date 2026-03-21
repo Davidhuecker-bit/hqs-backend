@@ -1828,6 +1828,12 @@ router.get("/review-queue", async (req, res) => {
         deferUntil:            opp.controlledApprovalFlow?.deferUntil            ?? null,
         executionIntent:       opp.controlledApprovalFlow?.executionIntent       ?? null,
         actionLifecycleStage:  opp.controlledApprovalFlow?.actionLifecycleStage  ?? null,
+        // Step 7 Block 5: audit/trace/safety fields
+        governanceStatus:    opp.auditTrace?.governanceStatus    ?? null,
+        blockedByGuardrail:  opp.auditTrace?.blockedByGuardrail  ?? false,
+        traceReason:         opp.auditTrace?.traceReason         ?? null,
+        safetyFlags:         opp.auditTrace?.safetyFlags         ?? [],
+        auditSummary:        opp.auditTrace?.auditSummary        ?? null,
       };
 
       if (aq.pendingApproval) {
@@ -1866,6 +1872,10 @@ router.get("/review-queue", async (req, res) => {
         approvalFlowDeferred:              [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "deferred").length,
         approvalFlowWaitingForMoreData:    [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "waiting_for_more_data").length,
         approvalFlowClosed:                [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.approvalFlowStatus === "closed").length,
+        // Step 7 Block 5: audit/safety distribution
+        blockedByGuardrailCount:   [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.blockedByGuardrail === true).length,
+        reviewControlledCount:     [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.governanceStatus === "review_controlled").length,
+        dataLimitedCount:          [...pendingApproval, ...proposalBucket, ...insufficientData].filter((e) => e.governanceStatus === "data_limited").length,
       },
       pendingApproval,
       proposalBucket,

@@ -121,6 +121,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 7 Block 4: Controlled Approval Flow – next controlled follow-up step after decision.
   const controlledApprovalFlow = marketData?.controlledApprovalFlow ?? context?.controlledApprovalFlow ?? null;
 
+  // Step 7 Block 5: Audit/trace/safety layer – condensed governance and guardrail state.
+  const auditTrace = marketData?.auditTrace ?? context?.auditTrace ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -593,7 +596,39 @@ async function analyzeStockWithGuardian(context) {
   }
   const controlledApprovalFlowBlock = buildControlledApprovalFlowBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock]
+  // Step 7 Block 5: Audit/trace/safety block – explains why the system is in this governance state,
+  // which guardrail or rule fired, and where the case stands in the controlled lifecycle.
+  const GOVERNANCE_STATUS_LABELS = {
+    review_controlled:  "Freigabe-kontrolliert – manuelle Prüfung erforderlich",
+    proposal_available: "Vorschlag verfügbar – Nutzer kann eigenständig entscheiden",
+    data_limited:       "Datenbasis begrenzt – Signalqualität unzureichend für Entscheidung",
+    observation:        "Beobachtung – kein Handlungsbedarf, reguläres Monitoring",
+    closed:             "Abgeschlossen – keine weitere Aktion erforderlich",
+  };
+  function buildAuditTraceBlock() {
+    if (!auditTrace) return "";
+    const parts = [];
+    if (auditTrace.governanceStatus) {
+      const label = GOVERNANCE_STATUS_LABELS[auditTrace.governanceStatus] || auditTrace.governanceStatus;
+      parts.push(`Governance-Status: ${label}`);
+    }
+    if (auditTrace.blockedByGuardrail) {
+      parts.push("⚠ Guardrail aktiv – das System hat die Aktion automatisch begrenzt");
+    }
+    if (auditTrace.traceReason) {
+      parts.push(`Begründung: ${auditTrace.traceReason}`);
+    }
+    if (auditTrace.tracePath) {
+      parts.push(`Lifecycle-Pfad: ${auditTrace.tracePath}`);
+    }
+    if (Array.isArray(auditTrace.safetyFlags) && auditTrace.safetyFlags.length) {
+      parts.push(`Safety-Flags: ${auditTrace.safetyFlags.join(", ")}`);
+    }
+    return parts.length ? `Audit-Trace (Step 7 Block 5): ${parts.join(" · ")}` : "";
+  }
+  const auditTraceBlock = buildAuditTraceBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -717,6 +752,18 @@ Erstelle eine strukturierte Erklärung mit:
     - Wichtig: Der Folgefluss ist kontrolliert und nicht automatisch. Kein Schritt wird ohne manuelle Bestätigung ausgeführt.
     - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und handlungsorientiert
     Wenn kein kontrollierter Folgefluss vorhanden, diesen Punkt weglassen.
+18. Audit-, Safety- & Traceability-Status (Step 7 Block 5): Falls ein Audit-Trace vorhanden ist, erkläre kurz und nachvollziehbar, warum das System diesen Fall so eingestuft, begrenzt oder freigegeben hat –
+    - governanceStatus="review_controlled": erkläre, warum eine manuelle Freigabe erforderlich ist und welche Governance-Regel gegriffen hat – kein automatischer Fortschritt ohne Nutzer-Bestätigung
+    - governanceStatus="proposal_available": erkläre, dass ein Vorschlag zur eigenständigen Nutzerentscheidung bereitsteht – keine formale Freigabepflicht, aber Verantwortung liegt beim Nutzer
+    - governanceStatus="data_limited": erkläre klar, warum die Datenbasis oder Signalqualität noch keine Entscheidung erlaubt – was fehlt und was beobachtet werden sollte
+    - governanceStatus="observation": erkläre, warum kein Handlungsbedarf besteht – das Signal wird regulär beobachtet, aber es gibt keinen Grund für eine Aktion
+    - governanceStatus="closed": erkläre, warum der Fall abgeschlossen ist – welche Entscheidung getroffen wurde und warum keine weitere Aktion mehr nötig ist
+    - blockedByGuardrail=true: erkläre klar, warum das System automatisch eine Grenze gesetzt hat – welche Sicherheits- oder Governance-Regel gegriffen hat, und warum das System in diesem Fall nicht eigenständig weitergehen darf
+    - traceReason vorhanden: nutze es als direkte Erklärung, warum das System diese Einstufung vorgenommen hat
+    - safetyFlags vorhanden: erkläre, was diese Flags bedeuten und wie sie die Klassifizierung beeinflusst haben
+    - Wichtig: Kein Hinweis in diesem Block bedeutet eine automatische Genehmigung oder Ausführung. Das System handelt nie selbstständig – jeder Schritt erfordert menschliche Einschätzung.
+    - Halte die Erklärung kurz (1–3 Sätze) – klar, nachvollziehbar und governance-kompatibel
+    Wenn kein Audit-Trace vorhanden, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
