@@ -246,6 +246,10 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     governanceContext: stock?.governanceContext ?? null,
     // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis.
     policyPlane: stock?.policyPlane ?? null,
+    // Step 8 Block 4: Evidence Package – policyFingerprint, policyValidity, policyApprovalHistory, operatorActionTrace.
+    evidencePackage:     stock?.evidencePackage     ?? null,
+    policyFingerprint:   stock?.policyFingerprint   ?? null,
+    policyValidity:      stock?.policyValidity      ?? null,
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -392,6 +396,10 @@ function buildTopSignals(stocks) {
         governanceContext: stock.governanceContext ?? null,
         // Step 8 Block 3: policy-plane for downstream policy/shadow/four-eyes rendering
         policyPlane: stock.policyPlane ?? null,
+        // Step 8 Block 4: evidence package – policyFingerprint/policyValidity for downstream evidence rendering
+        evidencePackage:   stock.evidencePackage   ?? null,
+        policyFingerprint: stock.policyFingerprint ?? null,
+        policyValidity:    stock.policyValidity    ?? null,
       };
     });
 }
@@ -579,6 +587,16 @@ function buildPortfolioIntelligenceSummary(stocks) {
       shadowEligibleCount:         stocks.filter((s) => s.policyPlane?.shadowModeEligible === true).length,
       pendingApprovalPolicyCount:  stocks.filter((s) => s.policyPlane?.policyStatus === "pending_approval").length,
       policyPlaneBasis:            "step8_block3",
+    },
+    // Step 8 Block 4: evidence summary – policy validity, fingerprint presence, four-eyes, guardrail counts.
+    evidencePackages: {
+      validCount:            stocks.filter((s) => s.policyValidity === "valid" || !s.policyValidity).length,
+      pendingCount:          stocks.filter((s) => s.policyValidity === "pending").length,
+      suspendedCount:        stocks.filter((s) => s.policyValidity === "suspended").length,
+      withFourEyesCount:     stocks.filter((s) => s.evidencePackage?.approvalSummary?.requiresSecondApproval === true).length,
+      withGuardrailCount:    stocks.filter((s) => s.evidencePackage?.governanceStatus === "review_controlled" ||
+                                                   s.auditTrace?.blockedByGuardrail === true).length,
+      evidenceBasis:         "step8_block4",
     },
   };
 }

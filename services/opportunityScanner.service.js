@@ -47,7 +47,7 @@ const {
 const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 8 Block 1: Governance context – actor-role, SoD, tenant scope classification
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
-const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext } = require("./governance.context");
+const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2539,7 +2539,10 @@ async function getTopOpportunities(arg = 10) {
     const exceptionFields = computeExceptionFields({ actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace });
     // Step 8 Block 3: derive policy-plane descriptor (version/status/mode/four-eyes/shadow)
     const policyPlane = computePolicyPlaneContext({ ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, governanceContext });
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane };
+    // Step 8 Block 4: derive evidence package + policy-versioning descriptor
+    const oppWithPolicy = { ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, approvalQueueEntry, policyPlane, governanceContext };
+    const evidencePackageResult = computeEvidencePackage(oppWithPolicy, governanceContext);
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

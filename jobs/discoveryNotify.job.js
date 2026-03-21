@@ -92,6 +92,33 @@ function _derivePickOrchestration(pick, onWatchlist) {
         policyMutationAllowed: false,
         policyPlaneBasis: "step8_block3",
       },
+      // Step 8 Block 4: evidence package for high-signal picks
+      policyValidity:     "pending",
+      policyFingerprint:  `v1:pending_approval:live:${decisionStatus}`,
+      evidencePackage: {
+        policyVersion:    "v1",
+        policyFingerprint: `v1:pending_approval:live:${decisionStatus}`,
+        policyValidity:   "pending",
+        governanceStatus: "review_controlled",
+        traceReason,
+        tracePath:        null,
+        reviewSummary:    { actionReadiness: "review_required", approvalQueueBucket: "risk_review", pendingApproval: true },
+        decisionSummary:  { decisionStatus, decisionReason: null },
+        approvalSummary:  { approvalFlowStatus, requiresSecondApproval: hasStrongData, approvalState: hasStrongData ? "awaiting_second" : "none" },
+        actorContext:     { actorRole: "operator", governanceRole: "operator", tenantScope: "platform", separationOfDutiesFlag: true },
+        policyApprovalHistory: [
+          { event: "governance_status", state: "review_controlled", source: "discoveryNotify" },
+          { event: "decision_recorded", state: decisionStatus, source: "discoveryNotify" },
+          { event: "approval_flow", state: approvalFlowStatus, source: "discoveryNotify" },
+          ...(hasStrongData ? [{ event: "four_eyes_required", state: "awaiting_second", source: "policyPlane" }] : []),
+        ],
+        operatorActionTrace: [
+          { trace: "audit_reason",     value: traceReason },
+          { trace: "action_readiness", value: "review_required" },
+          ...(hasStrongData ? [{ trace: "second_approval", value: "awaiting" }] : []),
+        ],
+        evidenceBasis: "step8_block4",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -133,6 +160,30 @@ function _derivePickOrchestration(pick, onWatchlist) {
         policyMutationAllowed: false,
         policyPlaneBasis: "step8_block3",
       },
+      // Step 8 Block 4: evidence package for proposal-level picks
+      policyValidity:     "valid",
+      policyFingerprint:  "v1:active:live:none",
+      evidencePackage: {
+        policyVersion:    "v1",
+        policyFingerprint: "v1:active:live:none",
+        policyValidity:   "valid",
+        governanceStatus: "proposal_available",
+        traceReason:      "Strukturierter Vorschlag verfügbar – Nutzer entscheidet eigenständig",
+        tracePath:        null,
+        reviewSummary:    { actionReadiness: "proposal_ready", approvalQueueBucket: "proposal_bucket", pendingApproval: false },
+        decisionSummary:  { decisionStatus: null, decisionReason: null },
+        approvalSummary:  { approvalFlowStatus: "proposal_available", requiresSecondApproval: false, approvalState: "none" },
+        actorContext:     { actorRole: "viewer", governanceRole: "viewer", tenantScope: "platform", separationOfDutiesFlag: false },
+        policyApprovalHistory: [
+          { event: "governance_status", state: "proposal_available", source: "discoveryNotify" },
+          { event: "approval_flow", state: "proposal_available", source: "discoveryNotify" },
+        ],
+        operatorActionTrace: [
+          { trace: "audit_reason",     value: "Strukturierter Vorschlag verfügbar – Nutzer entscheidet eigenständig" },
+          { trace: "action_readiness", value: "proposal_ready" },
+        ],
+        evidenceBasis: "step8_block4",
+      },
     };
   }
   return {
@@ -172,6 +223,29 @@ function _derivePickOrchestration(pick, onWatchlist) {
       policyScope: "per_opportunity",
       policyMutationAllowed: false,
       policyPlaneBasis: "step8_block3",
+    },
+    // Step 8 Block 4: evidence package for monitor-only picks
+    policyValidity:     "valid",
+    policyFingerprint:  "v1:active:live:none",
+    evidencePackage: {
+      policyVersion:    "v1",
+      policyFingerprint: "v1:active:live:none",
+      policyValidity:   "valid",
+      governanceStatus: "observation",
+      traceReason:      "Signal zu schwach für aktive Zustellung – nur Beobachtung",
+      tracePath:        null,
+      reviewSummary:    { actionReadiness: "monitor_only", approvalQueueBucket: null, pendingApproval: false },
+      decisionSummary:  { decisionStatus: null, decisionReason: null },
+      approvalSummary:  { approvalFlowStatus: null, requiresSecondApproval: false, approvalState: "none" },
+      actorContext:     { actorRole: "viewer", governanceRole: "viewer", tenantScope: "platform", separationOfDutiesFlag: false },
+      policyApprovalHistory: [
+        { event: "governance_status", state: "observation", source: "discoveryNotify" },
+      ],
+      operatorActionTrace: [
+        { trace: "audit_reason",     value: "Signal zu schwach für aktive Zustellung – nur Beobachtung" },
+        { trace: "action_readiness", value: "monitor_only" },
+      ],
+      evidenceBasis: "step8_block4",
     },
   };
 }

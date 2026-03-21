@@ -133,6 +133,10 @@ async function analyzeStockWithGuardian(context) {
   // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis.
   const policyPlane = marketData?.policyPlane ?? context?.policyPlane ?? null;
 
+  // Step 8 Block 4: Evidence Package – policyFingerprint, policyValidity, policyApprovalHistory, operatorActionTrace.
+  const evidencePackage = marketData?.evidencePackage ?? context?.evidencePackage ?? null;
+  const policyValidity  = marketData?.policyValidity  ?? context?.policyValidity  ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -725,7 +729,37 @@ async function analyzeStockWithGuardian(context) {
   }
   const policyPlaneBlock = buildPolicyPlaneBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock]
+  // Step 8 Block 4: Evidence Package block – policy validity, fingerprint, approval history, operator trace.
+  function buildEvidencePackageBlock() {
+    if (!evidencePackage && !policyValidity) return "";
+    const parts = [];
+    if (policyValidity && policyValidity !== "valid") {
+      const validityLabels = {
+        pending:   "⏳ Policy ausstehend (Freigabe/Shadow)",
+        suspended: "🚫 Policy ausgesetzt (Guardrail/Entwurf)",
+      };
+      parts.push(`Policy-Gültigkeit: ${validityLabels[policyValidity] || policyValidity}`);
+    }
+    if (evidencePackage?.policyFingerprint) {
+      parts.push(`Policy-Fingerabdruck: ${evidencePackage.policyFingerprint}`);
+    }
+    if (evidencePackage?.governanceStatus && evidencePackage.governanceStatus !== "observation") {
+      parts.push(`Governance-Status: ${evidencePackage.governanceStatus}`);
+    }
+    if (evidencePackage?.approvalSummary?.requiresSecondApproval === true) {
+      const secondReady = evidencePackage?.approvalSummary?.approvalState === "awaiting_second";
+      parts.push(`Vier-Augen-Freigabe in Evidence-Paket: ${secondReady ? "ausstehend" : "bereit"}`);
+    }
+    const history = evidencePackage?.policyApprovalHistory;
+    if (Array.isArray(history) && history.length > 0) {
+      const histSummary = history.map((h) => `${h.event}:${h.state}`).join(", ");
+      parts.push(`Freigabe-Historie: ${histSummary}`);
+    }
+    return parts.length ? `Evidence-Paket (Step 8 Block 4): ${parts.join(" · ")}` : "";
+  }
+  const evidencePackageBlock = buildEvidencePackageBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -893,6 +927,14 @@ Erstelle eine strukturierte Erklärung mit:
      - shadowModeEligible=true (bei policyMode="live"): nenne kurz, dass ein Shadow-Test für diese Policy möglich wäre, bevor sie live geht
      - Halte die Erklärung kurz (1–2 Sätze) – nur Policy-Ebenen-Einordnung, keine neue Analyse
      Wenn kein Policy-Plane-Kontext vorhanden oder policyMode="live" und policyStatus="active", diesen Punkt weglassen.
+22. Evidence-Paket (Step 8 Block 4): Falls ein Evidence-Paket vorhanden ist, erkläre kurz den Policy-Nachweis-Status –
+     - policyValidity="suspended": erkläre, dass die Policy durch einen Guardrail oder Entwurfsstatus ausgesetzt ist – keine Aktion ohne manuelle Freigabe
+     - policyValidity="pending": erkläre, dass die Policy noch aussteht (Freigabe ausstehend oder Shadow-Evaluierung läuft) – Aktivierung erfordert Bestätigung
+     - policyFingerprint vorhanden: weise kurz darauf hin, dass der Policy-Zustand versioniert und nachvollziehbar ist (kein Kryptographie-Nachweis – strukturierter interner Nachweis)
+     - policyApprovalHistory vorhanden: erkläre kurz die Freigabe-Kette (z.B. governance_status → decision_recorded → approval_flow) als nachvollziehbare Entscheidungsspur
+     - requiresSecondApproval=true in approvalSummary: bestätige, dass die Vier-Augen-Anforderung im Evidence-Paket verankert ist
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Evidence-Einordnung, keine neue Analyse
+     Wenn kein Evidence-Paket vorhanden oder policyValidity="valid", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({
