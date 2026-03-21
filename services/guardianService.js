@@ -149,6 +149,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 9 Block 1: Drift detection – drift signals, level, metronom deviation, baseline state.
   const driftDetection = marketData?.driftDetection ?? context?.driftDetection ?? null;
 
+  // Step 9 Block 2: Action chain – state-machine state, stage, next step, block/escalation.
+  const actionChainState = marketData?.actionChainState ?? context?.actionChainState ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -904,7 +907,47 @@ async function analyzeStockWithGuardian(context) {
   }
   const driftDetectionBlock = buildDriftDetectionBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock]
+  // Step 9 Block 2: Action chain block – chain state, next step, block/escalation.
+  function buildActionChainBlock() {
+    if (!actionChainState) return "";
+    const parts = [];
+    const { actionChainState: state, actionChainLabel, nextChainStep, chainBlocked, chainBlockReason, escalationPath, chainConflictRisk, chainSafetyMode } = actionChainState;
+
+    if (state === "escalated") {
+      parts.push("⬆️ Kettenzustand: Eskaliert – übergeordnete Prüfung nötig");
+    } else if (state === "aborted") {
+      parts.push("🛑 Kettenzustand: Abgebrochen");
+    } else if (state === "executing") {
+      parts.push("▶️ Kettenzustand: Ausführungsintent – menschliche Ausführung ausstehend");
+    } else if (state === "awaiting_signal") {
+      parts.push("⏳ Kettenzustand: Signal erwartet – Review/Freigabe ausstehend");
+    } else if (state === "preparing") {
+      parts.push("🔧 Kettenzustand: Vorbereitend – Vorschlag wird konsolidiert");
+    } else if (state === "observing") {
+      parts.push("👁 Kettenzustand: Beobachtend – keine Aktion geplant");
+    } else if (actionChainLabel) {
+      parts.push(`Kettenzustand: ${actionChainLabel}`);
+    }
+    if (chainBlocked && chainBlockReason) {
+      parts.push(`Blockiert: ${chainBlockReason}`);
+    }
+    if (chainConflictRisk) {
+      parts.push("⚠️ Konfliktrisiko erkannt – Safety-First aktiv");
+    }
+    if (chainSafetyMode) {
+      parts.push("🛡 Safety-Modus aktiv");
+    }
+    if (escalationPath) {
+      parts.push(`Eskalationspfad: ${escalationPath}`);
+    }
+    if (nextChainStep) {
+      parts.push(`Nächster Schritt: ${nextChainStep}`);
+    }
+    return parts.length ? `Aktionskette (Step 9 Block 2): ${parts.join(" · ")}` : "";
+  }
+  const actionChainBlock = buildActionChainBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock]
     .filter(Boolean)
     .join("\n");
 
