@@ -48,7 +48,8 @@ const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 8 Block 1: Governance context – actor-role, SoD, tenant scope classification
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
 // Step 8 Block 5: Tenant/resource governance – tenant policy, load band, quota, guardrail
-const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance } = require("./governance.context");
+// Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery state
+const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance, computeOperationalResilienceContext } = require("./governance.context");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2548,7 +2549,11 @@ async function getTopOpportunities(arg = 10) {
       { ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, exceptionFields, policyPlane, governanceContext },
       governanceContext,
     );
-    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance };
+    // Step 8 Block 6: derive operational resilience layer (degradation mode, fallback tier, recovery state)
+    const operationalResilience = computeOperationalResilienceContext(
+      { ...oppFull, auditTrace, decisionLayer, actionReadiness, controlledApprovalFlow, exceptionFields, tenantResourceGovernance },
+    );
+    return { ...oppFull, ...adaptivePriority, actionReadiness, approvalQueueEntry, decisionLayer, controlledApprovalFlow, auditTrace, governanceContext, exceptionFields, policyPlane, ...evidencePackageResult, tenantResourceGovernance, operationalResilience };
   });
 
   // Portfolio-intelligence + delta-aware + adaptive priority re-sort.

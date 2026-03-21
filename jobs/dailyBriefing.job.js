@@ -370,6 +370,20 @@ function _deriveBriefingTenantResourceLabel(stock) {
   return "";
 }
 
+/**
+ * Step 8 Block 6: Derive a compact operational-resilience label for briefing fact lines.
+ * Only surfaces non-normal degradation states (elevated_load, constrained, critical_guarded).
+ * Returns a short string label or empty string when system is in normal operation.
+ */
+function _deriveBriefingResilienceLabel(stock) {
+  const or_ = stock.operationalResilience || null;
+  if (!or_) return "";
+  if (or_.degradationMode === "critical_guarded") return " · 🚨 System kritisch abgesichert";
+  if (or_.degradationMode === "constrained")      return " · ⚠️ System eingeschränkt";
+  if (or_.degradationMode === "elevated_load")    return " · 🔶 Erhöhte Last";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -491,8 +505,11 @@ function buildFactsFromMarket(stocks) {
     // Step 8 Block 5: tenant/resource governance label for elevated resource states
     const tenantResourceLabel = _deriveBriefingTenantResourceLabel(s);
 
+    // Step 8 Block 6: operational resilience label for non-normal degradation states
+    const resilienceLabel = _deriveBriefingResilienceLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}.`
     );
   }
   return lines.join("\n");

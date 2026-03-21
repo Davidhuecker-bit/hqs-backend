@@ -140,6 +140,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 8 Block 5: Tenant/resource governance – load band, quota, guardrail.
   const tenantResourceGovernance = marketData?.tenantResourceGovernance ?? context?.tenantResourceGovernance ?? null;
 
+  // Step 8 Block 6: Operational resilience – degradation mode, fallback tier, recovery state.
+  const operationalResilience = marketData?.operationalResilience ?? context?.operationalResilience ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -796,7 +799,48 @@ async function analyzeStockWithGuardian(context) {
   }
   const tenantResourceGovernanceBlock = buildTenantResourceGovernanceBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock]
+  // Step 8 Block 6: Operational resilience block – degradation mode, fallback tier, recovery state.
+  function buildOperationalResilienceBlock() {
+    if (!operationalResilience) return "";
+    const parts = [];
+    const { degradationMode, operationalHealth, fallbackTier, recoveryState, resumeReady, resilienceFlags, systemPressureSummary } = operationalResilience;
+
+    if (degradationMode === "critical_guarded") {
+      parts.push("🚨 System kritisch abgesichert – nur essentielle Signale, kein automatischer Fortschritt");
+    } else if (degradationMode === "constrained") {
+      parts.push("⚠️ System eingeschränkt – reduzierter Kontext, manuelle Prüfung erforderlich");
+    } else if (degradationMode === "elevated_load") {
+      parts.push("🔶 Erhöhte Last – defensiver Betrieb empfohlen");
+    }
+    if (operationalHealth === "critical") {
+      parts.push("Betriebszustand: kritisch");
+    } else if (operationalHealth === "degraded") {
+      parts.push("Betriebszustand: degradiert");
+    }
+    if (fallbackTier === "essential_only") {
+      parts.push("Fallback: nur essentielle Signale aktiv");
+    } else if (fallbackTier === "reduced_context") {
+      parts.push("Fallback: reduzierter Kontext");
+    }
+    if (recoveryState === "at_risk") {
+      parts.push("Recovery: gefährdet – Eingriff erforderlich");
+    } else if (recoveryState === "recovering") {
+      parts.push("Recovery: in Genesung");
+    }
+    if (resumeReady === false) {
+      parts.push("⏸ Normalbetrieb noch nicht wiederhergestellt");
+    }
+    if (Array.isArray(resilienceFlags) && resilienceFlags.length > 0) {
+      parts.push(`Aktive Flags: ${resilienceFlags.join(", ")}`);
+    }
+    if (systemPressureSummary && degradationMode !== "normal") {
+      parts.push(systemPressureSummary);
+    }
+    return parts.length ? `Betriebsresilienz (Step 8 Block 6): ${parts.join(" · ")}` : "";
+  }
+  const operationalResilienceBlock = buildOperationalResilienceBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -982,6 +1026,19 @@ Erstelle eine strukturierte Erklärung mit:
      - resourceGuardrail="active": bestätige, dass der Ressource-Guardrail aktiv ist und Schutzmaßnahmen greifen
      - Halte die Erklärung kurz (1–2 Sätze) – nur Ressourcen-/Tenant-Einordnung, keine neue Analyse
      Wenn kein Tenant/Ressource-Governance-Kontext vorhanden oder resourceGovernanceStatus="open" und keine Quota-Warnung, diesen Punkt weglassen.
+24. Betriebsresilienz (Step 8 Block 6): Falls ein Betriebsresilienz-Kontext vorhanden ist, erkläre kurz, ob das System aktuell defensiver oder reduzierter arbeitet –
+     - degradationMode="critical_guarded": erkläre, dass das System im kritisch abgesicherten Modus arbeitet – nur essentielle Signale werden priorisiert, kein automatischer Fortschritt möglich, manueller Eingriff erforderlich
+     - degradationMode="constrained": erkläre, dass das System eingeschränkt arbeitet – reduzierter Kontext, wichtige Entscheidungen erfordern manuelle Prüfung
+     - degradationMode="elevated_load": weise darauf hin, dass das System unter erhöhter Last steht – defensiver Betrieb ist empfohlen, alle kritischen Signale bleiben aktiv
+     - operationalHealth="critical": erkläre, dass der Betriebszustand kritisch ist – sofortiger Eingriff empfohlen
+     - operationalHealth="degraded": erkläre, dass der Betriebszustand degradiert ist – Genesung läuft, Überwachung erforderlich
+     - fallbackTier="essential_only": weise darauf hin, dass nur essentielle Signale aktiv sind – nicht-kritische Kontextfelder werden zurückgehalten
+     - fallbackTier="reduced_context": erkläre, dass ein reduzierter Kontext aktiv ist – einige Governance-Felder sind eingeschränkt verfügbar
+     - recoveryState="at_risk": erkläre, dass die Genesung gefährdet ist – das System kann ohne Eingriff nicht in den Normalbetrieb zurückkehren
+     - recoveryState="recovering": weise darauf hin, dass die Genesung läuft – kein sofortiger Eingriff nötig, aber weiter beobachten
+     - resumeReady=false: erkläre, dass der Normalbetrieb noch nicht wiederhergestellt ist – offene Sperren oder Backlog-Druck verhindern den Übergang
+     - Halte die Erklärung kurz (1–2 Sätze) – nur Resilienz-Einordnung, keine neue Analyse
+     Wenn kein Betriebsresilienz-Kontext vorhanden oder degradationMode="normal", diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

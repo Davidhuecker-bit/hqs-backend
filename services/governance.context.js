@@ -821,6 +821,219 @@ function computeTenantResourceGovernanceSummary(opps) {
   };
 }
 
+/* =========================================================
+   STEP 8 BLOCK 6: GRACEFUL DEGRADATION, RECOVERY &
+   OPERATIONAL RESILIENCE
+
+   Derives a first operational-resilience layer from existing
+   governance, tenant-resource, exception, and backlog signals.
+   No new DB calls. No SRE platform. No rate-limit engine.
+
+   Fields derived per-opportunity:
+     degradationMode      – normal / elevated_load / constrained / critical_guarded
+     operationalHealth    – healthy / degraded / critical
+     fallbackTier         – full_context / reduced_context / essential_only
+     resilienceFlags      – array of active pressure flags
+     recoveryState        – stable / recovering / at_risk
+     resumeReady          – boolean: safe to resume normal processing
+     systemPressureSummary – human-readable one-liner
+
+   All derived from already-computed layers:
+     tenantResourceGovernance (Block 5), exceptionFields (Block 2),
+     auditTrace (Step 7 Block 5), actionReadiness (Step 7 Block 1),
+     decisionLayer (Step 7 Block 3), controlledApprovalFlow (Step 7 Block 4)
+   No new infrastructure.
+========================================================= */
+
+// ── Degradation-mode label mapping ────────────────────────────────────────
+const PRESSURE_SUMMARY = {
+  normal:           "Normalbetrieb – kein erhöhter Systemdruck",
+  elevated_load:    "Erhöhte Last – defensiver Betrieb empfohlen",
+  constrained:      "System eingeschränkt – reduzierter Kontext, manuelle Prüfung erforderlich",
+  critical_guarded: "Kritisch abgesichert – nur essentielle Signale, kein automatischer Fortschritt",
+};
+
+/**
+ * Compute a per-opportunity operational-resilience descriptor.
+ * All fields are derived from already-computed governance layers –
+ * no new DB calls, no real infrastructure.
+ *
+ * @param {object} opp    - Opportunity with governance layers attached
+ * @returns {object} Operational resilience descriptor
+ */
+function computeOperationalResilienceContext(opp) {
+  const trg  = opp?.tenantResourceGovernance || {};
+  const exc  = opp?.exceptionFields          || {};
+  const aud  = opp?.auditTrace               || {};
+  const caf  = opp?.controlledApprovalFlow   || {};
+
+  const tenantLoadBand              = trg.tenantLoadBand              || "low";
+  const backlogPressure             = trg.backlogPressure             || "none";
+  const rateLimitRisk               = trg.rateLimitRisk               || "low";
+  const quotaWarning                = trg.quotaWarning                === true;
+  const resourceGovernanceStatus    = trg.resourceGovernanceStatus    || "open";
+  const blockedByGuardrail          = aud.blockedByGuardrail          === true;
+  const exceptionPriority           = exc.exceptionPriority           || "low";
+  const approvalFlowStatus          = caf.approvalFlowStatus          || null;
+
+  // ── Degradation mode ─────────────────────────────────────────────────────
+  // critical_guarded: hard guardrail block or critical exception + critical load
+  // constrained:      critical load band or (high exception + elevated backlog)
+  // elevated_load:    high load band or elevated backlog or high rate-limit risk
+  // normal:           no significant pressure signals
+  let degradationMode = "normal";
+  if (
+    blockedByGuardrail ||
+    (exceptionPriority === "critical" && tenantLoadBand === "critical")
+  ) {
+    degradationMode = "critical_guarded";
+  } else if (
+    tenantLoadBand === "critical" ||
+    (exceptionPriority === "high" && backlogPressure === "elevated")
+  ) {
+    degradationMode = "constrained";
+  } else if (
+    tenantLoadBand === "high" ||
+    backlogPressure === "elevated" ||
+    rateLimitRisk === "high"
+  ) {
+    degradationMode = "elevated_load";
+  }
+
+  // ── Operational health ────────────────────────────────────────────────────
+  const operationalHealth =
+    degradationMode === "critical_guarded" ? "critical" :
+    degradationMode !== "normal"           ? "degraded" :
+    "healthy";
+
+  // ── Fallback tier ─────────────────────────────────────────────────────────
+  // essential_only:  critical degradation – surface only blocking signals
+  // reduced_context: constrained – reduce non-essential context fields
+  // full_context:    normal or elevated_load – full governance context
+  const fallbackTier =
+    degradationMode === "critical_guarded" ? "essential_only" :
+    degradationMode === "constrained"      ? "reduced_context" :
+    "full_context";
+
+  // ── Resilience flags ──────────────────────────────────────────────────────
+  const resilienceFlags = [];
+  if (blockedByGuardrail)                           resilienceFlags.push("guardrail_active");
+  if (quotaWarning)                                 resilienceFlags.push("quota_warning");
+  if (backlogPressure === "elevated")               resilienceFlags.push("backlog_elevated");
+  if (rateLimitRisk === "high" || rateLimitRisk === "medium") resilienceFlags.push("rate_limit_risk");
+  if (tenantLoadBand === "critical")                resilienceFlags.push("load_band_critical");
+  if (resourceGovernanceStatus === "hard_gated")    resilienceFlags.push("resource_hard_gated");
+
+  // ── Recovery state ────────────────────────────────────────────────────────
+  const recoveryState =
+    operationalHealth === "critical" ? "at_risk"   :
+    operationalHealth === "degraded" ? "recovering" :
+    "stable";
+
+  // ── Resume readiness ──────────────────────────────────────────────────────
+  // Eligible to resume normal processing when:
+  //   - not hard-blocked by a guardrail
+  //   - not stuck in a stalled flow state
+  //   - not in at_risk recovery state
+  const stalledFlow = approvalFlowStatus === "deferred" ||
+    approvalFlowStatus === "waiting_for_more_data";
+  const resumeReady = !blockedByGuardrail && !stalledFlow && recoveryState !== "at_risk";
+
+  const systemPressureSummary = PRESSURE_SUMMARY[degradationMode] || PRESSURE_SUMMARY.normal;
+
+  return {
+    degradationMode,
+    operationalHealth,
+    fallbackTier,
+    resilienceFlags,
+    recoveryState,
+    resumeReady,
+    systemPressureSummary,
+    resilienceBasis: "step8_block6",
+  };
+}
+
+/**
+ * Compute an aggregate operational-resilience summary across a list of
+ * already-enriched opportunities (with operationalResilience attached).
+ * Used by the admin endpoint and frontendAdapter portfolio summary.
+ *
+ * @param {Array} opps - Opportunities with operationalResilience attached
+ * @returns {object} Aggregate operational resilience summary
+ */
+function computeOperationalResilienceContextSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:        0,
+      criticalGuardedCount:  0,
+      constrainedCount:      0,
+      elevatedLoadCount:     0,
+      normalCount:           0,
+      criticalHealthCount:   0,
+      degradedHealthCount:   0,
+      healthyCount:          0,
+      resumeReadyCount:      0,
+      fallbackTierCounts:    { essential_only: 0, reduced_context: 0, full_context: 0 },
+      dominantDegradationMode: "normal",
+      systemPressureLevel:   "none",
+      resilienceBasis:       "step8_block6",
+    };
+  }
+
+  const r = (o) => o.operationalResilience || {};
+
+  const criticalGuardedCount = opps.filter((o) => r(o).degradationMode === "critical_guarded").length;
+  const constrainedCount     = opps.filter((o) => r(o).degradationMode === "constrained").length;
+  const elevatedLoadCount    = opps.filter((o) => r(o).degradationMode === "elevated_load").length;
+  const normalCount          = opps.filter((o) => r(o).degradationMode === "normal" || !r(o).degradationMode).length;
+
+  const criticalHealthCount  = opps.filter((o) => r(o).operationalHealth === "critical").length;
+  const degradedHealthCount  = opps.filter((o) => r(o).operationalHealth === "degraded").length;
+  const healthyCount         = opps.filter((o) => r(o).operationalHealth === "healthy" || !r(o).operationalHealth).length;
+
+  const resumeReadyCount     = opps.filter((o) => r(o).resumeReady === true).length;
+
+  const fallbackTierCounts = { essential_only: 0, reduced_context: 0, full_context: 0 };
+  for (const o of opps) {
+    const tier = r(o).fallbackTier || "full_context";
+    if (tier in fallbackTierCounts) fallbackTierCounts[tier]++;
+  }
+
+  // Dominant mode: whichever non-normal mode has the highest count; fallback normal.
+  let dominantDegradationMode = "normal";
+  if (criticalGuardedCount > 0)                                  dominantDegradationMode = "critical_guarded";
+  else if (constrainedCount > elevatedLoadCount)                 dominantDegradationMode = "constrained";
+  else if (elevatedLoadCount > 0)                                dominantDegradationMode = "elevated_load";
+
+  // System pressure level: aggregate severity signal.
+  // critical: ≥10% of opps are critical_guarded (avoid alerting on a single outlier)
+  const critRatio = opps.length > 0 ? criticalGuardedCount / opps.length : 0;
+  const constRatio = opps.length > 0 ? constrainedCount / opps.length : 0;
+  const elevRatio  = opps.length > 0 ? elevatedLoadCount / opps.length : 0;
+  let systemPressureLevel = "none";
+  if (critRatio >= 0.1)        systemPressureLevel = "critical";
+  else if (constRatio >= 0.25) systemPressureLevel = "high";
+  else if (constRatio > 0)     systemPressureLevel = "medium";
+  else if (elevRatio >= 0.25)  systemPressureLevel = "medium";
+  else if (elevRatio > 0)      systemPressureLevel = "low";
+
+  return {
+    totalEvaluated: opps.length,
+    criticalGuardedCount,
+    constrainedCount,
+    elevatedLoadCount,
+    normalCount,
+    criticalHealthCount,
+    degradedHealthCount,
+    healthyCount,
+    resumeReadyCount,
+    fallbackTierCounts,
+    dominantDegradationMode,
+    systemPressureLevel,
+    resilienceBasis: "step8_block6",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -834,4 +1047,7 @@ module.exports = {
   computeEvidencePackage,
   computeTenantResourceGovernance,
   computeTenantResourceGovernanceSummary,
+  computeOperationalResilienceContext,
+  computeOperationalResilienceContextSummary,
+  PRESSURE_SUMMARY,
 };

@@ -135,6 +135,22 @@ function _derivePickOrchestration(pick, onWatchlist) {
         resourceGuardrail:        "standby",
         tenantResourceBasis:      "step8_block5",
       },
+      // Step 8 Block 6: operational resilience for high-signal picks.
+      // Discovery picks bypass getTopOpportunities(), so computeOperationalResilienceContext()
+      // cannot be called directly here (no full opp object available).  The values below are
+      // structurally consistent approximations based on the same signal thresholds used by
+      // the canonical function: hasStrongData correlates to elevated backlog and rate-limit
+      // signals that would produce elevated_load in the live pipeline.
+      operationalResilience: {
+        degradationMode:       hasStrongData ? "elevated_load" : "normal",
+        operationalHealth:     hasStrongData ? "degraded" : "healthy",
+        fallbackTier:          hasStrongData ? "reduced_context" : "full_context",
+        resilienceFlags:       hasStrongData ? ["backlog_elevated", "rate_limit_risk"] : [],
+        recoveryState:         hasStrongData ? "recovering" : "stable",
+        resumeReady:           !hasStrongData,
+        systemPressureSummary: hasStrongData ? "Erhöhte Last – defensiver Betrieb empfohlen" : "Normalbetrieb – kein erhöhter Systemdruck",
+        resilienceBasis:       "step8_block6",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -216,6 +232,17 @@ function _derivePickOrchestration(pick, onWatchlist) {
         resourceGuardrail:        "inactive",
         tenantResourceBasis:      "step8_block5",
       },
+      // Step 8 Block 6: operational resilience for proposal-level picks
+      operationalResilience: {
+        degradationMode:       "normal",
+        operationalHealth:     "healthy",
+        fallbackTier:          "full_context",
+        resilienceFlags:       [],
+        recoveryState:         "stable",
+        resumeReady:           true,
+        systemPressureSummary: "Normalbetrieb – kein erhöhter Systemdruck",
+        resilienceBasis:       "step8_block6",
+      },
     };
   }
   return {
@@ -294,6 +321,17 @@ function _derivePickOrchestration(pick, onWatchlist) {
       quotaWarning:             false,
       resourceGuardrail:        "inactive",
       tenantResourceBasis:      "step8_block5",
+    },
+    // Step 8 Block 6: operational resilience for monitor-only picks
+    operationalResilience: {
+      degradationMode:       "normal",
+      operationalHealth:     "healthy",
+      fallbackTier:          "full_context",
+      resilienceFlags:       [],
+      recoveryState:         "stable",
+      resumeReady:           true,
+      systemPressureSummary: "Normalbetrieb – kein erhöhter Systemdruck",
+      resilienceBasis:       "step8_block6",
     },
   };
 }
