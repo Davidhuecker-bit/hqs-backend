@@ -93,7 +93,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 // Step 8 Block 1: Governance context for admin-level role/scope classification
 // Step 8 Block 2: Operating Console / Exception Hub aggregate view
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
-const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext } = require("../services/governance.context");
+// Step 8 Block 4: Evidence Packages & Policy Versioning – policyFingerprint, evidencePackage, operatorActionTrace
+const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage } = require("../services/governance.context");
 
 const router = express.Router();
 
@@ -2026,6 +2027,76 @@ router.get("/policy-plane", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin policy-plane route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/evidence-packages
+ * Step 8 Block 4: Evidence Packages & Policy Versioning – read-only.
+ *
+ * Returns per-opportunity evidence packages (policyFingerprint, policyValidity,
+ * policyApprovalHistory, operatorActionTrace) and an aggregate evidence summary
+ * derived from existing governance layers.  No new signals introduced.
+ *
+ * Query params:
+ *   ?limit=20  – number of scanner candidates to evaluate (1–50)
+ * ───────────────────────────────────────────────────────── */
+router.get("/evidence-packages", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 20, 50));
+    const opportunities = await getTopOpportunities({ limit });
+
+    // Governance context for the calling admin actor
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    // Aggregate evidence summary counts
+    const suspendedCount = opportunities.filter((o) => o.policyValidity === "suspended").length;
+    const pendingCount   = opportunities.filter((o) => o.policyValidity === "pending").length;
+    const validCount     = opportunities.filter((o) => o.policyValidity === "valid" || !o.policyValidity).length;
+    const withFourEyes   = opportunities.filter((o) => o.evidencePackage?.approvalSummary?.requiresSecondApproval === true).length;
+    const withGuardrail  = opportunities.filter((o) => o.evidencePackage?.governanceStatus === "review_controlled" ||
+                                                        o.auditTrace?.blockedByGuardrail === true).length;
+
+    const evidenceSummary = {
+      totalEvaluated:   opportunities.length,
+      validCount,
+      pendingCount,
+      suspendedCount,
+      withFourEyesCount:     withFourEyes,
+      withGuardrailCount:    withGuardrail,
+      evidenceBasis:         "step8_block4",
+    };
+
+    // Per-opportunity evidence entries (only those with a non-trivial evidence state)
+    const evidenceEntries = opportunities.map((o) => {
+      // Re-compute if not already attached (fallback for legacy enrichment paths)
+      const ep = o.evidencePackage || computeEvidencePackage(o, governanceCtx).evidencePackage;
+      return {
+        symbol:                 o.symbol,
+        policyVersion:          o.policyVersion          ?? ep.policyVersion,
+        policyFingerprint:      o.policyFingerprint      ?? ep.policyFingerprint,
+        policyValidity:         o.policyValidity         ?? ep.policyValidity,
+        governanceStatus:       ep.governanceStatus,
+        traceReason:            ep.traceReason           ?? null,
+        reviewSummary:          ep.reviewSummary         ?? null,
+        decisionSummary:        ep.decisionSummary       ?? null,
+        approvalSummary:        ep.approvalSummary       ?? null,
+        actorContext:           ep.actorContext           ?? null,
+        policyApprovalHistory:  o.policyApprovalHistory  ?? ep.policyApprovalHistory,
+        operatorActionTrace:    o.operatorActionTrace    ?? ep.operatorActionTrace,
+      };
+    });
+
+    return res.json({
+      success:          true,
+      generatedAt:      new Date().toISOString(),
+      governanceContext: governanceCtx,
+      evidenceSummary,
+      evidenceEntries,
+    });
+  } catch (error) {
+    logger.error("Admin evidence-packages route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });

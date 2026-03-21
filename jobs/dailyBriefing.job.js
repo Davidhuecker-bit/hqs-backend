@@ -338,6 +338,23 @@ function _deriveBriefingPolicyPlaneLabel(stock) {
   return "";
 }
 
+/**
+ * Step 8 Block 4: Derive a compact evidence-package label for briefing fact lines.
+ * Only surfaces non-valid policy validity or four-eyes evidence states.
+ * Returns a short string label or empty string when no evidence exception applies.
+ */
+function _deriveBriefingEvidenceLabel(stock) {
+  const validity = stock.policyValidity || null;
+  if (validity === "suspended") return " · 🚫 Evidence: Policy ausgesetzt";
+  if (validity === "pending")   return " · ⏳ Evidence: Policy ausstehend";
+  // Surface four-eyes requirement from evidence package when not already shown by policy-plane label
+  if (stock.evidencePackage?.approvalSummary?.requiresSecondApproval === true &&
+      !stock.policyPlane?.requiresSecondApproval) {
+    return " · 🔐 Evidence: Vier-Augen verankert";
+  }
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -453,8 +470,11 @@ function buildFactsFromMarket(stocks) {
     // Step 8 Block 3: policy-plane label for non-live/non-active policy states
     const policyPlaneLabel = _deriveBriefingPolicyPlaneLabel(s);
 
+    // Step 8 Block 4: evidence-package label for non-valid policy validity or four-eyes evidence
+    const evidenceLabel = _deriveBriefingEvidenceLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}.`
     );
   }
   return lines.join("\n");

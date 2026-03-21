@@ -403,6 +403,181 @@ function computePolicyPlaneContext(opp, govCtx) {
   };
 }
 
+/* =========================================================
+   STEP 8 BLOCK 4: EVIDENCE PACKAGES & POLICY VERSIONING
+
+   Builds a first evidence/policy-versioning layer from
+   existing governance signals.  No cryptography, no Merkle,
+   no external workflow – only structured internal derivation.
+
+   Fields derived:
+     policyFingerprint     – compact deterministic key from policy-state signals
+     policyValidity        – valid / pending / suspended
+     policyApprovalHistory – ordered approval-event list from existing layers
+     operatorActionTrace   – operator-readable governance trace entries
+     evidencePackage       – compact evidence summary for audit/admin/frontend
+
+   All fields are derived solely from already-computed layers:
+     policyPlane, auditTrace, decisionLayer, controlledApprovalFlow,
+     actionReadiness, approvalQueueEntry, governanceContext
+   No new DB calls.  No real cryptography.
+========================================================= */
+
+/**
+ * Compute an evidence package + policy-versioning descriptor for a single
+ * opportunity.  All fields are derived from already-computed governance
+ * layers – no new DB calls, no real cryptography.
+ *
+ * @param {object} opp    - Opportunity with full governance layers attached
+ * @param {object} [govCtx] - Pre-computed governance context
+ * @returns {object} Evidence package + policy versioning descriptor
+ */
+function computeEvidencePackage(opp, govCtx) {
+  const gc = govCtx || computeGovernanceContext();
+
+  const policyPlane            = opp?.policyPlane            || {};
+  const auditTrace             = opp?.auditTrace             || {};
+  const decisionLayer          = opp?.decisionLayer          || {};
+  const controlledApprovalFlow = opp?.controlledApprovalFlow || {};
+  const actionReadiness        = opp?.actionReadiness        || {};
+  const approvalQueueEntry     = opp?.approvalQueueEntry     || {};
+
+  // ── Policy fingerprint (deterministic, no crypto) ─────────────────────────
+  // A short structured key derived from policy-state signals.
+  // Format: "<version>:<status>:<mode>:<decisionStatus>"
+  // Allows downstream consumers to detect policy-state changes without a
+  // full changelog system.
+  const policyVersion   = policyPlane.policyVersion   || "v1";
+  const policyStatus    = policyPlane.policyStatus    || "active";
+  const policyMode      = policyPlane.policyMode      || "live";
+  const decisionStatus  = decisionLayer.decisionStatus || "none";
+  const policyFingerprint = `${policyVersion}:${policyStatus}:${policyMode}:${decisionStatus}`;
+
+  // ── Policy validity ────────────────────────────────────────────────────────
+  // suspended – hard-blocked by guardrail or in draft (not yet active)
+  // pending   – awaiting approval or in shadow evaluation
+  // valid     – active, live, operative
+  let policyValidity = "valid";
+  if (auditTrace.blockedByGuardrail === true || policyMode === "draft") {
+    policyValidity = "suspended";
+  } else if (policyStatus === "pending_approval" || policyMode === "shadow") {
+    policyValidity = "pending";
+  }
+
+  // ── Policy approval history (from existing state, no persistence) ─────────
+  // An ordered list of approval-relevant state transitions derived from what
+  // the layers already know.  Not a persisted ledger – a structured read-out
+  // of the current approval-chain state for evidence/audit purposes.
+  const policyApprovalHistory = [];
+  if (auditTrace.governanceStatus) {
+    policyApprovalHistory.push({
+      event:  "governance_status",
+      state:  auditTrace.governanceStatus,
+      source: "auditTrace",
+    });
+  }
+  if (approvalQueueEntry.pendingApproval === true) {
+    policyApprovalHistory.push({
+      event:  "approval_queued",
+      state:  approvalQueueEntry.approvalQueueBucket || "unknown",
+      source: "approvalQueueEntry",
+    });
+  }
+  if (decisionLayer.decisionStatus) {
+    policyApprovalHistory.push({
+      event:  "decision_recorded",
+      state:  decisionLayer.decisionStatus,
+      source: "decisionLayer",
+    });
+  }
+  if (controlledApprovalFlow.approvalFlowStatus) {
+    policyApprovalHistory.push({
+      event:  "approval_flow",
+      state:  controlledApprovalFlow.approvalFlowStatus,
+      source: "controlledApprovalFlow",
+    });
+  }
+  if (policyPlane.requiresSecondApproval === true) {
+    policyApprovalHistory.push({
+      event:  "four_eyes_required",
+      state:  policyPlane.approvalState || "awaiting_second",
+      source: "policyPlane",
+    });
+  }
+
+  // ── Operator action trace ─────────────────────────────────────────────────
+  // Readable governance trace derived from available layers.
+  // Gives operators and auditors a narrative of which governance controls
+  // are active for this opportunity.
+  const operatorActionTrace = [];
+  if (auditTrace.traceReason) {
+    operatorActionTrace.push({ trace: "audit_reason",     value: auditTrace.traceReason });
+  }
+  if (auditTrace.tracePath) {
+    operatorActionTrace.push({ trace: "audit_path",       value: auditTrace.tracePath });
+  }
+  if (auditTrace.blockedByGuardrail === true) {
+    operatorActionTrace.push({ trace: "guardrail_active", value: "blocked" });
+  }
+  if (actionReadiness.actionReadiness) {
+    operatorActionTrace.push({ trace: "action_readiness", value: actionReadiness.actionReadiness });
+  }
+  if (policyMode !== "live") {
+    operatorActionTrace.push({ trace: "policy_mode",      value: policyMode });
+  }
+  if (policyPlane.requiresSecondApproval === true) {
+    operatorActionTrace.push({
+      trace: "second_approval",
+      value: policyPlane.secondApprovalReady ? "ready" : "awaiting",
+    });
+  }
+
+  // ── Evidence package (compact structured summary) ─────────────────────────
+  const evidencePackage = {
+    policyVersion,
+    policyFingerprint,
+    policyValidity,
+    governanceStatus:  auditTrace.governanceStatus  || "observation",
+    traceReason:       auditTrace.traceReason       || null,
+    tracePath:         auditTrace.tracePath         || null,
+    // Review / decision / approval chain summary
+    reviewSummary: {
+      actionReadiness:     actionReadiness.actionReadiness     || null,
+      approvalQueueBucket: approvalQueueEntry.approvalQueueBucket || null,
+      pendingApproval:     approvalQueueEntry.pendingApproval === true,
+    },
+    decisionSummary: {
+      decisionStatus:  decisionLayer.decisionStatus  || null,
+      decisionReason:  decisionLayer.decisionReason  || null,
+    },
+    approvalSummary: {
+      approvalFlowStatus:     controlledApprovalFlow.approvalFlowStatus || null,
+      requiresSecondApproval: policyPlane.requiresSecondApproval === true,
+      approvalState:          policyPlane.approvalState || "none",
+    },
+    // Actor / role context
+    actorContext: {
+      actorRole:              gc.actorRole,
+      governanceRole:         gc.governanceRole,
+      tenantScope:            gc.tenantScope,
+      separationOfDutiesFlag: gc.separationOfDutiesFlag,
+    },
+    policyApprovalHistory,
+    operatorActionTrace,
+    evidenceBasis: "step8_block4",
+  };
+
+  return {
+    policyVersion,
+    policyFingerprint,
+    policyValidity,
+    policyApprovalHistory,
+    operatorActionTrace,
+    evidencePackage,
+    evidenceBasis: "step8_block4",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -413,4 +588,5 @@ module.exports = {
   deriveOpportunityGovernance,
   computeOperatingConsoleContext,
   computePolicyPlaneContext,
+  computeEvidencePackage,
 };
