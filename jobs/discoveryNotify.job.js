@@ -269,6 +269,24 @@ function _derivePickOrchestration(pick, onWatchlist) {
           : "Für das Tages-Briefing · high · Hohes Signal – Briefing-Priorität",
         attentionBasis:       "step10_block2",
       },
+      // Step 10 Block 3: autonomy-preview output for high-signal picks.
+      // Strong-data picks require operator confirmation → awaiting_confirmation.
+      // Other high-signal picks are guarded (promotionBlocked via hasStrongData logic).
+      autonomyPreview: {
+        autonomyState:         hasStrongData ? "awaiting_confirmation" : "guarded",
+        autonomyPreview:       hasStrongData ? "Bestätigung nötig" : "Gebremst",
+        autonomyConfidence:    hasStrongData ? 40 : 55,
+        confidenceBand:        hasStrongData ? "medium" : "medium",
+        trustReason:           hasStrongData
+          ? "Operator-Eingriff ausstehend – kein automatischer Fortschritt"
+          : "Vorsichtsmodus aktiv – eingeschränkte Ausführung",
+        stopAvailable:         hasStrongData,
+        needsUserConfirmation: hasStrongData,
+        previewSummary:        hasStrongData
+          ? `Bestätigung nötig · Vertrauen: medium · Operator-Eingriff ausstehend`
+          : `Gebremst · Vertrauen: medium · Vorsichtsmodus aktiv`,
+        autonomyBasis:         "step10_block3",
+      },
     };
   }
   if (onWatchlist || confidence >= 55 || score >= 55) {
@@ -458,6 +476,19 @@ function _derivePickOrchestration(pick, onWatchlist) {
         attentionSummary:     "Bündeln · low · Mittleres Signal – Bündelung empfohlen",
         attentionBasis:       "step10_block2",
       },
+      // Step 10 Block 3: autonomy-preview output for proposal-level picks.
+      // Proposal tier: prepared state – no blocking, no confirmation required.
+      autonomyPreview: {
+        autonomyState:         "prepared",
+        autonomyPreview:       "Vorbereitet",
+        autonomyConfidence:    65,
+        confidenceBand:        "medium",
+        trustReason:           "Vorbereitung liegt bereit – Nutzer kann prüfen und eigenständig entscheiden",
+        stopAvailable:         false,
+        needsUserConfirmation: false,
+        previewSummary:        "Vorbereitet · Vertrauen: medium · Vorbereitung liegt bereit",
+        autonomyBasis:         "step10_block3",
+      },
     };
   }
   return {
@@ -644,6 +675,19 @@ function _derivePickOrchestration(pick, onWatchlist) {
       deliveryReason:       "Kein akuter Handlungsbedarf – stilles Monitoring",
       attentionSummary:     "Still beobachten · minimal · Kein akuter Handlungsbedarf",
       attentionBasis:       "step10_block2",
+    },
+    // Step 10 Block 3: autonomy-preview output for monitor-only picks.
+    // Monitor tier: suggestion state – no blocking, no confirmation, signal too weak for action.
+    autonomyPreview: {
+      autonomyState:         "suggestion",
+      autonomyPreview:       "Vorschlag",
+      autonomyConfidence:    35,
+      confidenceBand:        "low",
+      trustReason:           "Analytischer Vorschlag – keine automatische Ausführung, Nutzer entscheidet",
+      stopAvailable:         false,
+      needsUserConfirmation: false,
+      previewSummary:        "Vorschlag · Vertrauen: low · Signal zu schwach – nur Beobachtung",
+      autonomyBasis:         "step10_block3",
     },
   };
 }

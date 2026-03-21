@@ -2485,6 +2485,154 @@ function computeAttentionDeliveryMeta(opps) {
   };
 }
 
+// ── Step 10 Block 3: Autonomy Preview / Companion Trust Layer ─────────────────
+// Aggregates autonomy-state and trust-preview distribution from per-opp signals.
+// No new scoring, no new data access – reads from already-computed opp fields.
+
+/**
+ * Named autonomy states for the preview layer.
+ * Each state maps directly to a recognisable plain-language label for users.
+ * Priority order (first match wins): stopped → blocked → awaiting_confirmation →
+ *   guarded → internal_update_only → prepared → suggestion
+ */
+const AUTONOMY_STATES = {
+  stopped:              "Gestoppt",
+  blocked:              "Blockiert",
+  awaiting_confirmation: "Bestätigung nötig",
+  guarded:              "Gebremst",
+  internal_update_only: "Internes Update",
+  prepared:             "Vorbereitet",
+  suggestion:           "Vorschlag",
+};
+
+/**
+ * Derive the autonomy state for a single opportunity from its existing signals.
+ * Conservative rules: safety/stop signals dominate; defaults to suggestion.
+ *
+ * @param {object} opp – opportunity object with already-computed governance fields
+ * @returns {string} autonomyState key (matches AUTONOMY_STATES)
+ */
+function _deriveOppAutonomyState(opp) {
+  const rsl  = opp.recoverySafetyLayer        ?? null;
+  const audit = opp.auditTrace                ?? null;
+  const acs  = opp.actionChainState           ?? null;
+  const cap  = opp.controlledAutoPreparation  ?? null;
+  const pae  = opp.partialAutoExecution       ?? null;
+  const al   = opp.autonomyLevel              ?? null;
+  const dd   = opp.driftDetection             ?? null;
+  const opRes = opp.operationalResilience     ?? null;
+  const pp   = opp.policyPlane                ?? null;
+
+  if (rsl?.stopEligible || rsl?.degradeRequired)                                       return "stopped";
+  if (audit?.blockedByGuardrail || acs?.chainBlocked)                                 return "blocked";
+  if (rsl?.operatorInterventionRequired || cap?.manualConfirmationRequired
+      || pp?.requiresSecondApproval)                                                   return "awaiting_confirmation";
+  if (rsl?.promotionBlocked || cap?.preparationGuarded || pae?.autoExecutionGuarded
+      || opRes?.degradationMode === "critical_guarded"
+      || dd?.driftLevel === "high" || al?.effectiveLevel === "manual")                 return "guarded";
+  if (pae?.autoExecutionEligible && pae?.executionScope === "internal_only"
+      && pae?.autoExecutionSafety === "safe")                                          return "internal_update_only";
+  if (cap?.autoPreparationEligible)                                                    return "prepared";
+  return "suggestion";
+}
+
+/**
+ * Step 10 Block 3: Compute an Autonomy Preview / Trust aggregate across
+ * a set of opportunity objects.
+ *
+ * Reads from already-computed per-opp fields:
+ *   - recoverySafetyLayer, auditTrace, actionChainState,
+ *     controlledAutoPreparation, partialAutoExecution, autonomyLevel,
+ *     driftDetection, operationalResilience, policyPlane, autonomyPreview
+ *
+ * @param {Array} opps – array of opportunity objects (already scored/classified)
+ * @returns {object} autonomy-preview aggregate summary
+ */
+function computeAutonomyPreviewSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return {
+      totalEvaluated:              0,
+      stateDistribution:           {},
+      stoppedCount:                0,
+      blockedCount:                0,
+      awaitingConfirmationCount:   0,
+      guardedCount:                0,
+      internalUpdateOnlyCount:     0,
+      preparedCount:               0,
+      suggestionCount:             0,
+      needsUserConfirmationCount:  0,
+      stopAvailableCount:          0,
+      confidenceBandDistribution:  {},
+      highConfidenceCount:         0,
+      mediumConfidenceCount:       0,
+      lowConfidenceCount:          0,
+      autonomyPreviewBasis:        "step10_block3",
+    };
+  }
+
+  let stoppedCount              = 0;
+  let blockedCount              = 0;
+  let awaitingConfirmationCount = 0;
+  let guardedCount              = 0;
+  let internalUpdateOnlyCount   = 0;
+  let preparedCount             = 0;
+  let suggestionCount           = 0;
+  let needsUserConfirmationCount = 0;
+  let stopAvailableCount        = 0;
+  let highConfidenceCount       = 0;
+  let mediumConfidenceCount     = 0;
+  let lowConfidenceCount        = 0;
+  const stateDist               = {};
+  const bandDist                = {};
+
+  for (const o of opps) {
+    const state = o.autonomyPreview?.autonomyState ?? _deriveOppAutonomyState(o);
+    stateDist[state] = (stateDist[state] || 0) + 1;
+    if (state === "stopped")               stoppedCount++;
+    else if (state === "blocked")          blockedCount++;
+    else if (state === "awaiting_confirmation") awaitingConfirmationCount++;
+    else if (state === "guarded")          guardedCount++;
+    else if (state === "internal_update_only") internalUpdateOnlyCount++;
+    else if (state === "prepared")         preparedCount++;
+    else                                   suggestionCount++;
+
+    if (o.autonomyPreview?.needsUserConfirmation || o.recoverySafetyLayer?.operatorInterventionRequired
+        || o.controlledAutoPreparation?.manualConfirmationRequired) {
+      needsUserConfirmationCount++;
+    }
+    if (o.autonomyPreview?.stopAvailable || o.recoverySafetyLayer?.stopEligible) {
+      stopAvailableCount++;
+    }
+
+    const band = o.autonomyPreview?.confidenceBand ?? null;
+    if (band) {
+      bandDist[band] = (bandDist[band] || 0) + 1;
+      if (band === "high")        highConfidenceCount++;
+      else if (band === "medium") mediumConfidenceCount++;
+      else if (band === "low")    lowConfidenceCount++;
+    }
+  }
+
+  return {
+    totalEvaluated:              opps.length,
+    stateDistribution:           stateDist,
+    stoppedCount,
+    blockedCount,
+    awaitingConfirmationCount,
+    guardedCount,
+    internalUpdateOnlyCount,
+    preparedCount,
+    suggestionCount,
+    needsUserConfirmationCount,
+    stopAvailableCount,
+    confidenceBandDistribution:  bandDist,
+    highConfidenceCount,
+    mediumConfidenceCount,
+    lowConfidenceCount,
+    autonomyPreviewBasis:        "step10_block3",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -2519,4 +2667,6 @@ module.exports = {
   computeRecoverySafetyLayer,
   computeRecoverySafetyLayerSummary,
   computeAttentionDeliveryMeta,
+  AUTONOMY_STATES,
+  computeAutonomyPreviewSummary,
 };

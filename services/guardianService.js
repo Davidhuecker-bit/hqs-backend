@@ -164,6 +164,9 @@ async function analyzeStockWithGuardian(context) {
   // Step 10 Block 2: Attention Management / Delivery Intelligence output.
   const attentionDeliveryOutput = marketData?.attentionDeliveryOutput ?? context?.attentionDeliveryOutput ?? null;
 
+  // Step 10 Block 3: Autonomy Preview / Companion Trust output.
+  const autonomyPreview = marketData?.autonomyPreview ?? context?.autonomyPreview ?? null;
+
   // ── Fallback guard ───────────────────────────────────────────────────────
   // Surface any missing canonical fields so pipeline gaps are visible.
   const missingFields = detectMissingCanonicalFields(marketData);
@@ -1109,7 +1112,41 @@ async function analyzeStockWithGuardian(context) {
   }
   const attentionDeliveryBlock = buildAttentionDeliveryBlock();
 
-  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock, attentionDeliveryBlock]
+  // Step 10 Block 3: Autonomy Preview / Companion Trust block – explains what the system
+  // is currently allowed to do, why it is guarded/blocked/stopped, and whether confirmation
+  // from the user or operator is still needed.
+  function buildAutonomyPreviewBlock() {
+    if (!autonomyPreview) return "";
+    const { autonomyState, autonomyPreview: stateLabel, autonomyConfidence,
+            confidenceBand, trustReason, stopAvailable,
+            needsUserConfirmation, previewSummary } = autonomyPreview;
+    if (!autonomyState) return "";
+
+    const STATE_EXPLAIN = {
+      stopped:               "Das System ist aktuell gestoppt – keine automatische Fortführung",
+      blocked:               "Eine Schutzregel oder Kettenblockierung verhindert weitere autonome Schritte",
+      awaiting_confirmation: "Das System wartet auf eine externe Bestätigung – kein automatischer Fortschritt",
+      guarded:               "Das System arbeitet im gebremsten Modus – nur konservative Schritte erlaubt",
+      internal_update_only:  "Nur interne Status-Aktualisierungen erlaubt – kein Marktschritt, keine externe Aktion",
+      prepared:              "Eine Vorbereitung liegt bereit – der Nutzer kann prüfen und eigenständig entscheiden",
+      suggestion:            "Analytischer Vorschlag – keine automatische Ausführung, Nutzer entscheidet",
+    };
+
+    const parts = [];
+    parts.push(`Autonomiezustand: ${stateLabel || autonomyState}`);
+    if (confidenceBand) parts.push(`Vertrauensband: ${confidenceBand}`);
+    if (autonomyConfidence != null) parts.push(`Vertrauen: ${autonomyConfidence}%`);
+    if (trustReason) parts.push(`Grund: ${trustReason}`);
+    const explain = STATE_EXPLAIN[autonomyState];
+    if (explain) parts.push(explain);
+    if (stopAvailable)          parts.push("🛑 Stop verfügbar – Operator kann eingreifen");
+    if (needsUserConfirmation)  parts.push("⏳ Nutzer- oder Operator-Bestätigung ausstehend");
+    if (previewSummary)         parts.push(`Vorschau: ${previewSummary}`);
+    return parts.length ? `Autonomie-Vorschau (Step 10 Block 3): ${parts.join(" · ")}` : "";
+  }
+  const autonomyPreviewBlock = buildAutonomyPreviewBlock();
+
+  const contextLines = [convictionBlock, regimeBlock, componentsBlock, whyBlock, portfolioBlock, deltaBlock, nextActionBlock, actionOrchestrationBlock, feedbackBlock, userStateBlock, followUpBlock, adaptiveSignalBlock, userPreferenceBlock, adaptivePriorityBlock, actionReadinessBlock, approvalQueueBlock, decisionLayerBlock, controlledApprovalFlowBlock, auditTraceBlock, governanceContextBlock, exceptionHubBlock, policyPlaneBlock, evidencePackageBlock, tenantResourceGovernanceBlock, operationalResilienceBlock, autonomyLevelBlock, driftDetectionBlock, actionChainBlock, controlledAutoPreparationBlock, partialAutoExecutionBlock, recoverySafetyBlock, companionExplanationBlock, attentionDeliveryBlock, autonomyPreviewBlock]
     .filter(Boolean)
     .join("\n");
 
@@ -1394,6 +1431,22 @@ Erstelle eine strukturierte Erklärung mit:
      - Wichtig: Keine neue Analyse – nur die Systementscheidung erklären, warum jetzt gesprochen, gebündelt oder geschwiegen wird
      - Halte die Erklärung kurz (1–2 Sätze) – ruhig, orientierend, governance-kompatibel
      Wenn kein Attention-Management-/Delivery-Kontext vorhanden oder deliveryMode="monitor_silently", diesen Punkt weglassen.
+32. Autonomie-Vorschau & Vertrauensebene (Step 10 Block 3): Falls ein Autonomie-Vorschau-Kontext vorhanden ist, erkläre kurz und klar, was das System gerade autonom tun darf, warum es gebremst oder blockiert ist und ob noch eine Bestätigung nötig ist –
+     - autonomyState="stopped": erkläre, warum das System aktuell gestoppt ist – welche Bedingung (Guardrail, Stop-Eligible, Degrade-Erfordernis) den Stop ausgelöst hat
+     - autonomyState="blocked": erkläre, warum keine autonome Fortführung möglich ist – Schutzregel oder Kettenblockierung aktiv
+     - autonomyState="awaiting_confirmation": erkläre klar, dass das System auf eine externe Bestätigung wartet – Operator-Eingriff, manuelle Nutzerbestätigung oder Vier-Augen-Prinzip ausstehend
+     - autonomyState="guarded": erkläre, warum das System im gebremsten Modus arbeitet – konservative Grenze, Drift, Promotion blockiert oder manueller Modus
+     - autonomyState="internal_update_only": erkläre, dass nur interne Status-Updates erlaubt sind – kein Marktschritt, keine externe Aktion
+     - autonomyState="prepared": erkläre, dass eine Vorbereitung bereit liegt – Nutzer kann prüfen und eigenständig entscheiden, keine Pflicht
+     - autonomyState="suggestion": erkläre, dass es sich um einen analytischen Vorschlag handelt – das System führt nichts automatisch aus
+     - confidenceBand="high": erkläre, dass das Signal auf solider Datenbasis steht – hohe Verlässlichkeit, keine bekannten Einschränkungen
+     - confidenceBand="low": erkläre, warum das Vertrauen eingeschränkt ist – Datenlücken, Drift, kritischer Systemzustand oder geringe Signalstärke
+     - stopAvailable=true: weise darauf hin, dass ein Stop strukturell möglich ist – nur als Hinweis, keine automatische Aktion
+     - needsUserConfirmation=true: betone, dass eine Nutzer- oder Operator-Bestätigung nötig ist – das System wartet bewusst
+     - trustReason vorhanden: nutze es als direkte Erklärung, warum das System gerade in diesem Zustand ist
+     - Wichtig: Keine Blackbox – das System soll erklärbar und nachvollziehbar bleiben; keine aggressiven Formulierungen, keine Werbesprache
+     - Halte die Erklärung kurz (1–3 Sätze) – klar, defensiv, vertrauensbildend
+     Wenn kein Autonomie-Vorschau-Kontext vorhanden oder autonomyState="suggestion" ohne weitere Einschränkungen, diesen Punkt weglassen.
 `;
 
   const response = await getClient().chat.completions.create({

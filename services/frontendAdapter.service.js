@@ -292,6 +292,24 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
       followUpContext:      stock?.followUpContext       ?? null,
       operationalResilience: stock?.operationalResilience ?? null,
     }),
+    // Step 10 Block 3: Autonomy Preview / Companion Trust Layer.
+    // Derives autonomyState, confidenceBand, trustReason, stopAvailable and previewSummary
+    // from already-computed per-stock governance/safety/execution signals.
+    autonomyPreview: buildAutonomyPreviewOutput({
+      symbol,
+      recoverySafetyLayer:       stock?.recoverySafetyLayer       ?? null,
+      auditTrace:                stock?.auditTrace                ?? null,
+      actionChainState:          stock?.actionChainState          ?? null,
+      controlledAutoPreparation: stock?.controlledAutoPreparation ?? null,
+      partialAutoExecution:      stock?.partialAutoExecution      ?? null,
+      autonomyLevel:             stock?.autonomyLevel             ?? null,
+      driftDetection:            stock?.driftDetection            ?? null,
+      operationalResilience:     stock?.operationalResilience     ?? null,
+      policyPlane:               stock?.policyPlane               ?? null,
+      explainableTags:           stock?.explainableTags           ?? [],
+      hqsScore,
+      confidence,
+    }),
     news: normalizedNews.slice(0, 3),
   };
 }
@@ -587,6 +605,164 @@ function buildAttentionDeliveryOutput(params) {
   };
 }
 
+// ── Step 10 Block 3: Autonomy Preview / Companion Trust Layer ─────────────────
+// Derives a transparent autonomy-state preview from already-computed per-stock
+// governance/safety/execution signals.  No new scoring – read-only derivation.
+
+const AUTONOMY_STATE_LABELS = {
+  stopped:               "Gestoppt",
+  blocked:               "Blockiert",
+  awaiting_confirmation: "Bestätigung nötig",
+  guarded:               "Gebremst",
+  internal_update_only:  "Internes Update",
+  prepared:              "Vorbereitet",
+  suggestion:            "Vorschlag",
+};
+
+/**
+ * Step 10 Block 3: Build an autonomy-preview / trust output block for a single stock.
+ * Reads only from already-computed signals – no new DB calls, no new scoring.
+ *
+ * Autonomy state rules (first match wins – conservative by design):
+ *   stopped              ← stopEligible or degradeRequired
+ *   blocked              ← blockedByGuardrail or chainBlocked
+ *   awaiting_confirmation← operatorInterventionRequired or manualConfirmationRequired or requiresSecondApproval
+ *   guarded              ← promotionBlocked, preparationGuarded, autoExecutionGuarded, critical_guarded, high drift, manual level
+ *   internal_update_only ← autoExecutionEligible + internal_only + safe
+ *   prepared             ← autoPreparationEligible
+ *   suggestion           ← default
+ *
+ * @param {object} params – relevant signal fields (already computed on the stock)
+ * @returns {object} autonomyPreview fields
+ */
+function buildAutonomyPreviewOutput(params) {
+  const {
+    symbol,
+    recoverySafetyLayer,
+    auditTrace,
+    actionChainState,
+    controlledAutoPreparation,
+    partialAutoExecution,
+    autonomyLevel,
+    driftDetection,
+    operationalResilience,
+    policyPlane,
+    explainableTags,
+    hqsScore,
+    confidence,
+  } = params;
+
+  const rsl   = recoverySafetyLayer       ?? null;
+  const audit = auditTrace                ?? null;
+  const acs   = actionChainState          ?? null;
+  const cap   = controlledAutoPreparation ?? null;
+  const pae   = partialAutoExecution      ?? null;
+  const al    = autonomyLevel             ?? null;
+  const dd    = driftDetection            ?? null;
+  const opRes = operationalResilience     ?? null;
+  const pp    = policyPlane               ?? null;
+  const tags  = Array.isArray(explainableTags) ? explainableTags : [];
+  const score = toFiniteNumber(confidence ?? hqsScore, 50);
+
+  // ── Autonomy State (first match wins) ────────────────────────────────────
+  let autonomyState;
+  if (rsl?.stopEligible || rsl?.degradeRequired) {
+    autonomyState = "stopped";
+  } else if (audit?.blockedByGuardrail || acs?.chainBlocked) {
+    autonomyState = "blocked";
+  } else if (rsl?.operatorInterventionRequired || cap?.manualConfirmationRequired
+             || pp?.requiresSecondApproval) {
+    autonomyState = "awaiting_confirmation";
+  } else if (rsl?.promotionBlocked || cap?.preparationGuarded || pae?.autoExecutionGuarded
+             || opRes?.degradationMode === "critical_guarded"
+             || dd?.driftLevel === "high" || al?.effectiveLevel === "manual") {
+    autonomyState = "guarded";
+  } else if (pae?.autoExecutionEligible && pae?.executionScope === "internal_only"
+             && pae?.autoExecutionSafety === "safe") {
+    autonomyState = "internal_update_only";
+  } else if (cap?.autoPreparationEligible) {
+    autonomyState = "prepared";
+  } else {
+    autonomyState = "suggestion";
+  }
+
+  // ── Confidence Band ──────────────────────────────────────────────────────
+  const hasLowConfidence   = tags.includes("low_confidence") || tags.includes("event_caution");
+  const hasStrongConfidence = tags.includes("quality_leader") || tags.includes("stable_uptrend");
+  const isCriticalHealth   = opRes?.operationalHealth === "critical";
+  const isHighDrift        = dd?.driftLevel === "high";
+
+  let confidenceBand;
+  if (score < 45 || hasLowConfidence || isCriticalHealth || isHighDrift) {
+    confidenceBand = "low";
+  } else if (score >= 68 && hasStrongConfidence && !hasLowConfidence && !isCriticalHealth && !isHighDrift) {
+    confidenceBand = "high";
+  } else {
+    confidenceBand = "medium";
+  }
+
+  // ── Autonomy Confidence (0–100) ──────────────────────────────────────────
+  // Penalise blocked/stopped/guarded states; reward clean suggestion/prepared.
+  let autonomyConfidence = clamp(Math.round(score), 0, 100);
+  if (autonomyState === "stopped" || autonomyState === "blocked")         autonomyConfidence = Math.min(autonomyConfidence, 20);
+  else if (autonomyState === "awaiting_confirmation" || autonomyState === "guarded") autonomyConfidence = Math.min(autonomyConfidence, 50);
+  else if (autonomyState === "internal_update_only")                      autonomyConfidence = Math.min(autonomyConfidence, 65);
+
+  // ── Trust Reason ─────────────────────────────────────────────────────────
+  let trustReason;
+  if (autonomyState === "stopped") {
+    trustReason = rsl?.degradeRequired
+      ? "System muss in reduzierten Betriebsmodus wechseln"
+      : "Stop-Bedingung aktiv – manueller Eingriff erforderlich";
+  } else if (autonomyState === "blocked") {
+    trustReason = audit?.blockedByGuardrail
+      ? "Schutzregel aktiv – keine automatische Fortführung"
+      : "Aktions-Kette blockiert – keine Ausführung möglich";
+  } else if (autonomyState === "awaiting_confirmation") {
+    trustReason = pp?.requiresSecondApproval
+      ? "Vier-Augen-Prinzip: Zweite Freigabe ausstehend"
+      : cap?.manualConfirmationRequired
+      ? "Manuelle Bestätigung durch Nutzer erforderlich"
+      : "Operator-Eingriff ausstehend – kein automatischer Fortschritt";
+  } else if (autonomyState === "guarded") {
+    if (dd?.driftLevel === "high")         trustReason = "Hohe Drift erkannt – System im gebremsten Modus";
+    else if (rsl?.promotionBlocked)        trustReason = "Autonomie-Erhöhung gesperrt – konservative Grenze aktiv";
+    else if (al?.effectiveLevel === "manual") trustReason = "Manueller Modus – keine automatische Aktion";
+    else                                   trustReason = "Vorsichtsmodus aktiv – eingeschränkte Ausführung";
+  } else if (autonomyState === "internal_update_only") {
+    trustReason = "Nur interne Status-Updates erlaubt – kein Marktschritt, keine externe Aktion";
+  } else if (autonomyState === "prepared") {
+    trustReason = "Vorbereitung liegt bereit – Nutzer kann Vorschlag prüfen und eigenständig entscheiden";
+  } else {
+    trustReason = "Analytischer Vorschlag – keine automatische Ausführung, Nutzer entscheidet";
+  }
+
+  // ── Stop Available ────────────────────────────────────────────────────────
+  const stopAvailable = rsl?.stopEligible === true || rsl?.degradeRequired === true;
+
+  // ── Needs User Confirmation ───────────────────────────────────────────────
+  const needsUserConfirmation = rsl?.operatorInterventionRequired === true
+    || cap?.manualConfirmationRequired === true
+    || pp?.requiresSecondApproval === true;
+
+  // ── Preview Summary (single sentence) ────────────────────────────────────
+  const stateLabel = AUTONOMY_STATE_LABELS[autonomyState] || autonomyState;
+  const sym = symbol ?? "?";
+  const previewSummary = `${sym}: ${stateLabel} · Vertrauen: ${confidenceBand} · ${trustReason}`;
+
+  return {
+    autonomyState,
+    autonomyPreview:   stateLabel,
+    autonomyConfidence,
+    confidenceBand,
+    trustReason,
+    stopAvailable,
+    needsUserConfirmation,
+    previewSummary,
+    autonomyBasis: "step10_block3",
+  };
+}
+
 function buildTopSignals(stocks) {
   const DELTA_CHANGE_BADGES = {
     new_signal:               "Neu",
@@ -707,11 +883,25 @@ function buildTopSignals(stocks) {
       const attDelBadge = attDel?.deliveryMode && ATTENTION_DELIVERY_BADGES[attDel.deliveryMode]
         ? ` ${ATTENTION_DELIVERY_BADGES[attDel.deliveryMode]}`
         : "";
+      // Step 10 Block 3: autonomy-preview badge – surface state and confirmation need compactly
+      const apv = stock.autonomyPreview ?? null;
+      const AUTONOMY_PREVIEW_BADGES = {
+        stopped:               "🛑 Gestoppt",
+        blocked:               "🚫 Blockiert",
+        awaiting_confirmation: "⏳ Bestätigung",
+        guarded:               "🛡 Gebremst",
+        internal_update_only:  null,
+        prepared:              "📄 Vorbereitet",
+        suggestion:            null,
+      };
+      const apvBadge = apv?.autonomyState && AUTONOMY_PREVIEW_BADGES[apv.autonomyState]
+        ? ` ${AUTONOMY_PREVIEW_BADGES[apv.autonomyState]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}${attDelBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}${attDelBadge}${apvBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -757,6 +947,8 @@ function buildTopSignals(stocks) {
         companionOutput: stock.companionOutput ?? null,
         // Step 10 Block 2: Attention/Delivery Intelligence – delivery mode recommendation
         attentionDeliveryOutput: stock.attentionDeliveryOutput ?? null,
+        // Step 10 Block 3: Autonomy Preview / Trust – state, confidence band, stop, confirmation
+        autonomyPreview: stock.autonomyPreview ?? null,
       };
     });
 }
@@ -1052,6 +1244,22 @@ function buildPortfolioIntelligenceSummary(stocks) {
       highUrgencyCount:         stocks.filter((s) => s.attentionDeliveryOutput?.deliveryUrgency === "high" || s.attentionDeliveryOutput?.deliveryUrgency === "medium").length,
       attentionDeliveryBasis:   "step10_block2",
     },
+    // Step 10 Block 3: Autonomy Preview / Companion Trust distribution.
+    autonomyPreview: {
+      stoppedCount:              stocks.filter((s) => s.autonomyPreview?.autonomyState === "stopped").length,
+      blockedCount:              stocks.filter((s) => s.autonomyPreview?.autonomyState === "blocked").length,
+      awaitingConfirmationCount: stocks.filter((s) => s.autonomyPreview?.autonomyState === "awaiting_confirmation").length,
+      guardedCount:              stocks.filter((s) => s.autonomyPreview?.autonomyState === "guarded").length,
+      internalUpdateOnlyCount:   stocks.filter((s) => s.autonomyPreview?.autonomyState === "internal_update_only").length,
+      preparedCount:             stocks.filter((s) => s.autonomyPreview?.autonomyState === "prepared").length,
+      suggestionCount:           stocks.filter((s) => s.autonomyPreview?.autonomyState === "suggestion").length,
+      needsUserConfirmationCount: stocks.filter((s) => s.autonomyPreview?.needsUserConfirmation === true).length,
+      stopAvailableCount:        stocks.filter((s) => s.autonomyPreview?.stopAvailable === true).length,
+      highConfidenceCount:       stocks.filter((s) => s.autonomyPreview?.confidenceBand === "high").length,
+      mediumConfidenceCount:     stocks.filter((s) => s.autonomyPreview?.confidenceBand === "medium").length,
+      lowConfidenceCount:        stocks.filter((s) => s.autonomyPreview?.confidenceBand === "low").length,
+      autonomyPreviewBasis:      "step10_block3",
+    },
   };
 }
 
@@ -1234,6 +1442,27 @@ function buildGuardianPayload(rawStocks, options = {}) {
     attentionDeliveryBasis:   "step10_block2",
   };
 
+  // Step 10 Block 3: Autonomy Preview / Companion Trust aggregate.
+  const autonomyPreviewMeta = {
+    stateDistribution: {
+      stopped:               stocks.filter((s) => s.autonomyPreview?.autonomyState === "stopped").length,
+      blocked:               stocks.filter((s) => s.autonomyPreview?.autonomyState === "blocked").length,
+      awaitingConfirmation:  stocks.filter((s) => s.autonomyPreview?.autonomyState === "awaiting_confirmation").length,
+      guarded:               stocks.filter((s) => s.autonomyPreview?.autonomyState === "guarded").length,
+      internalUpdateOnly:    stocks.filter((s) => s.autonomyPreview?.autonomyState === "internal_update_only").length,
+      prepared:              stocks.filter((s) => s.autonomyPreview?.autonomyState === "prepared").length,
+      suggestion:            stocks.filter((s) => s.autonomyPreview?.autonomyState === "suggestion").length,
+    },
+    confidenceBandDistribution: {
+      high:   stocks.filter((s) => s.autonomyPreview?.confidenceBand === "high").length,
+      medium: stocks.filter((s) => s.autonomyPreview?.confidenceBand === "medium").length,
+      low:    stocks.filter((s) => s.autonomyPreview?.confidenceBand === "low").length,
+    },
+    needsUserConfirmationCount: stocks.filter((s) => s.autonomyPreview?.needsUserConfirmation === true).length,
+    stopAvailableCount:         stocks.filter((s) => s.autonomyPreview?.stopAvailable === true).length,
+    autonomyPreviewBasis:       "step10_block3",
+  };
+
   return {
     success: true,
     stabilityScore,
@@ -1260,6 +1489,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     companionMeta,
     // Step 10 Block 2: Attention/Delivery Intelligence aggregate – mode distribution.
     attentionDeliveryMeta,
+    // Step 10 Block 3: Autonomy Preview / Trust aggregate – state and confidence distribution.
+    autonomyPreviewMeta,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
@@ -1280,4 +1511,5 @@ module.exports = {
   CANONICAL_FIELDS,
   buildCompanionOutput,
   buildAttentionDeliveryOutput,
+  buildAutonomyPreviewOutput,
 };
