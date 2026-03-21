@@ -85,6 +85,11 @@ async function initFactorTable() {
       peer_context_available BOOLEAN,
       sector_scoring_meta JSONB,
 
+      -- HQS 2.0 Block 3: Regime-based Weighting, Enhanced Stability & Liquidity
+      regime_weight_profile JSONB,
+      enhanced_stability_meta JSONB,
+      liquidity_meta JSONB,
+
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
@@ -118,13 +123,58 @@ async function saveScoreSnapshot({
   sectorTemplate,
   peerContextAvailable,
   sectorScoringMeta,
+  regimeWeightProfile,
+  enhancedStabilityMeta,
+  liquidityMeta,
 }) {
   try {
     const normalizedRegime = normRegime(regime);
 
-    // Try the extended insert that includes HQS 2.0 Block 1 + Block 2 meta columns.
+    // Try the extended insert that includes HQS 2.0 Block 1 + Block 2 + Block 3 meta columns.
     // If the table was created before these columns existed (legacy deployment),
     // we gracefully fall back so existing flow is never broken.
+    try {
+      await pool.query(
+        `
+        INSERT INTO factor_history
+        (symbol, hqs_score, momentum, quality, stability, relative, regime,
+         market_average, volatility,
+         hqs_version, confidence_score, data_quality_meta, imputation_meta,
+         sector_template, peer_context_available, sector_scoring_meta,
+         regime_weight_profile, enhanced_stability_meta, liquidity_meta)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        `,
+        [
+          String(symbol || "").trim().toUpperCase(),
+          Number(hqsScore),
+          momentum ?? null,
+          quality ?? null,
+          stability ?? null,
+          relative ?? null,
+          normalizedRegime,
+          marketAverage ?? null,
+          volatility ?? null,
+          hqsVersion ?? null,
+          confidenceScore != null ? Number(confidenceScore) : null,
+          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
+          imputationMeta ? JSON.stringify(imputationMeta) : null,
+          sectorTemplate ?? null,
+          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
+          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
+          regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
+          enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
+          liquidityMeta ? JSON.stringify(liquidityMeta) : null,
+        ]
+      );
+      return;
+    } catch (extErr) {
+      // Column does not exist in this deployment – fall back to Block 2 insert.
+      // PostgreSQL error code 42703 = undefined_column.
+      if (extErr.code !== "42703") throw extErr;
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 3 columns not yet in table, trying Block 2 insert", { message: extErr.message });
+    }
+
+    // Block 2 fallback (table has Block 1+2 columns but not Block 3)
     try {
       await pool.query(
         `
@@ -155,11 +205,9 @@ async function saveScoreSnapshot({
         ]
       );
       return;
-    } catch (extErr) {
-      // Column does not exist in this deployment – fall back to Block 1 insert first.
-      // PostgreSQL error code 42703 = undefined_column.
-      if (extErr.code !== "42703") throw extErr;
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 2 columns not yet in table, trying Block 1 insert", { message: extErr.message });
+    } catch (b2Err) {
+      if (b2Err.code !== "42703") throw b2Err;
+      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 2 columns not yet in table, trying Block 1 insert", { message: b2Err.message });
     }
 
     // Block 1 fallback (table has Block 1 columns but not Block 2)
@@ -524,6 +572,76 @@ async function getRecentHqsSectorMeta(limit = 50) {
   }
 }
 
+/* =========================================================
+   HQS 2.0 Block 3: REGIME / STABILITY / LIQUIDITY META (admin read-only)
+   Returns recent factor_history rows with regime weight profile,
+   enhanced stability meta and liquidity meta.
+   Tries Block 3 columns first, falls back gracefully.
+========================================================= */
+
+async function getRecentHqsRegimeMeta(limit = 50) {
+  try {
+    // Try with HQS 2.0 Block 3 columns
+    try {
+      const res = await pool.query(
+        `
+        SELECT
+          id,
+          symbol,
+          hqs_score               AS "hqsScore",
+          regime,
+          hqs_version             AS "hqsVersion",
+          regime_weight_profile   AS "regimeWeightProfile",
+          enhanced_stability_meta AS "enhancedStabilityMeta",
+          liquidity_meta          AS "liquidityMeta",
+          created_at              AS "createdAt"
+        FROM factor_history
+        WHERE symbol <> 'PORTFOLIO'
+        ORDER BY created_at DESC
+        LIMIT $1
+        `,
+        [limit]
+      );
+      return res.rows;
+    } catch (extErr) {
+      if (extErr.code === "42703") {
+        if (logger?.warn) logger.warn("getRecentHqsRegimeMeta: Block 3 columns not present, using fallback projection");
+      } else {
+        throw extErr;
+      }
+    }
+
+    // Fallback projection (no Block 3 columns)
+    const res = await pool.query(
+      `
+      SELECT
+        id,
+        symbol,
+        hqs_score  AS "hqsScore",
+        regime,
+        created_at AS "createdAt"
+      FROM factor_history
+      WHERE symbol <> 'PORTFOLIO'
+      ORDER BY created_at DESC
+      LIMIT $1
+      `,
+      [limit]
+    );
+
+    return res.rows.map((row) => ({
+      ...row,
+      hqsVersion: null,
+      regimeWeightProfile: null,
+      enhancedStabilityMeta: null,
+      liquidityMeta: null,
+    }));
+  } catch (err) {
+    if (logger?.error) logger.error("getRecentHqsRegimeMeta error", { message: err.message });
+    else console.error("❌ getRecentHqsRegimeMeta error:", err.message);
+    return [];
+  }
+}
+
 module.exports = {
   initFactorTable,
   saveScoreSnapshot,
@@ -533,4 +651,5 @@ module.exports = {
   getBacktestHistory,
   getRecentHqsDataQuality,
   getRecentHqsSectorMeta,
+  getRecentHqsRegimeMeta,
 };

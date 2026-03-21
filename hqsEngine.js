@@ -16,6 +16,14 @@
   - applySectorQualityAdjustment() applies sector-aware quality scoring
   - HQS output extended with sector meta fields (backward compatible)
   - 5th param entityMeta = { sector, industry } passed from marketService
+  HQS 2.0 Block 3: Regime-based Weighting, Enhanced Stability & Liquidity Guardrails
+  - computeRegimeWeightProfile() derives regime-sensitive factor weights from
+    world state context (bull/expansion → momentum; bear/crash → quality+stability)
+  - computeEnhancedStabilityMeta() extends stability beyond day range with
+    volatility proxy, drawdown proxy, gap stress and price consistency band
+  - computeLiquidityGuardrail() derives liquidityTier, slippageRisk and
+    illiquidity penalty from available volume/price fields
+  - 6th param worldStateCtx passed from marketService for regime context
 */
 
 const { getFundamentals } = require("./services/fundamental.service");
@@ -281,6 +289,227 @@ function computeDataQuality(item, fundamentals) {
 }
 
 /* =========================================================
+   HQS 2.0 – BLOCK 3: REGIME-BASED WEIGHT PROFILE
+   Derives regime-sensitive factor weight overrides from the
+   resolved regime label and optional world state context.
+   Bull/expansion markets favour Momentum & Relative Strength;
+   Bear/crash markets favour Quality & Stability.
+   Neutral/unknown falls back to balanced defaults.
+   The returned profile is advisory – it is blended on top of
+   the adaptive/database weights so existing learning is not
+   discarded.
+========================================================= */
+
+const REGIME_WEIGHT_PROFILES = {
+  expansion: { momentum: 0.40, quality: 0.28, stability: 0.17, relative: 0.15 },
+  bull:       { momentum: 0.38, quality: 0.30, stability: 0.18, relative: 0.14 },
+  neutral:    { momentum: 0.35, quality: 0.35, stability: 0.20, relative: 0.10 },
+  bear:       { momentum: 0.22, quality: 0.40, stability: 0.28, relative: 0.10 },
+  crash:      { momentum: 0.15, quality: 0.42, stability: 0.33, relative: 0.10 },
+};
+
+// Blend ratio: share of regime profile applied on top of adaptive/learned weights
+const REGIME_WEIGHT_BLEND_RATIO = 0.35;
+
+// Liquidity guardrail thresholds (dollar volume)
+const HIGH_LIQUIDITY_THRESHOLD   = 50_000_000;
+const MEDIUM_LIQUIDITY_THRESHOLD =  5_000_000;
+
+// Volume ratio thresholds (volume / avgVolume)
+const LOW_VOLUME_RATIO_THRESHOLD  = 0.25; // far below average → elevated slippage
+const HIGH_VOLUME_SPIKE_THRESHOLD = 3;    // unusual spike → flag for event risk
+
+// Enhanced stability band thresholds
+const VOLATILE_BAND_VOL_THRESHOLD      = 5;   // volatilityProxy %
+const VOLATILE_BAND_DRAWDOWN_THRESHOLD = 4;   // drawdownProxy %
+const MODERATE_BAND_VOL_THRESHOLD      = 2.5;
+const MODERATE_BAND_DRAWDOWN_THRESHOLD = 2;
+
+// Gap stress threshold (open vs previous close, %)
+const GAP_STRESS_THRESHOLD = 2;
+
+function computeRegimeWeightProfile(regime, worldStateCtx) {
+  const label = String(regime || "neutral").toLowerCase();
+
+  // If world state signals stress (risk_off) override to bear/crash profile
+  // even when the per-symbol regime is labelled neutral.
+  let effectiveLabel = label;
+  if (worldStateCtx) {
+    const riskMode = String(worldStateCtx.risk_mode || "").toLowerCase();
+    const volState = String(worldStateCtx.volatility_state || "").toLowerCase();
+    if (riskMode === "risk_off" && (effectiveLabel === "neutral" || effectiveLabel === "bull")) {
+      effectiveLabel = "bear";
+    }
+    if (volState === "high" && effectiveLabel === "expansion") {
+      effectiveLabel = "bull";
+    }
+  }
+
+  const profile = REGIME_WEIGHT_PROFILES[effectiveLabel] || REGIME_WEIGHT_PROFILES.neutral;
+
+  return {
+    regimeContext:      effectiveLabel,
+    regimeWeightProfile: { ...profile },
+    profileSource:      effectiveLabel !== label ? "world_state_override" : "regime_direct",
+  };
+}
+
+/* =========================================================
+   HQS 2.0 – BLOCK 3: ENHANCED STABILITY META
+   Extends the single-day range stability score with additional
+   stability proxies derived from directly available market
+   fields (no external lookups).
+   Fields:
+     volatilityProxy  – intraday range as % of price
+     drawdownProxy    – price move from previous close (% abs)
+     gapStress        – open vs previous close gap (% abs)
+     priceConsistency – directional consistency flag
+     stabilityBand    – "stable" / "moderate" / "volatile"
+========================================================= */
+
+function computeEnhancedStabilityMeta(item) {
+  const price       = safe(item.price);
+  const high        = safe(item.high);
+  const low         = safe(item.low);
+  const open        = safe(item.open);
+  const prevClose   = safe(item.previousClose);
+  const changesPct  = safe(item.changesPercentage);
+
+  const reasons = [];
+
+  // ── Volatility proxy: intraday range / price ─────────────────────────────
+  let volatilityProxy = null;
+  if (price > 0 && high > 0 && low > 0) {
+    volatilityProxy = Math.round(((high - low) / price) * 1000) / 10; // pct, 1 dp
+  }
+
+  // ── Drawdown proxy: absolute % move vs previous close ───────────────────
+  let drawdownProxy = null;
+  if (prevClose > 0 && price > 0) {
+    drawdownProxy = Math.round(Math.abs(((price - prevClose) / prevClose) * 100) * 10) / 10;
+  } else if (changesPct !== 0) {
+    drawdownProxy = Math.round(Math.abs(changesPct) * 10) / 10;
+  }
+
+  // ── Gap stress: overnight gap between open and previous close ───────────
+  let gapStress = null;
+  if (open > 0 && prevClose > 0) {
+    gapStress = Math.round(Math.abs(((open - prevClose) / prevClose) * 100) * 10) / 10;
+    if (gapStress > GAP_STRESS_THRESHOLD) reasons.push(`gap_stress_${gapStress.toFixed(1)}pct`);
+  }
+
+  // ── Price consistency: open vs close directionality ──────────────────────
+  let priceConsistency = "neutral";
+  if (open > 0 && price > 0) {
+    if (changesPct > 0 && price >= open) priceConsistency = "consistent_up";
+    else if (changesPct < 0 && price <= open) priceConsistency = "consistent_down";
+    else priceConsistency = "reversal";
+  }
+
+  // ── Stability band: aggregate classification ────────────────────────────
+  let stabilityBand = "stable";
+  const volCheck = volatilityProxy ?? Math.abs(changesPct ?? 0);
+  if (volCheck > VOLATILE_BAND_VOL_THRESHOLD || (drawdownProxy !== null && drawdownProxy > VOLATILE_BAND_DRAWDOWN_THRESHOLD)) {
+    stabilityBand = "volatile";
+    reasons.push("high_intraday_range");
+  } else if (volCheck > MODERATE_BAND_VOL_THRESHOLD || (drawdownProxy !== null && drawdownProxy > MODERATE_BAND_DRAWDOWN_THRESHOLD)) {
+    stabilityBand = "moderate";
+  }
+  if (priceConsistency === "reversal") {
+    if (stabilityBand === "stable") stabilityBand = "moderate";
+    reasons.push("price_reversal_intraday");
+  }
+
+  return {
+    volatilityProxy,
+    drawdownProxy,
+    gapStress,
+    priceConsistency,
+    stabilityBand,
+    stabilityReasons: reasons,
+  };
+}
+
+/* =========================================================
+   HQS 2.0 – BLOCK 3: LIQUIDITY & SLIPPAGE GUARDRAIL
+   Derives a simple, transparent liquidity classification and
+   slippage risk from available volume and price fields only.
+   No broker/execution engine is built here – this is a
+   protective meta layer.
+   Fields:
+     liquidityTier   – "high" / "medium" / "low"
+     slippageRisk    – "low" / "medium" / "high"
+     liquidityPenalty – 0-5 HQS point deduction (transparent)
+     liquidityReason – string explanation
+========================================================= */
+
+function computeLiquidityGuardrail(item) {
+  const price     = safe(item.price);
+  const volume    = safe(item.volume);
+  const avgVolume = safe(item.avgVolume);
+
+  const reasons = [];
+
+  // ── Dollar volume: primary liquidity signal ─────────────────────────────
+  const dollarVolume = price > 0 && volume > 0 ? price * volume : 0;
+
+  let liquidityTier = "medium";
+  let slippageRisk  = "medium";
+
+  if (dollarVolume === 0) {
+    // No volume data available
+    liquidityTier = "low";
+    slippageRisk  = "high";
+    reasons.push("no_volume_data");
+  } else if (dollarVolume >= HIGH_LIQUIDITY_THRESHOLD) {
+    liquidityTier = "high";
+    slippageRisk  = "low";
+  } else if (dollarVolume >= MEDIUM_LIQUIDITY_THRESHOLD) {
+    liquidityTier = "medium";
+    slippageRisk  = "medium";
+    reasons.push("medium_dollar_volume");
+  } else {
+    liquidityTier = "low";
+    slippageRisk  = "high";
+    reasons.push("low_dollar_volume");
+  }
+
+  // ── Volume ratio: volume vs average volume ──────────────────────────────
+  // Only used if avgVolume is cleanly available (> 0)
+  if (avgVolume > 0 && volume > 0) {
+    const volRatio = volume / avgVolume;
+    if (volRatio < LOW_VOLUME_RATIO_THRESHOLD) {
+      // Trading far below average – elevated slippage even in high-cap names
+      if (liquidityTier === "high") liquidityTier = "medium";
+      if (slippageRisk === "low")   slippageRisk  = "medium";
+      reasons.push("volume_below_avg_ratio");
+    } else if (volRatio > HIGH_VOLUME_SPIKE_THRESHOLD) {
+      reasons.push("volume_spike_ratio");
+      // High spike may indicate event risk – keep tier but flag
+    }
+  }
+
+  // ── Illiquidity penalty: moderate and transparent ───────────────────────
+  // Penalty is capped at 5 points and only applies for low-tier assets.
+  let liquidityPenalty = 0;
+  if (liquidityTier === "low")    liquidityPenalty = 5;
+  else if (liquidityTier === "medium") liquidityPenalty = 0; // no penalty for medium
+
+  const liquidityReason =
+    reasons.length > 0
+      ? reasons.join("; ")
+      : `${liquidityTier}_liquidity_nominal`;
+
+  return {
+    liquidityTier,
+    slippageRisk,
+    liquidityPenalty,
+    liquidityReason,
+    dollarVolume: dollarVolume > 0 ? Math.round(dollarVolume) : null,
+  };
+}
+
+/* =========================================================
    MAIN ENGINE
 ========================================================= */
 
@@ -289,7 +518,8 @@ async function buildHQSResponse(
   marketAverage = 0,
   adaptiveWeights = null,
   regimeHint = null,
-  entityMeta = null
+  entityMeta = null,
+  worldStateCtx = null
 ) {
   try {
     if (!item.symbol) throw new Error("Missing symbol");
@@ -305,8 +535,6 @@ async function buildHQSResponse(
       if (weightsRaw) weightsSource = "database";
     }
 
-    const weights = normalizeWeights(weightsRaw || DEFAULT_WEIGHTS);
-
     let fundamentals = null;
 
     try {
@@ -320,6 +548,23 @@ async function buildHQSResponse(
     const mappedHint = mapRegimeHint(regimeHint);
     const regime =
       mappedHint || detectRegime(item.changesPercentage, marketAverage);
+
+    // ── HQS 2.0 Block 3: regime weight profile ────────────────────────────
+    const regimeProfile = computeRegimeWeightProfile(regime, worldStateCtx);
+
+    // Blend regime profile into the base weights.
+    // If adaptive/database weights exist they serve as the primary anchor;
+    // the regime profile nudges momentum/quality/stability according to
+    // the current market phase while keeping the learned baseline.
+    const baseWeightsRaw = normalizeWeights(weightsRaw || DEFAULT_WEIGHTS);
+    const regimePW = regimeProfile.regimeWeightProfile;
+    const blendedWeights = {
+      momentum:  baseWeightsRaw.momentum  * (1 - REGIME_WEIGHT_BLEND_RATIO) + regimePW.momentum  * REGIME_WEIGHT_BLEND_RATIO,
+      quality:   baseWeightsRaw.quality   * (1 - REGIME_WEIGHT_BLEND_RATIO) + regimePW.quality   * REGIME_WEIGHT_BLEND_RATIO,
+      stability: baseWeightsRaw.stability * (1 - REGIME_WEIGHT_BLEND_RATIO) + regimePW.stability * REGIME_WEIGHT_BLEND_RATIO,
+      relative:  baseWeightsRaw.relative  * (1 - REGIME_WEIGHT_BLEND_RATIO) + regimePW.relative  * REGIME_WEIGHT_BLEND_RATIO,
+    };
+    const weights = normalizeWeights(blendedWeights);
 
     const momentum = calculateMomentum(item.changesPercentage, item.trend);
     const stability = calculateStability(item);
@@ -346,6 +591,12 @@ async function buildHQSResponse(
       marketAverage
     );
 
+    // ── HQS 2.0 Block 3: enhanced stability meta ──────────────────────────
+    const enhancedStabilityMeta = computeEnhancedStabilityMeta(item);
+
+    // ── HQS 2.0 Block 3: liquidity guardrail ─────────────────────────────
+    const liquidityGuardrail = computeLiquidityGuardrail(item);
+
     let baseScore =
       momentum * weights.momentum +
       quality * weights.quality +
@@ -354,7 +605,9 @@ async function buildHQSResponse(
 
     baseScore *= regimeMultiplier(regime);
 
-    const finalScore = clamp(Math.round(baseScore), 0, 100);
+    // Apply transparent liquidity penalty (0–5 points, only for low liquidity)
+    const scoreBeforeLiquidity = clamp(Math.round(baseScore), 0, 100);
+    const finalScore = clamp(scoreBeforeLiquidity - liquidityGuardrail.liquidityPenalty, 0, 100);
 
     // ── HQS 2.0 Block 1: derive data quality meta ─────────────────────────
     const dataQuality = computeDataQuality(item, fundamentalsRecord);
@@ -387,6 +640,16 @@ async function buildHQSResponse(
         sectorReason: sectorCtx.sectorReason,
         baseQuality,
         appliedAdjustments,
+      },
+      // ── HQS 2.0 Block 3: regime/stability/liquidity meta ──────────────
+      regimeWeightProfile: regimeProfile.regimeWeightProfile,
+      enhancedStabilityMeta,
+      liquidityMeta: {
+        liquidityTier:    liquidityGuardrail.liquidityTier,
+        slippageRisk:     liquidityGuardrail.slippageRisk,
+        liquidityPenalty: liquidityGuardrail.liquidityPenalty,
+        liquidityReason:  liquidityGuardrail.liquidityReason,
+        dollarVolume:     liquidityGuardrail.dollarVolume,
       },
     });
 
@@ -427,6 +690,14 @@ async function buildHQSResponse(
       peerContextAvailable: sectorCtx.peerContextAvailable,
       normalizationMeta: sectorCtx.normalizationMeta,
       sectorReason: sectorCtx.sectorReason,
+      // ── HQS 2.0 Block 3 regime/stability/liquidity meta fields ───────
+      regimeContext:          regimeProfile.regimeContext,
+      regimeWeightProfile:    regimeProfile.regimeWeightProfile,
+      enhancedStabilityMeta,
+      liquidityTier:          liquidityGuardrail.liquidityTier,
+      slippageRisk:           liquidityGuardrail.slippageRisk,
+      liquidityPenalty:       liquidityGuardrail.liquidityPenalty,
+      liquidityReason:        liquidityGuardrail.liquidityReason,
     };
   } catch (error) {
     if (logger?.error)

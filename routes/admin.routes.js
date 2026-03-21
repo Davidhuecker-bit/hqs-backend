@@ -104,7 +104,8 @@ const { getTopOpportunities } = require("../services/opportunityScanner.service"
 const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernanceSummary, computeOperationalResilienceContextSummary, computeAutonomyDriftSummary, computeActionChainSummary, computeControlledAutoPreparationSummary, computePartialAutoExecutionSummary, computeRecoverySafetyLayerSummary } = require("../services/governance.context");
 // HQS 2.0 Block 1: Data Quality summary from factor history
 // HQS 2.0 Block 2: Sector / Peer-Group Normalization meta from factor history
-const { getRecentHqsDataQuality, getRecentHqsSectorMeta } = require("../services/factorHistory.repository");
+// HQS 2.0 Block 3: Regime / Stability / Liquidity meta from factor history
+const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta } = require("../services/factorHistory.repository");
 
 const router = express.Router();
 
@@ -2688,6 +2689,116 @@ router.get("/hqs-sector-meta", async (req, res) => {
     });
   } catch (error) {
     logger.error("Admin hqs-sector-meta route error", { message: error.message });
+    return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * GET /api/admin/hqs-regime-meta
+ * HQS 2.0 Block 3: Read-only regime weighting, enhanced stability &
+ * liquidity guardrail view.
+ *
+ * Surfaces:
+ *   - regime distribution across recent HQS score snapshots
+ *   - average liquidity tier distribution
+ *   - slippage risk summary
+ *   - enhanced stability band distribution
+ *   - per-entry Block 3 meta
+ *
+ * All derived from factor_history table – no mutations.
+ *
+ * Query params:
+ *   ?limit=50  – number of recent snapshots to evaluate (1–200)
+ * ───────────────────────────────────────────────────────── */
+router.get("/hqs-regime-meta", async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 50, 200));
+    const rows = await getRecentHqsRegimeMeta(limit);
+
+    const governanceCtx = computeGovernanceContext({ isAdminRoute: true });
+
+    const total = rows.length;
+    const regimeCounts = {};
+    const liquidityTierCounts = {};
+    const slippageRiskCounts = {};
+    const stabilityBandCounts = {};
+    let totalLiquidityPenalty = 0;
+    let penaltyCount = 0;
+
+    for (const row of rows) {
+      const regime = row.regime || "unknown";
+      regimeCounts[regime] = (regimeCounts[regime] || 0) + 1;
+
+      const lm = row.liquidityMeta || {};
+      const tier = lm.liquidityTier || "unknown";
+      liquidityTierCounts[tier] = (liquidityTierCounts[tier] || 0) + 1;
+
+      const sr = lm.slippageRisk || "unknown";
+      slippageRiskCounts[sr] = (slippageRiskCounts[sr] || 0) + 1;
+
+      if (lm.liquidityPenalty != null) {
+        totalLiquidityPenalty += Number(lm.liquidityPenalty) || 0;
+        penaltyCount++;
+      }
+
+      const esm = row.enhancedStabilityMeta || {};
+      const band = esm.stabilityBand || "unknown";
+      stabilityBandCounts[band] = (stabilityBandCounts[band] || 0) + 1;
+    }
+
+    const toDistribution = (counts) =>
+      Object.entries(counts)
+        .map(([label, count]) => ({
+          label,
+          count,
+          pct: total > 0 ? Math.round((count / total) * 100) : 0,
+        }))
+        .sort((a, b) => b.count - a.count);
+
+    const summary = {
+      total,
+      regimeDistribution:       toDistribution(regimeCounts),
+      liquidityTierDistribution: toDistribution(liquidityTierCounts),
+      slippageRiskDistribution:  toDistribution(slippageRiskCounts),
+      stabilityBandDistribution: toDistribution(stabilityBandCounts),
+      avgLiquidityPenalty: penaltyCount > 0
+        ? Math.round((totalLiquidityPenalty / penaltyCount) * 10) / 10
+        : 0,
+    };
+
+    const entries = rows.map((row) => {
+      const rwp = row.regimeWeightProfile || {};
+      const esm = row.enhancedStabilityMeta || {};
+      const lm  = row.liquidityMeta || {};
+      return {
+        symbol:               row.symbol,
+        hqsScore:             row.hqsScore,
+        regime:               row.regime,
+        hqsVersion:           row.hqsVersion ?? null,
+        regimeWeightProfile:  Object.keys(rwp).length > 0 ? rwp : null,
+        stabilityBand:        esm.stabilityBand ?? null,
+        volatilityProxy:      esm.volatilityProxy ?? null,
+        drawdownProxy:        esm.drawdownProxy ?? null,
+        gapStress:            esm.gapStress ?? null,
+        priceConsistency:     esm.priceConsistency ?? null,
+        stabilityReasons:     esm.stabilityReasons ?? [],
+        liquidityTier:        lm.liquidityTier ?? null,
+        slippageRisk:         lm.slippageRisk ?? null,
+        liquidityPenalty:     lm.liquidityPenalty ?? null,
+        liquidityReason:      lm.liquidityReason ?? null,
+        createdAt:            row.createdAt,
+      };
+    });
+
+    return res.json({
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      governanceContext: governanceCtx,
+      summary,
+      entries,
+    });
+  } catch (error) {
+    logger.error("Admin hqs-regime-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
   }
 });
