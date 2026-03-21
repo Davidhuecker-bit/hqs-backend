@@ -25,16 +25,32 @@ async function getFundamentals(symbol) {
       return null;
     }
 
+    const metric = data.metric;
+
+    // Track which fields are actually present vs estimated/zero
+    const missingFields = [];
+    if (!metric.revenueTTM)         missingFields.push("revenueTTM");
+    if (!metric.netProfitMarginTTM) missingFields.push("netProfitMarginTTM");
+    if (!metric.epsTTM)             missingFields.push("epsTTM");
+
     // Wir mappen die Finnhub-Metriken so um, dass dein System nicht abstürzt.
     // Finnhub liefert keine 5-Jahres-Liste im Free Plan, daher geben wir das aktuellste Jahr zurück.
-    return [{
+    const record = {
       year: new Date().getFullYear().toString(),
-      revenue: data.metric.revenueTTM || 0,
-      netIncome: data.metric.netProfitMarginTTM || 0, // Finnhub liefert hier oft Margen
-      ebitda: data.metric.ebitda || 0,
-      eps: data.metric.epsTTM || 0,
+      revenue: metric.revenueTTM || 0,
+      netIncome: metric.netProfitMarginTTM || 0, // Finnhub liefert hier oft Margen
+      ebitda: metric.ebitda || 0,
+      eps: metric.epsTTM || 0,
       operatingIncome: 0, // Nicht direkt in Basis-Metriken enthalten
-    }];
+      // HQS 2.0 quality meta: marks which fields are estimated or missing
+      _meta: {
+        source: "finnhub",
+        isEstimated: missingFields.length > 0,
+        missingFields,
+      },
+    };
+
+    return [record];
 
   } catch (error) {
     // Das verhindert den roten "401" Error im Log

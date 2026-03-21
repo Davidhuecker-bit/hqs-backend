@@ -78,10 +78,25 @@ function normalizeMarketData(raw, source, region) {
   }
 
   // ✅ extra optional fields (if provider has them)
+  const high = toNumberOrNull(raw.high ?? raw.h);
+  const low = toNumberOrNull(raw.low ?? raw.l);
   const marketCap = toNumberOrNull(raw.marketCap ?? raw.mktCap ?? raw.market_cap);
   const avgVolume = toNumberOrNull(raw.avgVolume ?? raw.avgVol ?? raw.averageVolume ?? raw.average_volume);
   const currency = toTextOrNull(raw.currency ?? raw.curr);
   const name = toTextOrNull(raw.name ?? raw.companyName ?? raw.company_name);
+
+  // HQS 2.0 Block 1: track which fields are missing/null for quality layer
+  const missingFields = [];
+  if (price == null)             missingFields.push("price");
+  if (changesPercentage == null) missingFields.push("changesPercentage");
+  if (high == null)              missingFields.push("high");
+  if (low == null)               missingFields.push("low");
+  if (open == null)              missingFields.push("open");
+
+  const _qualityMeta = {
+    hasMinimal: price !== null,
+    missingFields,
+  };
 
   return {
     symbol,
@@ -92,8 +107,8 @@ function normalizeMarketData(raw, source, region) {
     change,
     changesPercentage,
 
-    high: toNumberOrNull(raw.high ?? raw.h),
-    low: toNumberOrNull(raw.low ?? raw.l),
+    high,
+    low,
     open,
     previousClose,
 
@@ -106,6 +121,7 @@ function normalizeMarketData(raw, source, region) {
 
     timestamp: new Date().toISOString(),
     source: String(source || "unknown"),
+    _qualityMeta,
   };
 }
 
