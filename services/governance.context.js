@@ -2633,6 +2633,72 @@ function computeAutonomyPreviewSummary(opps) {
   };
 }
 
+/**
+ * Step 10 Block 4: Aggregate adaptive UX / feedback distribution from all opportunities.
+ * Reads from per-opp adaptiveUXOutput fields – no new logic, no DB calls.
+ *
+ * @param {object[]} opps – array of opportunity objects (post-scanner, with adaptiveUXOutput)
+ * @returns {object} adaptive UX aggregate summary
+ */
+function computeAdaptiveUXSummary(opps) {
+  if (!Array.isArray(opps) || opps.length === 0) {
+    return { totalEvaluated: 0, adaptiveUXBasis: "step10_block4" };
+  }
+
+  const profileDist = {};
+  const densityDist = {};
+  const toneDist    = {};
+  const fitDist     = {};
+  let coachCount     = 0;
+  let executiveCount = 0;
+  let analystCount   = 0;
+  let calmCount      = 0;
+  let alertCount     = 0;
+  let highDensityCount = 0;
+  let lowDensityCount  = 0;
+
+  for (const o of opps) {
+    const aux = o.adaptiveUXOutput ?? null;
+    if (!aux) continue;
+    const { styleProfile, communicationDensity, adaptiveTone, outputFit } = aux;
+    if (styleProfile) {
+      profileDist[styleProfile] = (profileDist[styleProfile] || 0) + 1;
+      if (styleProfile === "coach")     coachCount++;
+      else if (styleProfile === "executive") executiveCount++;
+      else if (styleProfile === "analyst")   analystCount++;
+    }
+    if (communicationDensity) {
+      densityDist[communicationDensity] = (densityDist[communicationDensity] || 0) + 1;
+      if (communicationDensity === "high") highDensityCount++;
+      else if (communicationDensity === "low") lowDensityCount++;
+    }
+    if (adaptiveTone) {
+      toneDist[adaptiveTone] = (toneDist[adaptiveTone] || 0) + 1;
+      if (adaptiveTone === "calm")  calmCount++;
+      else if (adaptiveTone === "alert") alertCount++;
+    }
+    if (outputFit) {
+      fitDist[outputFit] = (fitDist[outputFit] || 0) + 1;
+    }
+  }
+
+  return {
+    totalEvaluated:           opps.length,
+    styleProfileDistribution: profileDist,
+    densityDistribution:      densityDist,
+    toneDistribution:         toneDist,
+    outputFitDistribution:    fitDist,
+    coachCount,
+    executiveCount,
+    analystCount,
+    calmCount,
+    alertCount,
+    highDensityCount,
+    lowDensityCount,
+    adaptiveUXBasis:          "step10_block4",
+  };
+}
+
 module.exports = {
   ACTOR_ROLES,
   DEFAULT_ACTOR_ROLE,
@@ -2669,4 +2735,5 @@ module.exports = {
   computeAttentionDeliveryMeta,
   AUTONOMY_STATES,
   computeAutonomyPreviewSummary,
+  computeAdaptiveUXSummary,
 };

@@ -188,6 +188,47 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
         }))
     : fallbackNews;
 
+  // ── Step 10 Block 1–4: Pre-compute derived outputs so Block 4 can read from Blocks 1–3 ──
+  // Each block reads from raw stock fields; Block 4 additionally reads from Block 2 + 3 results.
+  const _companionOut = buildCompanionOutput({
+    symbol,
+    category: stock?.category || meta.category || null,
+    finalConviction: stock?.finalConviction ?? null,
+    hqsScore,
+    explainableTags: stock?.explainableTags ?? [],
+    actionReadiness: stock?.actionReadiness ?? null,
+    decisionLayer:   stock?.decisionLayer   ?? null,
+    controlledApprovalFlow: stock?.controlledApprovalFlow ?? null,
+    recoverySafetyLayer:    stock?.recoverySafetyLayer    ?? null,
+    auditTrace:             stock?.auditTrace             ?? null,
+    operationalResilience:  stock?.operationalResilience  ?? null,
+  });
+  const _attentionOut = buildAttentionDeliveryOutput({
+    symbol,
+    userAttentionLevel:    stock?.userAttentionLevel   ?? null,
+    companionTone:         null, // derived internally from recoverySafetyLayer + actionReadiness
+    recoverySafetyLayer:   stock?.recoverySafetyLayer  ?? null,
+    auditTrace:            stock?.auditTrace           ?? null,
+    exceptionFields:       stock?.exceptionFields      ?? null,
+    followUpContext:       stock?.followUpContext       ?? null,
+    operationalResilience: stock?.operationalResilience ?? null,
+  });
+  const _autonomyOut = buildAutonomyPreviewOutput({
+    symbol,
+    recoverySafetyLayer:       stock?.recoverySafetyLayer       ?? null,
+    auditTrace:                stock?.auditTrace                ?? null,
+    actionChainState:          stock?.actionChainState          ?? null,
+    controlledAutoPreparation: stock?.controlledAutoPreparation ?? null,
+    partialAutoExecution:      stock?.partialAutoExecution      ?? null,
+    autonomyLevel:             stock?.autonomyLevel             ?? null,
+    driftDetection:            stock?.driftDetection            ?? null,
+    operationalResilience:     stock?.operationalResilience     ?? null,
+    policyPlane:               stock?.policyPlane               ?? null,
+    explainableTags:           stock?.explainableTags           ?? [],
+    hqsScore,
+    confidence,
+  });
+
   return {
     ...stock,
     symbol,
@@ -267,48 +308,26 @@ function normalizeStockForFrontend(stock, index = 0, generatedAt = new Date().to
     // Step 9 Block 5: Recovery/stop/override/promotion-safety layer.
     recoverySafetyLayer: stock?.recoverySafetyLayer ?? null,
     // Step 10 Block 1: Companion Output / Human Translation Layer.
-    companionOutput: buildCompanionOutput({
+    companionOutput: _companionOut,
+    // Step 10 Block 2: Attention Management / Delivery Intelligence.
+    attentionDeliveryOutput: _attentionOut,
+    // Step 10 Block 3: Autonomy Preview / Companion Trust Layer.
+    autonomyPreview: _autonomyOut,
+    // Step 10 Block 4: Adaptive UX / Feedback Layer.
+    // Derives styleProfile, communicationDensity, adaptiveTone and feedback hints
+    // from already-computed per-stock companion/attention/autonomy/feedback signals.
+    adaptiveUXOutput: buildAdaptiveUXOutput({
       symbol,
-      category: stock?.category || meta.category || null,
-      finalConviction: stock?.finalConviction ?? null,
-      hqsScore,
-      explainableTags: stock?.explainableTags ?? [],
-      actionReadiness: stock?.actionReadiness ?? null,
-      decisionLayer:   stock?.decisionLayer   ?? null,
-      controlledApprovalFlow: stock?.controlledApprovalFlow ?? null,
+      feedbackContext:        stock?.feedbackContext        ?? null,
+      followUpContext:        stock?.followUpContext        ?? null,
+      attentionDeliveryOutput: _attentionOut,
+      autonomyPreview:        _autonomyOut,
       recoverySafetyLayer:    stock?.recoverySafetyLayer    ?? null,
       auditTrace:             stock?.auditTrace             ?? null,
+      companionOutput:        _companionOut,
       operationalResilience:  stock?.operationalResilience  ?? null,
-    }),
-    // Step 10 Block 2: Attention Management / Delivery Intelligence.
-    // Derives delivery-mode recommendation from existing attention/governance/companion signals.
-    attentionDeliveryOutput: buildAttentionDeliveryOutput({
-      symbol,
-      userAttentionLevel:   stock?.userAttentionLevel   ?? null,
-      companionTone:        null, // derived internally from recoverySafetyLayer + actionReadiness
-      recoverySafetyLayer:  stock?.recoverySafetyLayer  ?? null,
-      auditTrace:           stock?.auditTrace           ?? null,
-      exceptionFields:      stock?.exceptionFields      ?? null,
-      followUpContext:      stock?.followUpContext       ?? null,
-      operationalResilience: stock?.operationalResilience ?? null,
-    }),
-    // Step 10 Block 3: Autonomy Preview / Companion Trust Layer.
-    // Derives autonomyState, confidenceBand, trustReason, stopAvailable and previewSummary
-    // from already-computed per-stock governance/safety/execution signals.
-    autonomyPreview: buildAutonomyPreviewOutput({
-      symbol,
-      recoverySafetyLayer:       stock?.recoverySafetyLayer       ?? null,
-      auditTrace:                stock?.auditTrace                ?? null,
-      actionChainState:          stock?.actionChainState          ?? null,
-      controlledAutoPreparation: stock?.controlledAutoPreparation ?? null,
-      partialAutoExecution:      stock?.partialAutoExecution      ?? null,
-      autonomyLevel:             stock?.autonomyLevel             ?? null,
-      driftDetection:            stock?.driftDetection            ?? null,
-      operationalResilience:     stock?.operationalResilience     ?? null,
-      policyPlane:               stock?.policyPlane               ?? null,
-      explainableTags:           stock?.explainableTags           ?? [],
-      hqsScore,
-      confidence,
+      actionChainState:       stock?.actionChainState       ?? null,
+      driftDetection:         stock?.driftDetection         ?? null,
     }),
     news: normalizedNews.slice(0, 3),
   };
@@ -763,6 +782,200 @@ function buildAutonomyPreviewOutput(params) {
   };
 }
 
+// ── Step 10 Block 4: Adaptive UX / Feedback Layer ────────────────────────────
+// Derives first-layer adaptive output recommendations from already-computed
+// per-stock companion, attention, autonomy, feedback and safety signals.
+// No new scoring, no ML – purely defensive, transparent rule derivation.
+//
+// Style profiles:
+//   executive → acted/dismissed feedback with high signal or interrupt_now
+//   coach     → quiet/calm delivery, guardrail/stop, guarded autonomy, low confidence
+//   analyst   → default (moderate signal, some reasoning preferred)
+//
+// Communication density:
+//   high   → overdue follow-up, user confirmation needed, guarded+interrupt
+//   low    → quiet monitoring, nothing actionable right now
+//   medium → default
+//
+// Adaptive tone:
+//   calm   → guarded/blocked/stopped – explain calmly, don't alarm
+//   alert  → interrupt now, follow-up overdue
+//   neutral → default
+
+/**
+ * Step 10 Block 4: Build an adaptive UX / feedback output block for a single stock.
+ * Reads only from already-computed signals – no new DB calls, no new scoring.
+ *
+ * @param {object} params – relevant signal fields (already computed on the stock)
+ * @returns {object} adaptiveUXOutput fields
+ */
+function buildAdaptiveUXOutput(params) {
+  const {
+    symbol,
+    feedbackContext,
+    followUpContext,
+    attentionDeliveryOutput,
+    autonomyPreview,
+    recoverySafetyLayer,
+    auditTrace,
+    companionOutput,
+    operationalResilience,
+    actionChainState,
+    driftDetection,
+  } = params;
+
+  const fb    = feedbackContext        ?? null;
+  const fu    = followUpContext        ?? null;
+  const ado   = attentionDeliveryOutput ?? null;
+  const apv   = autonomyPreview        ?? null;
+  const rsl   = recoverySafetyLayer    ?? null;
+  const audit = auditTrace             ?? null;
+  const opRes = operationalResilience  ?? null;
+  const dd    = driftDetection         ?? null;
+
+  // ── Detect key signal conditions ─────────────────────────────────────────
+  const isBlocked    = audit?.blockedByGuardrail === true
+    || rsl?.stopEligible === true
+    || rsl?.degradeRequired === true
+    || opRes?.degradationMode === "critical_guarded";
+
+  const isGuarded    = apv?.autonomyState === "guarded"
+    || apv?.autonomyState === "stopped"
+    || apv?.autonomyState === "blocked";
+
+  const isInterrupt  = ado?.deliveryMode === "interrupt_now";
+  const isQuiet      = ado?.quietModeRecommended === true
+    || ado?.deliveryMode === "monitor_silently";
+
+  const hasActed     = fb?.responseType === "acted" || fb?.actedAt != null;
+  const hasDismissed = fb?.dismissedAt != null;
+  const hasPositive  = fb?.feedbackSignal === "positive";
+  const hasNegative  = fb?.feedbackSignal === "negative";
+
+  const isLowConfidence  = apv?.confidenceBand === "low";
+  const isHighConfidence = apv?.confidenceBand === "high";
+  const isHighDrift      = dd?.driftLevel === "high";
+  const needsConfirm     = apv?.needsUserConfirmation === true;
+  const followUpOverdue  = fu?.followUpStatus === "overdue";
+  const followUpPending  = fu?.followUpStatus === "pending";
+
+  // ── Style Profile (first match wins, defensive) ───────────────────────────
+  // executive: user has engaged (acted/dismissed) with an urgent signal
+  // coach:     system is guarded/quiet/blocked – needs calm, explanatory tone
+  // analyst:   default for moderate signals with no special conditions
+  let styleProfile;
+  if ((hasActed || hasDismissed) && (isInterrupt || isHighConfidence)) {
+    styleProfile = "executive";
+  } else if (isBlocked || isGuarded || isQuiet || isLowConfidence || isHighDrift || needsConfirm) {
+    styleProfile = "coach";
+  } else {
+    styleProfile = "analyst";
+  }
+
+  // ── Communication Density ─────────────────────────────────────────────────
+  // high:   overdue follow-up, confirmation pending, guarded+interrupt overlap
+  // low:    quiet monitoring with no active signal
+  // medium: default
+  let communicationDensity;
+  if (followUpOverdue || needsConfirm || (isInterrupt && isGuarded)) {
+    communicationDensity = "high";
+  } else if (isQuiet && !isGuarded) {
+    communicationDensity = "low";
+  } else {
+    communicationDensity = "medium";
+  }
+
+  // ── Adaptive Tone ─────────────────────────────────────────────────────────
+  // calm:    guarded/blocked/stopped/quiet – explain without alarming
+  // alert:   interrupt_now or overdue follow-up – clear, direct
+  // neutral: default
+  let adaptiveTone;
+  if (isBlocked || isGuarded || isQuiet) {
+    adaptiveTone = "calm";
+  } else if (isInterrupt || followUpOverdue) {
+    adaptiveTone = "alert";
+  } else {
+    adaptiveTone = "neutral";
+  }
+
+  // ── Feedback Signal (pass-through from feedbackContext) ───────────────────
+  const feedbackSignal = fb?.feedbackSignal ?? null;
+
+  // ── Feedback Summary (single-stock counts for aggregation) ───────────────
+  const feedbackSummary = {
+    acted:           hasActed      ? 1 : 0,
+    dismissed:       hasDismissed  ? 1 : 0,
+    positive:        hasPositive   ? 1 : 0,
+    negative:        hasNegative   ? 1 : 0,
+    followUpOverdue: followUpOverdue ? 1 : 0,
+    followUpPending: followUpPending ? 1 : 0,
+  };
+
+  // ── Output Fit ────────────────────────────────────────────────────────────
+  // Describes how the current configuration fits the user's likely needs.
+  let outputFit;
+  if (isBlocked || isGuarded) {
+    outputFit = "guarded_calm";
+  } else if (styleProfile === "executive" && adaptiveTone === "alert") {
+    outputFit = "high_signal_alert";
+  } else if (communicationDensity === "low") {
+    outputFit = "quiet_monitor";
+  } else if (styleProfile === "analyst" && communicationDensity === "medium") {
+    outputFit = "standard_analysis";
+  } else {
+    outputFit = "standard";
+  }
+
+  // ── Adaptation Reason ─────────────────────────────────────────────────────
+  // Short plain-language explanation of why this configuration was chosen.
+  let adaptationReason;
+  if (isBlocked) {
+    adaptationReason = "Schutzregel oder Stop aktiv – ruhige, erklärende Ausgabe bevorzugt";
+  } else if (isGuarded) {
+    adaptationReason = "Gebremster Modus – einfache Sprache, keine Alarmierung";
+  } else if (followUpOverdue) {
+    adaptationReason = "Überfällige Wiedervorlage – klare Handlungshinweise empfohlen";
+  } else if (needsConfirm) {
+    adaptationReason = "Bestätigung ausstehend – strukturierte Entscheidungshilfe empfohlen";
+  } else if (hasActed && isInterrupt) {
+    adaptationReason = "Nutzer hat zuletzt gehandelt und Signal ist akut – knappe Entscheidungshilfe";
+  } else if (isQuiet) {
+    adaptationReason = "Kein aktiver Hinweis nötig – kurze Einordnung ausreichend";
+  } else if (isHighConfidence && hasPositive) {
+    adaptationReason = "Starke Datenlage mit positivem Feedback – direkte Einordnung";
+  } else {
+    adaptationReason = "Standardmäßige Ausgabe – keine besonderen Anpassungshinweise";
+  }
+
+  // ── User Preference Hint ──────────────────────────────────────────────────
+  // A directional hint about what kind of output likely works best.
+  let userPreferenceHint;
+  if (styleProfile === "coach") {
+    userPreferenceHint = "eher ruhige, erklärende Einordnung bevorzugt";
+  } else if (styleProfile === "executive") {
+    userPreferenceHint = "eher knappe Entscheidungshilfe bevorzugt";
+  } else {
+    userPreferenceHint = "eher sachliche Analyse mit etwas Begründung bevorzugt";
+  }
+
+  // ── Adaptive UX Summary (single sentence) ────────────────────────────────
+  const sym = symbol ?? "?";
+  const adaptiveUXSummary = `${sym}: ${styleProfile} · ${communicationDensity} · ${adaptiveTone} · ${outputFit}`;
+
+  return {
+    styleProfile,
+    communicationDensity,
+    feedbackSignal,
+    feedbackSummary,
+    adaptiveTone,
+    outputFit,
+    adaptationReason,
+    userPreferenceHint,
+    adaptiveUXSummary,
+    adaptiveUXBasis: "step10_block4",
+  };
+}
+
 function buildTopSignals(stocks) {
   const DELTA_CHANGE_BADGES = {
     new_signal:               "Neu",
@@ -897,11 +1110,21 @@ function buildTopSignals(stocks) {
       const apvBadge = apv?.autonomyState && AUTONOMY_PREVIEW_BADGES[apv.autonomyState]
         ? ` ${AUTONOMY_PREVIEW_BADGES[apv.autonomyState]}`
         : "";
+      // Step 10 Block 4: adaptive UX badge – surface style profile when non-default
+      const aux = stock.adaptiveUXOutput ?? null;
+      const ADAPTIVE_UX_BADGES = {
+        executive: "🎯 Entscheidung",
+        coach:     "🧭 Einordnung",
+        analyst:   null,
+      };
+      const auxBadge = aux?.styleProfile && ADAPTIVE_UX_BADGES[aux.styleProfile]
+        ? ` ${ADAPTIVE_UX_BADGES[aux.styleProfile]}`
+        : "";
       return {
         symbol: stock.symbol,
         type: toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0) >= 70 ? "momentum" : "watch",
         score: clamp(Math.round(toFiniteNumber(stock.finalConviction ?? stock.hqsScore, 0)), 0, 100),
-        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}${attDelBadge}${apvBadge}`,
+        summary: `${stock.symbol}: HQS ${stock.hqsScore}, Bewegung ${stock.changePercent >= 0 ? "+" : ""}${stock.changePercent.toFixed(2)}%${ctxBadge}${intelligenceBadge}${deltaBadge}${actionBadge}${attention}${deliveryBadge}${followUpBadge}${arBadge}${aqBadge}${dlBadge}${cafBadge}${auditBadge}${attDelBadge}${apvBadge}${auxBadge}`,
         portfolioContext: ctx,
         deltaContext: delta,
         nextAction: action,
@@ -949,6 +1172,8 @@ function buildTopSignals(stocks) {
         attentionDeliveryOutput: stock.attentionDeliveryOutput ?? null,
         // Step 10 Block 3: Autonomy Preview / Trust – state, confidence band, stop, confirmation
         autonomyPreview: stock.autonomyPreview ?? null,
+        // Step 10 Block 4: Adaptive UX / Feedback – style profile, density, tone, fit
+        adaptiveUXOutput: stock.adaptiveUXOutput ?? null,
       };
     });
 }
@@ -1260,6 +1485,23 @@ function buildPortfolioIntelligenceSummary(stocks) {
       lowConfidenceCount:        stocks.filter((s) => s.autonomyPreview?.confidenceBand === "low").length,
       autonomyPreviewBasis:      "step10_block3",
     },
+    // Step 10 Block 4: Adaptive UX / Feedback Layer distribution.
+    adaptiveUX: {
+      coachCount:            stocks.filter((s) => s.adaptiveUXOutput?.styleProfile === "coach").length,
+      analystCount:          stocks.filter((s) => s.adaptiveUXOutput?.styleProfile === "analyst").length,
+      executiveCount:        stocks.filter((s) => s.adaptiveUXOutput?.styleProfile === "executive").length,
+      lowDensityCount:       stocks.filter((s) => s.adaptiveUXOutput?.communicationDensity === "low").length,
+      mediumDensityCount:    stocks.filter((s) => s.adaptiveUXOutput?.communicationDensity === "medium").length,
+      highDensityCount:      stocks.filter((s) => s.adaptiveUXOutput?.communicationDensity === "high").length,
+      calmToneCount:         stocks.filter((s) => s.adaptiveUXOutput?.adaptiveTone === "calm").length,
+      neutralToneCount:      stocks.filter((s) => s.adaptiveUXOutput?.adaptiveTone === "neutral").length,
+      alertToneCount:        stocks.filter((s) => s.adaptiveUXOutput?.adaptiveTone === "alert").length,
+      guardedCalmCount:      stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "guarded_calm").length,
+      highSignalAlertCount:  stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "high_signal_alert").length,
+      quietMonitorCount:     stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "quiet_monitor").length,
+      standardAnalysisCount: stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "standard_analysis").length,
+      adaptiveUXBasis:       "step10_block4",
+    },
   };
 }
 
@@ -1463,6 +1705,33 @@ function buildGuardianPayload(rawStocks, options = {}) {
     autonomyPreviewBasis:       "step10_block3",
   };
 
+  // Step 10 Block 4: Adaptive UX / Feedback Layer aggregate.
+  const adaptiveUXMeta = {
+    styleProfileDistribution: {
+      coach:     stocks.filter((s) => s.adaptiveUXOutput?.styleProfile === "coach").length,
+      analyst:   stocks.filter((s) => s.adaptiveUXOutput?.styleProfile === "analyst").length,
+      executive: stocks.filter((s) => s.adaptiveUXOutput?.styleProfile === "executive").length,
+    },
+    densityDistribution: {
+      low:    stocks.filter((s) => s.adaptiveUXOutput?.communicationDensity === "low").length,
+      medium: stocks.filter((s) => s.adaptiveUXOutput?.communicationDensity === "medium").length,
+      high:   stocks.filter((s) => s.adaptiveUXOutput?.communicationDensity === "high").length,
+    },
+    toneDistribution: {
+      calm:    stocks.filter((s) => s.adaptiveUXOutput?.adaptiveTone === "calm").length,
+      neutral: stocks.filter((s) => s.adaptiveUXOutput?.adaptiveTone === "neutral").length,
+      alert:   stocks.filter((s) => s.adaptiveUXOutput?.adaptiveTone === "alert").length,
+    },
+    outputFitDistribution: {
+      guarded_calm:      stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "guarded_calm").length,
+      high_signal_alert: stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "high_signal_alert").length,
+      quiet_monitor:     stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "quiet_monitor").length,
+      standard_analysis: stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "standard_analysis").length,
+      standard:          stocks.filter((s) => s.adaptiveUXOutput?.outputFit === "standard").length,
+    },
+    adaptiveUXBasis: "step10_block4",
+  };
+
   return {
     success: true,
     stabilityScore,
@@ -1491,6 +1760,8 @@ function buildGuardianPayload(rawStocks, options = {}) {
     attentionDeliveryMeta,
     // Step 10 Block 3: Autonomy Preview / Trust aggregate – state and confidence distribution.
     autonomyPreviewMeta,
+    // Step 10 Block 4: Adaptive UX / Feedback aggregate – style/density/tone/fit distribution.
+    adaptiveUXMeta,
     topSignals,
     riskFlags,
     correlationSeries: buildCorrelationSeries(stocks, generatedAt),
@@ -1512,4 +1783,5 @@ module.exports = {
   buildCompanionOutput,
   buildAttentionDeliveryOutput,
   buildAutonomyPreviewOutput,
+  buildAdaptiveUXOutput,
 };

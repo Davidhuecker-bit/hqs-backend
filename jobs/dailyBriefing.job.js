@@ -534,6 +534,24 @@ function _deriveBriefingAutonomyPreviewLabel(stock) {
   return "";
 }
 
+/**
+ * Step 10 Block 4: Derive a compact adaptive UX / feedback label for briefing fact lines.
+ * Only surfaces non-default style profiles and notable tone/density conditions.
+ * Returns a short string label or empty string.
+ */
+function _deriveBriefingAdaptiveUXLabel(stock) {
+  const aux = stock.adaptiveUXOutput || null;
+  if (!aux) return "";
+  const { styleProfile, adaptiveTone, communicationDensity, outputFit } = aux;
+  if (!styleProfile) return "";
+  if (styleProfile === "executive") return " · 🎯 Stil: Entscheidung";
+  if (styleProfile === "coach" && adaptiveTone === "calm" && outputFit === "guarded_calm") {
+    return " · 🧭 Stil: Ruhige Einordnung";
+  }
+  if (communicationDensity === "high") return " · 📊 Dichte: Hoch";
+  return "";
+}
+
 // ── Urgency/priority resolution ─────────────────────────────────────────────
 const URGENCY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
@@ -685,8 +703,11 @@ function buildFactsFromMarket(stocks) {
     // Step 10 Block 3: autonomy-preview label for guarded/blocked/confirmation states
     const autonomyPreviewLabel = _deriveBriefingAutonomyPreviewLabel(s);
 
+    // Step 10 Block 4: adaptive UX label for notable style/tone/density configurations
+    const adaptiveUXLabel = _deriveBriefingAdaptiveUXLabel(s);
+
     lines.push(
-      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}${recoverySafetyLabel}${companionLabel}${attentionDeliveryLabel}${autonomyPreviewLabel}.`
+      `- ${s.symbol}: Kurs ${s.price ?? "?"}, Änderung ${cp}, HQS ${score}, Marktphase ${regime}${attnLabel}${orchLabel}${followUpLabel}${arLabel}${aqLabel}${dsLabel}${afsLabel}${govLabel}${guardrailLabel}${governanceRoleLabel}${exceptionLabel}${policyPlaneLabel}${evidenceLabel}${tenantResourceLabel}${resilienceLabel}${autonomyLabel}${driftLabel}${actionChainLabel}${autoPreparationLabel}${autoExecutionLabel}${recoverySafetyLabel}${companionLabel}${attentionDeliveryLabel}${autonomyPreviewLabel}${adaptiveUXLabel}.`
     );
   }
   return lines.join("\n");
