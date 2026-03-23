@@ -2912,7 +2912,7 @@ router.get("/hqs-explainability-meta", async (req, res) => {
    Returns model distribution, shadow availability, average
    shadow delta and point-in-time readiness summary.
 ========================================================= */
-router.get("/hqs-shadow-meta", requireAdmin, async (req, res) => {
+router.get("/hqs-shadow-meta", async (req, res) => {
   try {
     const governanceCtx = computeGovernanceContext(req);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
@@ -3018,7 +3018,7 @@ router.get("/hqs-shadow-meta", requireAdmin, async (req, res) => {
    Returns clarity mode distribution, companion status summary,
    and output reason tags across recent HQS explainability data.
 ========================================================= */
-router.get("/companion-meta", requireAdmin, async (req, res) => {
+router.get("/companion-meta", async (req, res) => {
   try {
     const governanceCtx = computeGovernanceContext(req);
     const limit = Math.min(Number(req.query.limit) || 100, 500);
