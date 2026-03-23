@@ -1,6 +1,6 @@
 "use strict";
 
-const { Pool } = require("pg");
+const { getSharedPool } = require("../config/database");
 const logger = require("../utils/logger");
 
 const {
@@ -28,10 +28,7 @@ const { evaluateMarketMemory } = require("../engines/marketMemoryEngine");
 const { evaluateMetaLearning } = require("../engines/metaLearningEngine");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = getSharedPool();
 
 /* =========================================================
    IN-MEMORY AI STORES

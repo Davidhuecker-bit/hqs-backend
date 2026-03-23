@@ -1,11 +1,8 @@
 "use strict";
 
-const { Pool } = require("pg");
+const { getSharedPool } = require("../config/database");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = getSharedPool();
 
 const RUNTIME_STATE_MARKET_MEMORY_KEY = "market_memory_store";
 const RUNTIME_STATE_META_LEARNING_KEY = "meta_learning_store";
@@ -16,7 +13,11 @@ const RUNTIME_STATE_META_LEARNING_KEY = "meta_learning_store";
  * - ergänzt fehlende Spalten (7d/30d getrennte Checks)
  * - legt Indexe an
  */
+let _discoveryTableInitialized = false;
+
 async function initDiscoveryTable() {
+  if (_discoveryTableInitialized) return;
+  _discoveryTableInitialized = true;
   // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
   // ALTER TABLE acquires AccessExclusiveLock even with IF NOT EXISTS.
   // All columns MUST be in the CREATE TABLE statement.

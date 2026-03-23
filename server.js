@@ -54,6 +54,7 @@ const notificationsRoutes = require("./routes/notifications.routes");
 const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
 const secEdgarRoutes = require("./routes/secEdgar.routes");
+const { getAdminDemoPortfolio } = require("./services/adminDemoPortfolio.service");
 
 /* =========================================================
 DISCOVERY
@@ -160,6 +161,27 @@ app.use("/api/discovery", discoveryRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/market-news", marketNewsRoutes);
 app.use("/api/sec-edgar", secEdgarRoutes);
+
+/* Alias: flat path used by some clients */
+app.get("/api/admin-demo-portfolio", async (_req, res) => {
+  try {
+    const result = await getAdminDemoPortfolio();
+    return res.json(result);
+  } catch (error) {
+    logger.error("admin-demo-portfolio alias route error", { message: error.message });
+    return res.json({
+      success: false,
+      portfolioId: "DEMO_ADMIN_20",
+      portfolioName: "Internes Admin-Prüfportfolio",
+      symbolCount: 0,
+      dataStatus: "error",
+      holdings: [],
+      partialErrors: [{ symbol: "*", error: error.message }],
+      generatedAt: new Date().toISOString(),
+      summary: { total: 0, green: 0, yellow: 0, red: 0 },
+    });
+  }
+});
 
 /* =========================================================
 FORMATTER

@@ -130,7 +130,11 @@ function normalizeNewsItem(item) {
   };
 }
 
+let _marketNewsTableInitialized = false;
+
 async function initMarketNewsTable() {
+  if (_marketNewsTableInitialized) return;
+  _marketNewsTableInitialized = true;
   try {
     if (logger?.info) logger.info("[marketNews] initMarketNewsTable: CREATE TABLE start");
     await pool.query(`
