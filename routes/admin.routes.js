@@ -116,6 +116,40 @@ const router = express.Router();
 // Step 8 Block 2: exception priority ordering for exception-hub sort (lower = higher priority)
 const EXCEPTION_PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
+// ── Admin stack TTL cache ────────────────────────────────────────────────────
+// buildAdminStack() is an expensive full DB aggregation (getAdminInsights +
+// 3 historical snapshot loads + all engine derivations).  Every admin sub-route
+// (/overview, /diagnostics, /validation, …) calls it and only picks one key
+// from the result.  Caching the result for ADMIN_STACK_TTL_MS means the heavy
+// computation only fires once per window, regardless of how many sub-routes are
+// hit in quick succession.
+//
+// Admin data is diagnostic/observational and tolerate a short lag; 90 s is a
+// good balance between freshness and latency reduction.
+const ADMIN_STACK_TTL_MS = (() => {
+  const v = parseInt(process.env.ADMIN_STACK_TTL_MS, 10);
+  return Number.isFinite(v) && v > 0 ? v : 90_000;
+})();
+let _adminStackCache = null;    // { data, ts }
+
+/**
+ * Returns a cached admin-stack result if it is still fresh, otherwise builds
+ * a new one.  The cache is bypassed when persistSnapshot is requested so that
+ * manual snapshot triggers always get a fresh run.
+ */
+async function buildAdminStack(options = {}) {
+  const { persistSnapshot = false } = options;
+
+  // Bypass cache for explicit snapshot persistence requests.
+  if (!persistSnapshot) {
+    if (_adminStackCache && Date.now() - _adminStackCache.ts < ADMIN_STACK_TTL_MS) {
+      return _adminStackCache.data;
+    }
+  }
+
+  return _runBuildAdminStack(options);
+}
+
 function createAdminState({ insights, diagnostics, validation, tuning }) {
   return {
     insights: insights || {},
@@ -125,7 +159,7 @@ function createAdminState({ insights, diagnostics, validation, tuning }) {
   };
 }
 
-async function buildAdminStack(options = {}) {
+async function _runBuildAdminStack(options = {}) {
   const { persistSnapshot = false } = options;
 
   let insights;
@@ -257,7 +291,7 @@ async function buildAdminStack(options = {}) {
     }
   }
 
-  return {
+  const result = {
     insights,
     diagnostics,
     validation,
@@ -271,6 +305,11 @@ async function buildAdminStack(options = {}) {
     recommendations,
     briefing,
   };
+
+  // Store in cache so the next non-persist call gets the freshly built result.
+  _adminStackCache = { data: result, ts: Date.now() };
+
+  return result;
 }
 
 router.get("/overview", async (req, res) => {

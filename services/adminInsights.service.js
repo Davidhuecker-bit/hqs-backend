@@ -23,6 +23,14 @@ const DEFAULT_LONG_LOOKBACK_DAYS = Number(process.env.ADMIN_LONG_LOOKBACK_DAYS |
 // Minimum number of empty table fields required to classify the overall data status as "empty"
 const EMPTY_STATUS_THRESHOLD = 4;
 
+// ── Schema introspection cache ───────────────────────────────────────────────
+// information_schema queries are slow and the schema is stable within a process
+// lifetime (tables are created at startup, never dropped mid-run).  Cache the
+// results for SCHEMA_CACHE_TTL_MS to avoid hitting information_schema on every
+// getAdminInsights() call.
+const SCHEMA_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const _schemaCache = new Map(); // "exists:<table>" | "cols:<table>" → { value, ts }
+
 function safeNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -45,6 +53,10 @@ function toIso(value) {
 }
 
 async function tableExists(tableName) {
+  const cacheKey = `exists:${tableName}`;
+  const cached = _schemaCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < SCHEMA_CACHE_TTL_MS) return cached.value;
+
   const res = await pool.query(
     `
     SELECT EXISTS (
@@ -57,10 +69,16 @@ async function tableExists(tableName) {
     [tableName]
   );
 
-  return Boolean(res.rows?.[0]?.exists);
+  const value = Boolean(res.rows?.[0]?.exists);
+  _schemaCache.set(cacheKey, { value, ts: Date.now() });
+  return value;
 }
 
 async function getTableColumns(tableName) {
+  const cacheKey = `cols:${tableName}`;
+  const cached = _schemaCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < SCHEMA_CACHE_TTL_MS) return cached.value;
+
   const res = await pool.query(
     `
     SELECT column_name
@@ -71,7 +89,9 @@ async function getTableColumns(tableName) {
     [tableName]
   );
 
-  return (res.rows || []).map((r) => r.column_name);
+  const value = (res.rows || []).map((r) => r.column_name);
+  _schemaCache.set(cacheKey, { value, ts: Date.now() });
+  return value;
 }
 
 function pickFirstExisting(columns, candidates) {
@@ -640,78 +660,83 @@ async function getAdminInsights(options = {}) {
     }
   }
 
-  const universeStats = await safeCall(
-    "universe",
-    () => getUniverseStats(),
-    { total: 0, active: 0, byRegion: {} }
-  );
-
-  const watchlist = await safeCall(
-    "watchlist",
-    () => getWatchlistStats(),
-    { total: 0, active: 0, byRegion: {}, byPriorityTier: {} }
-  );
-
-  const snapshots = await safeCall(
-    "snapshots",
-    () => getMarketSnapshotStats(lookbackHours),
-    { totalRows: 0, recentRows: 0, recentSymbols: 0, latestRunAt: null, bySource: {} }
-  );
-
-  const hqs = await safeCall(
-    "hqs",
-    () => getHqsStats(lookbackHours),
-    { totalRows: 0, recentRows: 0, latestAt: null }
-  );
-
-  const factorHistory = await safeCall(
-    "factorHistory",
-    () => getFactorHistoryStats(lookbackHours, longLookbackDays),
-    {
-      totalRows: 0,
-      recentRows: 0,
-      latestAt: null,
-      recentUniqueSymbols: 0,
-      averageHqsScore7d: null,
-      byRegime7d: {},
-    }
-  );
-
-  const weightHistory = await safeCall(
-    "weightHistory",
-    () => getWeightHistoryStats(lookbackHours),
-    { totalRows: 0, recentRows: 0, latestAt: null, regimesTracked: 0 }
-  );
-
-  const advancedMetrics = await safeCall(
-    "advancedMetrics",
-    () => getAdvancedMetricsStats(lookbackHours),
-    { totalRows: 0, recentRows: 0, latestAt: null }
-  );
-
-  const outcomes = await safeCall(
-    "outcomes",
-    () => getOutcomeTrackingStats(lookbackHours),
-    { totalRows: 0, recentRows: 0, latestAt: null, completedRows: 0, completionRate: 0 }
-  );
-
-  const discovery = await safeCall(
-    "discovery",
-    () => getDiscoveryStats(lookbackHours, longLookbackDays),
-    { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0 }
-  );
-
-  const jobLocks = await safeCall(
-    "jobLocks",
-    () => getJobLockStats(),
-    { totalLocks: 0, activeLocks: 0, lockNames: [] }
-  );
-
-  const notifications = await safeCall(
-    "notifications",
-    () => getNotificationStats(),
-    { activeUsers: 0, notificationsSent24h: 0, latestNotificationAt: null }
-  );
+  // Run all independent stats queries in parallel to cut serial latency.
+  const [
+    universeStats,
+    watchlist,
+    snapshots,
+    hqs,
+    factorHistory,
+    weightHistory,
+    advancedMetrics,
+    outcomes,
+    discovery,
+    jobLocks,
+    notifications,
+  ] = await Promise.all([
+    safeCall(
+      "universe",
+      () => getUniverseStats(),
+      { total: 0, active: 0, byRegion: {} }
+    ),
+    safeCall(
+      "watchlist",
+      () => getWatchlistStats(),
+      { total: 0, active: 0, byRegion: {}, byPriorityTier: {} }
+    ),
+    safeCall(
+      "snapshots",
+      () => getMarketSnapshotStats(lookbackHours),
+      { totalRows: 0, recentRows: 0, recentSymbols: 0, latestRunAt: null, bySource: {} }
+    ),
+    safeCall(
+      "hqs",
+      () => getHqsStats(lookbackHours),
+      { totalRows: 0, recentRows: 0, latestAt: null }
+    ),
+    safeCall(
+      "factorHistory",
+      () => getFactorHistoryStats(lookbackHours, longLookbackDays),
+      {
+        totalRows: 0,
+        recentRows: 0,
+        latestAt: null,
+        recentUniqueSymbols: 0,
+        averageHqsScore7d: null,
+        byRegime7d: {},
+      }
+    ),
+    safeCall(
+      "weightHistory",
+      () => getWeightHistoryStats(lookbackHours),
+      { totalRows: 0, recentRows: 0, latestAt: null, regimesTracked: 0 }
+    ),
+    safeCall(
+      "advancedMetrics",
+      () => getAdvancedMetricsStats(lookbackHours),
+      { totalRows: 0, recentRows: 0, latestAt: null }
+    ),
+    safeCall(
+      "outcomes",
+      () => getOutcomeTrackingStats(lookbackHours),
+      { totalRows: 0, recentRows: 0, latestAt: null, completedRows: 0, completionRate: 0 }
+    ),
+    safeCall(
+      "discovery",
+      () => getDiscoveryStats(lookbackHours, longLookbackDays),
+      { totalRows: 0, recentRows: 0, latestAt: null, recentUniqueSymbols: 0 }
+    ),
+    safeCall(
+      "jobLocks",
+      () => getJobLockStats(),
+      { totalLocks: 0, activeLocks: 0, lockNames: [] }
+    ),
+    safeCall(
+      "notifications",
+      () => getNotificationStats(),
+      { activeUsers: 0, notificationsSent24h: 0, latestNotificationAt: null }
+    ),
+  ]);
 
   let coverage = {
     snapshotUniverseCoverage: 0,
