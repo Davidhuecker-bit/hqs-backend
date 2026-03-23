@@ -1682,6 +1682,157 @@ async function loadLatestSnapshot(symbol) {
 }
 
 /* =========================================================
+   BATCH LOADERS FOR MARKET LIST (hot-path helpers)
+   These replace the N+1 per-symbol query pattern in
+   getStoredMarketList by issuing one query per data source
+   for all symbols at once.
+========================================================= */
+
+/**
+ * Batch-load the latest market snapshot for each symbol.
+ * Returns Map<SYMBOL, snapshotRow>.
+ */
+async function _loadSnapshotsBatch(symbols) {
+  const map = new Map();
+  if (!symbols.length) return map;
+  try {
+    const res = await pool.query(
+      `
+      SELECT DISTINCT ON (symbol)
+        symbol, price, price_usd, open, high, low, volume, source,
+        currency, fx_rate, changes_percentage, previous_close,
+        created_at AS timestamp
+      FROM market_snapshots
+      WHERE symbol = ANY($1::text[])
+      ORDER BY symbol, created_at DESC NULLS LAST
+      `,
+      [symbols]
+    );
+    for (const row of res.rows) {
+      const rowCurrency = String(row.currency || "EUR").toUpperCase();
+      const fxRate = row.fx_rate !== null ? Number(row.fx_rate) : null;
+      const fxApplied = row.price_usd !== null && rowCurrency === "EUR";
+      map.set(row.symbol, {
+        symbol: row.symbol,
+        price: row.price !== null ? Number(row.price) : null,
+        priceUsd: row.price_usd !== null ? Number(row.price_usd) : null,
+        open: row.open !== null ? Number(row.open) : null,
+        high: row.high !== null ? Number(row.high) : null,
+        low: row.low !== null ? Number(row.low) : null,
+        previousClose: row.previous_close !== null ? Number(row.previous_close) : null,
+        changesPercentage: row.changes_percentage !== null ? Number(row.changes_percentage) : null,
+        volume: row.volume !== null ? Number(row.volume) : null,
+        source: row.source ?? null,
+        priceSource: row.source ?? null,
+        currency: rowCurrency,
+        originalCurrency: fxApplied ? "USD" : null,
+        fxRate,
+        fxApplied,
+        timestamp: row.timestamp ? new Date(row.timestamp).toISOString() : null,
+      });
+    }
+  } catch (err) {
+    logger.warn("marketService: snapshots batch failed", { message: err.message });
+  }
+  return map;
+}
+
+/**
+ * Batch-load the latest HQS score for each symbol.
+ * Returns Map<SYMBOL, hqsRow>.
+ */
+async function _loadHqsScoresBatch(symbols) {
+  const map = new Map();
+  if (!symbols.length) return map;
+  try {
+    const res = await pool.query(
+      `
+      SELECT DISTINCT ON (symbol)
+        symbol, hqs_score, momentum, quality, stability, relative, regime, created_at
+      FROM hqs_scores
+      WHERE symbol = ANY($1::text[])
+      ORDER BY symbol, created_at DESC NULLS LAST
+      `,
+      [symbols]
+    );
+    for (const row of res.rows) {
+      map.set(row.symbol, {
+        hqsScore: row.hqs_score !== null ? Number(row.hqs_score) : null,
+        momentum: row.momentum !== null ? Number(row.momentum) : null,
+        quality: row.quality !== null ? Number(row.quality) : null,
+        stability: row.stability !== null ? Number(row.stability) : null,
+        relative: row.relative !== null ? Number(row.relative) : null,
+        regime: row.regime ?? null,
+        hqsCreatedAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      });
+    }
+  } catch (err) {
+    logger.warn("marketService: hqs scores batch failed", { message: err.message });
+  }
+  return map;
+}
+
+/**
+ * Batch-load advanced metrics for each symbol.
+ * Returns Map<SYMBOL, metricsRow>.
+ */
+async function _loadAdvancedMetricsBatch(symbols) {
+  const map = new Map();
+  if (!symbols.length) return map;
+  try {
+    const res = await pool.query(
+      `
+      SELECT DISTINCT ON (symbol)
+        symbol, regime, trend, volatility_annual, volatility_daily, scenarios, updated_at
+      FROM market_advanced_metrics
+      WHERE symbol = ANY($1::text[])
+      ORDER BY symbol, updated_at DESC NULLS LAST
+      `,
+      [symbols]
+    );
+    for (const row of res.rows) {
+      const volAnnual = row.volatility_annual !== null ? Number(row.volatility_annual) : null;
+      map.set(row.symbol, {
+        regime: row.regime ?? null,
+        trend: row.trend !== null ? Number(row.trend) : null,
+        volatility: volAnnual,
+        volatilityAnnual: volAnnual,
+        volatilityDaily: row.volatility_daily !== null ? Number(row.volatility_daily) : null,
+        scenarios: row.scenarios ?? null,
+        advancedUpdatedAt: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+      });
+    }
+  } catch (err) {
+    logger.warn("marketService: advanced metrics batch failed", { message: err.message });
+  }
+  return map;
+}
+
+/* =========================================================
+   MARKET LIST IN-MEMORY CACHE
+   Short TTL keeps the /api/market list hot without stale
+   data accumulating. Heavy batch work runs at most once
+   per TTL window regardless of concurrent requests.
+========================================================= */
+
+const MARKET_LIST_CACHE_TTL_MS = 30 * 1000; // 30 s
+let _marketListCache = null;
+let _marketListCacheTs = 0;
+let _marketListCacheInflight = null; // in-progress Promise dedup
+
+function _getMarketListCached() {
+  if (_marketListCache && Date.now() - _marketListCacheTs < MARKET_LIST_CACHE_TTL_MS) {
+    return _marketListCache;
+  }
+  return null;
+}
+
+function _setMarketListCache(value) {
+  _marketListCache = value;
+  _marketListCacheTs = Date.now();
+}
+
+/* =========================================================
    MARKET DATA (API / UI)
 ========================================================= */
 
@@ -1729,25 +1880,84 @@ async function getStoredMarketDataBySymbol(symbol) {
   return entry;
 }
 
+/**
+ * Load the full market list using batch queries (one per data source) instead of
+ * the previous N+1 per-symbol pattern. Results are cached in memory for
+ * MARKET_LIST_CACHE_TTL_MS to prevent repeated expensive batch scans.
+ * Concurrent callers share a single in-flight Promise to avoid thundering-herd
+ * on a cold cache.
+ */
 async function getStoredMarketList({ limit } = {}) {
   const safeLimit = clamp(Number(limit) || 250, 1, 2000);
-  const symbols = await listActiveUniverseSymbols(safeLimit, {
-    country: SNAPSHOT_REGION,
-  });
-  const results = [];
-  const CONCURRENCY = 5;
 
-  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
-    const chunk = symbols.slice(i, i + CONCURRENCY);
-    const entries = await Promise.all(
-      chunk.map((symbol) => getStoredMarketDataBySymbol(symbol))
-    );
-    for (const entry of entries) {
-      if (entry) results.push(entry);
-    }
+  const cached = _getMarketListCached();
+  if (cached) {
+    return cached.slice(0, safeLimit);
   }
 
-  return results;
+  // Deduplicate concurrent requests hitting a cold cache
+  if (_marketListCacheInflight) {
+    const result = await _marketListCacheInflight;
+    return result.slice(0, safeLimit);
+  }
+
+  _marketListCacheInflight = (async () => {
+    try {
+      const symbols = await listActiveUniverseSymbols(safeLimit, {
+        country: SNAPSHOT_REGION,
+      });
+
+      if (!symbols.length) return [];
+
+      // Fire all 4 batch queries in parallel – replaces the old serial N+1 loop
+      const [snapshots, hqsScores, advMetrics, outcomeMap] = await Promise.all([
+        _loadSnapshotsBatch(symbols),
+        _loadHqsScoresBatch(symbols),
+        _loadAdvancedMetricsBatch(symbols),
+        loadLatestOutcomeTrackingBySymbols(symbols).catch(() => ({})),
+      ]);
+
+      const results = [];
+      for (const symbol of symbols) {
+        const snapshot = snapshots.get(symbol);
+        if (!snapshot) continue; // no snapshot → omit from list
+
+        const entry = { ...snapshot };
+        const hqs = hqsScores.get(symbol);
+        if (hqs) Object.assign(entry, hqs);
+
+        const adv = advMetrics.get(symbol);
+        if (adv) {
+          entry.regime = entry.regime ?? adv.regime ?? null;
+          entry.trend = adv.trend ?? null;
+          entry.volatility = adv.volatility ?? null;
+          entry.scenarios = adv.scenarios ?? null;
+          entry.advancedUpdatedAt = adv.advancedUpdatedAt ?? null;
+        }
+
+        const tracked = outcomeMap?.[symbol] || null;
+        if (tracked) {
+          const finalView = tracked.payload?.finalView || {};
+          entry.finalConviction = tracked.finalConviction || null;
+          entry.finalConfidence = tracked.finalConfidence || null;
+          entry.finalRating = finalView.finalRating || null;
+          entry.finalDecision = finalView.finalDecision || null;
+          entry.whyInteresting = Array.isArray(finalView.whyInteresting) ? finalView.whyInteresting : [];
+          entry.components = finalView.components || null;
+        }
+
+        results.push(entry);
+      }
+
+      _setMarketListCache(results);
+      return results;
+    } finally {
+      _marketListCacheInflight = null;
+    }
+  })();
+
+  const result = await _marketListCacheInflight;
+  return result.slice(0, safeLimit);
 }
 
 async function getMarketData(symbol, { limit } = {}) {
