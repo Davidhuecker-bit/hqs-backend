@@ -1915,7 +1915,7 @@ async function loadPortfolio() {
       try {
         const wsData = await wsRes.json();
         staleWarning = !!(wsData.worldState && wsData.worldState.staleWarning);
-      } catch (_) { /* ignore */ }
+      } catch (err) { console.debug('Failed to parse world-state response:', err); }
     }
     if (staleWarning) {
       grid.style.opacity = '0.6';
