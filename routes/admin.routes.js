@@ -126,7 +126,10 @@ const EXCEPTION_PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 //
 // Admin data is diagnostic/observational and tolerate a short lag; 90 s is a
 // good balance between freshness and latency reduction.
-const ADMIN_STACK_TTL_MS = Number(process.env.ADMIN_STACK_TTL_MS || 90_000);
+const ADMIN_STACK_TTL_MS = (() => {
+  const v = parseInt(process.env.ADMIN_STACK_TTL_MS, 10);
+  return Number.isFinite(v) && v > 0 ? v : 90_000;
+})();
 let _adminStackCache = null;    // { data, ts }
 
 /**
@@ -303,11 +306,8 @@ async function _runBuildAdminStack(options = {}) {
     briefing,
   };
 
-  // Update the cache (always, including persistSnapshot runs, so the next
-  // non-persist call gets fresh data too).
-  if (!persistSnapshot) {
-    _adminStackCache = { data: result, ts: Date.now() };
-  }
+  // Store in cache so the next non-persist call gets the freshly built result.
+  _adminStackCache = { data: result, ts: Date.now() };
 
   return result;
 }
