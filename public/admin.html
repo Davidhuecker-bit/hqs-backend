@@ -1076,7 +1076,10 @@
   </div>
 
   <!-- Portfolio Grid -->
-  <div class="portfolio-grid" id="portfolioGrid">
+  <div id="staleBanner" style="display:none;padding:8px 14px;margin-bottom:8px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:8px;color:var(--yellow);font-size:0.85rem;text-align:center">
+    ⚠ World State veraltet – Daten werden im Hintergrund aktualisiert
+  </div>
+  <div class="portfolio-grid" id="portfolioGrid" style="transition:opacity 0.3s ease">
     <div class="loading-wrap" style="grid-column:1/-1">
       <div class="spinner"></div> Portfolio wird geladen…
     </div>
@@ -1899,11 +1902,33 @@ async function loadPortfolio() {
   grid.innerHTML = `<div class="loading-wrap" style="grid-column:1/-1"><div class="spinner"></div> Portfolio wird geladen…</div>`;
 
   try {
-    const [portfolioRes] = await Promise.all([
+    const [portfolioRes, wsRes] = await Promise.all([
       fetch(`${API_BASE}/portfolio`),
+      fetch(`${API_BASE}/world-state`).catch(() => null),
     ]);
     const data = await portfolioRes.json();
     portfolioData = data.portfolio || [];
+
+    // Check staleWarning from world state
+    let staleWarning = false;
+    if (wsRes && wsRes.ok) {
+      try {
+        const wsData = await wsRes.json();
+        staleWarning = !!(wsData.worldState && wsData.worldState.staleWarning);
+      } catch (err) { console.debug('Failed to parse world-state response:', err); }
+    }
+    if (staleWarning) {
+      grid.style.opacity = '0.6';
+      grid.title = 'Daten möglicherweise veraltet – World State wird neu aufgebaut';
+      const banner = document.getElementById('staleBanner');
+      if (banner) banner.style.display = 'block';
+    } else {
+      grid.style.opacity = '1';
+      grid.title = '';
+      const banner = document.getElementById('staleBanner');
+      if (banner) banner.style.display = 'none';
+    }
+
     renderPortfolio();
     updateStats(portfolioData, auditFeedData);
     // Load audit feed in parallel; stats update inside loadAuditFeed

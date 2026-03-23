@@ -1735,10 +1735,16 @@ async function getStoredMarketList({ limit } = {}) {
     country: SNAPSHOT_REGION,
   });
   const results = [];
+  const CONCURRENCY = 5;
 
-  for (const symbol of symbols) {
-    const entry = await getStoredMarketDataBySymbol(symbol);
-    if (entry) results.push(entry);
+  for (let i = 0; i < symbols.length; i += CONCURRENCY) {
+    const chunk = symbols.slice(i, i + CONCURRENCY);
+    const entries = await Promise.all(
+      chunk.map((symbol) => getStoredMarketDataBySymbol(symbol))
+    );
+    for (const entry of entries) {
+      if (entry) results.push(entry);
+    }
   }
 
   return results;

@@ -290,8 +290,6 @@ briefing.  Used by `AdminControlCenterView`.
 
 ## GET /api/admin/demo-portfolio
 
-**Alias:** `GET /api/admin-demo-portfolio`
-
 **Purpose:** Curated admin diagnostic portfolio of ~20 well-known stocks.
 Provides per-holding diagnostics: data freshness, pipeline stage status,
 missing/weak sources, completeness and reliability scores.

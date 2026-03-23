@@ -93,6 +93,7 @@ const SECTOR_ALERT_PERFORMANCE = -0.10;
 
 let _cache = null;
 let _cacheTs = 0;
+let _isRebuilding = false;
 
 function _getCached() {
   if (_cache && Date.now() - _cacheTs < CACHE_TTL_MS) return _cache;
@@ -555,14 +556,36 @@ async function getWorldState() {
     const persisted = await loadRuntimeState(WORLD_STATE_KEY);
     if (persisted && persisted.version) {
       const freshnessLabel = classifyWorldStateAge(persisted);
-      // Hard-stale persisted snapshots are not trustworthy – rebuild synchronously
-      // instead of returning stale data to consumers.
+      // Hard-stale: return old snapshot immediately with staleWarning flag,
+      // then trigger an async rebuild so the next call gets fresh data.
       if (freshnessLabel === "hard_stale") {
+        console.warn(
+          "[worldState] Delivering degraded hard_stale snapshot",
+          { created_at: persisted.created_at, isRebuilding: _isRebuilding }
+        );
         logger.warn(
-          "worldState: persisted snapshot is hard_stale – rebuilding synchronously",
+          "worldState: delivering degraded hard_stale snapshot – async rebuild triggered",
           { created_at: persisted.created_at }
         );
-        return buildWorldState();
+        const degraded = { ...persisted, staleWarning: true };
+        _setCache(degraded);
+
+        // Kick off a non-blocking rebuild with simple locking
+        if (!_isRebuilding) {
+          _isRebuilding = true;
+          setImmediate(() => {
+            buildWorldState()
+              .catch((err) =>
+                logger.warn("worldState: async hard_stale rebuild failed", {
+                  message: err.message,
+                })
+              )
+              .finally(() => {
+                _isRebuilding = false;
+              });
+          });
+        }
+        return degraded;
       }
       _setCache(persisted);
       // Rebuild asynchronously so the next call gets a fresh snapshot
