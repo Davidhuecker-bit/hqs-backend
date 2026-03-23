@@ -126,28 +126,82 @@ const EXCEPTION_PRIORITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 //
 // Admin data is diagnostic/observational and tolerate a short lag; 90 s is a
 // good balance between freshness and latency reduction.
+//
+// Read-first design:
+//  - Fresh cache  → return immediately (no DB work).
+//  - Stale cache  → return stale data immediately, trigger one background
+//                   rebuild so the *next* caller gets fresh data (SWR pattern).
+//  - No cache     → one inflight promise shared by all concurrent callers;
+//                   no stampede even on cold start.
 const ADMIN_STACK_TTL_MS = (() => {
   const v = parseInt(process.env.ADMIN_STACK_TTL_MS, 10);
   return Number.isFinite(v) && v > 0 ? v : 90_000;
 })();
 let _adminStackCache = null;    // { data, ts }
+let _adminStackInflight = null; // deduplication for concurrent cold-start callers
+let _adminStackBgRunning = false; // guard: only one background SWR refresh at a time
 
 /**
  * Returns a cached admin-stack result if it is still fresh, otherwise builds
  * a new one.  The cache is bypassed when persistSnapshot is requested so that
  * manual snapshot triggers always get a fresh run.
+ *
+ * Stale-while-revalidate: stale cache is returned immediately; a single
+ * background rebuild updates the cache for subsequent callers.
+ * Inflight deduplication: concurrent cold-start calls share one promise.
  */
 async function buildAdminStack(options = {}) {
   const { persistSnapshot = false } = options;
 
-  // Bypass cache for explicit snapshot persistence requests.
-  if (!persistSnapshot) {
-    if (_adminStackCache && Date.now() - _adminStackCache.ts < ADMIN_STACK_TTL_MS) {
-      return _adminStackCache.data;
-    }
+  // Explicit snapshot persistence: always bypass cache, run fresh.
+  if (persistSnapshot) {
+    return _runBuildAdminStack(options);
   }
 
-  return _runBuildAdminStack(options);
+  const now = Date.now();
+
+  // Fresh cache → return immediately.
+  if (_adminStackCache && now - _adminStackCache.ts < ADMIN_STACK_TTL_MS) {
+    return _adminStackCache.data;
+  }
+
+  // Stale cache → return stale data right away; kick off one background refresh.
+  if (_adminStackCache && !_adminStackBgRunning) {
+    _adminStackBgRunning = true;
+    setImmediate(() => {
+      _runBuildAdminStack({})
+        .catch((err) =>
+          logger.warn("buildAdminStack: background SWR refresh failed", { message: err.message })
+        )
+        .finally(() => {
+          _adminStackBgRunning = false;
+        });
+    });
+    return _adminStackCache.data;
+  }
+  if (_adminStackCache) {
+    // Background refresh already running; return stale data without queuing another.
+    return _adminStackCache.data;
+  }
+
+  // No cache at all (cold start): deduplicate concurrent callers with one shared promise.
+  if (_adminStackInflight) {
+    return _adminStackInflight;
+  }
+  const t0 = Date.now();
+  _adminStackInflight = _runBuildAdminStack(options)
+    .then((result) => {
+      logger.info("buildAdminStack: cold build completed", { ms: Date.now() - t0 });
+      return result;
+    })
+    .catch((err) => {
+      logger.warn("buildAdminStack: cold build failed", { message: err.message });
+      throw err;
+    })
+    .finally(() => {
+      _adminStackInflight = null;
+    });
+  return _adminStackInflight;
 }
 
 function createAdminState({ insights, diagnostics, validation, tuning }) {
@@ -161,6 +215,7 @@ function createAdminState({ insights, diagnostics, validation, tuning }) {
 
 async function _runBuildAdminStack(options = {}) {
   const { persistSnapshot = false } = options;
+  const t0 = Date.now();
 
   let insights;
   try {
@@ -308,6 +363,12 @@ async function _runBuildAdminStack(options = {}) {
 
   // Store in cache so the next non-persist call gets the freshly built result.
   _adminStackCache = { data: result, ts: Date.now() };
+  const elapsedMs = Date.now() - t0;
+  if (elapsedMs > 3000) {
+    logger.warn("buildAdminStack: slow build detected", { ms: elapsedMs });
+  } else {
+    logger.info("buildAdminStack: build completed", { ms: elapsedMs });
+  }
 
   return result;
 }

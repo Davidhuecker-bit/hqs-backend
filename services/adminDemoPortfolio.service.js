@@ -737,10 +737,10 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
 }
 
 /* =========================================================
-   MAIN: getAdminDemoPortfolio
+   MAIN: _getAdminDemoPortfolioRaw  (internal – called through cache wrapper)
 ========================================================= */
 
-async function getAdminDemoPortfolio() {
+async function _getAdminDemoPortfolioRaw() {
   // Dynamic symbol loading if configured
   let symbols = [];
   if (DEMO_ADMIN_SYMBOLS === "use_universe") {
@@ -1022,6 +1022,70 @@ async function getAdminDemoPortfolio() {
       staleCounts,
     },
   };
+}
+
+/* =========================================================
+   CACHE LAYER  (read-first, stale-while-revalidate)
+   ─────────────────────────────────────────────────────────
+   getAdminDemoPortfolio() does 5 parallel batch DB queries per call.
+   The demo-portfolio payload is observational and tolerates a short lag.
+   TTL: 60 s (overridable via DEMO_PORTFOLIO_TTL_MS env var).
+   Stale-while-revalidate: stale data returned immediately; one background
+   refresh is triggered so the next caller gets fresh data.
+   Inflight deduplication: concurrent cold-start calls share one promise.
+========================================================= */
+const DEMO_PORTFOLIO_TTL_MS = (() => {
+  const v = parseInt(process.env.DEMO_PORTFOLIO_TTL_MS, 10);
+  return Number.isFinite(v) && v > 0 ? v : 60_000;
+})();
+let _demoCache = null;        // { data, ts }
+let _demoInflight = null;     // shared promise for concurrent cold-start callers
+let _demoBgRunning = false;   // guard: only one SWR background refresh at a time
+
+async function getAdminDemoPortfolio() {
+  const now = Date.now();
+
+  // Fresh cache → return immediately.
+  if (_demoCache && now - _demoCache.ts < DEMO_PORTFOLIO_TTL_MS) {
+    return _demoCache.data;
+  }
+
+  // Stale cache → return stale data right away; kick off one background refresh.
+  if (_demoCache && !_demoBgRunning) {
+    _demoBgRunning = true;
+    setImmediate(() => {
+      _buildDemoPortfolio()
+        .catch((err) =>
+          logger.warn("getAdminDemoPortfolio: background SWR refresh failed", { message: err.message })
+        )
+        .finally(() => { _demoBgRunning = false; });
+    });
+    return _demoCache.data;
+  }
+  if (_demoCache) {
+    // Background refresh already running; return stale without queuing another.
+    return _demoCache.data;
+  }
+
+  // No cache (cold start): deduplicate concurrent callers.
+  if (_demoInflight) {
+    return _demoInflight;
+  }
+  _demoInflight = _buildDemoPortfolio()
+    .catch((err) => {
+      logger.warn("getAdminDemoPortfolio: cold build failed", { message: err.message });
+      throw err;
+    })
+    .finally(() => { _demoInflight = null; });
+  return _demoInflight;
+}
+
+async function _buildDemoPortfolio() {
+  const t0 = Date.now();
+  const result = await _getAdminDemoPortfolioRaw();
+  _demoCache = { data: result, ts: Date.now() };
+  logger.info("adminDemoPortfolio: built in ms", { ms: Date.now() - t0 });
+  return result;
 }
 
 module.exports = { getAdminDemoPortfolio, DEMO_ADMIN_SYMBOLS };
