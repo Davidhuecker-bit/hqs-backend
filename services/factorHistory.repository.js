@@ -1,6 +1,6 @@
 "use strict";
 
-const { Pool } = require("pg");
+const { getSharedPool } = require("../config/database");
 
 // optional logger (falls vorhanden)
 let logger = null;
@@ -32,16 +32,17 @@ function normRegime(regime) {
   return normalizeRegimeLocal(regime);
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = getSharedPool();
 
 /* =========================================================
    INIT TABLE (FULL QUANT + SAFE UPGRADE)
 ========================================================= */
 
+let _factorTableInitialized = false;
+
 async function initFactorTable() {
+  if (_factorTableInitialized) return;
+  _factorTableInitialized = true;
   //
   // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
   // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the

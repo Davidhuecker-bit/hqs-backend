@@ -14,15 +14,12 @@
   - Läuft safe: wenn Daten fehlen -> skip
 */
 
-const { Pool } = require("pg");
+const { getSharedPool } = require("../config/database");
 const logger = require("../utils/logger");
 const { updateForwardReturns } = require("./factorHistory.repository");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+const pool = getSharedPool();
 
 // Wie viele offene Records pro Run bearbeiten
 const DEFAULT_LIMIT = Number(process.env.FORWARD_LEARNING_LIMIT || 40);
