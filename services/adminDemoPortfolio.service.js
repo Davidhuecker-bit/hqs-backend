@@ -38,11 +38,17 @@
 const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
+const { readUiSummary, writeUiSummary } = require("./uiSummary.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
+
+// Step 3: how long a DB-persisted demo portfolio is considered fresh enough
+// to serve directly on cold start without rebuilding from scratch.
+const DEMO_DB_CACHE_MAX_AGE_MS = 10 * 60 * 1000; // 10 min
+const DEMO_SUMMARY_TYPE = "demo_portfolio";
 
 /* =========================================================
    DEMO SYMBOL SET
@@ -1067,7 +1073,29 @@ async function getAdminDemoPortfolio() {
     return _demoCache.data;
   }
 
-  // No cache (cold start): deduplicate concurrent callers.
+  // No cache (cold start): try DB-persisted summary before doing a full build.
+  // This makes cold restarts faster and avoids 5 batch queries when recent data exists.
+  if (!_demoInflight) {
+    const dbRow = await readUiSummary(DEMO_SUMMARY_TYPE).catch(() => null);
+    if (dbRow && dbRow.builtAt) {
+      const ageMs = Date.now() - new Date(dbRow.builtAt).getTime();
+      if (ageMs < DEMO_DB_CACHE_MAX_AGE_MS) {
+        const data = dbRow.payload;
+        _demoCache = { data, ts: Date.now() - ageMs }; // backdate cache ts to match DB age
+        logger.info("adminDemoPortfolio: served from DB ui_summary on cold start", {
+          ageMs,
+          builtAt: dbRow.builtAt,
+        });
+        // Trigger a background refresh so in-memory + DB stay current
+        setImmediate(() => {
+          _buildDemoPortfolio().catch((err) =>
+            logger.warn("adminDemoPortfolio: post-db-serve background refresh failed", { message: err.message })
+          );
+        });
+        return data;
+      }
+    }
+  }
   if (_demoInflight) {
     return _demoInflight;
   }
@@ -1083,8 +1111,16 @@ async function getAdminDemoPortfolio() {
 async function _buildDemoPortfolio() {
   const t0 = Date.now();
   const result = await _getAdminDemoPortfolioRaw();
+  const durationMs = Date.now() - t0;
   _demoCache = { data: result, ts: Date.now() };
-  logger.info("adminDemoPortfolio: built in ms", { ms: Date.now() - t0 });
+  logger.info("adminDemoPortfolio: built in ms", { ms: durationMs });
+  // Step 3: persist to ui_summaries so cold restarts can serve prepared data
+  writeUiSummary(DEMO_SUMMARY_TYPE, result, {
+    buildDurationMs: durationMs,
+    isPartial: result.dataStatus === "error",
+  }).catch((err) =>
+    logger.warn("adminDemoPortfolio: writeUiSummary failed", { message: err.message })
+  );
   return result;
 }
 

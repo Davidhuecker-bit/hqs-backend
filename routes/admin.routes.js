@@ -90,6 +90,14 @@ const {
   getSignalKPIs,
 } = require("../services/signalHistory.repository");
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
+
+// Step 3: UI Summary / Read-Model layer
+const { listUiSummaries, readUiSummary } = require("../services/uiSummary.repository");
+const { refreshMarketSummary } = require("../services/marketSummary.builder");
+const {
+  getOrBuildGuardianStatusSummary,
+  refreshGuardianStatusSummary,
+} = require("../services/guardianStatusSummary.builder");
 // Step 8 Block 1: Governance context for admin-level role/scope classification
 // Step 8 Block 2: Operating Console / Exception Hub aggregate view
 // Step 8 Block 3: Policy Plane – policy version/status/mode, shadow, four-eyes basis
@@ -3367,6 +3375,95 @@ router.get("/adaptive-ux-meta", async (req, res) => {
   } catch (error) {
     logger.error("Admin adaptive-ux-meta route error", { message: error.message });
     return res.status(500).json({ success: false, dataStatus: "error", error: error.message });
+  }
+});
+
+/* =========================================================
+   STEP 3 – UI SUMMARY / READ-MODEL ADMIN ENDPOINTS
+========================================================= */
+
+/**
+ * GET /api/admin/ui-summaries
+ * Lists all prepared UI summaries with freshness metadata (no payload).
+ * Useful for health-checking the read-model layer.
+ */
+router.get("/ui-summaries", async (_req, res) => {
+  try {
+    const summaries = await listUiSummaries();
+    return res.json({
+      success:     true,
+      generatedAt: new Date().toISOString(),
+      count:       summaries.length,
+      summaries,
+    });
+  } catch (error) {
+    logger.error("Admin ui-summaries route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/guardian-status-summary
+ * Returns the prepared guardian/system status summary (worldState + pipeline health).
+ * Served from ui_summaries with SWR freshness logic.
+ */
+router.get("/guardian-status-summary", async (_req, res) => {
+  try {
+    const summary = await getOrBuildGuardianStatusSummary();
+    return res.json({ success: true, ...summary });
+  } catch (error) {
+    logger.error("Admin guardian-status-summary route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/admin/refresh-summary/:type
+ * Manually trigger a summary rebuild for a given summary_type.
+ * Supported types: market_list, guardian_status
+ */
+router.post("/refresh-summary/:type", async (req, res) => {
+  const { type } = req.params;
+  const SUPPORTED = new Set(["market_list", "guardian_status"]);
+
+  if (!SUPPORTED.has(type)) {
+    return res.status(400).json({
+      success: false,
+      error:   `Unknown summary type '${type}'. Supported: ${[...SUPPORTED].join(", ")}`,
+    });
+  }
+
+  try {
+    let result = null;
+    const t0 = Date.now();
+
+    if (type === "market_list") {
+      result = await refreshMarketSummary({ limit: 250 });
+    } else if (type === "guardian_status") {
+      result = await refreshGuardianStatusSummary();
+    }
+
+    const durationMs = Date.now() - t0;
+
+    if (result === null) {
+      return res.json({
+        success:    false,
+        summaryType: type,
+        message:    "Refresh skipped (already in progress or source unavailable)",
+        durationMs,
+        generatedAt: new Date().toISOString(),
+      });
+    }
+
+    return res.json({
+      success:     true,
+      summaryType: type,
+      durationMs,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error(`Admin refresh-summary/${type} route error`, { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
