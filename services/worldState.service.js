@@ -94,6 +94,7 @@ const SECTOR_ALERT_PERFORMANCE = -0.10;
 let _cache = null;
 let _cacheTs = 0;
 let _isRebuilding = false;
+let _coldStartInflight = null; // deduplication: share one cold-start promise
 
 function _getCached() {
   if (_cache && Date.now() - _cacheTs < CACHE_TTL_MS) return _cache;
@@ -600,8 +601,15 @@ async function getWorldState() {
     // Ignore – fall through to full synchronous build
   }
 
-  // Cold-start: build synchronously
-  return buildWorldState();
+  // Cold-start: build synchronously (deduplicated across concurrent callers)
+  if (_coldStartInflight) return _coldStartInflight;
+  _coldStartInflight = buildWorldState()
+    .catch((err) => {
+      logger.warn("worldState: cold-start build failed", { message: err.message });
+      throw err;
+    })
+    .finally(() => { _coldStartInflight = null; });
+  return _coldStartInflight;
 }
 
 module.exports = {

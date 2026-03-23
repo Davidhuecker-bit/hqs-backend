@@ -392,8 +392,65 @@ function _buildAgentDiscourse(sis, riskMode, layers, gates, twinData, trendDir) 
 }
 
 /* =========================================================
-   MAIN FUNCTION
+   MAIN FUNCTION (with read-first cache)
 ========================================================= */
+
+// TTL cache: interface-state is purely derived from system signals that
+// themselves have their own TTLs (worldState 2 min, SIS ~30 s, etc.).
+// 30 s is a safe lag for a UI-direction signal – it avoids hammering
+// getWorldState() / getSystemIntelligenceReport() on every page load.
+// Stale-while-revalidate: stale result returned instantly; one background
+// refresh is triggered so the next caller gets a fresh payload.
+const INTERFACE_STATE_TTL_MS = (() => {
+  const v = parseInt(process.env.INTERFACE_STATE_TTL_MS, 10);
+  return Number.isFinite(v) && v > 0 ? v : 30_000;
+})();
+let _ifStateCache = null;     // { data, ts }
+let _ifStateInflight = null;  // deduplication for concurrent cold-start callers
+let _ifStateBgRunning = false;
+
+/**
+ * Returns the current interface-state payload.
+ * Read-first: stale data is returned immediately while a background refresh
+ * keeps the cache warm for the next caller.
+ *
+ * @returns {Promise<object>}
+ */
+async function getInterfaceState() {
+  const now = Date.now();
+
+  // Fresh cache → return immediately.
+  if (_ifStateCache && now - _ifStateCache.ts < INTERFACE_STATE_TTL_MS) {
+    return _ifStateCache.data;
+  }
+
+  // Stale cache → return stale, kick one background refresh.
+  if (_ifStateCache && !_ifStateBgRunning) {
+    _ifStateBgRunning = true;
+    setImmediate(() => {
+      _buildInterfaceState()
+        .catch((err) =>
+          logger.warn("getInterfaceState: background SWR refresh failed", { message: err.message })
+        )
+        .finally(() => { _ifStateBgRunning = false; });
+    });
+    return _ifStateCache.data;
+  }
+  if (_ifStateCache) {
+    // Background refresh already running; return stale without queuing another.
+    return _ifStateCache.data;
+  }
+
+  // No cache (cold start): share one inflight promise.
+  if (_ifStateInflight) return _ifStateInflight;
+  _ifStateInflight = _buildInterfaceState()
+    .catch((err) => {
+      logger.warn("getInterfaceState: cold build failed", { message: err.message });
+      throw err;
+    })
+    .finally(() => { _ifStateInflight = null; });
+  return _ifStateInflight;
+}
 
 /**
  * Builds the full interface-state payload from existing system services.
@@ -401,7 +458,7 @@ function _buildAgentDiscourse(sis, riskMode, layers, gates, twinData, trendDir) 
  *
  * @returns {Promise<object>}
  */
-async function getInterfaceState() {
+async function _buildInterfaceState() {
   // ── Fetch all inputs in parallel ─────────────────────────────────────────
   const [sisReport, opsStatus, worldState, sisTrend] = await Promise.all([
     getSystemIntelligenceReport().catch((err) => {
@@ -444,7 +501,7 @@ async function getInterfaceState() {
   const deepDiveLevelRecommendation = _deepDiveLevel(surfaceMode, sis);
   const agentDiscourse = _buildAgentDiscourse(sis, riskMode, layers, opsStatus, null, trendDir);
 
-  return {
+  const result = {
     surfaceMode,
     dominantTopic,
     headline,
@@ -460,6 +517,8 @@ async function getInterfaceState() {
     blockerCount: opsStatus.blockerCount ?? 0,
     generatedAt: new Date().toISOString(),
   };
+  _ifStateCache = { data: result, ts: Date.now() };
+  return result;
 }
 
 /* =========================================================
