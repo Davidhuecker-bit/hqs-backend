@@ -303,12 +303,12 @@ const DEMO_PORTFOLIO_DEPS = {
     },
   ],
   nichtCrashKritisch: [
-    "entity_map",
-    "factor_history",
-    "fx_rates (Fallback auf statischen Kurs vorhanden)",
-    "ui_summaries (Auto-Rebuild bei Bedarf)",
-    "pipeline_status",
-    "job_locks",
+    { table: "entity_map", note: null },
+    { table: "factor_history", note: null },
+    { table: "fx_rates", note: "Fallback auf statischen Kurs vorhanden" },
+    { table: "ui_summaries", note: "Auto-Rebuild bei Bedarf" },
+    { table: "pipeline_status", note: null },
+    { table: "job_locks", note: null },
   ],
 };
 
@@ -368,24 +368,31 @@ async function fetchJobLocks() {
 
 /**
  * Fetch freshness data for critical tables.
+ * Table names are from a hardcoded whitelist – validated via SAFE_TABLE_NAMES.
  */
+const SAFE_TABLE_NAMES = new Set([
+  "market_snapshots", "hqs_scores", "factor_history",
+  "market_advanced_metrics", "market_news", "entity_map",
+  "ui_summaries", "fx_rates", "pipeline_status", "job_locks",
+]);
+
 async function fetchTableFreshness() {
-  const tables = [
-    "market_snapshots", "hqs_scores", "factor_history",
-    "market_advanced_metrics", "market_news", "entity_map",
-    "ui_summaries", "fx_rates", "pipeline_status", "job_locks",
-  ];
+  const tables = [...SAFE_TABLE_NAMES];
   const results = {};
 
   for (const tbl of tables) {
+    if (!SAFE_TABLE_NAMES.has(tbl)) continue;
+    // pg identifier quoting: table names are from the hardcoded whitelist above
+    // and contain only lowercase letters and underscores.
+    const quoted = `"${tbl}"`;
     try {
       const countRes = await pool.query(
-        `SELECT COUNT(*) AS cnt FROM ${tbl}`
+        `SELECT COUNT(*) AS cnt FROM ${quoted}`
       );
       const freshRes = await pool.query(
-        `SELECT MAX(created_at) AS latest FROM ${tbl}`
+        `SELECT MAX(created_at) AS latest FROM ${quoted}`
       ).catch(() =>
-        pool.query(`SELECT MAX(updated_at) AS latest FROM ${tbl}`)
+        pool.query(`SELECT MAX(updated_at) AS latest FROM ${quoted}`)
       ).catch(() => ({ rows: [{ latest: null }] }));
 
       const rowCount = Number(countRes.rows[0]?.cnt) || 0;
