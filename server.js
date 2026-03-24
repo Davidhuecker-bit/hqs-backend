@@ -51,8 +51,7 @@ STEP 4 – SUMMARY REFRESH ORCHESTRATION LAYER
 
 const { ensureUiSummariesTable } = require("./services/uiSummary.repository");
 const {
-  getOrBuild,
-  forceRefresh: _summaryForceRefresh,
+  readSummary,
   SUPPORTED_TYPES: _summarySupportedTypes,
 } = require("./services/uiSummaryRefresh.service");
 
@@ -168,12 +167,12 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/market-news", marketNewsRoutes);
 app.use("/api/sec-edgar", secEdgarRoutes);
 
-/* Alias: flat path used by some clients – routed via central orchestration (Step 4) */
+/* Alias: flat path used by some clients – read-only from DB (DB-first architecture) */
 app.get("/api/admin-demo-portfolio", async (_req, res) => {
   try {
-    const result = await getOrBuild("demo_portfolio");
+    const result = await readSummary("demo_portfolio");
     if (!result.payload) {
-      throw new Error(result.lastError ?? "Demo portfolio payload unavailable");
+      throw new Error("Demo portfolio not yet written by job – no data available");
     }
     return res.json(result.payload);
   } catch (error) {
@@ -318,9 +317,9 @@ app.get("/api/market", async (req, res) => {
     let summaryMeta = null;
 
     if (!symbol) {
-      // List path: read from prepared DB summary via central orchestration (Step 4).
-      // Falls back to live build on cold start; stale data served async refresh.
-      const result = await getOrBuild("market_list");
+      // List path: read-only from prepared DB summary (DB-first architecture).
+      // Summary is written by job:ui-market-list – API never rebuilds.
+      const result = await readSummary("market_list");
       const rawStocks = Array.isArray(result.payload?.stocks) ? result.payload.stocks : [];
       stocks = rawStocks.map(formatMarketItem).filter(Boolean).slice(0, limit);
       summaryMeta = {
@@ -330,7 +329,8 @@ app.get("/api/market", async (req, res) => {
         dataAge:         result.ageMs != null ? Math.round(result.ageMs / 1000) : null,
         lastSnapshotAt:  result.builtAt ?? null,
         isPartial:       result.isPartial,
-        rebuilding:      result.rebuilding,
+        rebuilding:      false,
+        writer:          result.writer,
       };
     } else {
       // Single-symbol path: bypass summary (symbol-level data is always live)
@@ -705,40 +705,14 @@ app.listen(PORT, async () => {
     });
   });
 
-  // Step 4 + Step 5: warm up all ui_summaries via central orchestration
-  // so the first requests to /api/market, /api/admin/demo-portfolio,
-  // and /api/admin/guardian-status-summary are served from prepared data.
-  //
-  // Step 5 hardening:
-  //   - Non-blocking: warmup runs after the current event-loop tick via setImmediate
-  //     so the HTTP server is ready to accept requests before any build starts.
-  //   - Sequential with 500 ms gap between types to avoid a build storm at startup.
-  //   - Partial-failure tolerant: one type failing does not abort warmup for others.
-  //   - Structured logging: each type logs start / success / failure individually.
-  setImmediate(() => {
-    const WARMUP_GAP_MS = 500;
-    (async () => {
-      logger.info("[startup] beginning ui_summary warmup", { types: _summarySupportedTypes });
-      for (const [i, summaryType] of _summarySupportedTypes.entries()) {
-        try {
-          logger.info(`[startup] warming up ui_summary '${summaryType}'`);
-          await _summaryForceRefresh(summaryType);
-          logger.info(`[startup] ui_summary '${summaryType}' warmup complete`);
-        } catch (err) {
-          logger.warn(`[startup] ui_summary '${summaryType}' warmup failed (non-fatal)`, {
-            message: err.message,
-          });
-        }
-        if (i < _summarySupportedTypes.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, WARMUP_GAP_MS));
-        }
-      }
-      logger.info("[startup] ui_summary warmup finished");
-    })().catch((err) => {
-      logger.warn("[startup] ui_summary warmup loop encountered unexpected error", {
-        message: err.message,
-      });
-    });
+  // ── UI summary warmup REMOVED (DB-first architecture) ───────────────────
+  // ui_summaries are now written exclusively by dedicated cron jobs:
+  //   job:ui-market-list, job:ui-demo-portfolio, job:ui-guardian-status
+  // The API server only reads from ui_summaries – it never triggers rebuilds.
+  // If summaries are stale/empty on cold start, the API returns degraded
+  // responses until the next job run populates the data.
+  logger.info("[startup] ui_summaries: DB-first mode – API reads only, jobs write", {
+    supportedTypes: _summarySupportedTypes,
   });
 
   // ── Background job schedulers REMOVED ─────────────────────────────────────

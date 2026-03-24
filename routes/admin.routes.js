@@ -91,10 +91,9 @@ const {
 } = require("../services/signalHistory.repository");
 const { getTopOpportunities } = require("../services/opportunityScanner.service");
 
-// Step 3 / Step 4: UI Summary / Read-Model layer + central refresh orchestration
+// UI Summary – read-only service (DB-first architecture, jobs write)
 const {
-  getOrBuild,
-  forceRefresh,
+  readSummary,
   getSummaryStatus,
   listSummaryStatuses,
   getHealthSnapshot,
@@ -1699,14 +1698,14 @@ router.post("/market-news/collect", async (req, res) => {
 
 /* =========================================================
    ADMIN DEMO PORTFOLIO  (real DB data, no mocks)
-   Served via central uiSummaryRefresh orchestration (Step 4)
+   Read-only from ui_summaries – written by job:ui-demo-portfolio
 ========================================================= */
 
 router.get("/demo-portfolio", async (req, res) => {
   try {
-    const result = await getOrBuild("demo_portfolio");
+    const result = await readSummary("demo_portfolio");
     if (!result.payload) {
-      throw new Error(result.lastError ?? "Demo portfolio payload unavailable");
+      throw new Error("Demo portfolio not yet written by job – no data available");
     }
     const payload = result.payload;
     return res.json({
@@ -1717,7 +1716,8 @@ router.get("/demo-portfolio", async (req, res) => {
         freshness:   result.freshnessLabel,
         dataAge:     result.ageMs != null ? Math.round(result.ageMs / 1000) : null,
         isPartial:   result.isPartial,
-        rebuilding:  result.rebuilding,
+        rebuilding:  false,
+        writer:      result.writer,
       },
     });
   } catch (error) {
@@ -3525,12 +3525,11 @@ router.get("/ui-summaries-health", async (_req, res) => {
 /**
  * GET /api/admin/guardian-status-summary
  * Returns the prepared guardian/system status summary (worldState + pipeline health).
- * Served via the central uiSummaryRefresh orchestration (fresh/stale/rebuild).
- * Step 5: also exposes operationalStatus and failure metadata.
+ * Read-only from ui_summaries – written by job:ui-guardian-status.
  */
 router.get("/guardian-status-summary", async (_req, res) => {
   try {
-    const result = await getOrBuild("guardian_status");
+    const result = await readSummary("guardian_status");
     const payload = result.payload ?? {};
     return res.json({
       success:             true,
@@ -3539,10 +3538,8 @@ router.get("/guardian-status-summary", async (_req, res) => {
       ageMs:               result.ageMs,
       builtAt:             result.builtAt,
       isPartial:           result.isPartial,
-      rebuilding:          result.rebuilding,
-      lastError:           result.lastError,
-      consecutiveFailures: result.consecutiveFailures,
-      cooldownRemainingMs: result.cooldownRemainingMs,
+      rebuilding:          false,
+      writer:              result.writer,
       ...payload,
     });
   } catch (error) {
@@ -3553,10 +3550,8 @@ router.get("/guardian-status-summary", async (_req, res) => {
 
 /**
  * POST /api/admin/refresh-summary/:type
- * Manually trigger a synchronous summary rebuild for a given summary_type.
- * Supported types: market_list, demo_portfolio, guardian_status
- * Step 5: always bypasses backoff cooldown (admin-forced), returns
- *         operationalStatus and consecutiveFailures in response.
+ * DEPRECATED – In DB-first architecture, summaries are written by dedicated jobs.
+ * This endpoint now returns a message directing the user to trigger the corresponding job.
  */
 router.post("/refresh-summary/:type", async (req, res) => {
   const { type } = req.params;
@@ -3568,23 +3563,18 @@ router.post("/refresh-summary/:type", async (req, res) => {
     });
   }
 
+  // Read current status instead of rebuilding
   try {
-    const t0     = Date.now();
-    const result = await forceRefresh(type);
-    const durationMs = Date.now() - t0;
-
+    const status = await getSummaryStatus(type);
     return res.json({
-      success:             result.success,
-      summaryType:         type,
-      freshnessLabel:      result.freshnessLabel,
-      operationalStatus:   result.operationalStatus,
-      builtAt:             result.builtAt,
-      buildDurationMs:     result.buildDurationMs,
-      lastError:           result.lastError,
-      consecutiveFailures: result.consecutiveFailures,
-      message:             result.message ?? (result.success ? "Rebuild complete" : "Rebuild skipped or failed"),
-      durationMs,
-      generatedAt:         new Date().toISOString(),
+      success:           false,
+      summaryType:       type,
+      message:           `API no longer rebuilds summaries. Trigger the dedicated job instead: job:ui-${type.replace(/_/g, "-")}`,
+      currentStatus:     status?.operationalStatus ?? "unknown",
+      freshnessLabel:    status?.freshnessLabel ?? "unknown",
+      builtAt:           status?.builtAt ?? null,
+      writer:            status?.writer ?? null,
+      generatedAt:       new Date().toISOString(),
     });
   } catch (error) {
     logger.error(`Admin refresh-summary/${type} route error`, { message: error.message });
