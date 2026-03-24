@@ -80,6 +80,7 @@ const {
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 const { initMarketNewsTable } = require("./marketNews.repository");
+const { initFactorTable } = require("./factorHistory.repository");
 const {
   savePipelineStage,
   loadPipelineStatus: loadPipelineStatusFromDb,
@@ -750,6 +751,10 @@ async function ensureTablesExist() {
   await initMarketNewsTable();
   logger.info("[startup] ensureTablesExist.initMarketNewsTable: ok");
 
+  logger.info("[startup] ensureTablesExist.initFactorTable: start");
+  await initFactorTable();
+  logger.info("[startup] ensureTablesExist.initFactorTable: ok");
+
   logger.info("[startup] ensureTablesExist.initUniverseTables: start");
   await initUniverseTables();
   logger.info("[startup] ensureTablesExist.initUniverseTables: ok");
@@ -1107,7 +1112,7 @@ async function buildMarketSnapshot() {
             scenarios,
           });
         } else {
-          logger.warn("Historical insufficient", {
+          logger.warn("Historical insufficient – trendData will be null, symbol continues with fallback zeros", {
             symbol,
             points: prices.length,
             period: HIST_PERIOD,
@@ -1115,7 +1120,7 @@ async function buildMarketSnapshot() {
           });
         }
       } catch (histErr) {
-        logger.warn("Historical unavailable", {
+        logger.warn("Historical unavailable – trendData will be null, symbol continues with fallback zeros", {
           symbol,
           message: histErr.message,
           tier,
