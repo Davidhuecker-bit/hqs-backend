@@ -708,14 +708,41 @@ app.listen(PORT, async () => {
     });
   });
 
-  // Step 4: warm up all ui_summaries via central orchestration
+  // Step 4 + Step 5: warm up all ui_summaries via central orchestration
   // so the first requests to /api/market, /api/admin/demo-portfolio,
   // and /api/admin/guardian-status-summary are served from prepared data.
-  for (const summaryType of _summarySupportedTypes) {
-    _summaryForceRefresh(summaryType).catch((err) => {
-      logger.warn(`[startup] initial summary build failed for '${summaryType}'`, { message: err.message });
+  //
+  // Step 5 hardening:
+  //   - Non-blocking: warmup runs after the current event-loop tick via setImmediate
+  //     so the HTTP server is ready to accept requests before any build starts.
+  //   - Sequential with 500 ms gap between types to avoid a build storm at startup.
+  //   - Partial-failure tolerant: one type failing does not abort warmup for others.
+  //   - Structured logging: each type logs start / success / failure individually.
+  setImmediate(() => {
+    const WARMUP_GAP_MS = 500;
+    (async () => {
+      logger.info("[startup] beginning ui_summary warmup", { types: _summarySupportedTypes });
+      for (const [i, summaryType] of _summarySupportedTypes.entries()) {
+        try {
+          logger.info(`[startup] warming up ui_summary '${summaryType}'`);
+          await _summaryForceRefresh(summaryType);
+          logger.info(`[startup] ui_summary '${summaryType}' warmup complete`);
+        } catch (err) {
+          logger.warn(`[startup] ui_summary '${summaryType}' warmup failed (non-fatal)`, {
+            message: err.message,
+          });
+        }
+        if (i < _summarySupportedTypes.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, WARMUP_GAP_MS));
+        }
+      }
+      logger.info("[startup] ui_summary warmup finished");
+    })().catch((err) => {
+      logger.warn("[startup] ui_summary warmup loop encountered unexpected error", {
+        message: err.message,
+      });
     });
-  }
+  });
 
   if (RUN_JOBS) {
     logger.info("RUN_JOBS=true -> starting background jobs inside API server");

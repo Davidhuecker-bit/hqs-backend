@@ -96,7 +96,10 @@ const {
   forceRefresh,
   getSummaryStatus,
   listSummaryStatuses,
+  getHealthSnapshot,
   SUPPORTED_TYPES,
+  BACKOFF_THRESHOLDS,
+  FAILING_THRESHOLD,
 } = require("../services/uiSummaryRefresh.service");
 // Step 8 Block 1: Governance context for admin-level role/scope classification
 // Step 8 Block 2: Operating Console / Exception Hub aggregate view
@@ -3383,25 +3386,31 @@ router.get("/adaptive-ux-meta", async (req, res) => {
 });
 
 /* =========================================================
-   STEP 4 – UI SUMMARY REFRESH ORCHESTRATION ADMIN ENDPOINTS
+   STEP 4 + STEP 5 – UI SUMMARY REFRESH ORCHESTRATION ADMIN ENDPOINTS
    (replaces Step 3 individual endpoints; now uses central service)
+   Step 5 additions: richer status fields, health snapshot endpoint,
+   backoff/cooldown visibility, and per-type failure metadata.
 ========================================================= */
 
 /**
  * GET /api/admin/ui-summaries
- * Lists all known summary types with full freshness diagnostics:
- *   freshnessLabel, ageMs, builtAt, isPartial, buildDurationMs,
- *   rebuilding, rebuildStartedAt, lastError, maxAgeMs.
+ * Lists all known summary types with full freshness + Step 5 operational diagnostics:
+ *   freshnessLabel, operationalStatus, ageMs, builtAt, isPartial, buildDurationMs,
+ *   rebuilding, lastSuccessAt, lastFailureAt, failureCount, consecutiveFailures,
+ *   lastErrorMessage, lastErrorAt, lastRebuildStartedAt, lastRebuildFinishedAt,
+ *   cooldownRemainingMs, maxAgeMs.
  * Payloads are excluded for brevity.
  */
 router.get("/ui-summaries", async (_req, res) => {
   try {
     const summaries = await listSummaryStatuses();
     return res.json({
-      success:        true,
-      generatedAt:    new Date().toISOString(),
-      count:          summaries.length,
-      supportedTypes: SUPPORTED_TYPES,
+      success:           true,
+      generatedAt:       new Date().toISOString(),
+      count:             summaries.length,
+      supportedTypes:    SUPPORTED_TYPES,
+      failingThreshold:  FAILING_THRESHOLD,
+      backoffThresholds: BACKOFF_THRESHOLDS,
       summaries,
     });
   } catch (error) {
@@ -3413,8 +3422,7 @@ router.get("/ui-summaries", async (_req, res) => {
 /**
  * GET /api/admin/ui-summary-detail/:type
  * Returns detailed status for a single summary type including the stored payload.
- * Includes: freshnessLabel, ageMs, builtAt, isPartial, buildDurationMs,
- *           rebuilding, rebuildStartedAt, lastError, maxAgeMs, payload.
+ * Step 5: includes operationalStatus, all failure/timing metadata, cooldownRemainingMs.
  */
 router.get("/ui-summary-detail/:type", async (req, res) => {
   const { type } = req.params;
@@ -3438,22 +3446,58 @@ router.get("/ui-summary-detail/:type", async (req, res) => {
 });
 
 /**
+ * GET /api/admin/ui-summaries-health
+ * Step 5: Compact health snapshot for all summary types.
+ * Returns operationalStatus, freshnessLabel, consecutiveFailures,
+ * cooldownRemainingMs, builtAt, ageMs, rebuilding per type.
+ * Intended for lightweight health checks and monitoring dashboards.
+ *
+ * Overall health is "ok" if all types are healthy or stale (no failures),
+ * "degraded" if any type is degraded, "failing" if any type is failing.
+ */
+router.get("/ui-summaries-health", async (_req, res) => {
+  try {
+    const snapshots = await getHealthSnapshot();
+
+    const hasFailingType   = snapshots.some((s) => s.operationalStatus === "failing");
+    const hasDegradedType  = snapshots.some((s) => s.operationalStatus === "degraded");
+    const overallHealth    = hasFailingType ? "failing"
+      : hasDegradedType ? "degraded"
+      : "ok";
+
+    return res.json({
+      success:      true,
+      generatedAt:  new Date().toISOString(),
+      overallHealth,
+      types:        snapshots,
+    });
+  } catch (error) {
+    logger.error("Admin ui-summaries-health route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * GET /api/admin/guardian-status-summary
  * Returns the prepared guardian/system status summary (worldState + pipeline health).
  * Served via the central uiSummaryRefresh orchestration (fresh/stale/rebuild).
+ * Step 5: also exposes operationalStatus and failure metadata.
  */
 router.get("/guardian-status-summary", async (_req, res) => {
   try {
     const result = await getOrBuild("guardian_status");
     const payload = result.payload ?? {};
     return res.json({
-      success:        true,
-      freshnessLabel: result.freshnessLabel,
-      ageMs:          result.ageMs,
-      builtAt:        result.builtAt,
-      isPartial:      result.isPartial,
-      rebuilding:     result.rebuilding,
-      lastError:      result.lastError,
+      success:             true,
+      freshnessLabel:      result.freshnessLabel,
+      operationalStatus:   result.operationalStatus,
+      ageMs:               result.ageMs,
+      builtAt:             result.builtAt,
+      isPartial:           result.isPartial,
+      rebuilding:          result.rebuilding,
+      lastError:           result.lastError,
+      consecutiveFailures: result.consecutiveFailures,
+      cooldownRemainingMs: result.cooldownRemainingMs,
       ...payload,
     });
   } catch (error) {
@@ -3466,7 +3510,8 @@ router.get("/guardian-status-summary", async (_req, res) => {
  * POST /api/admin/refresh-summary/:type
  * Manually trigger a synchronous summary rebuild for a given summary_type.
  * Supported types: market_list, demo_portfolio, guardian_status
- * Routes through the central uiSummaryRefresh orchestration (dedup-safe).
+ * Step 5: always bypasses backoff cooldown (admin-forced), returns
+ *         operationalStatus and consecutiveFailures in response.
  */
 router.post("/refresh-summary/:type", async (req, res) => {
   const { type } = req.params;
@@ -3484,15 +3529,17 @@ router.post("/refresh-summary/:type", async (req, res) => {
     const durationMs = Date.now() - t0;
 
     return res.json({
-      success:         result.success,
-      summaryType:     type,
-      freshnessLabel:  result.freshnessLabel,
-      builtAt:         result.builtAt,
-      buildDurationMs: result.buildDurationMs,
-      lastError:       result.lastError,
-      message:         result.message ?? (result.success ? "Rebuild complete" : "Rebuild skipped or failed"),
+      success:             result.success,
+      summaryType:         type,
+      freshnessLabel:      result.freshnessLabel,
+      operationalStatus:   result.operationalStatus,
+      builtAt:             result.builtAt,
+      buildDurationMs:     result.buildDurationMs,
+      lastError:           result.lastError,
+      consecutiveFailures: result.consecutiveFailures,
+      message:             result.message ?? (result.success ? "Rebuild complete" : "Rebuild skipped or failed"),
       durationMs,
-      generatedAt:     new Date().toISOString(),
+      generatedAt:         new Date().toISOString(),
     });
   } catch (error) {
     logger.error(`Admin refresh-summary/${type} route error`, { message: error.message });
