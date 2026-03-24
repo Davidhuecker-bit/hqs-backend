@@ -128,6 +128,30 @@ const SERVICE_MAP = [
     writesTo: ["pipeline_status"],
     description: "Removes stale scan state, expired locks, audits pipeline staleness",
   },
+  {
+    railwayService: "UI Market List",
+    startCommand: "npm run job:ui-market-list",
+    type: "cron",
+    pipelineStage: "ui_market_list",
+    writesTo: ["ui_summaries", "pipeline_status"],
+    description: "Builds and persists market_list UI summary (DB-first writer)",
+  },
+  {
+    railwayService: "UI Demo Portfolio",
+    startCommand: "npm run job:ui-demo-portfolio",
+    type: "cron",
+    pipelineStage: "ui_demo_portfolio",
+    writesTo: ["ui_summaries", "pipeline_status"],
+    description: "Builds and persists demo_portfolio UI summary (DB-first writer)",
+  },
+  {
+    railwayService: "UI Guardian Status",
+    startCommand: "npm run job:ui-guardian-status",
+    type: "cron",
+    pipelineStage: "ui_guardian_status",
+    writesTo: ["ui_summaries", "pipeline_status"],
+    description: "Builds and persists guardian_status UI summary (DB-first writer)",
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -172,10 +196,10 @@ const WRITER_READER_MATRIX = {
     staleThresholdHours: 168,
   },
   ui_summaries: {
-    writer: "API Server (uiSummaryRefresh.service.js → uiSummary.repository.writeUiSummary)",
+    writer: "Dedicated cron jobs (job:ui-market-list, job:ui-demo-portfolio, job:ui-guardian-status)",
     readers: ["/api/market", "/api/admin/demo-portfolio", "/api/admin/guardian-status-summary"],
-    role: "Read-model cache – auto-rebuilds on demand",
-    staleThresholdHours: null,
+    role: "PFLICHT Read-model – written by jobs, API reads only (DB-first)",
+    staleThresholdHours: 1,
   },
   fx_rates: {
     writer: "Scan Markt Snapshot (snapshotScan.job.js → fx.service.refreshAndPersistFxRate)",
@@ -306,7 +330,7 @@ const DEMO_PORTFOLIO_DEPS = {
     { table: "entity_map", note: null },
     { table: "factor_history", note: null },
     { table: "fx_rates", note: "Fallback auf statischen Kurs vorhanden" },
-    { table: "ui_summaries", note: "Auto-Rebuild bei Bedarf" },
+    { table: "ui_summaries", note: "Pflicht-Read-Model – geschrieben von job:ui-market-list, job:ui-demo-portfolio, job:ui-guardian-status" },
     { table: "pipeline_status", note: null },
     { table: "job_locks", note: null },
   ],

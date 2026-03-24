@@ -16,6 +16,9 @@
 #   "Causal Memory"            → job:causal-memory
 #   "Tech Radar"               → job:tech-radar
 #   "Data Cleanup"             → job:data-cleanup
+#   "UI Market List"           → job:ui-market-list
+#   "UI Demo Portfolio"        → job:ui-demo-portfolio
+#   "UI Guardian Status"       → job:ui-guardian-status
 #
 # IMPORTANT: Only "HQS Backend" starts the Express server.
 # All other services run their job and exit. Unknown/unset names abort.

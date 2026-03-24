@@ -44,6 +44,15 @@
     "job:data-cleanup": "node jobs/dataCleanup.job.js",
     "job:data-cleanup:check": "node --check jobs/dataCleanup.job.js",
 
+    "job:ui-market-list": "node jobs/uiMarketList.job.js",
+    "job:ui-market-list:check": "node --check jobs/uiMarketList.job.js",
+
+    "job:ui-demo-portfolio": "node jobs/uiDemoPortfolio.job.js",
+    "job:ui-demo-portfolio:check": "node --check jobs/uiDemoPortfolio.job.js",
+
+    "job:ui-guardian-status": "node jobs/uiGuardianStatus.job.js",
+    "job:ui-guardian-status:check": "node --check jobs/uiGuardianStatus.job.js",
+
     "smoke-check": "node scripts/smoke-check.js",
     "smoke-check:check": "node --check scripts/smoke-check.js",
 

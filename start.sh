@@ -87,6 +87,21 @@ case "$SERVICE" in
     exec npm run job:data-cleanup
     ;;
 
+  "UI Market List"|"ui-market-list")
+    echo "[start.sh] Starting job: ui-market-list"
+    exec npm run job:ui-market-list
+    ;;
+
+  "UI Demo Portfolio"|"ui-demo-portfolio")
+    echo "[start.sh] Starting job: ui-demo-portfolio"
+    exec npm run job:ui-demo-portfolio
+    ;;
+
+  "UI Guardian Status"|"ui-guardian-status")
+    echo "[start.sh] Starting job: ui-guardian-status"
+    exec npm run job:ui-guardian-status
+    ;;
+
   # ── Safety net ───────────────────────────────────────────────────────────
   # Unknown or unset service names must NOT fall back to npm start.
   # This prevents cron services from accidentally booting the full backend.
