@@ -16,6 +16,9 @@
 set -e
 
 SERVICE="${RAILWAY_SERVICE_NAME:-}"
+# Trim leading and trailing whitespace so names like " HQS Backend " match cleanly
+SERVICE="${SERVICE#"${SERVICE%%[![:space:]]*}"}"
+SERVICE="${SERVICE%"${SERVICE##*[![:space:]]}"}"
 
 echo "[start.sh] RAILWAY_SERVICE_NAME = '${SERVICE:-<unset>}'"
 
