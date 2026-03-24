@@ -1,5 +1,8 @@
 [deploy]
-startCommand = "npm start"
+# start.sh reads RAILWAY_SERVICE_NAME and dispatches to the correct entry point.
+# Each service must NOT override this in the Railway dashboard so the dispatcher runs.
+# See start.sh for the full service → command mapping.
+startCommand = "bash start.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "on_failure"
