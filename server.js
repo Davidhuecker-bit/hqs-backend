@@ -45,6 +45,19 @@ const {
 const { buildWorldState } = require("./services/worldState.service");
 
 /* =========================================================
+STEP 3 – SUMMARY / READ-MODEL LAYER
+========================================================= */
+
+const { ensureUiSummariesTable } = require("./services/uiSummary.repository");
+const {
+  getOrBuildMarketSummary,
+  refreshMarketSummary,
+} = require("./services/marketSummary.builder");
+const {
+  refreshGuardianStatusSummary,
+} = require("./services/guardianStatusSummary.builder");
+
+/* =========================================================
 ROUTES
 ========================================================= */
 
@@ -305,19 +318,32 @@ app.get("/api/market", async (req, res) => {
     const symbol = symbolResult.value || null;
     const limit = limitResult.value;
 
-    const raw = await getMarketData(symbol || undefined, { limit });
-    let stocks = Array.isArray(raw)
-      ? raw.map(formatMarketItem).filter(Boolean)
-      : [];
+    let stocks;
+    let summaryMeta = null;
 
     if (!symbol) {
-      stocks = stocks.slice(0, limit);
+      // List path: read from prepared DB summary (Step 3 read-model layer).
+      // Falls back to live aggregation on the first cold start.
+      const summary = await getOrBuildMarketSummary({ limit: 250 });
+      const rawStocks = Array.isArray(summary.stocks) ? summary.stocks : [];
+      stocks = rawStocks.map(formatMarketItem).filter(Boolean).slice(0, limit);
+      summaryMeta = {
+        source:    "ui_summary",
+        builtAt:   summary.builtAt,
+        freshness: summary.freshness,
+        isPartial: summary.isPartial,
+      };
+    } else {
+      // Single-symbol path: bypass summary (symbol-level data is always live)
+      const raw = await getMarketData(symbol, { limit });
+      stocks = Array.isArray(raw) ? raw.map(formatMarketItem).filter(Boolean) : [];
     }
 
     return res.json({
       success: true,
       count: stocks.length,
       stocks,
+      ...(summaryMeta ? { summaryMeta } : {}),
     });
   } catch (error) {
     logger.error("Market route error", { message: error.message });
@@ -633,6 +659,7 @@ async function runStartupInit() {
   await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);
   await safeInit("ensureSisHistoryTable",                 ensureSisHistoryTable);
   await safeInit("ensurePipelineStatusTable",             ensurePipelineStatusTable);
+  await safeInit("ensureUiSummariesTable",                ensureUiSummariesTable);
   await safeInit("hydrateMarketRuntimeState",             hydrateMarketRuntimeState);
   await safeInit("hydrateOpportunityRuntimeState",        hydrateOpportunityRuntimeState);
 
@@ -677,6 +704,15 @@ app.listen(PORT, async () => {
     logger.warn("worldState: initial build failed on startup", {
       message: wsErr.message,
     });
+  });
+
+  // Step 3: warm up UI summary layer – build initial market + guardian summaries
+  // so the first /api/market request is served from prepared data.
+  refreshMarketSummary().catch((err) => {
+    logger.warn("[startup] initial marketSummary build failed", { message: err.message });
+  });
+  refreshGuardianStatusSummary().catch((err) => {
+    logger.warn("[startup] initial guardianStatusSummary build failed", { message: err.message });
   });
 
   if (RUN_JOBS) {

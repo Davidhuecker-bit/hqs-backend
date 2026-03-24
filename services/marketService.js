@@ -1986,6 +1986,7 @@ async function pingDb() {
 
 module.exports = {
   getMarketData,
+  getStoredMarketList,
   buildMarketSnapshot,
   hydrateMarketRuntimeState,
   ensureTablesExist,
