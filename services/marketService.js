@@ -80,6 +80,7 @@ const {
 
 const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
 const { initMarketNewsTable } = require("./marketNews.repository");
+const { initFactorTable } = require("./factorHistory.repository");
 const {
   savePipelineStage,
   loadPipelineStatus: loadPipelineStatusFromDb,
@@ -750,6 +751,10 @@ async function ensureTablesExist() {
   await initMarketNewsTable();
   logger.info("[startup] ensureTablesExist.initMarketNewsTable: ok");
 
+  logger.info("[startup] ensureTablesExist.initFactorTable: start");
+  await initFactorTable();
+  logger.info("[startup] ensureTablesExist.initFactorTable: ok");
+
   logger.info("[startup] ensureTablesExist.initUniverseTables: start");
   await initUniverseTables();
   logger.info("[startup] ensureTablesExist.initUniverseTables: ok");
@@ -1068,7 +1073,11 @@ async function buildMarketSnapshot() {
       ensureTierBucket(summary, tier).normalizedOk++;
       ensureSourceBucket(summary, providerSource).normalizedOk++;
 
-      let trendData = null;
+      // trendData is always a fully-formed object after this block.
+      // buildTrendScore() already handles any price-array length and returns
+      // all-zero fields for < 2 prices, so the result is never null.
+      let trendData = buildTrendScore([]); // safe zero-value default
+      let trendSource = "zeroed_fetch_error";
       let scenarios = null;
 
       let regime = "neutral";
@@ -1081,11 +1090,15 @@ async function buildMarketSnapshot() {
           .map((d) => Number(d?.close))
           .filter((n) => Number.isFinite(n) && n > 0);
 
+        // Always compute trendData – buildTrendScore handles any length and
+        // returns zero-value fields for insufficient series (< 2 prices).
+        trendData = buildTrendScore(prices);
+
         if (prices.length >= 30) {
+          // Quality threshold met: persist advanced metrics and compute scenarios.
+          trendSource = "computed";
           summary.historicalOk++;
           ensureTierBucket(summary, tier).historicalOk++;
-
-          trendData = buildTrendScore(prices);
 
           regime = detectMarketRegime(
             trendData.trend,
@@ -1107,20 +1120,36 @@ async function buildMarketSnapshot() {
             scenarios,
           });
         } else {
-          logger.warn("Historical insufficient", {
+          // Trend is computed but unreliable; advanced_metrics NOT persisted.
+          trendSource = prices.length >= 2 ? "computed_low_quality" : "zeroed_no_prices";
+          logger.warn("snapshot: historical insufficient – trend computed but advanced_metrics not upserted", {
             symbol,
             points: prices.length,
             period: HIST_PERIOD,
             tier,
+            trendSource,
           });
         }
       } catch (histErr) {
-        logger.warn("Historical unavailable", {
+        // Fetch failed entirely – fall back to all-zero trendData object.
+        trendData = buildTrendScore([]);
+        trendSource = "zeroed_fetch_error";
+        logger.warn("snapshot: historical fetch failed – trendData zeroed, advanced_metrics skipped", {
           symbol,
-          message: histErr.message,
           tier,
+          message: histErr.message,
+          trendSource,
         });
       }
+
+      logger.info("snapshot: trendData ready", {
+        symbol,
+        tier,
+        trendSource,
+        trend: trendData.trend,
+        volatilityAnnual: trendData.volatilityAnnual,
+        trendStrength: trendData.trendStrength,
+      });
 
       // Compute (or retrieve cached) adaptive weights for the detected regime.
       // Exactly one computeAdaptiveWeights() call per unique regime per batch

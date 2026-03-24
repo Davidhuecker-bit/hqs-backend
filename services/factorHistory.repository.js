@@ -113,10 +113,11 @@ async function initFactorTable() {
 
 /* =========================================================
    SAVE SINGLE STOCK SNAPSHOT
-   HQS 2.0: accepts optional hqsVersion, confidenceScore,
-   dataQualityMeta, imputationMeta for quality-layer storage.
-   Falls back gracefully to legacy insert if HQS 2.0 columns
-   are not yet present in an existing deployment.
+   Writes the full HQS 2.2 Block-5 schema in one INSERT.
+   The table is guaranteed to exist with the full schema because
+   initFactorTable() (CREATE TABLE IF NOT EXISTS with all columns)
+   is called from ensureTablesExist() before any snapshot processing.
+   No fallback cascade is needed or appropriate here.
 ========================================================= */
 
 async function saveScoreSnapshot({
@@ -149,231 +150,20 @@ async function saveScoreSnapshot({
   comparisonMeta,
   pointInTimeContext,
 }) {
+  const normalizedRegime = normRegime(regime);
+
   try {
-    const normalizedRegime = normRegime(regime);
-
-    // Try the extended insert that includes HQS 2.0 Block 1+2+3+4 + HQS 2.2 Block 5 meta columns.
-    // If the table was created before these columns existed (legacy deployment),
-    // we gracefully fall back so existing flow is never broken.
-    try {
-      await pool.query(
-        `
-        INSERT INTO factor_history
-        (symbol, hqs_score, momentum, quality, stability, relative, regime,
-         market_average, volatility,
-         hqs_version, confidence_score, data_quality_meta, imputation_meta,
-         sector_template, peer_context_available, sector_scoring_meta,
-         regime_weight_profile, enhanced_stability_meta, liquidity_meta,
-         explainable_tags, version_reason, event_awareness_meta,
-         scoring_model_id, shadow_hqs_score, shadow_delta, comparison_meta, point_in_time_context)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-        `,
-        [
-          String(symbol || "").trim().toUpperCase(),
-          Number(hqsScore),
-          momentum ?? null,
-          quality ?? null,
-          stability ?? null,
-          relative ?? null,
-          normalizedRegime,
-          marketAverage ?? null,
-          volatility ?? null,
-          hqsVersion ?? null,
-          confidenceScore != null ? Number(confidenceScore) : null,
-          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
-          imputationMeta ? JSON.stringify(imputationMeta) : null,
-          sectorTemplate ?? null,
-          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
-          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
-          regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
-          enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
-          liquidityMeta ? JSON.stringify(liquidityMeta) : null,
-          explainableTags ? JSON.stringify(explainableTags) : null,
-          versionReason ?? null,
-          eventAwarenessMeta ? JSON.stringify(eventAwarenessMeta) : null,
-          scoringModelId ?? null,
-          shadowHqsScore != null ? Number(shadowHqsScore) : null,
-          shadowDelta != null ? Number(shadowDelta) : null,
-          comparisonMeta ? JSON.stringify(comparisonMeta) : null,
-          pointInTimeContext ? JSON.stringify(pointInTimeContext) : null,
-        ]
-      );
-      return;
-    } catch (extErr) {
-      // Column does not exist in this deployment – fall back to Block 4 insert.
-      // PostgreSQL error code 42703 = undefined_column.
-      if (extErr.code !== "42703") {
-        if (logger?.error) logger.error("saveScoreSnapshot: unexpected error on Block 5 insert", { message: extErr.message, code: extErr.code });
-        throw extErr;
-      }
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 5 columns not yet in table, trying Block 4 insert", { message: extErr.message });
-    }
-
-    // Block 4 fallback (table has Block 1+2+3+4 columns but not Block 5)
-    try {
-      await pool.query(
-        `
-        INSERT INTO factor_history
-        (symbol, hqs_score, momentum, quality, stability, relative, regime,
-         market_average, volatility,
-         hqs_version, confidence_score, data_quality_meta, imputation_meta,
-         sector_template, peer_context_available, sector_scoring_meta,
-         regime_weight_profile, enhanced_stability_meta, liquidity_meta,
-         explainable_tags, version_reason, event_awareness_meta)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-        `,
-        [
-          String(symbol || "").trim().toUpperCase(),
-          Number(hqsScore),
-          momentum ?? null,
-          quality ?? null,
-          stability ?? null,
-          relative ?? null,
-          normalizedRegime,
-          marketAverage ?? null,
-          volatility ?? null,
-          hqsVersion ?? null,
-          confidenceScore != null ? Number(confidenceScore) : null,
-          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
-          imputationMeta ? JSON.stringify(imputationMeta) : null,
-          sectorTemplate ?? null,
-          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
-          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
-          regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
-          enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
-          liquidityMeta ? JSON.stringify(liquidityMeta) : null,
-          explainableTags ? JSON.stringify(explainableTags) : null,
-          versionReason ?? null,
-          eventAwarenessMeta ? JSON.stringify(eventAwarenessMeta) : null,
-        ]
-      );
-      return;
-    } catch (b4Err) {
-      // Column does not exist in this deployment – fall back to Block 3 insert.
-      if (b4Err.code !== "42703") {
-        if (logger?.error) logger.error("saveScoreSnapshot: unexpected error on Block 4 insert", { message: b4Err.message, code: b4Err.code });
-        throw b4Err;
-      }
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 4 columns not yet in table, trying Block 3 insert", { message: b4Err.message });
-    }
-
-    // Block 3 fallback (table has Block 1+2+3 columns but not Block 4)
-    try {
-      await pool.query(
-        `
-        INSERT INTO factor_history
-        (symbol, hqs_score, momentum, quality, stability, relative, regime,
-         market_average, volatility,
-         hqs_version, confidence_score, data_quality_meta, imputation_meta,
-         sector_template, peer_context_available, sector_scoring_meta,
-         regime_weight_profile, enhanced_stability_meta, liquidity_meta)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-        `,
-        [
-          String(symbol || "").trim().toUpperCase(),
-          Number(hqsScore),
-          momentum ?? null,
-          quality ?? null,
-          stability ?? null,
-          relative ?? null,
-          normalizedRegime,
-          marketAverage ?? null,
-          volatility ?? null,
-          hqsVersion ?? null,
-          confidenceScore != null ? Number(confidenceScore) : null,
-          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
-          imputationMeta ? JSON.stringify(imputationMeta) : null,
-          sectorTemplate ?? null,
-          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
-          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
-          regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
-          enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
-          liquidityMeta ? JSON.stringify(liquidityMeta) : null,
-        ]
-      );
-      return;
-    } catch (b3Err) {
-      // Column does not exist in this deployment – fall back to Block 2 insert.
-      if (b3Err.code !== "42703") throw b3Err;
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 3 columns not yet in table, trying Block 2 insert", { message: b3Err.message });
-    }
-
-    // Block 2 fallback (table has Block 1+2 columns but not Block 3)
-    try {
-      await pool.query(
-        `
-        INSERT INTO factor_history
-        (symbol, hqs_score, momentum, quality, stability, relative, regime,
-         market_average, volatility,
-         hqs_version, confidence_score, data_quality_meta, imputation_meta,
-         sector_template, peer_context_available, sector_scoring_meta)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-        `,
-        [
-          String(symbol || "").trim().toUpperCase(),
-          Number(hqsScore),
-          momentum ?? null,
-          quality ?? null,
-          stability ?? null,
-          relative ?? null,
-          normalizedRegime,
-          marketAverage ?? null,
-          volatility ?? null,
-          hqsVersion ?? null,
-          confidenceScore != null ? Number(confidenceScore) : null,
-          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
-          imputationMeta ? JSON.stringify(imputationMeta) : null,
-          sectorTemplate ?? null,
-          peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
-          sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
-        ]
-      );
-      return;
-    } catch (b2Err) {
-      if (b2Err.code !== "42703") throw b2Err;
-      if (logger?.warn) logger.warn("saveScoreSnapshot: Block 2 columns not yet in table, trying Block 1 insert", { message: b2Err.message });
-    }
-
-    // Block 1 fallback (table has Block 1 columns but not Block 2)
-    try {
-      await pool.query(
-        `
-        INSERT INTO factor_history
-        (symbol, hqs_score, momentum, quality, stability, relative, regime,
-         market_average, volatility,
-         hqs_version, confidence_score, data_quality_meta, imputation_meta)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-        `,
-        [
-          String(symbol || "").trim().toUpperCase(),
-          Number(hqsScore),
-          momentum ?? null,
-          quality ?? null,
-          stability ?? null,
-          relative ?? null,
-          normalizedRegime,
-          marketAverage ?? null,
-          volatility ?? null,
-          hqsVersion ?? null,
-          confidenceScore != null ? Number(confidenceScore) : null,
-          dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
-          imputationMeta ? JSON.stringify(imputationMeta) : null,
-        ]
-      );
-      return;
-    } catch (b1Err) {
-      // Column does not exist in this deployment – fall back to legacy insert.
-      if (b1Err.code !== "42703") throw b1Err;
-      if (logger?.warn) logger.warn("saveScoreSnapshot: HQS 2.0 columns not yet in table, using legacy insert", { message: b1Err.message });
-    }
-
-    // Legacy fallback (pre-HQS-2.0 table schema)
     await pool.query(
       `
       INSERT INTO factor_history
       (symbol, hqs_score, momentum, quality, stability, relative, regime,
-       market_average, volatility)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       market_average, volatility,
+       hqs_version, confidence_score, data_quality_meta, imputation_meta,
+       sector_template, peer_context_available, sector_scoring_meta,
+       regime_weight_profile, enhanced_stability_meta, liquidity_meta,
+       explainable_tags, version_reason, event_awareness_meta,
+       scoring_model_id, shadow_hqs_score, shadow_delta, comparison_meta, point_in_time_context)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
       `,
       [
         String(symbol || "").trim().toUpperCase(),
@@ -385,11 +175,41 @@ async function saveScoreSnapshot({
         normalizedRegime,
         marketAverage ?? null,
         volatility ?? null,
+        hqsVersion ?? null,
+        confidenceScore != null ? Number(confidenceScore) : null,
+        dataQualityMeta ? JSON.stringify(dataQualityMeta) : null,
+        imputationMeta ? JSON.stringify(imputationMeta) : null,
+        sectorTemplate ?? null,
+        peerContextAvailable != null ? Boolean(peerContextAvailable) : null,
+        sectorScoringMeta ? JSON.stringify(sectorScoringMeta) : null,
+        regimeWeightProfile ? JSON.stringify(regimeWeightProfile) : null,
+        enhancedStabilityMeta ? JSON.stringify(enhancedStabilityMeta) : null,
+        liquidityMeta ? JSON.stringify(liquidityMeta) : null,
+        explainableTags ? JSON.stringify(explainableTags) : null,
+        versionReason ?? null,
+        eventAwarenessMeta ? JSON.stringify(eventAwarenessMeta) : null,
+        scoringModelId ?? null,
+        shadowHqsScore != null ? Number(shadowHqsScore) : null,
+        shadowDelta != null ? Number(shadowDelta) : null,
+        comparisonMeta ? JSON.stringify(comparisonMeta) : null,
+        pointInTimeContext ? JSON.stringify(pointInTimeContext) : null,
       ]
     );
+
+    if (logger?.info) logger.info("factor_history: row saved", {
+      symbol: String(symbol || "").trim().toUpperCase(),
+      regime: normalizedRegime,
+      hqsVersion: hqsVersion ?? null,
+      scoringModelId: scoringModelId ?? null,
+      persistPath: "block5_full",
+    });
   } catch (err) {
-    if (logger?.error) logger.error("saveScoreSnapshot error", { message: err.message });
-    else console.error("❌ saveScoreSnapshot error:", err.message);
+    if (logger?.error) logger.error("saveScoreSnapshot: insert failed – ensure initFactorTable() ran before snapshot processing", {
+      symbol,
+      regime: normalizedRegime,
+      message: err.message,
+      code: err.code,
+    });
   }
 }
 
