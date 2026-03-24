@@ -6,6 +6,7 @@ const logger = require("../utils/logger");
 const { acquireLock, initJobLocksTable } = require("../services/jobLock.repository");
 const { runJob } = require("../utils/jobRunner");
 const { getMarketData } = require("../services/marketService");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 const {
   getActiveBriefingUsers,
@@ -983,6 +984,15 @@ async function runDailyBriefing() {
       });
     }
   }
+
+  // Persist pipeline status for monitoring
+  savePipelineStage("daily_briefing", {
+    inputCount:   users.length,
+    successCount: createdCount,
+    failedCount:  0,
+    skippedCount: skippedCount + alreadyToday,
+    status:       createdCount > 0 ? "success" : (users.length > 0 ? "failed" : "success"),
+  }).catch(() => {});
 
   return {
     processedCount: createdCount,

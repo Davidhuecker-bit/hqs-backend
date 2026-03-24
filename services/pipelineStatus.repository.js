@@ -43,6 +43,11 @@ const ALLOWED_STAGES = new Set([
   "advancedMetrics",
   "hqsScoring",
   "outcome",
+  "market_news_refresh",
+  "universe_refresh",
+  "build_entity_map",
+  "daily_briefing",
+  "summary_refresh",
 ]);
 
 let tableReady = false;
@@ -61,14 +66,20 @@ async function ensurePipelineStatusTable() {
         success_count      INT  NOT NULL DEFAULT 0,
         failed_count       INT  NOT NULL DEFAULT 0,
         skipped_count      INT  NOT NULL DEFAULT 0,
+        status             TEXT NOT NULL DEFAULT 'unknown',
+        error_message      TEXT,
         updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `)
     .then(() =>
-      // Idempotent migration: add last_healthy_run column if it doesn't exist yet
+      // Idempotent migration: add columns if they don't exist yet
       pool.query(`
         ALTER TABLE pipeline_status
-          ADD COLUMN IF NOT EXISTS last_healthy_run TIMESTAMPTZ
+          ADD COLUMN IF NOT EXISTS last_healthy_run TIMESTAMPTZ;
+        ALTER TABLE pipeline_status
+          ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE pipeline_status
+          ADD COLUMN IF NOT EXISTS error_message TEXT;
       `)
     )
     .then(() => { tableReady = true; });
@@ -84,17 +95,20 @@ async function ensurePipelineStatusTable() {
  * so it is always clear when the stage last processed data correctly.
  *
  * @param {string} stage
- * @param {{ inputCount?: number, successCount?: number, failedCount?: number, skippedCount?: number }} counts
+ * @param {{ inputCount?: number, successCount?: number, failedCount?: number, skippedCount?: number, status?: string, errorMessage?: string }} counts
  */
 async function savePipelineStage(stage, counts) {
   if (!ALLOWED_STAGES.has(stage)) return;
   try {
     await ensurePipelineStatusTable();
     const successCount = Number(counts.successCount) || 0;
+    const failedCount = Number(counts.failedCount) || 0;
+    const derivedStatus = counts.status || (failedCount > 0 && successCount === 0 ? "failed" : successCount > 0 ? "success" : "unknown");
+    const errorMessage = counts.errorMessage || null;
     await pool.query(
       `INSERT INTO pipeline_status
-         (stage, last_run_at, last_healthy_run, input_count, success_count, failed_count, skipped_count, updated_at)
-       VALUES ($1, NOW(), $2, $3, $4, $5, $6, NOW())
+         (stage, last_run_at, last_healthy_run, input_count, success_count, failed_count, skipped_count, status, error_message, updated_at)
+       VALUES ($1, NOW(), $2, $3, $4, $5, $6, $7, $8, NOW())
        ON CONFLICT (stage) DO UPDATE SET
          last_run_at        = NOW(),
          last_healthy_run   = CASE WHEN EXCLUDED.success_count > 0 THEN NOW()
@@ -103,14 +117,18 @@ async function savePipelineStage(stage, counts) {
          success_count      = EXCLUDED.success_count,
          failed_count       = EXCLUDED.failed_count,
          skipped_count      = EXCLUDED.skipped_count,
+         status             = EXCLUDED.status,
+         error_message      = EXCLUDED.error_message,
          updated_at         = NOW()`,
       [
         stage,
         successCount > 0 ? new Date().toISOString() : null,
         Number(counts.inputCount)   || 0,
         successCount,
-        Number(counts.failedCount)  || 0,
+        failedCount,
         Number(counts.skippedCount) || 0,
+        derivedStatus,
+        errorMessage,
       ]
     );
     logger.info("[pipelineStatus] stage persisted", {
@@ -118,8 +136,9 @@ async function savePipelineStage(stage, counts) {
       lastRunAt:     new Date().toISOString(),
       inputCount:    Number(counts.inputCount)   || 0,
       successCount,
-      failedCount:   Number(counts.failedCount)  || 0,
+      failedCount,
       skippedCount:  Number(counts.skippedCount) || 0,
+      status:        derivedStatus,
     });
   } catch (err) {
     logger.warn("[pipelineStatus] savePipelineStage failed", {
@@ -140,7 +159,7 @@ async function loadPipelineStatus() {
   try {
     await ensurePipelineStatusTable();
     const res = await pool.query(
-      `SELECT stage, last_run_at, last_healthy_run, input_count, success_count, failed_count, skipped_count
+      `SELECT stage, last_run_at, last_healthy_run, input_count, success_count, failed_count, skipped_count, status, error_message
        FROM pipeline_status`
     );
     const result = {};
@@ -152,6 +171,8 @@ async function loadPipelineStatus() {
         successCount:   Number(row.success_count) || 0,
         failedCount:    Number(row.failed_count)  || 0,
         skippedCount:   Number(row.skipped_count) || 0,
+        status:         row.status || "unknown",
+        errorMessage:   row.error_message || null,
       };
     }
     return result;

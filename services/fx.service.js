@@ -234,8 +234,45 @@ async function getUsdToEurRate({ forceRefresh = false } = {}) {
   return null;
 }
 
+/**
+ * Actively fetch and persist the current USD→EUR rate.
+ * Designed to be called from cron jobs (e.g. snapshotScan) so that
+ * fx_rates always has a recent row, even when no snapshot conversion
+ * happens to trigger the passive persist path.
+ *
+ * Returns the persisted rate, or null if fetch failed.
+ */
+async function refreshAndPersistFxRate() {
+  try {
+    await ensureFxRatesTable();
+    const liveRate = await fetchUsdEurRate();
+    if (isValidRate(liveRate)) {
+      await persistLastKnownGood(liveRate, "cron_refresh");
+      storeCachedRate(liveRate, "cron_refresh");
+      logger.info("fx: cron refresh persisted", { rate: liveRate });
+      return liveRate;
+    }
+    // Live failed – try to refresh from stored as a health signal
+    const stored = await loadLastKnownGoodFromFxRates();
+    if (stored && isValidRate(stored.rate)) {
+      storeCachedRate(stored.rate, "stored_fx_rates");
+      logger.warn("fx: cron refresh – live failed, reusing stored rate", {
+        rate: stored.rate,
+        fetchedAt: stored.fetchedAt,
+      });
+      return stored.rate;
+    }
+    logger.warn("fx: cron refresh – no rate available");
+    return null;
+  } catch (err) {
+    logger.warn("fx: refreshAndPersistFxRate failed", { message: err.message });
+    return null;
+  }
+}
+
 module.exports = {
   getUsdToEurRate,
   convertUsdToEur,
   ensureFxRatesTable,
+  refreshAndPersistFxRate,
 };

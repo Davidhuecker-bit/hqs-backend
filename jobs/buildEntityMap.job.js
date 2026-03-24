@@ -13,6 +13,7 @@ const {
   initEntityMapTable,
   upsertEntityMapEntries,
 } = require("../services/entityMap.repository");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -260,6 +261,15 @@ async function buildEntityMapBody() {
   });
 
   const result = await upsertEntityMapEntries(entries);
+
+  // Persist pipeline status for monitoring
+  savePipelineStage("build_entity_map", {
+    inputCount:   symbols.length,
+    successCount: result.insertedOrUpdated || 0,
+    failedCount:  symbols.length - (result.insertedOrUpdated || 0),
+    skippedCount: 0,
+    status:       (result.insertedOrUpdated || 0) > 0 ? "success" : "failed",
+  }).catch(() => {});
 
   return {
     processedCount: result.insertedOrUpdated,

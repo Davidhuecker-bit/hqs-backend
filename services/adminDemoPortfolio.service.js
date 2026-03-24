@@ -121,11 +121,11 @@ const COMPANY_NAMES = {
    CONFIGURABLE STALE-HOURS  (ENV with sensible defaults)
 ========================================================= */
 
-const DEMO_SNAPSHOT_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_STALE_HOURS) || 24;
-const DEMO_SCORE_STALE_HOURS    = Number(process.env.DEMO_SCORE_STALE_HOURS)    || 48;
-const DEMO_METRICS_STALE_HOURS  = Number(process.env.DEMO_METRICS_STALE_HOURS)  || 48;
-const DEMO_NEWS_STALE_HOURS     = Number(process.env.DEMO_NEWS_STALE_HOURS)     || 72;
-const DEMO_SNAPSHOT_HARD_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) || 72;
+const DEMO_SNAPSHOT_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_STALE_HOURS) || 48;
+const DEMO_SCORE_STALE_HOURS    = Number(process.env.DEMO_SCORE_STALE_HOURS)    || 72;
+const DEMO_METRICS_STALE_HOURS  = Number(process.env.DEMO_METRICS_STALE_HOURS)  || 72;
+const DEMO_NEWS_STALE_HOURS     = Number(process.env.DEMO_NEWS_STALE_HOURS)     || 168;
+const DEMO_SNAPSHOT_HARD_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS) || 168;
 
 /* =========================================================
    STATUS REASON LABELS  (stable keys → german labels)
@@ -362,6 +362,7 @@ async function loadSnapshotsBatch(symbols) {
         priceSource: primary.row.source || null,
         fxApplied: primary.fxApplied,
         originalCurrency: primary.rowCurrency === "EUR" ? null : primary.rowCurrency,
+        hardStale: primary.isHardStale,
         snapshotDebug: {
           selectionEvents,
           ageHours: primary.ageHours,
@@ -380,7 +381,7 @@ async function loadSnapshotsBatch(symbols) {
         });
       }
       if (primary.isHardStale) {
-        logger.warn("adminDemoPortfolio: hard-stale snapshot selected; price dropped", {
+        logger.info("adminDemoPortfolio: hard-stale snapshot used with age flag", {
           symbol,
           createdAt: primary.createdAtIso,
           ageHours: primary.ageHours,
@@ -570,12 +571,17 @@ function isFresh(ageHours, staleThreshold) {
    Single function that determines ALL diagnostic fields
    for one holding. Evaluation order:
 
-   1. Core fehlt (snapshot/score/metrics alle 0)     => rot
-   2. Core vorhanden, aber alt/unsicher              => gelb
-   3. Nur News fehlen                                => gelb (nicht rot)
-   4. Alles Kernrelevante vorhanden und frisch       => grün
+   Core inputs  = snapshot (price) + hqsScore
+   Supplementary = advancedMetrics, news
 
-   News = supplementary, never sole cause for red.
+   1. Both core missing                           => rot
+   2. Snapshot missing (no price)                  => rot
+   3. Score missing, snapshot ok                   => gelb
+   4. Core vorhanden, aber snapshot stale           => gelb
+   5. Core ok, news/metrics missing or stale        => grün (degraded flag)
+   6. Alles frisch                                  => grün
+
+   News + Metrics = supplementary, never sole cause for yellow/red.
 ========================================================= */
 
 function evaluateHoldingDiagnostics(holding, timestamps) {
@@ -595,7 +601,8 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   const scoreFresh    = scoreOk    && isFresh(scoreAgeHours, DEMO_SCORE_STALE_HOURS);
   const metricsFresh  = metricsOk  && isFresh(metricsAgeHours, DEMO_METRICS_STALE_HOURS);
   const newsFresh     = newsPresent && isFresh(newsAgeHours, DEMO_NEWS_STALE_HOURS);
-  const newsOk        = newsFresh;
+  // News is ok when present (fresh or stale) – it is supplementary
+  const newsOk        = newsPresent;
 
   // --- Missing / weak sources ---
   const missingSources = [];
@@ -614,58 +621,46 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   else if (!newsFresh) weakSources.push("news");
 
   // --- Failing stage (primary) ---
+  // Only core sources count as failing stages
   const coreMissing = [];
   if (!snapshotOk) coreMissing.push("snapshot");
   if (!scoreOk)    coreMissing.push("score");
-  if (!metricsOk)  coreMissing.push("metrics");
 
   const failingStage = coreMissing.length > 0
     ? coreMissing[0]
-    : (!newsOk ? "news" : null);
+    : null;
 
   // --- Overall status + statusReason ---
-  const coreOkCount = [snapshotOk, scoreOk, metricsOk].filter(Boolean).length;
+  // Core = snapshot + score (2 mandatory).  Metrics + News = supplementary.
+  const coreOkCount = [snapshotOk, scoreOk].filter(Boolean).length;
   const coreStaleCount = [
     snapshotOk && !snapshotFresh,
     scoreOk && !scoreFresh,
-    metricsOk && !metricsFresh,
   ].filter(Boolean).length;
 
   let overallStatus;
   let statusReason;
 
-  if (coreOkCount === 0) {
-    // Rule 1: All core missing => red
+  if (!snapshotOk && !scoreOk) {
+    // Rule 1: Both core missing => red
     overallStatus = "red";
-    statusReason = coreMissing.length > 1 ? "partial_multi_source" : ("missing_" + coreMissing[0]);
-  } else if (coreOkCount < 3) {
-    // Some core missing => yellow or red
-    if (coreOkCount === 1) {
-      // Only 1 of 3 core sources → red
-      overallStatus = "red";
-    } else {
-      overallStatus = "yellow";
-    }
-    if (coreMissing.length > 1) {
-      statusReason = "partial_multi_source";
-    } else if (!snapshotOk) {
-      statusReason = "missing_snapshot";
-    } else if (!scoreOk) {
-      statusReason = "missing_score";
-    } else {
-      statusReason = "missing_metrics";
-    }
+    statusReason = "partial_multi_source";
+  } else if (!snapshotOk) {
+    // Rule 2: Snapshot missing => red (price is essential)
+    overallStatus = "red";
+    statusReason = "missing_snapshot";
+  } else if (!scoreOk) {
+    // Rule 3: Score missing, snapshot ok => yellow (degraded but usable)
+    overallStatus = "yellow";
+    statusReason = "missing_score";
   } else if (coreStaleCount > 0) {
-    // Rule 2: Core present but stale => yellow
+    // Rule 4: Core present but stale => yellow
     overallStatus = "yellow";
     if (!snapshotFresh) statusReason = "stale_snapshot";
     else statusReason = "low_confidence";
-  } else if (!newsOk) {
-    // Rule 3: Only news missing => yellow (not red)
-    overallStatus = "yellow";
-    statusReason = "missing_news_only";
   } else {
-    // Rule 4: All core present, fresh, and news present => green
+    // Rule 5+6: Core ok and fresh => green
+    // Missing news/metrics does NOT downgrade to yellow
     overallStatus = "green";
     statusReason = "complete";
   }
@@ -673,20 +668,20 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   const statusReasonLabel = STATUS_REASON_LABELS[statusReason] || statusReason;
 
   // --- Completeness score (0-100) ---
-  // 4 sources, core sources weighted higher: snapshot 30, score 30, metrics 25, news 15
+  // Core sources weighted higher: snapshot 35, score 35, metrics 15, news 15
   let completenessScore = 0;
-  if (snapshotOk) completenessScore += 30;
-  if (scoreOk)    completenessScore += 30;
-  if (metricsOk)  completenessScore += 25;
+  if (snapshotOk) completenessScore += 35;
+  if (scoreOk)    completenessScore += 35;
+  if (metricsOk)  completenessScore += 15;
   if (newsOk)     completenessScore += 15;
 
   // --- Reliability score (0-100) ---
   // Based on freshness of available sources
   let reliabilityScore = 0;
   let reliabilityDivisor = 0;
-  if (snapshotOk) { reliabilityDivisor += 30; if (snapshotFresh) reliabilityScore += 30; }
-  if (scoreOk)    { reliabilityDivisor += 30; if (scoreFresh)    reliabilityScore += 30; }
-  if (metricsOk)  { reliabilityDivisor += 25; if (metricsFresh)  reliabilityScore += 25; }
+  if (snapshotOk) { reliabilityDivisor += 35; if (snapshotFresh) reliabilityScore += 35; }
+  if (scoreOk)    { reliabilityDivisor += 35; if (scoreFresh)    reliabilityScore += 35; }
+  if (metricsOk)  { reliabilityDivisor += 15; if (metricsFresh)  reliabilityScore += 15; }
   if (newsOk)     { reliabilityDivisor += 15; if (newsFresh)     reliabilityScore += 15; }
   // Normalize to 0-100 based on what is available
   if (reliabilityDivisor > 0) {
@@ -698,7 +693,8 @@ function evaluateHoldingDiagnostics(holding, timestamps) {
   const problemWeight = (statusWeight[overallStatus] || 0)
     + (coreMissing.length * 20)
     + (coreStaleCount * 10)
-    + (!newsOk ? 5 : 0);
+    + (!metricsOk ? 3 : 0)
+    + (!newsOk ? 2 : 0);
 
   // --- Derive dataStatus from overallStatus (backwards compat) ---
   let dataStatus;
@@ -820,10 +816,10 @@ async function _getAdminDemoPortfolioRaw() {
         news:     newsArr.length > 0 ? newsArr[0].publishedAt : null,
       };
 
-      if (snap?.price == null || snap?.snapshotDebug?.hardStale) {
-        logger.info("adminDemoPortfolio: snapshot missing or stale for symbol", {
+      if (snap?.price == null) {
+        logger.info("adminDemoPortfolio: snapshot missing for symbol", {
           symbol,
-          reason: snap?.snapshotDebug?.hardStale ? "hard-stale-snapshot" : "no-price",
+          reason: "no-price",
         });
       }
       if (newsArr.length === 0) {
@@ -1112,12 +1108,48 @@ async function _buildDemoPortfolio() {
   const t0 = Date.now();
   const result = await _getAdminDemoPortfolioRaw();
   const durationMs = Date.now() - t0;
+
+  // Enrich result with build metadata for ui_summaries consumers
+  result.builtAt = new Date().toISOString();
+  result.buildDurationMs = durationMs;
+  result.source = "adminDemoPortfolio.service";
+  result.dataAgeSec = Math.round(durationMs / 1000);
+
+  // Determine partial status: only "error" or "missing" (both core absent) counts as partial
+  const isPartial = result.dataStatus === "error" || result.dataStatus === "missing";
+  result.partial = isPartial;
+
+  // Freshness classification for the overall portfolio
+  const greenRatio = (result.summary?.green || 0) / Math.max(result.summary?.total || 1, 1);
+  if (greenRatio >= 0.5) {
+    result.freshness = "fresh";
+  } else if (result.dataStatus === "missing") {
+    result.freshness = "hard_stale";
+  } else {
+    result.freshness = "degraded";
+  }
+
   _demoCache = { data: result, ts: Date.now() };
-  logger.info("adminDemoPortfolio: built in ms", { ms: durationMs });
+  logger.info("adminDemoPortfolio: built", {
+    ms: durationMs,
+    freshness: result.freshness,
+    partial: isPartial,
+    green: result.summary?.green,
+    yellow: result.summary?.yellow,
+    red: result.summary?.red,
+  });
+
   // Step 3: persist to ui_summaries so cold restarts can serve prepared data
   writeUiSummary(DEMO_SUMMARY_TYPE, result, {
     buildDurationMs: durationMs,
-    isPartial: result.dataStatus === "error",
+    isPartial,
+    metadata: {
+      freshness: result.freshness,
+      source: result.source,
+      greenCount: result.summary?.green || 0,
+      yellowCount: result.summary?.yellow || 0,
+      redCount: result.summary?.red || 0,
+    },
   }).catch((err) =>
     logger.warn("adminDemoPortfolio: writeUiSummary failed", { message: err.message })
   );

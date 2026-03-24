@@ -10,6 +10,7 @@ const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { acquireLock, initJobLocksTable } = require("../services/jobLock.repository");
 const { refreshUniverse } = require("../services/universe.service");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 // Shared pool used for the DB readiness guard
 const pool = new Pool({
@@ -32,7 +33,18 @@ async function run() {
       }
 
       const result = await refreshUniverse();
-      return { processedCount: result?.inserted ?? result?.total ?? 0, ...result };
+      const processedCount = result?.inserted ?? result?.total ?? 0;
+
+      // Persist pipeline status for monitoring
+      savePipelineStage("universe_refresh", {
+        inputCount:   result?.total ?? processedCount,
+        successCount: processedCount,
+        failedCount:  result?.failed ?? 0,
+        skippedCount: result?.skipped ?? 0,
+        status:       processedCount > 0 ? "success" : "failed",
+      }).catch(() => {});
+
+      return { processedCount, ...result };
     },
     { pool, dbRetries: 5, dbDelayMs: 3000 }
   );
