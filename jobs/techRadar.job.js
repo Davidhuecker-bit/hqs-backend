@@ -20,6 +20,7 @@ const {
   acquireLock,
   initJobLocksTable,
 } = require("../services/jobLock.repository");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 let logger = null;
 try {
@@ -46,7 +47,13 @@ async function runTechRadarJob() {
     }
 
     const result = await scanTechRadar();
-    return { processedCount: result.inserted ?? 0, feeds: result.feeds, scanned: result.scanned };
+    const processedCount = result.inserted ?? 0;
+    await savePipelineStage("tech_radar", {
+      inputCount: result.scanned ?? 0,
+      successCount: processedCount,
+      failedCount: 0,
+    });
+    return { processedCount, feeds: result.feeds, scanned: result.scanned };
   });
 }
 

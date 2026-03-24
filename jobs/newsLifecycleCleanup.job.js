@@ -13,6 +13,7 @@ const {
   syncMarketNewsLifecycleStates,
   cleanupExpiredMarketNews,
 } = require("../services/marketNews.repository");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 async function run() {
   return runJob("newsLifecycleCleanup", async () => {
@@ -30,6 +31,11 @@ async function run() {
     const cleanupSummary   = await cleanupExpiredMarketNews();
 
     const processedCount = (lifecycleSummary?.updated ?? 0) + (cleanupSummary?.deleted ?? 0);
+    await savePipelineStage("news_lifecycle_cleanup", {
+      inputCount: processedCount,
+      successCount: processedCount,
+      failedCount: 0,
+    });
     return { processedCount, ...lifecycleSummary, ...cleanupSummary };
   });
 }

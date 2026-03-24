@@ -48,6 +48,12 @@ const ALLOWED_STAGES = new Set([
   "build_entity_map",
   "daily_briefing",
   "summary_refresh",
+  "forecast_verification",
+  "causal_memory",
+  "tech_radar",
+  "news_lifecycle_cleanup",
+  "discovery_notify",
+  "data_cleanup",
 ]);
 
 let tableReady = false;
