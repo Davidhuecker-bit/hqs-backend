@@ -1,7 +1,25 @@
 [deploy]
+# ─────────────────────────────────────────────────────────────────────────────
 # start.sh reads RAILWAY_SERVICE_NAME and dispatches to the correct entry point.
-# Each service must NOT override this in the Railway dashboard so the dispatcher runs.
-# See start.sh for the full service → command mapping.
+#
+# Service mapping (set RAILWAY_SERVICE_NAME per Railway service):
+#
+#   "HQS Backend"              → npm start           (API server)
+#   "Scan Markt Snapshot"      → job:snapshot-scan
+#   "Cron Markt-News"          → job:market-news-refresh
+#   "cron-entity-map-erstellen"→ job:build-entity-map
+#   "Cron Aktien Universum"    → job:universe-refresh
+#   "Cron tägliches Briefing"  → job:daily-briefing
+#   "Discovery Notify"         → job:discovery-notify
+#   "News Lifecycle Cleanup"   → job:news-lifecycle-cleanup
+#   "Forecast Verification"    → job:forecast-verification
+#   "Causal Memory"            → job:causal-memory
+#   "Tech Radar"               → job:tech-radar
+#   "Data Cleanup"             → job:data-cleanup
+#
+# IMPORTANT: Only "HQS Backend" starts the Express server.
+# All other services run their job and exit. Unknown/unset names abort.
+# ─────────────────────────────────────────────────────────────────────────────
 startCommand = "bash start.sh"
 healthcheckPath = "/health"
 healthcheckTimeout = 100

@@ -32,6 +32,18 @@
     "job:build-entity-map": "node jobs/buildEntityMap.job.js",
     "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js",
 
+    "job:forecast-verification": "node jobs/forecastVerification.job.js",
+    "job:forecast-verification:check": "node --check jobs/forecastVerification.job.js",
+
+    "job:causal-memory": "node jobs/causalMemory.job.js",
+    "job:causal-memory:check": "node --check jobs/causalMemory.job.js",
+
+    "job:tech-radar": "node jobs/techRadar.job.js",
+    "job:tech-radar:check": "node --check jobs/techRadar.job.js",
+
+    "job:data-cleanup": "node jobs/dataCleanup.job.js",
+    "job:data-cleanup:check": "node --check jobs/dataCleanup.job.js",
+
     "smoke-check": "node scripts/smoke-check.js",
     "smoke-check:check": "node --check scripts/smoke-check.js",
 
