@@ -84,6 +84,7 @@ const { runTechRadarJob } = require("./jobs/techRadar.job");
 const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
+const { runDataCleanupJob } = require("./jobs/dataCleanup.job");
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
@@ -329,11 +330,13 @@ app.get("/api/market", async (req, res) => {
       const rawStocks = Array.isArray(result.payload?.stocks) ? result.payload.stocks : [];
       stocks = rawStocks.map(formatMarketItem).filter(Boolean).slice(0, limit);
       summaryMeta = {
-        source:         "ui_summary",
-        builtAt:        result.builtAt,
-        freshness:      result.freshnessLabel,
-        isPartial:      result.isPartial,
-        rebuilding:     result.rebuilding,
+        source:          "ui_summary",
+        builtAt:         result.builtAt,
+        freshness:       result.freshnessLabel,
+        dataAge:         result.ageMs != null ? Math.round(result.ageMs / 1000) : null,
+        lastSnapshotAt:  result.builtAt ?? null,
+        isPartial:       result.isPartial,
+        rebuilding:      result.rebuilding,
       };
     } else {
       // Single-symbol path: bypass summary (symbol-level data is always live)
@@ -750,6 +753,7 @@ app.listen(PORT, async () => {
     scheduleDailyForecastVerification();
     scheduleCausalMemoryRecalibration();
     scheduleTechRadarScan();
+    scheduleDataCleanup();
   }
 
   const failedLabels = initErrors.map((e) => e.label);
@@ -842,6 +846,28 @@ async function scheduleTechRadarScan() {
       logger.error("Tech-Radar scan failed", { message: err.message });
     } finally {
       scheduleTechRadarScan();
+    }
+  }, delay);
+}
+
+/* =========================================================
+   DATA CLEANUP  (Stale Data Removal)
+========================================================= */
+
+async function scheduleDataCleanup() {
+  // Default: run at 02:00 daily (early morning, low traffic)
+  const hour   = Number(process.env.DATA_CLEANUP_HOUR   || 2);
+  const minute = Number(process.env.DATA_CLEANUP_MINUTE || 0);
+
+  const delay = msUntilNextLocalTime(hour, minute);
+
+  setTimeout(async () => {
+    try {
+      await runDataCleanupJob();
+    } catch (err) {
+      logger.error("Data cleanup job failed", { message: err.message });
+    } finally {
+      scheduleDataCleanup();
     }
   }, delay);
 }

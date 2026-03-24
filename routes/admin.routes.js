@@ -75,6 +75,7 @@ const {
 } = require("../services/sisHistory.service");
 const { buildMarketSnapshot, getPipelineStatusWithPersistence } = require("../services/marketService");
 const { runTableHealthCheck } = require("../services/tableHealth.service");
+const { getDataFlowHealth } = require("../services/dataFlowHealth.service");
 const {
   collectAndStoreMarketNews,
   normalizeSymbols,
@@ -1611,6 +1612,26 @@ router.get("/table-health", async (req, res) => {
 });
 
 /* =========================================================
+   DATA FLOW HEALTH
+   GET /api/admin/data-flow-health
+   Comprehensive view of all critical data-flow chains.
+   For each chain: lastWriteAt, rowCount, rowCount24h, freshnessLabel,
+   ageHours, writtenBy, readBy.
+   Chains: market, portfolio, guardian, world_state, news, pipeline,
+           universe, forecasts.
+========================================================= */
+
+router.get("/data-flow-health", async (_req, res) => {
+  try {
+    const report = await getDataFlowHealth();
+    return res.json({ success: true, ...report });
+  } catch (error) {
+    logger.error("Admin data-flow-health route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
    SNAPSHOT TRIGGER
    POST /api/admin/snapshot
    Triggers a full market snapshot build.
@@ -1674,7 +1695,18 @@ router.get("/demo-portfolio", async (req, res) => {
     if (!result.payload) {
       throw new Error(result.lastError ?? "Demo portfolio payload unavailable");
     }
-    return res.json(result.payload);
+    const payload = result.payload;
+    return res.json({
+      ...payload,
+      freshnessMetadata: {
+        source:      "ui_summary",
+        builtAt:     result.builtAt,
+        freshness:   result.freshnessLabel,
+        dataAge:     result.ageMs != null ? Math.round(result.ageMs / 1000) : null,
+        isPartial:   result.isPartial,
+        rebuilding:  result.rebuilding,
+      },
+    });
   } catch (error) {
     logger.error("Admin demo-portfolio route error", { message: error.message });
     return res.json({
