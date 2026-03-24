@@ -188,11 +188,9 @@ async function getDataFlowHealth() {
 
     buildChain(
       "guardian",
-      "Guardian status: hqs_scores + autonomy_audit + near_miss → ui_summaries → /api/admin/guardian-status-summary",
+      "Guardian status: hqs_scores + pipeline_status → ui_summaries → /api/admin/guardian-status-summary",
       {
         hqs_scores:        "created_at",
-        autonomy_audit:    "created_at",
-        guardian_near_miss:"created_at",
         ui_summaries:      "built_at",
       },
       "guardianStatusSummary.builder.refreshGuardianStatusSummary()",
