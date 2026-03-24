@@ -32,15 +32,13 @@ function safeJson(value) {
 
 async function initAdvancedMetricsTable() {
   // ── market_advanced_metrics ───────────────────────────────────────────────
-  // All required columns (regime, trend, volatility_annual, volatility_daily,
-  // scenarios, updated_at) are defined inline in CREATE TABLE so that
-  // ALTER TABLE ADD COLUMN migrations are never needed at runtime.
-  //
-  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
-  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
-  // column already exists (IF NOT EXISTS only skips the write, not the lock).
-  // Running these on every startup causes lock-contention hangs when
-  // HQS-Backend and hqs-scraping-service start concurrently.
+  // CREATE TABLE defines all required columns for new installations.
+  // ALTER TABLE ADD COLUMN IF NOT EXISTS below ensures existing tables that
+  // were created before volatility_annual / volatility_daily were introduced
+  // are migrated automatically. Without these columns, upsertAdvancedMetrics()
+  // would throw a "column does not exist" DB error on every call, silently
+  // caught by the inner try/catch in buildMarketSnapshot(), leaving the table
+  // permanently stale.
   if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: CREATE TABLE start");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS market_advanced_metrics (
@@ -55,6 +53,15 @@ async function initAdvancedMetricsTable() {
     );
   `);
   if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: CREATE TABLE ok");
+
+  // Idempotent column migration – ensures tables created with the old schema
+  // (which only had a single `volatility` column) get the split columns that
+  // the current upsert query requires.
+  await pool.query(`
+    ALTER TABLE market_advanced_metrics
+      ADD COLUMN IF NOT EXISTS volatility_annual FLOAT,
+      ADD COLUMN IF NOT EXISTS volatility_daily FLOAT;
+  `);
 
   // Index (optional, aber hilft)
   if (logger?.info) logger.info("[advancedMetrics] initAdvancedMetricsTable: INDEX start");

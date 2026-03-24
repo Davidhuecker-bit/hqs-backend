@@ -167,11 +167,11 @@ const pipelineStatus = {
   },
 };
 
-function updatePipelineStage(stage, counts) {
+async function updatePipelineStage(stage, counts) {
   if (!pipelineStatus[stage]) return;
   Object.assign(pipelineStatus[stage], counts, { lastUpdated: new Date().toISOString() });
-  // Persist asynchronously – never block the pipeline on a DB write
-  savePipelineStage(stage, counts).catch(() => {});
+  // savePipelineStage never throws (internal try/catch) – await is safe.
+  await savePipelineStage(stage, counts);
 }
 
 function getPipelineStatus() {
@@ -1616,36 +1616,41 @@ async function buildMarketSnapshot() {
   //
   // NOTE: market_snapshots and hqs_scores are SEPARATE tables.
   // Both are written during the same scan, but JOIN is needed when reading both together.
-  updatePipelineStage("universe", {
-    inputCount:   summary.totalActiveSymbols,
-    successCount: summary.symbolsTotal,
-    failedCount:  0,
-    skippedCount: 0,
-  });
-  updatePipelineStage("snapshot", {
-    inputCount:   summary.symbolsTotal,
-    successCount: summary.snapshotsSaved,
-    failedCount:  summary.failed,
-    skippedCount: summary.skipped,
-  });
-  updatePipelineStage("advancedMetrics", {
-    inputCount:   summary.quotesLoaded,
-    successCount: summary.historicalOk,
-    failedCount:  summary.quotesLoaded - summary.historicalOk - summary.skipped,
-    skippedCount: summary.skipped,
-  });
-  updatePipelineStage("hqsScoring", {
-    inputCount:   summary.normalizedOk,
-    successCount: summary.hqsSaved,
-    failedCount:  summary.failed,
-    skippedCount: summary.skipped,
-  });
-  updatePipelineStage("outcome", {
-    inputCount:   summary.hqsSaved,
-    successCount: summary.outcomeTracked,
-    failedCount:  summary.hqsSaved - summary.outcomeTracked,
-    skippedCount: 0,
-  });
+  //
+  // All 5 saves run in parallel and are awaited before returning so that the
+  // calling job process can safely exit without abandoning in-flight DB writes.
+  await Promise.all([
+    updatePipelineStage("universe", {
+      inputCount:   summary.totalActiveSymbols,
+      successCount: summary.symbolsTotal,
+      failedCount:  0,
+      skippedCount: 0,
+    }),
+    updatePipelineStage("snapshot", {
+      inputCount:   summary.symbolsTotal,
+      successCount: summary.snapshotsSaved,
+      failedCount:  summary.failed,
+      skippedCount: summary.skipped,
+    }),
+    updatePipelineStage("advancedMetrics", {
+      inputCount:   summary.quotesLoaded,
+      successCount: summary.historicalOk,
+      failedCount:  summary.quotesLoaded - summary.historicalOk - summary.skipped,
+      skippedCount: summary.skipped,
+    }),
+    updatePipelineStage("hqsScoring", {
+      inputCount:   summary.normalizedOk,
+      successCount: summary.hqsSaved,
+      failedCount:  summary.failed,
+      skippedCount: summary.skipped,
+    }),
+    updatePipelineStage("outcome", {
+      inputCount:   summary.hqsSaved,
+      successCount: summary.outcomeTracked,
+      failedCount:  summary.hqsSaved - summary.outcomeTracked,
+      skippedCount: 0,
+    }),
+  ]);
 }
 
 /* =========================================================
