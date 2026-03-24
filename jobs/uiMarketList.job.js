@@ -28,6 +28,7 @@ const pool = new Pool({
 });
 
 const LOCK_TTL_SECONDS = 10 * 60; // 10 min
+const MAX_MARKET_LIST_SYMBOLS = 250;
 
 // ── Job entry point ───────────────────────────────────────────────────────────
 
@@ -43,7 +44,7 @@ async function run() {
 
     logger.info("[job:ui-market-list] building market_list summary");
 
-    const stocks = await refreshMarketSummary({ limit: 250 });
+    const stocks = await refreshMarketSummary({ limit: MAX_MARKET_LIST_SYMBOLS });
     const symbolCount = Array.isArray(stocks) ? stocks.length : 0;
 
     await savePipelineStage("ui_market_list", {

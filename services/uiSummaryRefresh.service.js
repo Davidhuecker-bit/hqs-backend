@@ -84,7 +84,8 @@ function _deriveOperationalStatus(ageMs, maxAgeMs, row) {
  * Read a single UI summary from the DB.  Never triggers a rebuild.
  *
  * Returns an enriched object with freshness metadata, or a degraded
- * fallback shape when no data exists (never throws).
+ * fallback shape when no data exists.
+ * Throws for unknown summary types.
  *
  * @param {string} type
  * @returns {Promise<object>}

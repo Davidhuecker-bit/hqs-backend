@@ -3452,10 +3452,10 @@ router.get("/ui-summaries", async (_req, res) => {
     return res.json({
       success:           true,
       generatedAt:       new Date().toISOString(),
+      architecture:      "db-first",
+      note:              "All summaries are written by dedicated cron jobs. The API only reads.",
       count:             summaries.length,
       supportedTypes:    SUPPORTED_TYPES,
-      failingThreshold:  FAILING_THRESHOLD,
-      backoffThresholds: BACKOFF_THRESHOLDS,
       summaries,
     });
   } catch (error) {
@@ -3467,7 +3467,7 @@ router.get("/ui-summaries", async (_req, res) => {
 /**
  * GET /api/admin/ui-summary-detail/:type
  * Returns detailed status for a single summary type including the stored payload.
- * Step 5: includes operationalStatus, all failure/timing metadata, cooldownRemainingMs.
+ * DB-first: includes writer info, operationalStatus (healthy/stale/empty), writtenByJob flag.
  */
 router.get("/ui-summary-detail/:type", async (req, res) => {
   const { type } = req.params;
@@ -3492,29 +3492,30 @@ router.get("/ui-summary-detail/:type", async (req, res) => {
 
 /**
  * GET /api/admin/ui-summaries-health
- * Step 5: Compact health snapshot for all summary types.
- * Returns operationalStatus, freshnessLabel, consecutiveFailures,
- * cooldownRemainingMs, builtAt, ageMs, rebuilding per type.
- * Intended for lightweight health checks and monitoring dashboards.
+ * Compact health snapshot for all summary types.
+ * DB-first architecture: all summaries written by dedicated jobs.
+ * Returns operationalStatus (healthy/stale/empty), freshnessLabel,
+ * writer, writtenByJob per type.
  *
- * Overall health is "ok" if all types are healthy or stale (no failures),
- * "degraded" if any type is degraded, "failing" if any type is failing.
+ * Overall health is "ok" if all types are healthy,
+ * "degraded" if any type is stale, "empty" if any type has no data.
  */
 router.get("/ui-summaries-health", async (_req, res) => {
   try {
     const snapshots = await getHealthSnapshot();
 
-    const hasFailingType   = snapshots.some((s) => s.operationalStatus === "failing");
-    const hasDegradedType  = snapshots.some((s) => s.operationalStatus === "degraded");
-    const overallHealth    = hasFailingType ? "failing"
-      : hasDegradedType ? "degraded"
-      : "ok";
+    const hasEmptyType   = snapshots.some((s) => s.operationalStatus === "empty");
+    const hasStaleType   = snapshots.some((s) => s.operationalStatus === "stale");
+    const overallHealth  = hasEmptyType ? "empty"
+      : hasStaleType ? "stale"
+      : "healthy";
 
     return res.json({
-      success:      true,
-      generatedAt:  new Date().toISOString(),
+      success:       true,
+      generatedAt:   new Date().toISOString(),
+      architecture:  "db-first",
       overallHealth,
-      types:        snapshots,
+      types:         snapshots,
     });
   } catch (error) {
     logger.error("Admin ui-summaries-health route error", { message: error.message });
