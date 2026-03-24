@@ -9,8 +9,10 @@
   Discovered entries are persisted in `tech_radar_entries` and surfaced via
   GET /api/admin/tech-radar and GET /api/admin/evolution-board.
 
-  Scheduled from server.js via scheduleTechRadarScan().
+  Run: node jobs/techRadar.job.js
 */
+
+require("dotenv").config();
 
 const { runJob } = require("../utils/jobRunner");
 const { scanTechRadar } = require("../services/techRadar.service");
@@ -49,3 +51,14 @@ async function runTechRadarJob() {
 }
 
 module.exports = { runTechRadarJob };
+
+// ── Standalone entry point (Railway cron) ──────────────────────────────────
+if (require.main === module) {
+  runTechRadarJob()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      const log = require("../utils/logger");
+      log.error("techRadar fatal", { message: err.message, stack: err.stack });
+      process.exit(1);
+    });
+}

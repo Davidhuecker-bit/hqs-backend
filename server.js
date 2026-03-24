@@ -77,14 +77,10 @@ const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repositor
 const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable } = require("./services/autonomyAudit.repository");
 const { initAgentForecastTable, initAgentsTable } = require("./services/agentForecast.repository");
 const { initDynamicWeightsTable } = require("./services/causalMemory.repository");
-const { runForecastVerificationJob } = require("./jobs/forecastVerification.job");
-const { runCausalMemoryJob } = require("./jobs/causalMemory.job");
 const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
-const { runTechRadarJob } = require("./jobs/techRadar.job");
 const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
-const { runDataCleanupJob } = require("./jobs/dataCleanup.job");
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
@@ -123,8 +119,6 @@ const DEFAULT_CORS_ORIGINS = [
 const STARTUP_DB_MAX_RETRIES    = Number(process.env.STARTUP_DB_MAX_RETRIES    || 10);
 const STARTUP_DB_RETRY_DELAY_MS = Number(process.env.STARTUP_DB_RETRY_DELAY_MS || 3000);
 
-const RUN_JOBS =
-  String(process.env.RUN_JOBS || "false").toLowerCase() === "true";
 const EXTRA_CORS_ORIGINS = String(process.env.CORS_ORIGINS || "")
   .split(",")
   .map((value) => value.trim())
@@ -747,14 +741,11 @@ app.listen(PORT, async () => {
     });
   });
 
-  if (RUN_JOBS) {
-    logger.info("RUN_JOBS=true -> starting background jobs inside API server");
-
-    scheduleDailyForecastVerification();
-    scheduleCausalMemoryRecalibration();
-    scheduleTechRadarScan();
-    scheduleDataCleanup();
-  }
+  // ── Background job schedulers REMOVED ─────────────────────────────────────
+  // Forecast verification, causal memory, tech-radar, and data-cleanup are
+  // now standalone job scripts in jobs/ and must be triggered via Railway
+  // cron services (e.g. npm run job:forecast-verification).
+  // The API server no longer schedules or runs any background jobs.
 
   const failedLabels = initErrors.map((e) => e.label);
   startupState.ready = true;
@@ -771,103 +762,3 @@ app.listen(PORT, async () => {
     logger.warn("[startup] tableHealth check failed", { message: thErr.message });
   });
 });
-
-/* =========================================================
-BACKGROUND JOB SCHEDULERS
-========================================================= */
-
-function msUntilNextLocalTime(targetHour, targetMinute) {
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(targetHour, targetMinute, 0, 0);
-  if (next <= now) next.setDate(next.getDate() + 1);
-  return next.getTime() - now.getTime();
-}
-
-/* =========================================================
-DAILY FORECAST VERIFICATION  (Prediction-Self-Audit)
-========================================================= */
-
-async function scheduleDailyForecastVerification() {
-  // Default: run at 03:00 (after markets close and 24h has passed for overnight forecasts)
-  const hour = Number(process.env.FORECAST_VERIFY_HOUR || 3);
-  const minute = Number(process.env.FORECAST_VERIFY_MINUTE || 0);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      await runForecastVerificationJob();
-    } catch (err) {
-      logger.error("Daily forecast verification failed", { message: err.message });
-    } finally {
-      scheduleDailyForecastVerification();
-    }
-  }, delay);
-}
-
-/* =========================================================
-   CAUSAL MEMORY RECALIBRATION  (Recursive Meta-Learning)
-========================================================= */
-
-async function scheduleCausalMemoryRecalibration() {
-  // Default: run at 04:00 (after forecast verification at 03:00)
-  const hour   = Number(process.env.CAUSAL_MEMORY_HOUR   || 4);
-  const minute = Number(process.env.CAUSAL_MEMORY_MINUTE || 0);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      await runCausalMemoryJob();
-    } catch (err) {
-      logger.error("Causal memory recalibration failed", { message: err.message });
-    } finally {
-      scheduleCausalMemoryRecalibration();
-    }
-  }, delay);
-}
-
-/* =========================================================
-   TECH-RADAR SCAN  (Innovation Scanner)
-========================================================= */
-
-async function scheduleTechRadarScan() {
-  // Default: run at 06:00 daily (after causal memory at 04:00)
-  const hour   = Number(process.env.TECH_RADAR_HOUR   || 6);
-  const minute = Number(process.env.TECH_RADAR_MINUTE || 0);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      await runTechRadarJob();
-    } catch (err) {
-      logger.error("Tech-Radar scan failed", { message: err.message });
-    } finally {
-      scheduleTechRadarScan();
-    }
-  }, delay);
-}
-
-/* =========================================================
-   DATA CLEANUP  (Stale Data Removal)
-========================================================= */
-
-async function scheduleDataCleanup() {
-  // Default: run at 02:00 daily (early morning, low traffic)
-  const hour   = Number(process.env.DATA_CLEANUP_HOUR   || 2);
-  const minute = Number(process.env.DATA_CLEANUP_MINUTE || 0);
-
-  const delay = msUntilNextLocalTime(hour, minute);
-
-  setTimeout(async () => {
-    try {
-      await runDataCleanupJob();
-    } catch (err) {
-      logger.error("Data cleanup job failed", { message: err.message });
-    } finally {
-      scheduleDataCleanup();
-    }
-  }, delay);
-}

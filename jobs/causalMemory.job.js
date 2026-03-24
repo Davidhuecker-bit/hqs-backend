@@ -6,8 +6,10 @@
   Runs periodically to evaluate 48-h-old verified forecasts and adjust
   the dynamic agent weights via causalMemory.repository.adjustAgentWeights().
 
-  Scheduled from server.js via scheduleCausalMemoryRecalibration().
+  Run: node jobs/causalMemory.job.js
 */
+
+require("dotenv").config();
 
 const { runJob } = require("../utils/jobRunner");
 const { adjustAgentWeights } = require("../services/causalMemory.repository");
@@ -46,3 +48,14 @@ async function runCausalMemoryJob() {
 }
 
 module.exports = { runCausalMemoryJob };
+
+// ── Standalone entry point (Railway cron) ──────────────────────────────────
+if (require.main === module) {
+  runCausalMemoryJob()
+    .then(() => process.exit(0))
+    .catch((err) => {
+      const log = require("../utils/logger");
+      log.error("causalMemory fatal", { message: err.message, stack: err.stack });
+      process.exit(1);
+    });
+}
