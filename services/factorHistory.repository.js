@@ -43,15 +43,9 @@ let _factorTableInitialized = false;
 async function initFactorTable() {
   if (_factorTableInitialized) return;
   _factorTableInitialized = true;
-  //
-  // IMPORTANT: Do NOT add ALTER TABLE ... ADD COLUMN statements here.
-  // ALTER TABLE acquires an AccessExclusiveLock on the table, even when the
-  // column already exists (IF NOT EXISTS only skips the write, not the lock).
-  // Running these on every startup causes lock-contention hangs when
-  // HQS-Backend and hqs-scraping-service start concurrently.
-  //
-  // All columns must be defined in the CREATE TABLE IF NOT EXISTS statement below.
 
+  // Step 1: Create the table with the original core schema if it does not exist yet.
+  // New deployments will receive the full HQS 2.x schema via the upgrade step below.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS factor_history (
       id SERIAL PRIMARY KEY,
@@ -75,37 +69,52 @@ async function initFactorTable() {
       portfolio_return FLOAT,
       factors JSONB,
 
-      -- HQS 2.0 Block 1: Data Quality, Confidence & Imputation meta
-      hqs_version TEXT,
-      confidence_score FLOAT,
-      data_quality_meta JSONB,
-      imputation_meta JSONB,
-
-      -- HQS 2.0 Block 2: Sector / Peer-Group Normalization meta
-      sector_template TEXT,
-      peer_context_available BOOLEAN,
-      sector_scoring_meta JSONB,
-
-      -- HQS 2.0 Block 3: Regime-based Weighting, Enhanced Stability & Liquidity
-      regime_weight_profile JSONB,
-      enhanced_stability_meta JSONB,
-      liquidity_meta JSONB,
-
-      -- HQS 2.1 Block 4: Explainable HQS, Versioning & Event-Awareness
-      explainable_tags JSONB,
-      version_reason TEXT,
-      event_awareness_meta JSONB,
-
-      -- HQS 2.2 Block 5: Shadow-HQS, Modellvergleich & Point-in-Time Basis
-      scoring_model_id TEXT,
-      shadow_hqs_score FLOAT,
-      shadow_delta FLOAT,
-      comparison_meta JSONB,
-      point_in_time_context JSONB,
-
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+
+  // Step 2: Idempotent schema upgrade inside a single transaction.
+  // Tables created before HQS 2.0/2.1/2.2 are missing the columns below.
+  // Each ADD COLUMN IF NOT EXISTS is a no-op when the column already exists.
+  // Wrapping all upgrades in one transaction acquires the table lock only once.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const upgrades = [
+      // HQS 2.0 Block 1: Data Quality, Confidence & Imputation meta
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS hqs_version TEXT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS confidence_score FLOAT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS data_quality_meta JSONB",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS imputation_meta JSONB",
+      // HQS 2.0 Block 2: Sector / Peer-Group Normalization meta
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS sector_template TEXT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS peer_context_available BOOLEAN",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS sector_scoring_meta JSONB",
+      // HQS 2.0 Block 3: Regime-based Weighting, Enhanced Stability & Liquidity
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS regime_weight_profile JSONB",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS enhanced_stability_meta JSONB",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS liquidity_meta JSONB",
+      // HQS 2.1 Block 4: Explainable HQS, Versioning & Event-Awareness
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS explainable_tags JSONB",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS version_reason TEXT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS event_awareness_meta JSONB",
+      // HQS 2.2 Block 5: Shadow-HQS, Modellvergleich & Point-in-Time Basis
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS scoring_model_id TEXT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS shadow_hqs_score FLOAT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS shadow_delta FLOAT",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS comparison_meta JSONB",
+      "ALTER TABLE factor_history ADD COLUMN IF NOT EXISTS point_in_time_context JSONB",
+    ];
+    for (const sql of upgrades) {
+      await client.query(sql);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
 
   if (logger?.info) logger.info("factor_history ready (FULL QUANT MODE)");
   else console.log("✅ factor_history ready (FULL QUANT MODE)");
@@ -114,10 +123,9 @@ async function initFactorTable() {
 /* =========================================================
    SAVE SINGLE STOCK SNAPSHOT
    Writes the full HQS 2.2 Block-5 schema in one INSERT.
-   The table is guaranteed to exist with the full schema because
-   initFactorTable() (CREATE TABLE IF NOT EXISTS with all columns)
-   is called from ensureTablesExist() before any snapshot processing.
-   No fallback cascade is needed or appropriate here.
+   The table is guaranteed to have the full schema because
+   initFactorTable() runs CREATE TABLE + idempotent ALTER TABLE upgrades
+   before any snapshot processing. No fallback cascade exists.
 ========================================================= */
 
 async function saveScoreSnapshot({
