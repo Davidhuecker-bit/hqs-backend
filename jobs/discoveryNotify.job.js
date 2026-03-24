@@ -5,6 +5,7 @@ require("dotenv").config();
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { acquireLock } = require("../services/jobLock.repository");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 const { discoverStocks } = require("../services/discoveryEngine.service");
 const {
@@ -970,6 +971,13 @@ async function runDiscoveryNotify() {
 
     logger.info("Discovery notify complete", {
       created, skipped, gatedOut, users: users.length, pick: pick.symbol,
+    });
+
+    await savePipelineStage("discovery_notify", {
+      inputCount: users.length,
+      successCount: created,
+      failedCount: 0,
+      skippedCount: skipped + gatedOut,
     });
 
     return {

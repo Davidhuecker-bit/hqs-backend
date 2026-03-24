@@ -122,6 +122,7 @@ const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyP
 // HQS 2.0 Block 3: Regime / Stability / Liquidity meta from factor history
 // HQS 2.1 Block 4: Explainability, Versioning & Event-Awareness meta from factor history
 const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta, getRecentHqsExplainabilityMeta, getRecentHqsShadowMeta } = require("../services/factorHistory.repository");
+const { getServiceDiagnostics } = require("../services/serviceDiagnostics.service");
 
 const router = express.Router();
 
@@ -1551,10 +1552,22 @@ router.get("/interface-state", async (req, res) => {
 router.get("/pipeline-status", async (req, res) => {
   try {
     const raw = await getPipelineStatusWithPersistence();
-    // Ensure all expected stage keys are present with safe defaults
-    const stages = ["universe", "snapshot", "advancedMetrics", "hqsScoring", "outcome"];
+    // ── Merge runtime stages + all persisted stages ─────────────────────────
+    // The old code only exposed 5 hardcoded stages. Now we expose every stage
+    // that appears either in the runtime data or in the DB-persisted rows.
+    const ALL_KNOWN_STAGES = [
+      "universe", "snapshot", "advancedMetrics", "hqsScoring", "outcome",
+      "market_news_refresh", "universe_refresh", "build_entity_map",
+      "daily_briefing", "summary_refresh",
+      "forecast_verification", "causal_memory", "tech_radar",
+      "news_lifecycle_cleanup", "discovery_notify", "data_cleanup",
+    ];
+    const seenStages = new Set([
+      ...ALL_KNOWN_STAGES,
+      ...Object.keys(raw?.stages ?? {}),
+    ]);
     const status = { stages: {} };
-    for (const stage of stages) {
+    for (const stage of seenStages) {
       const s = raw?.stages?.[stage] ?? null;
       status.stages[stage] = {
         inputCount:    s?.inputCount    ?? 0,
@@ -3575,6 +3588,29 @@ router.post("/refresh-summary/:type", async (req, res) => {
     });
   } catch (error) {
     logger.error(`Admin refresh-summary/${type} route error`, { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   SERVICE DIAGNOSTICS
+   GET /api/admin/service-diagnostics
+   Comprehensive Railway service mapping, job health, table freshness,
+   demo_portfolio Pflichtquellen, and Writer→Reader matrix.
+
+   Answers:
+     - Which job last ran and when
+     - Which table was last written to
+     - Which Pflichtquelle for demo_portfolio is stale/empty
+     - Whether a problem comes from: writer missing / stale data / wrong mapping
+========================================================= */
+
+router.get("/service-diagnostics", async (_req, res) => {
+  try {
+    const report = await getServiceDiagnostics();
+    return res.json({ success: true, ...report });
+  } catch (error) {
+    logger.error("Admin service-diagnostics route error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });

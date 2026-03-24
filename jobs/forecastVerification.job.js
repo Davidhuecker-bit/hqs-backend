@@ -27,6 +27,7 @@ const {
   acquireLock,
   initJobLocksTable,
 } = require("../services/jobLock.repository");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 // Module-level pool for DB-first price lookups (avoids live API calls when
 // a recent market_snapshots entry is available).
@@ -145,7 +146,13 @@ async function runForecastVerificationJob() {
       logger.warn("forecastVerification: 7d pass failed", { message: err7d.message });
     }
 
-    return { verified24h, verified7d, failedCount, processedCount: verified24h + verified7d };
+    const processedCount = verified24h + verified7d;
+    await savePipelineStage("forecast_verification", {
+      inputCount: processedCount + failedCount,
+      successCount: processedCount,
+      failedCount,
+    });
+    return { verified24h, verified7d, failedCount, processedCount };
   });
 }
 

@@ -24,6 +24,7 @@ const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { initJobLocksTable, acquireLock } = require("../services/jobLock.repository");
+const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -185,6 +186,13 @@ async function run() {
       jobLocksDeleted:     jobLocks.deleted     ?? 0,
       staleStages:         pipelineAudit.staleStages ?? [],
     };
+
+    const totalCleaned = summary.universeScanDeleted + summary.jobLocksDeleted;
+    await savePipelineStage("data_cleanup", {
+      inputCount: totalCleaned + summary.staleStages.length,
+      successCount: totalCleaned,
+      failedCount: 0,
+    });
 
     logger.info("[job:dataCleanup] cleanup complete", summary);
     return summary;
