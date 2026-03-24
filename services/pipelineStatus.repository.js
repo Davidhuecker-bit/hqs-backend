@@ -77,7 +77,7 @@ async function ensurePipelineStatusTable() {
         ALTER TABLE pipeline_status
           ADD COLUMN IF NOT EXISTS last_healthy_run TIMESTAMPTZ;
         ALTER TABLE pipeline_status
-          ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unknown';
+          ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'unknown';
         ALTER TABLE pipeline_status
           ADD COLUMN IF NOT EXISTS error_message TEXT;
       `)

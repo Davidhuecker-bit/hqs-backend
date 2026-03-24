@@ -1113,14 +1113,14 @@ async function _buildDemoPortfolio() {
   result.builtAt = new Date().toISOString();
   result.buildDurationMs = durationMs;
   result.source = "adminDemoPortfolio.service";
-  result.dataAgeSec = Math.round(durationMs / 1000);
+  result.buildDurationSec = Math.round(durationMs / 1000);
 
   // Determine partial status: only "error" or "missing" (both core absent) counts as partial
   const isPartial = result.dataStatus === "error" || result.dataStatus === "missing";
   result.partial = isPartial;
 
   // Freshness classification for the overall portfolio
-  const greenRatio = (result.summary?.green || 0) / Math.max(result.summary?.total || 1, 1);
+  const greenRatio = (result.summary?.green || 0) / (result.summary?.total || 1);
   if (greenRatio >= 0.5) {
     result.freshness = "fresh";
   } else if (result.dataStatus === "missing") {
