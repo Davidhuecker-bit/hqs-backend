@@ -1124,4 +1124,15 @@ async function _buildDemoPortfolio() {
   return result;
 }
 
-module.exports = { getAdminDemoPortfolio, DEMO_ADMIN_SYMBOLS };
+/**
+ * Rebuild the demo portfolio and persist to ui_summaries.
+ * Called by the central uiSummaryRefresh orchestration layer (Step 4).
+ * Returns the built portfolio result or null on failure.
+ *
+ * @returns {Promise<object|null>}
+ */
+async function refreshDemoPortfolio() {
+  return _buildDemoPortfolio();
+}
+
+module.exports = { getAdminDemoPortfolio, refreshDemoPortfolio, DEMO_ADMIN_SYMBOLS };

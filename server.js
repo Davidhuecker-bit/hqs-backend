@@ -45,17 +45,16 @@ const {
 const { buildWorldState } = require("./services/worldState.service");
 
 /* =========================================================
-STEP 3 – SUMMARY / READ-MODEL LAYER
+STEP 4 – SUMMARY REFRESH ORCHESTRATION LAYER
+(replaces Step 3 individual builder imports)
 ========================================================= */
 
 const { ensureUiSummariesTable } = require("./services/uiSummary.repository");
 const {
-  getOrBuildMarketSummary,
-  refreshMarketSummary,
-} = require("./services/marketSummary.builder");
-const {
-  refreshGuardianStatusSummary,
-} = require("./services/guardianStatusSummary.builder");
+  getOrBuild,
+  forceRefresh: _summaryForceRefresh,
+  SUPPORTED_TYPES: _summarySupportedTypes,
+} = require("./services/uiSummaryRefresh.service");
 
 /* =========================================================
 ROUTES
@@ -67,7 +66,6 @@ const notificationsRoutes = require("./routes/notifications.routes");
 const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
 const secEdgarRoutes = require("./routes/secEdgar.routes");
-const { getAdminDemoPortfolio } = require("./services/adminDemoPortfolio.service");
 
 /* =========================================================
 DISCOVERY
@@ -175,11 +173,14 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/market-news", marketNewsRoutes);
 app.use("/api/sec-edgar", secEdgarRoutes);
 
-/* Alias: flat path used by some clients */
+/* Alias: flat path used by some clients – routed via central orchestration (Step 4) */
 app.get("/api/admin-demo-portfolio", async (_req, res) => {
   try {
-    const result = await getAdminDemoPortfolio();
-    return res.json(result);
+    const result = await getOrBuild("demo_portfolio");
+    if (!result.payload) {
+      throw new Error(result.lastError ?? "Demo portfolio payload unavailable");
+    }
+    return res.json(result.payload);
   } catch (error) {
     logger.error("admin-demo-portfolio alias route error", { message: error.message });
     return res.json({
@@ -322,16 +323,17 @@ app.get("/api/market", async (req, res) => {
     let summaryMeta = null;
 
     if (!symbol) {
-      // List path: read from prepared DB summary (Step 3 read-model layer).
-      // Falls back to live aggregation on the first cold start.
-      const summary = await getOrBuildMarketSummary({ limit: 250 });
-      const rawStocks = Array.isArray(summary.stocks) ? summary.stocks : [];
+      // List path: read from prepared DB summary via central orchestration (Step 4).
+      // Falls back to live build on cold start; stale data served async refresh.
+      const result = await getOrBuild("market_list");
+      const rawStocks = Array.isArray(result.payload?.stocks) ? result.payload.stocks : [];
       stocks = rawStocks.map(formatMarketItem).filter(Boolean).slice(0, limit);
       summaryMeta = {
-        source:    "ui_summary",
-        builtAt:   summary.builtAt,
-        freshness: summary.freshness,
-        isPartial: summary.isPartial,
+        source:         "ui_summary",
+        builtAt:        result.builtAt,
+        freshness:      result.freshnessLabel,
+        isPartial:      result.isPartial,
+        rebuilding:     result.rebuilding,
       };
     } else {
       // Single-symbol path: bypass summary (symbol-level data is always live)
@@ -706,14 +708,14 @@ app.listen(PORT, async () => {
     });
   });
 
-  // Step 3: warm up UI summary layer – build initial market + guardian summaries
-  // so the first /api/market request is served from prepared data.
-  refreshMarketSummary().catch((err) => {
-    logger.warn("[startup] initial marketSummary build failed", { message: err.message });
-  });
-  refreshGuardianStatusSummary().catch((err) => {
-    logger.warn("[startup] initial guardianStatusSummary build failed", { message: err.message });
-  });
+  // Step 4: warm up all ui_summaries via central orchestration
+  // so the first requests to /api/market, /api/admin/demo-portfolio,
+  // and /api/admin/guardian-status-summary are served from prepared data.
+  for (const summaryType of _summarySupportedTypes) {
+    _summaryForceRefresh(summaryType).catch((err) => {
+      logger.warn(`[startup] initial summary build failed for '${summaryType}'`, { message: err.message });
+    });
+  }
 
   if (RUN_JOBS) {
     logger.info("RUN_JOBS=true -> starting background jobs inside API server");
