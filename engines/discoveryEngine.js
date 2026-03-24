@@ -83,13 +83,6 @@ function discoverOpportunities(symbol, marketData, features, advanced) {
 
   const discoveries = [];
 
-  // Guard: advanced (trendData) is null when historical prices are unavailable
-  // (< 30 data points or fetch error). Treat missing metrics as zeros so the
-  // symbol degrades gracefully instead of throwing.
-  if (!advanced || typeof advanced !== "object") {
-    advanced = {};
-  }
-
   const trend = safe(advanced.trend);
   const acceleration = safe(advanced.acceleration);
   const volatility = safe(advanced.volatilityAnnual);
