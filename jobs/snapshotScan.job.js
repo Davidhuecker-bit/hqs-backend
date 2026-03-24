@@ -28,6 +28,7 @@ const { initJobLocksTable } = require("../services/jobLock.repository");
 const {
   initOutcomeTrackingTable,
 } = require("../services/outcomeTracking.repository");
+const { refreshAndPersistFxRate } = require("../services/fx.service");
 
 // Shared pool for DB readiness probe inside this job process
 const pool = new Pool({
@@ -49,6 +50,11 @@ async function run() {
       logger.info("snapshotScan: ensureTablesExist start");
       await ensureTablesExist();
       logger.info("snapshotScan: ensureTablesExist done");
+
+      // Actively refresh FX rate so fx_rates table always has a recent row
+      logger.info("snapshotScan: refreshAndPersistFxRate start");
+      const fxRate = await refreshAndPersistFxRate();
+      logger.info("snapshotScan: refreshAndPersistFxRate done", { fxRate });
 
       logger.info("snapshotScan: buildMarketSnapshot start");
       await buildMarketSnapshot();

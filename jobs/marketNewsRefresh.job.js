@@ -40,6 +40,9 @@ const {
 } = require("../services/newsIntelligence.service");
 
 const marketNewsRepository = require("../services/marketNews.repository");
+const {
+  savePipelineStage,
+} = require("../services/pipelineStatus.repository");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -345,6 +348,15 @@ async function run() {
   if (logger?.info) {
     logger.info("Market news refresh completed", summary);
   }
+
+  // Persist pipeline status for monitoring
+  savePipelineStage("market_news_refresh", {
+    inputCount:   summary.symbolsLoaded,
+    successCount: summary.inserted,
+    failedCount:  summary.insertErrors,
+    skippedCount: summary.duplicatesSkipped,
+    status:       summary.inserted > 0 ? "success" : "failed",
+  }).catch(() => {});
 
   return {
     skipped: false,
