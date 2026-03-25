@@ -28,6 +28,9 @@ const MIN_POINTS = 30;
 // How far back to fetch from Massive when backfilling (2 years)
 const BACKFILL_FETCH_DAYS = 730;
 
+// Milliseconds per calendar day (24 * 60 * 60 * 1000)
+const MS_PER_DAY = 86400000;
+
 /**
  * historicalService – Historical price data reader with lazy backfill.
  *
@@ -63,7 +66,7 @@ async function getHistoricalPrices(symbol, period) {
       try {
         const today = new Date();
         const toDate   = today.toISOString().slice(0, 10);
-        const fromDate = new Date(today.getTime() - BACKFILL_FETCH_DAYS * 86400000)
+        const fromDate = new Date(today.getTime() - BACKFILL_FETCH_DAYS * MS_PER_DAY)
           .toISOString().slice(0, 10);
 
         const candles = await fetchMassiveHistoricalCandles(sym, fromDate, toDate);
