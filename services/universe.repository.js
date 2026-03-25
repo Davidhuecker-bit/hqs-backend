@@ -12,7 +12,10 @@ const pool = getSharedPool();
 // Cursor Keys
 const CURSOR_KEY_SNAPSHOT = "snapshot_scanner_cursor";
 
+let _universeTablesReady = false;
+
 async function initUniverseTables() {
+  if (_universeTablesReady) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS universe_symbols (
       id SERIAL PRIMARY KEY,
@@ -54,6 +57,7 @@ async function initUniverseTables() {
   );
 
   logger.info("Universe tables ensured");
+  _universeTablesReady = true;
 }
 
 function cleanText(v) {
