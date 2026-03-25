@@ -7,7 +7,7 @@
   "steps": {
     "install": {
       "commands": [
-        "npm ci",
+        "...",
         "pip3 install -r requirements.txt"
       ]
     }
