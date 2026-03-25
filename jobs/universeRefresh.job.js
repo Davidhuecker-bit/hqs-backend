@@ -23,20 +23,21 @@ async function run() {
       const won = await acquireLock("universe_refresh_job", 2 * 60 * 60);
       if (!won) {
         logger.warn("[job:universeRefresh] skipped – lock held", { skipReason: "lock_held" });
-        return { processedCount: 0 };
+        return { processedCount: 0, skipped: true, skipReason: "lock_held" };
       }
 
       try {
       const result = await refreshUniverse();
-      const processedCount = result?.inserted ?? result?.total ?? 0;
+      const processedCount = result?.insertedOrUpdated ?? 0;
 
       // Persist pipeline status for monitoring
+      // refreshUniverse() throws on any failure so failedCount/skippedCount are always 0 here
       savePipelineStage("universe_refresh", {
-        inputCount:   result?.total ?? processedCount,
+        inputCount:   result?.activeCount ?? processedCount,
         successCount: processedCount,
-        failedCount:  result?.failed ?? 0,
-        skippedCount: result?.skipped ?? 0,
-        status:       processedCount > 0 ? "success" : "failed",
+        failedCount:  0,
+        skippedCount: 0,
+        status:       "success",
       }).catch(() => {});
 
       return { processedCount, ...result };
