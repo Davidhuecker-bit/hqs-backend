@@ -51,7 +51,6 @@ const ALL_TABLES = [
   "sec_edgar_company_facts",
   "sec_edgar_filing_signals",
   "sis_history",
-  "system_evolution_proposals",
   "tech_radar_entries",
   "universe_scan_state",
   "universe_symbols",

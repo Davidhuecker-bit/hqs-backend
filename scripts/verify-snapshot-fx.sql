@@ -78,7 +78,7 @@ ORDER BY created_at DESC;
 
 -- ─────────────────────────────────────────────────────────────
 -- 5. Remaining legacy USD rows (pre-deploy / not yet backfilled)
---    Run backfillSnapshotFx.job.js to fix these.
+--    These rows were created before the EUR write-path was introduced.
 -- ─────────────────────────────────────────────────────────────
 SELECT
   COUNT(*)  AS legacy_usd_rows_to_backfill

@@ -81,7 +81,6 @@ const ALLOWED_TABLES = new Set([
   "sec_edgar_filing_signals",
   // Tech / evolution
   "tech_radar_entries",
-  "system_evolution_proposals",
   // History / SIS
   "sis_history",
   // Read model
@@ -354,12 +353,6 @@ const TABLE_CONFIGS = [
   // ── Tech / evolution ──────────────────────────────────────────────────────
   {
     name: "tech_radar_entries",
-    tsColumns: ["created_at"],
-    minRowsGreen:  1,
-    minRowsYellow: 0,
-  },
-  {
-    name: "system_evolution_proposals",
     tsColumns: ["created_at"],
     minRowsGreen:  1,
     minRowsYellow: 0,

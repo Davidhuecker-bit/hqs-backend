@@ -258,7 +258,7 @@ const TABLE_ASSESSMENT = {
   },
   prices_daily: {
     status: "active",
-    reason: "Canonical historical daily close table. Writer: historicalService.js (lazy Massive backfill). Reader: historicalService.getHistoricalPrices → advancedMetrics.",
+    reason: "Canonical historical daily close table. Writer: Python Historical Backfill (separate Railway service). Reader: historicalService.getHistoricalPrices → advancedMetrics. Empty until Historical Backfill service has run.",
     demoCritical: false,
   },
   sec_edgar_companies: {
@@ -274,11 +274,6 @@ const TABLE_ASSESSMENT = {
   sec_edgar_filing_signals: {
     status: "expected_empty_initially",
     reason: "Populated by SEC Edgar service. Future expansion scope.",
-    demoCritical: false,
-  },
-  system_evolution_proposals: {
-    status: "writer_exists_optional",
-    reason: "Written by Tech Radar job (techRadar.job.js → techRadar.service.scanTechRadar). May be empty if no RSS entries matched.",
     demoCritical: false,
   },
   user_devices: {
@@ -603,7 +598,6 @@ async function getServiceDiagnostics() {
         "Each cron service MUST set its own cron schedule in Railway dashboard",
         "healthcheckPath=/health in railway.toml only applies to 'HQS Backend' – Railway will mark cron services as unhealthy (expected, no action needed)",
         "If Railway forces startCommand='npm start' globally, override per-service in Railway dashboard settings",
-        "Legacy duplicate 'cron-markt-news-sammeln' should be removed in Railway if 'Cron Markt-News' exists",
       ],
     },
   };

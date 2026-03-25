@@ -7,7 +7,7 @@
 
 ## Overview
 
-The HQS backend uses a Railway-hosted PostgreSQL database with **36 production tables** (including the `ui_summaries` read-model and `universe_scan_state` tracking table). Tables are organized into logical groups corresponding to the major data-flow chains.
+The HQS backend uses a Railway-hosted PostgreSQL database with **35 production tables** (including the `ui_summaries` read-model and `universe_scan_state` tracking table). Tables are organized into logical groups corresponding to the major data-flow chains.
 
 ---
 
@@ -63,12 +63,12 @@ Massive/TwelveData API
 
 | Table | Purpose | Written By | Read By | Required |
 |-------|---------|-----------|---------|---------|
-| `pipeline_status` | Per-stage run counts (universe→snapshot→scoring→outcome) | `pipelineStatus.repository.savePipelineStage()` | `/api/admin/pipeline-status` | ✅ Yes (5 rows expected) |
+| `pipeline_status` | Per-stage run counts (universe→snapshot→scoring→outcome + all cron jobs) | `pipelineStatus.repository.savePipelineStage()` | `/api/admin/pipeline-status` | ✅ Yes (19 stages) |
 | `job_locks` | Distributed job deduplication locks | `jobLock.repository.acquireLock()` | All background jobs | ⚠️ Optional (transient) |
 | `admin_snapshots` | JSONB admin state snapshots for diagnostics | `adminSnapshots.repository` | `/api/admin/snapshots` | ⚠️ Optional |
 
 ### `pipeline_status` Columns
-- `stage` – one of: `universe`, `snapshot`, `advancedMetrics`, `hqsScoring`, `outcome`
+- `stage` – one of 19 allowed stages (universe, snapshot, advancedMetrics, hqsScoring, outcome, market_news_refresh, universe_refresh, build_entity_map, daily_briefing, summary_refresh, forecast_verification, causal_memory, tech_radar, news_lifecycle_cleanup, discovery_notify, data_cleanup, ui_market_list, ui_demo_portfolio, ui_guardian_status)
 - `last_run_at` – timestamp of most recent run (any result)
 - `last_healthy_run` – timestamp of most recent run with `success_count > 0` (**new**)
 - `input_count`, `success_count`, `failed_count`, `skipped_count` – last run counts
@@ -120,8 +120,8 @@ Massive/TwelveData API
 
 | Table | Purpose | Written By | Read By | Required |
 |-------|---------|-----------|---------|---------|
-| `discovery_history` | Discovery engine results (scanned stocks and signals) | `discoveryLearning.job` | `discoveryEngine.service`, `forwardLearning.service` | ⚪ Optional |
-| `learning_runtime_state` | Discovery learning runtime state (key/value store) | `discoveryLearning.repository` | `discoveryLearning.job` | ⚪ Optional (empty until first learning cycle) |
+| `discovery_history` | Discovery engine results (scanned stocks and signals) | `discoveryEngine.service` → `discoveryLearning.repository` | `discoveryEngine.service`, `forwardLearning.service` | ⚪ Optional |
+| `learning_runtime_state` | Discovery learning runtime state (key/value store) | `discoveryLearning.repository` | `discoveryLearning.service` | ⚪ Optional (empty until first learning cycle) |
 
 ---
 
@@ -143,12 +143,11 @@ Massive/TwelveData API
 
 ---
 
-## 11. Tech & Evolution
+## 11. Tech Radar
 
 | Table | Purpose | Written By | Read By | Required |
 |-------|---------|-----------|---------|---------|
-| `tech_radar_entries` | Tech radar scan results (innovation tracking) | `techRadar.job` → `techRadar.service` | `/api/admin/tech-radar` | ⚪ Optional |
-| `system_evolution_proposals` | System evolution proposals from tech radar | `techRadar.service` | `/api/admin/tech-radar` | ⚪ Optional |
+| `tech_radar_entries` | Tech radar scan results (innovation tracking) | `techRadar.job` → `techRadar.service` | `/api/admin/tech-radar`, `/api/admin/evolution-board` | ⚪ Optional |
 
 ---
 
@@ -179,7 +178,7 @@ Massive/TwelveData API
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/admin/table-health` | Traffic-light status for all 36 tables (green/yellow/red) |
+| `GET /api/admin/table-health` | Traffic-light status for all 35 tables (green/yellow/red) |
 | `GET /api/admin/data-flow-health` | Comprehensive chain-level freshness for all 8 data flows |
 | `GET /api/admin/pipeline-status` | Per-stage pipeline run counts with `last_healthy_run` |
 | `GET /api/admin/ui-summaries` | Freshness + rebuild status for all 3 UI summary types |
@@ -192,7 +191,7 @@ Massive/TwelveData API
 
 | Script | Description |
 |--------|-------------|
-| `node scripts/database-health-check.js` | Connection check + row counts for all 34 base tables |
+| `node scripts/database-health-check.js` | Connection check + row counts for all 33 base tables |
 | `node scripts/data-chain-health.js` | Deep diagnostic: snapshot↔HQS alignment, FX, pipeline |
 | `node scripts/data-chain-health.js --fix` | Auto-repair: backfill FX, init agents, clean pipeline |
 | `node scripts/db-inventory.js` | Full integrity check: existence, columns, cross-table integrity |

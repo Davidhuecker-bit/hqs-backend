@@ -118,7 +118,6 @@ LIMIT 1;
 **How to fix:**
 1. Set `FX_STATIC_USD_EUR=0.92` in Railway env vars (emergency fallback)
 2. Set `FX_USD_EUR_URL` if using custom FX provider
-3. Run backfillSnapshotFx.job to populate fx_rates from existing snapshots
 
 **Verification:**
 ```sql
@@ -134,11 +133,12 @@ ORDER BY created_at DESC LIMIT 10;
 
 ## Intentionally Empty Tables (Features Not Yet Active)
 
-### 1. `prices_daily` - NOT IMPLEMENTED YET
-**Purpose**: Daily OHLCV historical data for backtesting
-**Current State**: Table exists but NO write path implemented
-**Reason**: Historical data currently loaded on-demand via `loadHistoricalPrices()`, not persisted
-**Action**: None needed - feature planned for future
+### 1. `prices_daily` - ACTIVE (Python Historical Backfill)
+**Purpose**: Daily OHLCV historical data for advanced metrics and backtesting
+**Current State**: Table schema exists, writer is the separate Python Historical Backfill service
+**Write Path**: `python/historical-backfill/` service → `pricesDaily.repository.upsertPricesDailyBatch()`
+**Read Path**: `historicalService.getHistoricalPrices()` → `advancedMetrics`
+**Action**: Deploy the Historical Backfill service as a separate Railway service (see `python/README.md`). Table will be empty until service runs.
 
 ### 2. `sec_edgar_companies` + `sec_edgar_filing_signals` - CONDITIONAL
 **Purpose**: SEC filing analysis for fundamental signals
@@ -285,7 +285,6 @@ LIMIT 20;
 **Solution**: 
 1. Set `FX_STATIC_USD_EUR=0.92` in env (prevents future snapshot loss)
 2. Check Railway logs for "fx: could not persist last-known-good rate" warnings
-3. Run backfillSnapshotFx.job to populate fx_rates from existing snapshots
 
 ### Issue: "Universe shows 5000 symbols but only 80 processed"
 **Diagnosis**: NOT A BUG - This is batch pagination working correctly
@@ -298,7 +297,7 @@ LIMIT 20;
 
 ### Issue: "prices_daily, sec_edgar_*, agents are empty"
 **Diagnosis**: Features not active or low frequency
-**Solution**: See "Intentionally Empty Tables" section above - mostly OK to be empty
+**Solution**: `prices_daily` requires the Python Historical Backfill service (see `python/README.md`). sec_edgar_* requires opt-in via ENABLE_SEC_EDGAR. agents are populated on first causal memory cycle.
 
 ## Environment Variables Checklist
 
@@ -382,7 +381,7 @@ WHERE base_currency = 'USD' AND quote_currency = 'EUR';
 5. 🔴 universe_symbols empty or stale → Check universeRefresh.job
 
 **Intentionally empty = OK:**
-- prices_daily (feature not implemented)
+- prices_daily (empty until Python Historical Backfill service deployed)
 - sec_edgar_* (feature not enabled)
 - automation_audit (autonomous mode disabled)
 - autonomy_audit (autonomous mode disabled)

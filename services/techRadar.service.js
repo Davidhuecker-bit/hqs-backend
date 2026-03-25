@@ -117,25 +117,6 @@ async function initTechRadarTable() {
 }
 
 /* =========================================================
-   SYSTEM EVOLUTION PROPOSALS TABLE INIT
-========================================================= */
-
-async function initSystemEvolutionProposalsTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS system_evolution_proposals (
-      id                    SERIAL PRIMARY KEY,
-      title                 VARCHAR(255),
-      description           TEXT,
-      suggested_code_snippet TEXT,
-      impact_score          FLOAT,
-      created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  if (logger?.info) logger.info("system_evolution_proposals table ready");
-}
-
-/* =========================================================
    RSS FETCH + PARSE
 ========================================================= */
 
@@ -477,7 +458,6 @@ async function markEntriesSeen() {
 
 module.exports = {
   initTechRadarTable,
-  initSystemEvolutionProposalsTable,
   scanTechRadar,
   getTechRadarEntries,
   getEvolutionBoard,

@@ -106,7 +106,8 @@ Guardian-Status nutzt nur:
 
 ## Offene Restprobleme
 
-1. **market_advanced_metrics** wird nur via `snapshotScan → historicalService` geschrieben – kein separater Cron
+1. **market_advanced_metrics** wird nur via `snapshotScan → historicalService` geschrieben – benötigt gefüllte `prices_daily` (via Python Historical Backfill)
 2. **outcome_tracking** wird passiv via snapshotScan geschrieben – Timing-abhängig
 3. **FX API** (exchangerate.host) kann ausfallen → Static-Fallback (`FX_STATIC_USD_EUR` Env) empfohlen
 4. **Daily Briefing** hängt von `briefing_users` ab – muss manuell/admin geseeded werden
+5. **prices_daily** wird vom Python Historical Backfill Service befüllt (separater Railway Service). Ohne diesen Service sind `market_advanced_metrics` auf Snapshot-Daten begrenzt.
