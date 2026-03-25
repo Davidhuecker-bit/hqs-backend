@@ -57,8 +57,14 @@ async function run() {
       logger.info("snapshotScan: refreshAndPersistFxRate done", { fxRate });
 
       logger.info("snapshotScan: buildMarketSnapshot start");
-      await buildMarketSnapshot();
-      logger.info("snapshotScan: buildMarketSnapshot done");
+      const result = await buildMarketSnapshot();
+      logger.info("snapshotScan: buildMarketSnapshot done", {
+        processedCount: result?.processedCount ?? 0,
+        skipped: result?.skipped ?? false,
+        skipReason: result?.skipReason,
+      });
+
+      return result;
     },
     { pool, dbRetries: 5, dbDelayMs: 3000 }
   );

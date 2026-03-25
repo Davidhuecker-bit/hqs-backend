@@ -82,6 +82,21 @@ async function runJob(name, fn, opts = {}) {
         ? (result.processedCount ?? result.processed ?? result.count ?? 0)
         : 0;
 
+    // Propagate skip signals from the job body (e.g. lock-blocked runs)
+    const bodySkipped = result && typeof result === "object" && result.skipped === true;
+    const bodySkipReason = bodySkipped ? result.skipReason : undefined;
+
+    if (bodySkipped) {
+      logger.warn(`[job:${name}] skipped`, {
+        startedAt,
+        finishedAt,
+        durationMs,
+        processedCount,
+        skipReason: bodySkipReason,
+      });
+      return { success: true, durationMs, processedCount, skipped: true, skipReason: bodySkipReason };
+    }
+
     logger.info(`[job:${name}] finished`, {
       startedAt,
       finishedAt,

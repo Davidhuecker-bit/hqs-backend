@@ -78,7 +78,7 @@ const {
   RUNTIME_STATE_META_LEARNING_KEY,
 } = require("./discoveryLearning.repository");
 
-const { initJobLocksTable, acquireLock } = require("./jobLock.repository");
+const { initJobLocksTable, acquireLock, releaseLock } = require("./jobLock.repository");
 const { initMarketNewsTable } = require("./marketNews.repository");
 const { initFactorTable } = require("./factorHistory.repository");
 const {
@@ -917,10 +917,12 @@ async function buildMarketSnapshot() {
 
   if (!won) {
     logger.warn("Snapshot job skipped (lock held)");
-    return;
+    return { processedCount: 0, skipped: true, skipReason: "lock_held" };
   }
 
   logger.info("Building market snapshot...");
+
+  try {
 
   const summary = {
     totalActiveSymbols: 0,
@@ -961,7 +963,7 @@ async function buildMarketSnapshot() {
       health,
       recommendations,
     });
-    return;
+    return { processedCount: 0, skipped: true, skipReason: "no_candidates" };
   }
 
   let scoringActiveNewsBySymbol = {};
@@ -1651,6 +1653,15 @@ async function buildMarketSnapshot() {
       skippedCount: 0,
     }),
   ]);
+
+  return { processedCount: summary.snapshotsSaved };
+
+  } finally {
+    // Always release lock so next cron run can proceed immediately
+    await releaseLock("snapshot_job").catch((err) => {
+      logger.warn("snapshot_job lock release failed in finally", { message: err?.message });
+    });
+  }
 }
 
 /* =========================================================
