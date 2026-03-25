@@ -2,7 +2,7 @@
 
 // services/pricesDaily.repository.js
 // Repository for the prices_daily table – canonical historical daily close prices.
-// Writer: historicalService.js (lazy backfill from Massive on demand).
+// Writer: jobs/historicalBackfill.job.py (scheduled Historical Backfill cron job).
 // Reader: historicalService.js (getHistoricalPrices).
 
 const { Pool } = require("pg");

@@ -57,6 +57,7 @@ const ALLOWED_STAGES = new Set([
   "ui_market_list",
   "ui_demo_portfolio",
   "ui_guardian_status",
+  "historical_backfill",
 ]);
 
 let tableReady = false;
