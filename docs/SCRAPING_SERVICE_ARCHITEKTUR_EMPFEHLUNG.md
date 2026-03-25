@@ -44,12 +44,14 @@ Der Startup-Hänger durch concurrent `ALTER TABLE` Operations ist durch PR #80 *
 | **forecastVerification.job.js** | Prediction Self-Audit | Täglich 3:00 AM | ✅ Ja |
 | **causalMemory.job.js** | Meta-Learning Rekalibrierung | Täglich 4:00 AM | ✅ Ja |
 | **techRadar.job.js** | Innovation Scanner | Täglich 6:00 AM | ✅ Ja |
-| **discoveryLearning.job.js** | Discovery Evaluation | Täglich 11:00 AM | ✅ Ja |
-| **snapshotScan.job.js** | Batch Snapshot Scanning | Ad-hoc via CLI | ❌ Nein |
-| **dailyBriefing.job.js** | Daily Market Briefing | Ad-hoc via CLI | ❌ Nein |
-| **buildEntityMap.job.js** | Entity Mapping | Ad-hoc via CLI | ❌ Nein |
-| **backfillSnapshotFx.job.js** | FX Rates Backfill | Ad-hoc via CLI | ❌ Nein |
-| **discoveryNotify.job.js** | Discovery Notifications | Ad-hoc via CLI | ❌ Nein |
+| **snapshotScan.job.js** | Batch Snapshot Scanning | Cron / Ad-hoc via CLI | ✅ Ja |
+| **dailyBriefing.job.js** | Daily Market Briefing | Cron / Ad-hoc via CLI | ✅ Ja |
+| **buildEntityMap.job.js** | Entity Mapping | Cron / Ad-hoc via CLI | ✅ Ja |
+| **discoveryNotify.job.js** | Discovery Notifications | Cron / Ad-hoc via CLI | ✅ Ja |
+| **dataCleanup.job.js** | Daten-Bereinigung | Cron / täglich 2:00 AM | ✅ Ja |
+| **uiMarketList.job.js** | UI Market List Summary | Cron | ✅ Ja |
+| **uiDemoPortfolio.job.js** | UI Demo Portfolio Summary | Cron | ✅ Ja |
+| **uiGuardianStatus.job.js** | UI Guardian Status Summary | Cron | ✅ Ja |
 
 **Warmup Cycle** (alle 15 Minuten wenn `RUN_JOBS=true`):
 - `runMarketNewsRefreshJob()`

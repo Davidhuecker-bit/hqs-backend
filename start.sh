@@ -37,11 +37,8 @@ case "$SERVICE" in
     exec node jobs/snapshotScan.job.js
     ;;
 
-  "Cron Markt-News"|"cron-markt-news-sammeln")
-    # NOTE: "cron-markt-news-sammeln" is a legacy duplicate of "Cron Markt-News".
-    # Both names route to the same job. The duplicate should be removed in
-    # Railway once confirmed that only one service exists.
-    echo "[start.sh] Starting job: market-news-refresh (service: $SERVICE)"
+  "Cron Markt-News")
+    echo "[start.sh] Starting job: market-news-refresh"
     exec node jobs/marketNewsRefresh.job.js
     ;;
 

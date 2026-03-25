@@ -107,12 +107,11 @@ Alle **34 Datenbanktabellen** sind:
 - `notifications` - Benachrichtigungsverlauf
 - `user_devices` - Geräte-Tokens für Push
 
-#### 7. Externe Daten-Tabellen (5 Tabellen)
+#### 7. Externe Daten-Tabellen (4 Tabellen)
 - `sec_edgar_companies` - SEC Unternehmensdaten
 - `sec_edgar_company_facts` - SEC Finanzdaten
 - `sec_edgar_filing_signals` - SEC Filing Signale
 - `tech_radar_entries` - Tech Radar Daten
-- `system_evolution_proposals` - System-Verbesserungsvorschläge
 
 ---
 

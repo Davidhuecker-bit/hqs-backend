@@ -58,12 +58,11 @@ Your backend manages **34 tables** across 7 functional categories:
 - `notifications` - Notification history
 - `user_devices` - Device tokens for push
 
-### 7. SEC & External Data Tables (5 tables)
+### 7. SEC & External Data Tables (4 tables)
 - `sec_edgar_companies` - SEC company metadata
 - `sec_edgar_company_facts` - SEC financial facts
 - `sec_edgar_filing_signals` - SEC filing signals
 - `tech_radar_entries` - Tech radar data
-- `system_evolution_proposals` - System proposals
 
 ---
 

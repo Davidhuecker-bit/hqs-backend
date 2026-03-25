@@ -233,12 +233,6 @@ const TABLE_CATALOGUE = [
     purpose: "Tech radar scan results from innovation scanner",
   },
   {
-    name: "system_evolution_proposals",
-    expectedColumns: ["created_at"],
-    populated: "optional",
-    purpose: "System evolution proposals from tech radar",
-  },
-  {
     name: "sis_history",
     expectedColumns: ["created_at"],
     populated: "optional",

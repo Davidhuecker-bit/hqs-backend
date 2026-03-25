@@ -121,7 +121,6 @@ All **35 database tables** are:
 | `sec_edgar_company_facts` | SEC financial facts | ✅ Ready |
 | `sec_edgar_filing_signals` | SEC filing signals | ✅ Ready |
 | `tech_radar_entries` | Tech radar data | ✅ Ready |
-| `system_evolution_proposals` | System improvement proposals | ✅ Ready |
 
 ---
 

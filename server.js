@@ -76,7 +76,7 @@ const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repositor
 const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable } = require("./services/autonomyAudit.repository");
 const { initAgentForecastTable, initAgentsTable } = require("./services/agentForecast.repository");
 const { initDynamicWeightsTable } = require("./services/causalMemory.repository");
-const { initTechRadarTable, initSystemEvolutionProposalsTable } = require("./services/techRadar.service");
+const { initTechRadarTable } = require("./services/techRadar.service");
 const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
@@ -650,7 +650,6 @@ async function runStartupInit() {
   await safeInit("initAgentsTable",                       initAgentsTable);
   await safeInit("initDynamicWeightsTable",               initDynamicWeightsTable);
   await safeInit("initTechRadarTable",                    initTechRadarTable);
-  await safeInit("initSystemEvolutionProposalsTable",     initSystemEvolutionProposalsTable);
   await safeInit("initAutomationAuditTable",              initAutomationAuditTable);
   await safeInit("initNotificationTables",                initNotificationTables);
   await safeInit("seedDemoUserIfEmpty",                   seedDemoUserIfEmpty);
