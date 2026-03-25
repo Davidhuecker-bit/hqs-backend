@@ -53,8 +53,6 @@
     "job:ui-guardian-status": "node jobs/uiGuardianStatus.job.js",
     "job:ui-guardian-status:check": "node --check jobs/uiGuardianStatus.job.js",
 
-    "job:historical-backfill": "python3 jobs/historicalBackfill.job.py",
-
     "smoke-check": "node scripts/smoke-check.js",
     "smoke-check:check": "node --check scripts/smoke-check.js",
 

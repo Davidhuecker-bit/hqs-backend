@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-jobs/historicalBackfill.job.py
+python/historical-backfill/historicalBackfill.job.py
 
 Historical Price Backfill Job
 ==============================
@@ -18,7 +18,7 @@ This job replaces the lazy write path that previously lived in
 historicalService.js. historicalService is now a pure reader.
 
 Usage:
-  python3 jobs/historicalBackfill.job.py
+  python3 historicalBackfill.job.py
 """
 
 import math
