@@ -1658,7 +1658,9 @@ async function buildMarketSnapshot() {
 
   } finally {
     // Always release lock so next cron run can proceed immediately
-    await releaseLock("snapshot_job").catch(() => {});
+    await releaseLock("snapshot_job").catch((err) => {
+      logger.warn("snapshot_job lock release failed in finally", { message: err?.message });
+    });
   }
 }
 

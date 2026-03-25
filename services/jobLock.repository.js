@@ -73,7 +73,7 @@ async function releaseLock(name) {
       `DELETE FROM job_locks WHERE name = $1`,
       [lockName]
     );
-    const released = res.rowCount === 1;
+    const released = res.rowCount >= 1;
     if (logger?.info)
       logger.info("lock release", { name: lockName, released });
     return released;
