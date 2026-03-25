@@ -1,7 +1,7 @@
 "use strict";
 
-const { Pool } = require("pg");
-const { fetchDailyCandles, toUnixSeconds } = require("./finnhubCandle.service");
+const { getPricesDaily, upsertPricesDailyBatch } = require("./pricesDaily.repository");
+const { fetchMassiveHistoricalCandles } = require("./providerService");
 
 let logger = null;
 try {
@@ -10,13 +10,8 @@ try {
   logger = null;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-// Minimum data points required by advancedMetrics before Finnhub backfill is
-// attempted.  Must match the threshold in marketService.js (prices.length >= 30).
+// Minimum data points required by advancedMetrics.
+// Must match the threshold in marketService.js (prices.length >= 30).
 const MIN_POINTS = 30;
 
 /**
@@ -31,48 +26,36 @@ function parsePeriodToDays(period) {
   return 365;
 }
 
+// Newest-first comparator for ISO date strings ("YYYY-MM-DD").
+const newestFirst = (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0);
+
 /**
  * historicalService – Historical price data provider.
  *
- * getHistoricalPrices: Primary source is market_snapshots (one price per
- * calendar day, newest-first).  When market_snapshots has fewer than MIN_POINTS
- * calendar days (i.e. the system is young), Finnhub daily candles are fetched
- * and used to fill the missing older days so that advancedMetrics can be
- * computed immediately rather than waiting 30 days for organic accumulation.
+ * Source of truth: prices_daily table.
+ * Writer:          this service (lazy Massive backfill on first request).
  *
- * Merge strategy:
- *   - market_snapshots rows take precedence for any date that exists in both.
- *   - Finnhub candles supply the remaining older dates.
- *   - Result is sorted newest-first (matches existing caller expectations).
+ * Flow:
+ *   1. Read from prices_daily (DB-first).
+ *   2. If >= MIN_POINTS → return immediately (no external call).
+ *   3. If < MIN_POINTS → fetch up to `days` calendar days of OHLCV
+ *      from Massive historical candles endpoint.
+ *   4. Upsert fetched rows into prices_daily (idempotent).
+ *   5. Re-read from prices_daily and return the merged result.
  *
- * factor_history persistence is owned exclusively by factorHistory.repository.js.
+ * No Finnhub. No market_snapshots dependency for this path.
  */
 async function getHistoricalPrices(symbol, period) {
   const sym = String(symbol || "").toUpperCase();
   const days = parsePeriodToDays(period);
 
-  // --- Primary: market_snapshots ---
-  let snapshotRows = [];
+  // --- Step 1: DB-first read from prices_daily ---
+  let rows = [];
   try {
-    // DISTINCT ON (date) keeps one row per calendar day (the latest snapshot
-    // of that day).  COALESCE(price_usd, price) provides a consistent USD-first
-    // series; both columns are already validated positive by the snapshot job.
-    const res = await pool.query(
-      `SELECT DISTINCT ON (created_at::date)
-         created_at::date AS day,
-         COALESCE(price_usd, price) AS close
-       FROM market_snapshots
-       WHERE symbol        = $1
-         AND created_at   >= NOW() - INTERVAL '1 day' * $2
-         AND COALESCE(price_usd, price) IS NOT NULL
-         AND COALESCE(price_usd, price) > 0
-       ORDER BY created_at::date DESC, created_at DESC`,
-      [sym, days]
-    );
-    snapshotRows = res.rows; // [{ day: Date, close: '123.45' }, ...]
+    rows = await getPricesDaily(sym, days);
   } catch (err) {
     if (logger?.warn) {
-      logger.warn("[historicalService] getHistoricalPrices snapshot query failed", {
+      logger.warn("[historicalService] prices_daily read failed", {
         symbol: sym,
         message: err.message,
       });
@@ -80,81 +63,98 @@ async function getHistoricalPrices(symbol, period) {
     return [];
   }
 
-  // Sufficient data from market_snapshots alone — no external call needed.
-  if (snapshotRows.length >= MIN_POINTS) {
-    return snapshotRows.map((r) => ({ close: r.close }));
+  // Sufficient data already stored — return immediately.
+  if (rows.length >= MIN_POINTS) {
+    return rows.map((r) => ({ close: r.close }));
   }
 
-  // --- Fallback: Finnhub daily candles to backfill missing older days ---
-  if (!process.env.FINNHUB_API_KEY) {
+  // --- Step 3: Backfill from Massive ---
+  if (!process.env.MASSIVE_API_KEY) {
     if (logger?.warn) {
       logger.warn(
-        "[historicalService] market_snapshots insufficient and FINNHUB_API_KEY not set — cannot backfill",
-        { symbol: sym, snapshotPoints: snapshotRows.length }
+        "[historicalService] prices_daily insufficient and MASSIVE_API_KEY not set – cannot backfill",
+        { symbol: sym, storedPoints: rows.length }
       );
     }
-    return snapshotRows.map((r) => ({ close: r.close }));
+    return rows.map((r) => ({ close: r.close }));
   }
+
+  const toDate   = new Date().toISOString().slice(0, 10);
+  const fromDate = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return d.toISOString().slice(0, 10);
+  })();
 
   let candles = [];
   try {
-    const toUnix = toUnixSeconds(new Date());
-    const fromDate = new Date();
-    fromDate.setDate(fromDate.getDate() - days);
-    const fromUnix = toUnixSeconds(fromDate);
-
-    const raw = await fetchDailyCandles(sym, fromUnix, toUnix);
-    if (Array.isArray(raw)) {
-      candles = raw.filter((c) => Number.isFinite(c.close) && c.close > 0);
-    }
+    const raw = await fetchMassiveHistoricalCandles(sym, fromDate, toDate);
+    candles = (raw || []).filter(
+      (c) => Number.isFinite(Number(c.close)) && Number(c.close) > 0
+    );
   } catch (err) {
     if (logger?.warn) {
-      logger.warn("[historicalService] Finnhub candle backfill failed", {
+      logger.warn("[historicalService] Massive historical backfill failed", {
         symbol: sym,
         message: err.message,
       });
     }
-    // Return what we have from market_snapshots even without backfill.
-    return snapshotRows.map((r) => ({ close: r.close }));
+    // Return whatever we have from DB even without backfill.
+    return rows.map((r) => ({ close: r.close }));
   }
 
   if (candles.length === 0) {
-    return snapshotRows.map((r) => ({ close: r.close }));
+    return rows.map((r) => ({ close: r.close }));
   }
 
-  // Merge: market_snapshots dates take precedence; Finnhub fills the rest.
-  // Build a map: date → close (newest-first sort applied after merge)
-  const merged = new Map();
-
-  // Finnhub candles first (lower priority)
-  for (const c of candles) {
-    merged.set(c.date, String(c.close));
+  // --- Step 4: Persist to prices_daily ---
+  try {
+    await upsertPricesDailyBatch(sym, candles);
+  } catch (err) {
+    if (logger?.warn) {
+      logger.warn("[historicalService] prices_daily upsert failed after Massive backfill", {
+        symbol: sym,
+        message: err.message,
+      });
+    }
+    // Serve candles directly from memory rather than failing entirely.
+    return candles
+      .slice()
+      .sort(newestFirst)
+      .map((c) => ({ close: String(c.close) }));
   }
 
-  // market_snapshots override (higher priority)
-  for (const r of snapshotRows) {
-    const d = r.day instanceof Date ? r.day : new Date(r.day);
-    const dateStr = d.toISOString().slice(0, 10);
-    merged.set(dateStr, String(r.close));
+  // --- Step 5: Re-read from DB (authoritative) ---
+  let refreshed = [];
+  try {
+    refreshed = await getPricesDaily(sym, days);
+  } catch (err) {
+    if (logger?.warn) {
+      logger.warn("[historicalService] prices_daily re-read after backfill failed", {
+        symbol: sym,
+        message: err.message,
+      });
+    }
+    // Graceful degradation: return in-memory candles.
+    return candles
+      .slice()
+      .sort(newestFirst)
+      .map((c) => ({ close: String(c.close) }));
   }
-
-  // Sort newest-first (matches the ORDER BY … DESC of the original query)
-  const sorted = Array.from(merged.entries())
-    .sort(([a], [b]) => (a < b ? 1 : a > b ? -1 : 0))
-    .map(([, close]) => ({ close }));
 
   if (logger?.info) {
-    logger.info("[historicalService] Finnhub backfill applied", {
+    logger.info("[historicalService] Massive backfill applied and persisted", {
       symbol: sym,
-      snapshotPoints: snapshotRows.length,
-      finnhubPoints: candles.length,
-      mergedPoints: sorted.length,
+      storedBefore: rows.length,
+      massiveCandles: candles.length,
+      storedAfter: refreshed.length,
     });
   }
 
-  return sorted;
+  return refreshed.map((r) => ({ close: r.close }));
 }
 
 module.exports = {
   getHistoricalPrices,
 };
+

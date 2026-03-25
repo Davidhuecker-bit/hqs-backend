@@ -257,8 +257,8 @@ const TABLE_ASSESSMENT = {
     demoCritical: true,
   },
   prices_daily: {
-    status: "legacy_no_active_writer",
-    reason: "No active writer in current codebase. Referenced only in data-chain-health.js for data quality checks. Legacy table – not needed for demo portfolio.",
+    status: "active",
+    reason: "Canonical historical daily close table. Writer: historicalService.js (lazy Massive backfill). Reader: historicalService.getHistoricalPrices → advancedMetrics.",
     demoCritical: false,
   },
   sec_edgar_companies: {

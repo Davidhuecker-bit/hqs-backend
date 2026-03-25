@@ -252,6 +252,91 @@ async function fetchFromTwelveData(symbol) {
 }
 
 /* =========================================================
+   HISTORICAL CANDLES FROM MASSIVE
+   Polygon-compatible endpoint:
+   GET /v2/aggs/ticker/{symbol}/range/1/day/{from}/{to}
+   Dates in YYYY-MM-DD format.
+========================================================= */
+
+/**
+ * fetchMassiveHistoricalCandles(symbol, fromDate, toDate)
+ *
+ * Fetches daily OHLCV candles from Massive for the given date range.
+ *
+ * @param {string} symbol   – uppercase ticker, e.g. "AAPL"
+ * @param {string} fromDate – ISO date string "YYYY-MM-DD"
+ * @param {string} toDate   – ISO date string "YYYY-MM-DD"
+ * @returns {Promise<Array<{date: string, open: number|null, high: number|null, low: number|null, close: number, volume: number|null, source: string}>>}
+ */
+async function fetchMassiveHistoricalCandles(symbol, fromDate, toDate) {
+  if (!MASSIVE_API_KEY) {
+    throw new Error("Missing MASSIVE_API_KEY – cannot fetch historical candles");
+  }
+
+  const sym = String(symbol || "").trim().toUpperCase();
+  if (!sym) throw new Error("Missing symbol");
+
+  const url =
+    `https://api.massive.com/v2/aggs/ticker/${encodeURIComponent(sym)}` +
+    `/range/1/day/${encodeURIComponent(fromDate)}/${encodeURIComponent(toDate)}` +
+    `?adjusted=true&sort=desc&limit=5000&apiKey=${MASSIVE_API_KEY}`;
+
+  const maxTries = Number(process.env.MASSIVE_RETRIES || 3);
+
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    try {
+      const response = await http.get(url);
+      const data = response?.data;
+      const status = String(data?.status || "").toUpperCase();
+
+      if (!data || (status !== "OK" && status !== "")) {
+        throw new Error(`Massive historical response not OK (${data?.status || "no status"})`);
+      }
+
+      if (!Array.isArray(data.results) || data.results.length === 0) {
+        if (logger?.warn) {
+          logger.warn("[providerService] Massive historical: empty results", {
+            symbol: sym,
+            fromDate,
+            toDate,
+          });
+        }
+        return [];
+      }
+
+      return data.results.map((r) => ({
+        date:   new Date(r.t).toISOString().slice(0, 10),
+        open:   num(r.o, null),
+        high:   num(r.h, null),
+        low:    num(r.l, null),
+        close:  num(r.c, null),
+        volume: num(r.v, null),
+        source: "MASSIVE",
+      }));
+    } catch (err) {
+      const httpStatus = err?.response?.status;
+      const msg = `Massive historical fetch failed (attempt ${attempt}/${maxTries}) for ${sym}: ${err.message}`;
+
+      if (logger?.warn) {
+        logger.warn(msg, {
+          httpStatus: httpStatus ?? null,
+          url: safeUrlWithoutKey(url),
+        });
+      } else {
+        console.warn("⚠️ " + msg);
+      }
+
+      const retry = attempt < maxTries && shouldRetry(err);
+      if (!retry) throw err;
+
+      await sleep(400 * attempt);
+    }
+  }
+
+  throw new Error(`Massive historical fetch failed after retries for ${sym}`);
+}
+
+/* =========================================================
    MAIN FETCH
 ========================================================= */
 
@@ -354,4 +439,5 @@ async function fetchQuote(symbol) {
 
 module.exports = {
   fetchQuote,
+  fetchMassiveHistoricalCandles,
 };
