@@ -93,13 +93,12 @@ All **35 database tables** are:
 | `weight_history` | Portfolio weight history | ✅ Ready |
 | `admin_snapshots` | Admin historical snapshots | ✅ Ready |
 
-### 5. System & Infrastructure Tables (7 tables)
+### 5. System & Infrastructure Tables (6 tables)
 
 | Table | Purpose | Status |
 |-------|---------|--------|
 | `job_locks` | Job coordination locks (30min TTL) | ✅ Ready |
-| `snapshot_scan_state` | Snapshot scanning offset tracking | ✅ Ready |
-| `universe_scan_state` | Universe scan state | ✅ Ready |
+| `universe_scan_state` | Universe/snapshot scanning offset tracking | ✅ Ready |
 | `universe_symbols` | Trading universe (FMP sourced) | ✅ Ready |
 | `pipeline_status` | Data pipeline progress tracking | ✅ Ready |
 | `sis_history` | System intelligence snapshots | ✅ Ready |

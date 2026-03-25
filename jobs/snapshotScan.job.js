@@ -3,15 +3,15 @@
 /**
  * One-off Cron Job:
  * - ensures tables exist
- * - runs one snapshot batch (watchlist OR universe depending on env)
+ * - runs one snapshot batch (from universe_symbols)
  *
  * Required ENV:
  * - DATABASE_URL
  * - MASSIVE_API_KEY
  *
  * Optional ENV:
- * - SNAPSHOT_SOURCE=universe
- * - SNAPSHOT_BATCH_SIZE=150
+ * - SNAPSHOT_BATCH_SIZE=80  (default, max SNAPSHOT_SYMBOL_LIMIT)
+ * - SNAPSHOT_REGION=us      (filter universe_symbols by region)
  * - HIST_PERIOD=1y|max
  */
 

@@ -10,12 +10,13 @@
  *   - universe_scan_state  : keep only the most recent entry per key
  *   - pipeline_status      : mark stages as stale when last_run_at is very old
  *   - job_locks            : remove expired locks left by crashed processes
+ *   - fx_rates             : remove old rows to prevent unbounded growth
  *
  * Safe to run multiple times – all operations are idempotent.
  * Never touches market_snapshots, hqs_scores, market_news, factor_history,
  * or any other business data table.
  *
- * Schedule: daily (registered in server.js alongside other background jobs).
+ * Schedule: daily (deployed as a dedicated Railway cron service).
  */
 
 require("dotenv").config();
@@ -28,8 +29,8 @@ const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
-// Remove job_locks that were created more than this many hours ago without
-// being released – indicates a crashed process that held the lock.
+// Remove job_locks whose locked_until timestamp is in the past by more than
+// this many hours – indicates a crashed process that held the lock.
 const JOB_LOCK_EXPIRY_HOURS = Number(process.env.DATA_CLEANUP_LOCK_EXPIRY_HOURS || 6);
 
 // universe_scan_state rows older than this many days (per key, beyond the newest)
@@ -39,6 +40,10 @@ const UNIVERSE_SCAN_KEEP_DAYS = Number(process.env.DATA_CLEANUP_UNIVERSE_SCAN_KE
 // pipeline_status stages whose last_run_at is older than this many hours are
 // logged as stale (we do NOT delete them – they persist as historical markers).
 const PIPELINE_STALE_HOURS = Number(process.env.DATA_CLEANUP_PIPELINE_STALE_HOURS || 72);
+
+// fx_rates rows older than this many days are removed (keeps only recent
+// history for lookups – the most recent row per pair is always preserved).
+const FX_RATES_KEEP_DAYS = Number(process.env.DATA_CLEANUP_FX_RATES_KEEP_DAYS || 90);
 
 // ── DB pool ───────────────────────────────────────────────────────────────────
 
@@ -100,8 +105,11 @@ async function cleanUniverseScanState() {
 }
 
 /**
- * Remove expired job_locks (created more than JOB_LOCK_EXPIRY_HOURS ago).
+ * Remove expired job_locks (locked_until is in the past by more than JOB_LOCK_EXPIRY_HOURS).
  * These are locks left behind by processes that crashed without releasing them.
+ *
+ * NOTE: The job_locks table schema has columns (name TEXT, locked_until TIMESTAMP).
+ * There is no created_at column, so we use locked_until for expiry detection.
  *
  * @returns {{ deleted: number }}
  */
@@ -111,9 +119,13 @@ async function cleanExpiredJobLocks() {
   }
 
   try {
+    // Delete locks whose locked_until is in the past by more than the configured
+    // expiry window.  A lock with locked_until < NOW() is already expired (other
+    // jobs can acquire it), but we give an extra grace period so that locks which
+    // just expired aren't removed while a new run might be starting.
     const res = await pool.query(
       `DELETE FROM job_locks
-       WHERE created_at < NOW() - ($1 || ' hours')::INTERVAL`,
+       WHERE locked_until < NOW() - ($1 || ' hours')::INTERVAL`,
       [String(JOB_LOCK_EXPIRY_HOURS)]
     );
     const deleted = res.rowCount ?? 0;
@@ -161,6 +173,40 @@ async function auditPipelineStatusStaleness() {
   }
 }
 
+/**
+ * Remove old fx_rates rows to prevent unbounded table growth.
+ * Always preserves at least one row per (base_currency, quote_currency) pair
+ * so that the last-known-good FX rate remains available.
+ *
+ * @returns {{ deleted: number }}
+ */
+async function cleanOldFxRates() {
+  if (!(await tableExists("fx_rates"))) {
+    return { deleted: 0, skipped: true, reason: "table_missing" };
+  }
+
+  try {
+    // Delete rows older than FX_RATES_KEEP_DAYS, but never the most recent row
+    // per currency pair (so fallback lookups always have at least one value).
+    const res = await pool.query(
+      `DELETE FROM fx_rates
+       WHERE created_at < NOW() - ($1 || ' days')::INTERVAL
+         AND id NOT IN (
+           SELECT DISTINCT ON (base_currency, quote_currency) id
+           FROM fx_rates
+           ORDER BY base_currency, quote_currency, created_at DESC
+         )`,
+      [String(FX_RATES_KEEP_DAYS)]
+    );
+    const deleted = res.rowCount ?? 0;
+    logger.info("[dataCleanup] fx_rates cleaned", { deleted, keepDays: FX_RATES_KEEP_DAYS });
+    return { deleted };
+  } catch (err) {
+    logger.warn("[dataCleanup] cleanOldFxRates failed", { message: err.message });
+    return { deleted: 0, error: err.message };
+  }
+}
+
 // ── Job entry point ───────────────────────────────────────────────────────────
 
 async function run() {
@@ -175,19 +221,21 @@ async function run() {
 
     logger.info("[job:dataCleanup] starting cleanup run");
 
-    const [universeScan, jobLocks, pipelineAudit] = await Promise.all([
+    const [universeScan, jobLocks, pipelineAudit, fxRates] = await Promise.all([
       cleanUniverseScanState(),
       cleanExpiredJobLocks(),
       auditPipelineStatusStaleness(),
+      cleanOldFxRates(),
     ]);
 
     const summary = {
       universeScanDeleted: universeScan.deleted ?? 0,
       jobLocksDeleted:     jobLocks.deleted     ?? 0,
+      fxRatesDeleted:      fxRates.deleted      ?? 0,
       staleStages:         pipelineAudit.staleStages ?? [],
     };
 
-    const totalCleaned = summary.universeScanDeleted + summary.jobLocksDeleted;
+    const totalCleaned = summary.universeScanDeleted + summary.jobLocksDeleted + summary.fxRatesDeleted;
     await savePipelineStage("data_cleanup", {
       inputCount: totalCleaned + summary.staleStages.length,
       successCount: totalCleaned,
