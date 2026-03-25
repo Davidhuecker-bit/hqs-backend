@@ -109,7 +109,7 @@ const SERVICE_MAP = [
     startCommand: "npm run job:causal-memory",
     type: "cron",
     pipelineStage: "causal_memory",
-    writesTo: ["dynamic_weights", "weight_history", "pipeline_status"],
+    writesTo: ["dynamic_weights", "pipeline_status"],
     description: "Recursive meta-learning: adjusts agent weights from verified forecasts",
   },
   {
@@ -117,7 +117,7 @@ const SERVICE_MAP = [
     startCommand: "npm run job:tech-radar",
     type: "cron",
     pipelineStage: "tech_radar",
-    writesTo: ["system_evolution_proposals", "pipeline_status"],
+    writesTo: ["tech_radar_entries", "pipeline_status"],
     description: "RSS feed scanning for quant/AI research relevant to HQS",
   },
   {
@@ -125,8 +125,8 @@ const SERVICE_MAP = [
     startCommand: "npm run job:data-cleanup",
     type: "cron",
     pipelineStage: "data_cleanup",
-    writesTo: ["pipeline_status"],
-    description: "Removes stale scan state, expired locks, audits pipeline staleness",
+    writesTo: ["universe_scan_state", "job_locks", "fx_rates", "pipeline_status"],
+    description: "Removes stale scan state rows, expired job locks, old FX rates, audits pipeline staleness",
   },
   {
     railwayService: "UI Market List",

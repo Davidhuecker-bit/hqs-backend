@@ -7,7 +7,7 @@
 
 ## Overview
 
-The HQS backend uses a Railway-hosted PostgreSQL database with **36 production tables** (including the `ui_summaries` read-model and `snapshot_scan_state` tracking table). Tables are organized into logical groups corresponding to the major data-flow chains.
+The HQS backend uses a Railway-hosted PostgreSQL database with **36 production tables** (including the `ui_summaries` read-model and `universe_scan_state` tracking table). Tables are organized into logical groups corresponding to the major data-flow chains.
 
 ---
 
@@ -26,7 +26,7 @@ The HQS backend uses a Railway-hosted PostgreSQL database with **36 production t
 
 | Table | Purpose | Written By | Read By | Required |
 |-------|---------|-----------|---------|---------|
-| `market_snapshots` | Real-time price/volume snapshots from FMP/TwelveData API | `snapshotScan.job` → `marketService.buildMarketSnapshot()` | `marketSummary.builder`, `adminDemoPortfolio.service`, `worldState.service` | ✅ Yes |
+| `market_snapshots` | Real-time price/volume snapshots from Massive/TwelveData API | `snapshotScan.job` → `marketService.buildMarketSnapshot()` | `marketSummary.builder`, `adminDemoPortfolio.service`, `worldState.service` | ✅ Yes |
 | `hqs_scores` | HQS scoring results per symbol, calculated from snapshot data | `hqsEngine.buildHQSResponse()` (inside snapshotScan) | `marketSummary.builder`, `guardianStatusSummary.builder`, `worldState.service` | ✅ Yes |
 | `market_advanced_metrics` | Regime/volatility/trend analytics per symbol | `snapshotScan.job` → `marketService` | `worldState.service`, `opportunityScanner.service` | ✅ Yes |
 | `factor_history` | Persistent HQS factor audit trail with shadow-HQS and explainability | `factorHistory.repository.saveScoreSnapshot()` | `/api/admin/hqs-*-meta` endpoints | ✅ Yes |
@@ -34,7 +34,7 @@ The HQS backend uses a Railway-hosted PostgreSQL database with **36 production t
 
 ### Data Flow: Market Chain
 ```
-FMP/TwelveData API
+Massive/TwelveData API
     → snapshotScan.job
         → market_snapshots (raw OHLCV + price)
         → hqs_scores (composite quality score)
@@ -101,7 +101,7 @@ FMP/TwelveData API
 
 | Table | Purpose | Written By | Read By | Required |
 |-------|---------|-----------|---------|---------|
-| `market_news` | News articles with sentiment scores from FMP API | `marketNewsRefresh.job` → `marketNews.repository` | `newsIntelligence.service`, `/api/market-news` | ✅ Yes |
+| `market_news` | News articles with sentiment scores from RSS feeds | `marketNewsRefresh.job` → `marketNews.repository` | `newsIntelligence.service`, `/api/market-news` | ✅ Yes |
 | `entity_map` | Symbol-to-entity mapping for news enrichment | `buildEntityMap.job` → `entityMap.repository` | `newsIntelligence.service` | ⚠️ Optional (may be empty if job hasn't run) |
 
 ---
