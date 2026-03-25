@@ -18,6 +18,7 @@ const { runJob } = require("../utils/jobRunner");
 const { scanTechRadar } = require("../services/techRadar.service");
 const {
   acquireLock,
+  releaseLock,
   initJobLocksTable,
 } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
@@ -46,6 +47,7 @@ async function runTechRadarJob() {
       return { processedCount: 0 };
     }
 
+    try {
     const result = await scanTechRadar();
     const processedCount = result.inserted ?? 0;
     await savePipelineStage("tech_radar", {
@@ -54,6 +56,9 @@ async function runTechRadarJob() {
       failedCount: 0,
     });
     return { processedCount, feeds: result.feeds, scanned: result.scanned };
+    } finally {
+      await releaseLock("tech_radar_job").catch(() => {});
+    }
   });
 }
 

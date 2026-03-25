@@ -15,6 +15,7 @@ const { runJob } = require("../utils/jobRunner");
 const { adjustAgentWeights } = require("../services/causalMemory.repository");
 const {
   acquireLock,
+  releaseLock,
   initJobLocksTable,
 } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
@@ -43,6 +44,7 @@ async function runCausalMemoryJob() {
       return { processedCount: 0 };
     }
 
+    try {
     const result = await adjustAgentWeights();
     const processedCount = result.adjusted ?? 0;
     await savePipelineStage("causal_memory", {
@@ -51,6 +53,9 @@ async function runCausalMemoryJob() {
       failedCount: 0,
     });
     return { processedCount, weights: result.weights };
+    } finally {
+      await releaseLock("causal_memory_job").catch(() => {});
+    }
   });
 }
 

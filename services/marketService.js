@@ -702,6 +702,8 @@ async function ensureTablesExist() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_snapshots_symbol_created ON market_snapshots (symbol, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_snapshots_created_at ON market_snapshots (created_at DESC);`);
   logger.info("[startup] ensureTablesExist.market_snapshots: ok");
 
   // ── hqs_scores ────────────────────────────────────────────────────────────
@@ -719,6 +721,8 @@ async function ensureTablesExist() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_hqs_scores_symbol_created ON hqs_scores (symbol, created_at DESC);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_hqs_scores_created_at ON hqs_scores (created_at DESC);`);
   logger.info("[startup] ensureTablesExist.hqs_scores: ok");
 
   // ── auxiliary tables ──────────────────────────────────────────────────────

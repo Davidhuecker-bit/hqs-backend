@@ -30,6 +30,7 @@ const {
 const {
   initJobLocksTable,
   acquireLock,
+  releaseLock,
 } = require("../services/jobLock.repository");
 
 const {
@@ -253,6 +254,7 @@ async function run() {
     };
   }
 
+  try {
   await marketNewsRepository.initMarketNewsTable();
 
   const symbols = await loadTargetSymbols(SYMBOL_LIMIT);
@@ -358,6 +360,9 @@ async function run() {
     processedCount: summary.inserted ?? 0,
     summary,
   };
+  } finally {
+    await releaseLock("market_news_refresh_job").catch(() => {});
+  }
 }
 
 async function runMarketNewsRefreshJob(options = {}) {

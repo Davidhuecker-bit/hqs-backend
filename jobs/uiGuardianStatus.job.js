@@ -16,7 +16,7 @@ require("dotenv").config();
 
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
-const { initJobLocksTable, acquireLock } = require("../services/jobLock.repository");
+const { initJobLocksTable, acquireLock, releaseLock } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 const { refreshGuardianStatusSummary } = require("../services/guardianStatusSummary.builder");
 
@@ -36,6 +36,7 @@ async function run() {
       return { skipped: true };
     }
 
+    try {
     logger.info("[job:ui-guardian-status] building guardian_status summary");
 
     const summary = await refreshGuardianStatusSummary();
@@ -52,6 +53,9 @@ async function run() {
       pipelineOk:   summary?.pipeline?.ok ?? false,
     });
     return { processedCount: success ? 1 : 0 };
+    } finally {
+      await releaseLock("ui_guardian_status_job").catch(() => {});
+    }
   }, { pool });
 }
 
