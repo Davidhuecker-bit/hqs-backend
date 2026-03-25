@@ -119,10 +119,9 @@ async function cleanExpiredJobLocks() {
   }
 
   try {
-    // Delete locks whose locked_until is in the past by more than the configured
-    // expiry window.  A lock with locked_until < NOW() is already expired (other
-    // jobs can acquire it), but we give an extra grace period so that locks which
-    // just expired aren't removed while a new run might be starting.
+    // Delete locks that expired (locked_until < NOW()) more than
+    // JOB_LOCK_EXPIRY_HOURS ago.  This grace period prevents deletion of
+    // recently-expired locks that might be re-acquired momentarily.
     const res = await pool.query(
       `DELETE FROM job_locks
        WHERE locked_until < NOW() - ($1 || ' hours')::INTERVAL`,
@@ -188,13 +187,14 @@ async function cleanOldFxRates() {
   try {
     // Delete rows older than FX_RATES_KEEP_DAYS, but never the most recent row
     // per currency pair (so fallback lookups always have at least one value).
+    // Uses fetched_at to leverage the existing fx_rates_pair_fetched_idx index.
     const res = await pool.query(
       `DELETE FROM fx_rates
-       WHERE created_at < NOW() - ($1 || ' days')::INTERVAL
+       WHERE fetched_at < NOW() - ($1 || ' days')::INTERVAL
          AND id NOT IN (
            SELECT DISTINCT ON (base_currency, quote_currency) id
            FROM fx_rates
-           ORDER BY base_currency, quote_currency, created_at DESC
+           ORDER BY base_currency, quote_currency, fetched_at DESC
          )`,
       [String(FX_RATES_KEEP_DAYS)]
     );
