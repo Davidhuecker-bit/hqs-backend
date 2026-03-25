@@ -66,6 +66,9 @@ const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
 const secEdgarRoutes = require("./routes/secEdgar.routes");
 
+const { adminAuth } = require("./middleware/adminAuth");
+const { apiLimiter, adminLimiter } = require("./middleware/rateLimiter");
+
 /* =========================================================
 DISCOVERY
 ========================================================= */
@@ -161,12 +164,12 @@ app.use(express.static(path.join(__dirname, "public")));
 ROUTES
 ========================================================= */
 
-app.use("/api/notifications", notificationsRoutes);
-app.use("/api/opportunities", opportunitiesRoutes);
-app.use("/api/discovery", discoveryRoutes);
-app.use("/api/admin", adminRoutes);
-app.use("/api/market-news", marketNewsRoutes);
-app.use("/api/sec-edgar", secEdgarRoutes);
+app.use("/api/notifications", apiLimiter, notificationsRoutes);
+app.use("/api/opportunities", apiLimiter, opportunitiesRoutes);
+app.use("/api/discovery", apiLimiter, discoveryRoutes);
+app.use("/api/admin", adminLimiter, adminAuth, adminRoutes);
+app.use("/api/market-news", apiLimiter, marketNewsRoutes);
+app.use("/api/sec-edgar", apiLimiter, secEdgarRoutes);
 
 /* Alias: flat path used by some clients – read-only from DB (DB-first architecture) */
 app.get("/api/admin-demo-portfolio", async (_req, res) => {

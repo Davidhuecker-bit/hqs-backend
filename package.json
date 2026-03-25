@@ -34,6 +34,10 @@
     "job:data-cleanup:check": "node --check jobs/dataCleanup.job.js",
     "job:evaluate-discoveries": "node jobs/evaluateDiscoveries.job.js",
     "job:evaluate-discoveries:check": "node --check jobs/evaluateDiscoveries.job.js",
+    "job:world-state-refresh": "node jobs/worldStateRefresh.job.js",
+    "job:world-state-refresh:check": "node --check jobs/worldStateRefresh.job.js",
+    "job:sec-edgar-refresh": "node jobs/secEdgarRefresh.job.js",
+    "job:sec-edgar-refresh:check": "node --check jobs/secEdgarRefresh.job.js",
     "job:ui-market-list": "node jobs/uiMarketList.job.js",
     "job:ui-market-list:check": "node --check jobs/uiMarketList.job.js",
     "job:ui-demo-portfolio": "node jobs/uiDemoPortfolio.job.js",
@@ -55,8 +59,10 @@
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
+    "express-rate-limit": "^8.3.1",
     "openai": "^4.57.0",
     "pg": "^8.11.5",
+    "web-push": "^3.6.7",
     "winston": "^3.13.1"
   }
 }
