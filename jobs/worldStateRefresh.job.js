@@ -21,7 +21,7 @@
  * Writer:  this job (via buildWorldState())
  * Readers: opportunityScanner.service.js, marketService.js, GET /api/admin/world-state
  *
- * Schedule: every 15 minutes (configure in Railway cron: * /15 * * * *)
+ * Schedule: every 15 minutes (configure in Railway cron: */15 * * * *)
  */
 
 require("dotenv").config();
