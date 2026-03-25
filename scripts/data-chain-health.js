@@ -27,13 +27,8 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 const FIX_MODE = process.argv.includes("--fix");
 
 const COLORS = {
@@ -529,7 +524,7 @@ async function main() {
     }
     process.exit(1);
   } finally {
-    await pool.end();
+    await closeAllPools();
   }
 }
 

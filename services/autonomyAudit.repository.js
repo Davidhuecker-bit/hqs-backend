@@ -11,14 +11,10 @@
   Records are append-only and must not be deleted or updated.
 */
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* =========================================================
    TABLE INIT
 ========================================================= */

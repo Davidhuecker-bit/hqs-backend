@@ -1,6 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
 const {
@@ -56,11 +55,8 @@ const { computeUserAttentionLevel } = require("./notifications.repository");
 // Step 9 Block 5: Recovery, stop, override & promotion safety layer
 const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlaneContext, computeEvidencePackage, computeTenantResourceGovernance, computeOperationalResilienceContext, computeAutonomyLevelContext, computeDriftDetectionBasis, computeActionChainState, computeControlledAutoPreparation, computePartialAutoExecution, computeRecoverySafetyLayer } = require("./governance.context");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* =========================================================
    IN-MEMORY PREVIEW STORES
 ========================================================= */

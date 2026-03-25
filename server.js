@@ -3,7 +3,7 @@
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const { Pool } = require("pg");
+const { createPool, closeAllPools } = require("./config/database");
 require("dotenv").config();
 
 /* =========================================================
@@ -597,11 +597,7 @@ async function runStartupInit() {
   // ── DB readiness guard (Task 1 + Task 2) ─────────────────────────────────
   // Before touching any table, verify the DB is actually reachable.
   // Use a dedicated pool probe so we get typed error categories.
-  const probePool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-    max: 1,
-  });
+  const probePool = createPool({ max: 1 });
 
   let dbReady = false;
   try {
@@ -684,8 +680,10 @@ async function runStartupInit() {
 // The startup probePool (created inside runStartupInit) is already drained
 // via its own finally block before this handler is ever invoked.
 function gracefulShutdown(signal) {
-  logger.info(`[shutdown] ${signal} received`);
-  process.exit(0);
+  logger.info(`[shutdown] ${signal} received – closing shared DB pool`);
+  closeAllPools()
+    .catch((err) => logger.warn("[shutdown] pool close error", { message: err.message }))
+    .finally(() => process.exit(0));
 }
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

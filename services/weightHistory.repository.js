@@ -1,6 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
 const { upsertDynamicWeight } = require("./causalMemory.repository");
 
 // optional logger (falls vorhanden)
@@ -11,11 +10,8 @@ try {
   logger = null;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* =========================================================
    REGIME NORMALIZATION
 ========================================================= */

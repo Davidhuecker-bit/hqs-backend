@@ -1,14 +1,10 @@
 "use strict";
 
-const { Pool } = require("pg");
 let logger = null;
 try { logger = require("../utils/logger"); } catch (_) { logger = null; }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 async function initWatchlistTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS watchlist_symbols (

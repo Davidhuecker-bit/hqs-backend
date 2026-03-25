@@ -26,15 +26,8 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 3,
-  connectionTimeoutMillis: 15000,
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 const JSON_MODE = process.argv.includes("--json");
 
 // ── Table catalogue with expected columns ─────────────────────────────────────
@@ -595,7 +588,7 @@ async function main() {
     if (err.stack) console.error(c.dim(err.stack));
     exitCode = 1;
   } finally {
-    await pool.end();
+    await closeAllPools();
   }
 
   process.exit(exitCode);

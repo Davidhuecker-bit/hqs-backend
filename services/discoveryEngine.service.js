@@ -1,6 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
 const { saveDiscovery } = require("./discoveryLearning.service");
@@ -10,12 +9,8 @@ const {
 } = require("./discoveryLearning.repository");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
-// Pool is kept for getCurrentPrice (reads from market_snapshots)
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 // Einstellungen
 const DEFAULT_LIMIT = Number(process.env.DISCOVERY_LIMIT || 10);
 // verhindert, dass du jeden Tag dieselben Symbole "neu" findest

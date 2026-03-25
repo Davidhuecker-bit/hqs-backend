@@ -36,17 +36,13 @@
             score, and a direct upgrade path to scheduled SIS snapshots.
 */
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
 const { getAgentWisdomScores } = require("./agentForecast.repository");
 const { getAgentWeights, DEFAULT_WEIGHT } = require("./causalMemory.repository");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* =========================================================
    CONSTANTS
 ========================================================= */

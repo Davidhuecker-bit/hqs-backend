@@ -96,13 +96,8 @@ const { collectSocialSignals } = require("./socialScanner.service");
 const { getWorldState, classifyWorldStateAge } = require("./worldState.service");
 
 const logger = require("../utils/logger");
-const { Pool } = require("pg");
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 const OUTCOME_HORIZON_DAYS = Number(process.env.OUTCOME_HORIZON_DAYS || 30);

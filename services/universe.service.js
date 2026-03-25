@@ -6,7 +6,6 @@
 // Fallback: interne Tabellen, falls externe Quelle ausfällt
 
 const axios = require("axios");
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
 const {
@@ -15,11 +14,8 @@ const {
   countActiveUniverse,
 } = require("./universe.repository");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 const MASSIVE_API_KEY = String(
   process.env.MASSIVE_API_KEY ||
   process.env.POLYGON_API_KEY ||

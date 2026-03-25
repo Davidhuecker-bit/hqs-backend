@@ -14,7 +14,6 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { verifyAgentForecasts } = require("../services/agentForecast.repository");
@@ -29,14 +28,8 @@ const {
 } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
-// Module-level pool for DB-first price lookups (avoids live API calls when
-// a recent market_snapshots entry is available).
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 2,
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 /**
  * Reads the most recent price for a symbol from market_snapshots (last 4 hours).
  * Returns { price } on success, null when no recent snapshot exists.
@@ -162,13 +155,13 @@ module.exports = { runForecastVerificationJob };
 if (require.main === module) {
   runForecastVerificationJob()
     .then(() => {
-      pool.end().catch(() => {});
+      closeAllPools().catch(() => {});
       process.exit(0);
     })
     .catch((err) => {
       const log = require("../utils/logger");
       log.error("forecastVerification fatal", { message: err.message, stack: err.stack });
-      pool.end().catch(() => {});
+      closeAllPools().catch(() => {});
       process.exit(1);
     });
 }

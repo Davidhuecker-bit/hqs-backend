@@ -35,16 +35,12 @@
       sortKeys }
 */
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 const { readUiSummary, writeUiSummary } = require("./uiSummary.repository");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 // Step 3: how long a DB-persisted demo portfolio is considered fresh enough
 // to serve directly on cold start without rebuilding from scratch.
 const DEMO_DB_CACHE_MAX_AGE_MS = 10 * 60 * 1000; // 10 min
