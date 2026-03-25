@@ -6,9 +6,6 @@
   },
   "steps": {
     "install": {
-      "inputs": [
-        { "local": true, "include": ["package.json", "package-lock.json", "requirements.txt"] }
-      ],
       "commands": [
         "npm ci",
         "pip3 install -r requirements.txt"
