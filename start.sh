@@ -102,10 +102,11 @@ case "$SERVICE" in
     exec node jobs/uiGuardianStatus.job.js
     ;;
 
-  # ── Python services (must be deployed as separate Railway services) ────────
+  # ── Python services (OPTIONAL pre-warming – NOT required for pipeline) ──────
   # "Historical Backfill" is a Python job. It cannot run inside this Node-only
-  # container. Deploy it as a separate Railway service pointing at the
-  # python/historical-backfill/ directory. See python/README.md for details.
+  # container. If deployed, it runs as a separate Railway service pointing at
+  # python/historical-backfill/. The Node.js historicalService.js performs lazy
+  # backfill on demand, so the pipeline works without this Python service.
   "Historical Backfill"|"historical-backfill")
     echo "[start.sh] ERROR: Historical Backfill is a Python service."
     echo "[start.sh] It must be deployed as a separate Railway service."

@@ -252,7 +252,7 @@ const TABLE_ASSESSMENT = {
   },
   prices_daily: {
     status: "active",
-    reason: "Canonical historical daily close table. Writer: Python Historical Backfill (separate Railway service). Reader: historicalService.getHistoricalPrices → advancedMetrics. Empty until Historical Backfill service has run.",
+    reason: "Canonical historical daily close table. Writer: historicalService.js (lazy backfill via Massive API). Optional pre-warming: python/historical-backfill/. Reader: historicalService.getHistoricalPrices → advancedMetrics.",
     demoCritical: false,
   },
   sec_edgar_companies: {
