@@ -230,10 +230,7 @@ FMP_API_KEY=...                   # Für Universe Refresh
 TWELVE_DATA_API_KEY=...           # Für Market Data
 
 # OPTIONAL
-UNIVERSE_REFRESH_HOUR=2
-FORECAST_VERIFY_HOUR=3
-CAUSAL_MEMORY_HOUR=4
-TECH_RADAR_HOUR=6
+# (Job schedules are configured via Railway cron triggers, not env vars)
 ```
 
 #### **Exakte Änderungen (nötig):**
