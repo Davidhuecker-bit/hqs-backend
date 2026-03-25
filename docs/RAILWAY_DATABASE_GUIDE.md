@@ -103,34 +103,6 @@ MASSIVE_API_KEY=...      # Alternative provider
 TWELVE_DATA_API_KEY=...  # Twelve Data
 ```
 
-### Optional Redis Cache
-
-```bash
-# Distributed cache (Upstash Redis)
-UPSTASH_REDIS_REST_URL=https://...
-UPSTASH_REDIS_REST_TOKEN=...
-```
-
-### Job Scheduling (Optional, all have defaults)
-
-```bash
-# Universe refresh (default: 2:10 AM UTC)
-UNIVERSE_REFRESH_HOUR=2
-UNIVERSE_REFRESH_MINUTE=10
-
-# Forecast verification (default: 3:00 AM UTC)
-FORECAST_VERIFY_HOUR=3
-FORECAST_VERIFY_MINUTE=0
-
-# Causal memory update (default: 4:00 AM UTC)
-CAUSAL_MEMORY_HOUR=4
-CAUSAL_MEMORY_MINUTE=0
-
-# Tech radar scan (default: 6:00 AM UTC)
-TECH_RADAR_HOUR=6
-TECH_RADAR_MINUTE=0
-```
-
 ### Performance Tuning (Optional)
 
 ```bash
@@ -141,9 +113,6 @@ HIST_PERIOD=1y              # Historical data period
 
 # Monte Carlo simulations
 MC_SIMS=800                 # Number of simulations
-
-# Cache TTL
-CACHE_TTL_SECONDS=600       # 10 minutes
 ```
 
 ---

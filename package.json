@@ -10,52 +10,36 @@
     "prestart": "npm run check",
     "start": "node server.js",
     "dev": "node --watch server.js",
-
     "job:daily-briefing": "node jobs/dailyBriefing.job.js",
     "job:daily-briefing:check": "node --check jobs/dailyBriefing.job.js",
-
     "job:discovery-notify": "node jobs/discoveryNotify.job.js",
     "job:discovery-notify:check": "node --check jobs/discoveryNotify.job.js",
-
     "job:universe-refresh": "node jobs/universeRefresh.job.js",
     "job:universe-refresh:check": "node --check jobs/universeRefresh.job.js",
-
     "job:snapshot-scan": "node jobs/snapshotScan.job.js",
     "job:snapshot-scan:check": "node --check jobs/snapshotScan.job.js",
-
     "job:market-news-refresh": "node jobs/marketNewsRefresh.job.js",
     "job:market-news-refresh:check": "node --check jobs/marketNewsRefresh.job.js",
-
     "job:news-lifecycle-cleanup": "node jobs/newsLifecycleCleanup.job.js",
     "job:news-lifecycle-cleanup:check": "node --check jobs/newsLifecycleCleanup.job.js",
-
     "job:build-entity-map": "node jobs/buildEntityMap.job.js",
     "job:build-entity-map:check": "node --check jobs/buildEntityMap.job.js",
-
     "job:forecast-verification": "node jobs/forecastVerification.job.js",
     "job:forecast-verification:check": "node --check jobs/forecastVerification.job.js",
-
     "job:causal-memory": "node jobs/causalMemory.job.js",
     "job:causal-memory:check": "node --check jobs/causalMemory.job.js",
-
     "job:tech-radar": "node jobs/techRadar.job.js",
     "job:tech-radar:check": "node --check jobs/techRadar.job.js",
-
     "job:data-cleanup": "node jobs/dataCleanup.job.js",
     "job:data-cleanup:check": "node --check jobs/dataCleanup.job.js",
-
     "job:ui-market-list": "node jobs/uiMarketList.job.js",
     "job:ui-market-list:check": "node --check jobs/uiMarketList.job.js",
-
     "job:ui-demo-portfolio": "node jobs/uiDemoPortfolio.job.js",
     "job:ui-demo-portfolio:check": "node --check jobs/uiDemoPortfolio.job.js",
-
     "job:ui-guardian-status": "node jobs/uiGuardianStatus.job.js",
     "job:ui-guardian-status:check": "node --check jobs/uiGuardianStatus.job.js",
-
     "smoke-check": "node scripts/smoke-check.js",
     "smoke-check:check": "node --check scripts/smoke-check.js",
-
     "db:health": "node scripts/database-health-check.js",
     "db:health:check": "node --check scripts/database-health-check.js",
     "db:chains": "node scripts/data-chain-health.js",
@@ -65,12 +49,10 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@upstash/redis": "^1.28.4",
     "axios": "^1.13.5",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
-    "node-cache": "^5.1.2",
     "openai": "^4.57.0",
     "pg": "^8.11.5",
     "winston": "^3.13.1"
