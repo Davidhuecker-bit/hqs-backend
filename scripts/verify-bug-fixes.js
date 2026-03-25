@@ -7,14 +7,8 @@
  */
 
 require("dotenv").config();
-const { Pool } = require("pg");
-
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 2,
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 const TEST_SYMBOLS = ["AAPL", "MSFT", "TSLA", "SAP.DE", "VOW3.DE"];
 
 async function verifySymbol(symbol) {
@@ -179,7 +173,7 @@ async function main() {
   
   console.log(`\n✅ Verification complete`);
   
-  await pool.end();
+  await closeAllPools();
   process.exit(totalIssues > 10 ? 1 : 0);
 }
 

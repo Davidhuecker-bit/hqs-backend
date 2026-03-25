@@ -2,8 +2,6 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
-
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -44,11 +42,8 @@ const {
   savePipelineStage,
 } = require("../services/pipelineStatus.repository");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 const NEWS_LIMIT_PER_SYMBOL = Math.max(
   1,
   Math.min(Number(process.env.MARKET_NEWS_LIMIT_PER_SYMBOL || 5), 20)
@@ -371,7 +366,7 @@ async function runMarketNewsRefreshJob(options = {}) {
     return result;
   } finally {
     if (options?.closePool !== false) {
-      await pool.end().catch(() => {});
+      await closeAllPools().catch(() => {});
     }
   }
 }

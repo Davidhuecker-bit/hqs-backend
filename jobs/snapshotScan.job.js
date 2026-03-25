@@ -17,7 +17,6 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const {
@@ -30,13 +29,8 @@ const {
 } = require("../services/outcomeTracking.repository");
 const { refreshAndPersistFxRate } = require("../services/fx.service");
 
-// Shared pool for DB readiness probe inside this job process
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 1,
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 async function run() {
   await runJob(
     "snapshotScan",
@@ -72,7 +66,7 @@ async function run() {
 
 run()
   .then(() => {
-    pool.end().catch(() => {});
+    closeAllPools().catch(() => {});
     process.exit(0);
   })
   .catch((err) => {
@@ -80,6 +74,6 @@ run()
       message: err?.message || String(err),
       stack: err?.stack,
     });
-    pool.end().catch(() => {});
+    closeAllPools().catch(() => {});
     process.exit(1);
   });

@@ -5,18 +5,17 @@
 // - 1x täglich per Provider (z.B. FMP) refreshen
 // - Scanner zieht batchweise Symbole aus DB (Cursor) -> schützt vor API Limits
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 // Cursor Keys
 const CURSOR_KEY_SNAPSHOT = "snapshot_scanner_cursor";
 
+let _universeTablesReady = false;
+
 async function initUniverseTables() {
+  if (_universeTablesReady) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS universe_symbols (
       id SERIAL PRIMARY KEY,
@@ -58,6 +57,7 @@ async function initUniverseTables() {
   );
 
   logger.info("Universe tables ensured");
+  _universeTablesReady = true;
 }
 
 function cleanText(v) {

@@ -1,6 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -8,11 +7,8 @@ try {
   logger = null;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /**
  * JSONB Safety:
  * - entfernt undefined

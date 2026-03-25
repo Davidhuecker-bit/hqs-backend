@@ -4,8 +4,6 @@
 // Liest Systemzustand, Aktivität, Coverage und Lernsignale aus der DB
 // Ohne dein laufendes Kernsystem zu verändern.
 
-const { Pool } = require("pg");
-
 let logger = console;
 try {
   logger = require("../utils/logger");
@@ -13,11 +11,8 @@ try {
   logger = console;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 const DEFAULT_LOOKBACK_HOURS = Number(process.env.ADMIN_LOOKBACK_HOURS || 24);
 const DEFAULT_LONG_LOOKBACK_DAYS = Number(process.env.ADMIN_LONG_LOOKBACK_DAYS || 7);
 // Minimum number of empty table fields required to classify the overall data status as "empty"

@@ -14,19 +14,14 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { initJobLocksTable, acquireLock } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 const { refreshGuardianStatusSummary } = require("../services/guardianStatusSummary.builder");
 
-// ── DB pool (standalone) ──────────────────────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 const LOCK_TTL_SECONDS = 5 * 60; // 5 min
 
 // ── Job entry point ───────────────────────────────────────────────────────────
@@ -63,7 +58,7 @@ async function run() {
 if (require.main === module) {
   run()
     .then(() => {
-      pool.end();
+      closeAllPools();
       process.exit(0);
     })
     .catch((error) => {
@@ -71,7 +66,7 @@ if (require.main === module) {
         message: error.message,
         stack: error.stack,
       });
-      pool.end();
+      closeAllPools();
       process.exit(1);
     });
 }

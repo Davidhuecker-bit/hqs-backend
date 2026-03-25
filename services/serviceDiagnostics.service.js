@@ -13,8 +13,6 @@
  * Called from:  GET /api/admin/service-diagnostics
  */
 
-const { Pool } = require("pg");
-
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -22,12 +20,8 @@ try {
   logger = console;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  max: 3,
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 // ─────────────────────────────────────────────────────────────────────────────
 // 1.  SERVICE → JOB MAPPING (source of truth)
 // ─────────────────────────────────────────────────────────────────────────────

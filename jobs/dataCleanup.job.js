@@ -21,7 +21,6 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 const { initJobLocksTable, acquireLock } = require("../services/jobLock.repository");
@@ -47,11 +46,8 @@ const FX_RATES_KEEP_DAYS = Number(process.env.DATA_CLEANUP_FX_RATES_KEEP_DAYS ||
 
 // ── DB pool ───────────────────────────────────────────────────────────────────
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function tableExists(name) {
@@ -254,7 +250,7 @@ async function runDataCleanupJob() {
 if (require.main === module) {
   runDataCleanupJob()
     .then(() => {
-      pool.end();
+      closeAllPools();
       process.exit(0);
     })
     .catch((error) => {
@@ -262,7 +258,7 @@ if (require.main === module) {
         message: error.message,
         stack: error.stack,
       });
-      pool.end();
+      closeAllPools();
       process.exit(1);
     });
 }

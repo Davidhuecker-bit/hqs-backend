@@ -5,7 +5,6 @@
 
 require("dotenv").config();
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
 
@@ -15,11 +14,8 @@ const {
 } = require("../services/entityMap.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+const pool = getSharedPool();
 function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase();
 }
@@ -285,7 +281,7 @@ async function run() {
     process.exitCode = 1;
   }
 
-  await pool.end().catch(() => {});
+  await closeAllPools().catch(() => {});
 }
 
 run();

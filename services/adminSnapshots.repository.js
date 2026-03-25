@@ -1,7 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
-
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -9,11 +7,8 @@ try {
   logger = null;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 const ALLOWED_INTERVALS = new Set(["24 hours", "7 days", "30 days"]);
 
 function parseSnapshotValue(value) {

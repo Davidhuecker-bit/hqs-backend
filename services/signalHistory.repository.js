@@ -19,15 +19,11 @@
   clear explanation in the _meta block.
 */
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* ── helpers ───────────────────────────────────────────────────────────── */
 
 function safe(n, fallback = 0) {

@@ -21,8 +21,6 @@
  *   3 = Some tables unreachable
  */
 
-const { Pool } = require("pg");
-
 // All 34 tables that should exist
 const ALL_TABLES = [
   "admin_snapshots",
@@ -79,13 +77,8 @@ async function checkDatabaseConnection() {
     return null;
   }
 
-  const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
-    max: 1,
-    connectionTimeoutMillis: 10000,
-  });
-
+const { getSharedPool, closeAllPools } = require("../config/database");
+  const pool = getSharedPool();
   try {
     const result = await pool.query("SELECT NOW() as now, version() as version");
     console.log("✅ Database connected successfully");
@@ -285,7 +278,7 @@ async function main() {
   const results = await checkAllTables(pool);
   await printSummary(results);
 
-  await pool.end();
+  await closeAllPools();
 
   if (results.missing > 0) {
     process.exit(2);

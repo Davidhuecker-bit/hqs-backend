@@ -5,8 +5,6 @@
 // Writer: jobs/historicalBackfill.job.py (scheduled Historical Backfill cron job).
 // Reader: historicalService.js (getHistoricalPrices).
 
-const { Pool } = require("pg");
-
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -14,11 +12,8 @@ try {
   logger = null;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /**
  * Ensure the prices_daily table exists.
  * Called once on first use (lazy DDL).

@@ -38,15 +38,11 @@
     - Sector mapping reuses getSector() from capitalAllocation.service
 */
 
-const { Pool } = require("pg");
 const logger = require("../utils/logger");
 const { getSector } = require("./capitalAllocation.service");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* ─── fallback context ─────────────────────────────────────────────────────── */
 
 const UNKNOWN_CONTEXT = Object.freeze({

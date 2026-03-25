@@ -19,8 +19,6 @@
  *   )
  */
 
-const { Pool } = require("pg");
-
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -28,15 +26,8 @@ try {
   logger = console;
 }
 
-// Module-level DB pool for pipelineStatus operations.
-// This pool persists for the process lifetime and is shared across all
-// calls to savePipelineStage / loadPipelineStatus.  It is intentionally
-// not closed explicitly – the pg driver drains it on process exit / SIGTERM.
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 const ALLOWED_STAGES = new Set([
   "universe",
   "snapshot",

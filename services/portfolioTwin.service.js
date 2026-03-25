@@ -24,17 +24,13 @@
     - worldState consumed opportunistically (graceful fallback on unavailability)
 */
 
-const { Pool } = require("pg");
 const logger   = require("../utils/logger");
 const { getSector, calculatePositionSize } = require("./capitalAllocation.service");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
 const { ensureTrackedSymbol } = require("./universe.repository");
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 /* =========================================================
    TABLE INIT
 ========================================================= */

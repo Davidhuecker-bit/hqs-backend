@@ -1,6 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
 let logger = null;
 
 try {
@@ -9,15 +8,8 @@ try {
   logger = null;
 }
 
-const connectionString =
-  process.env.DATABASE_URL ||
-  `postgresql://${process.env.PGUSER}:${process.env.PGPASSWORD}@${process.env.PGHOST}:${process.env.PGPORT}/${process.env.PGDATABASE}`;
-
-const pool = new Pool({
-  connectionString,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 async function initJobLocksTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS job_locks (

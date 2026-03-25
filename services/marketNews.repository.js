@@ -1,6 +1,5 @@
 "use strict";
 
-const { Pool } = require("pg");
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -8,11 +7,8 @@ try {
   logger = null;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 const MARKET_NEWS_SYMBOL_URL_CONSTRAINT = "market_news_symbol_url_key";
 const SQL_INTERVAL_COOLING_EXTENDED = "7 days";
 const SQL_INTERVAL_COOLING_STANDARD = "3 days";

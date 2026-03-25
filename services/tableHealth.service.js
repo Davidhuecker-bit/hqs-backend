@@ -14,8 +14,6 @@
  *   // { overallStatus, green, yellow, red, tables: [...], checkedAt, durationMs }
  */
 
-const { Pool } = require("pg");
-
 let logger = null;
 try {
   logger = require("../utils/logger");
@@ -23,11 +21,8 @@ try {
   logger = console;
 }
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
+const { getSharedPool } = require("../config/database");
+const pool = getSharedPool();
 // A table with fewer rows is "yellow" unless it also has recent writes
 const MIN_ROWS_GREEN  = Number(process.env.TABLE_HEALTH_MIN_ROWS_GREEN  || 5);
 const MIN_ROWS_YELLOW = Number(process.env.TABLE_HEALTH_MIN_ROWS_YELLOW || 1);
