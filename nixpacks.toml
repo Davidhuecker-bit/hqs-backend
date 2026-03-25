@@ -1,6 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# nixpacks.toml — Railway build configuration
+# nixpacks.toml — Nixpacks build configuration (FALLBACK ONLY)
 # ─────────────────────────────────────────────────────────────────────────────
+# NOTE: Railway's default builder is now Railpack (replaces Nixpacks).
+# Railpack reads railpack.json — it does NOT read this file.
+# This file is kept as a fallback in case a service is explicitly configured
+# to use Nixpacks via the Railway dashboard.
+#
+# Active Railpack config is in railpack.json at the project root.
+#
 # Explicitly forces Node.js as the primary provider so that the presence of
 # requirements.txt (used only by the Python Historical Backfill job) does NOT
 # cause nixpacks to switch to a Python-only build environment.
