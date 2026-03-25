@@ -342,7 +342,7 @@ async function check5_EmptyTables() {
   section("CHECK 5: Intentionally Empty Tables Verification");
   
   const tables = [
-    { name: "prices_daily", expected: "empty", reason: "Feature not implemented yet" },
+    { name: "prices_daily", expected: "low", reason: "Historical daily closes – populated on demand by historicalService (Massive backfill)" },
     { name: "sec_edgar_companies", expected: "low", reason: "Conditional feature, requires opt-in" },
     { name: "sec_edgar_filing_signals", expected: "low", reason: "Conditional feature, requires opt-in" },
     { name: "agents", expected: "3", reason: "Should have 3 rows (GROWTH_BIAS, RISK_SKEPTIC, MACRO_JUDGE)" },
