@@ -17,6 +17,7 @@ const {
   getReminderEligibleNotifications,
   computeUserPreferenceHints,        // ✅ Step 6 Block 2: per-user preference hints
 } = require("../services/notifications.repository");
+const { sendPushToUser } = require("../services/pushDelivery.service");
 
 /**
  * Derive a minimal Action-Orchestration for a discovery pick.
@@ -961,6 +962,23 @@ async function runDiscoveryNotify() {
             } catch (linkErr) {
               logger.warn("discoveryNotify: linkFollowUpOutcome failed (ignored)", { message: linkErr.message });
             }
+          }
+
+          // Push delivery: send web push to devices with wants_push=TRUE.
+          // Fire-and-forget – a push failure must not abort notification creation.
+          if (u?.wants_push) {
+            sendPushToUser(userId, {
+              title: `HQS Discovery: ${pick.symbol}`,
+              body: String(pick.reason || pick.narrative || `New opportunity: ${pick.symbol}`).slice(0, 120),
+              url: `/discovery?symbol=${encodeURIComponent(pick.symbol)}`,
+              tag: `discovery-${pick.symbol}`,
+            }).catch((pushErr) => {
+              logger.warn("discoveryNotify: push delivery failed (ignored)", {
+                userId,
+                symbol: pick.symbol,
+                message: pushErr?.message,
+              });
+            });
           }
         } else {
           skipped++;

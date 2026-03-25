@@ -92,6 +92,16 @@ case "$SERVICE" in
     exec node jobs/evaluateDiscoveries.job.js
     ;;
 
+  "World State Refresh"|"world-state-refresh")
+    echo "[start.sh] Starting job: world-state-refresh"
+    exec node jobs/worldStateRefresh.job.js
+    ;;
+
+  "SEC EDGAR Refresh"|"sec-edgar-refresh")
+    echo "[start.sh] Starting job: sec-edgar-refresh"
+    exec node jobs/secEdgarRefresh.job.js
+    ;;
+
   "UI Market List"|"ui-market-list")
     echo "[start.sh] Starting job: ui-market-list"
     exec node jobs/uiMarketList.job.js

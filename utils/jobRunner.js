@@ -9,6 +9,11 @@
  *
  * Optional DB readiness guard: if `pool` is supplied the job is skipped
  * (not thrown) when the DB is not reachable.
+ *
+ * Error alerting:
+ *   When a job throws an unhandled error, a Slack alert is sent if
+ *   ALERT_SLACK_WEBHOOK_URL is configured (env var).  The alert is fire-and-
+ *   forget: a delivery failure never masks the original job error.
  */
 
 let logger = null;
@@ -16,6 +21,35 @@ try {
   logger = require("./logger");
 } catch (_) {
   logger = console;
+}
+
+// ── Slack alerting ──────────────────────────────────────────────────────────
+const SLACK_WEBHOOK_URL = String(process.env.ALERT_SLACK_WEBHOOK_URL || "").trim();
+
+async function sendSlackAlert(name, err, durationMs) {
+  if (!SLACK_WEBHOOK_URL) return;
+
+  let axios;
+  try {
+    axios = require("axios");
+  } catch (_) {
+    return;
+  }
+
+  const env    = String(process.env.RAILWAY_ENVIRONMENT || process.env.NODE_ENV || "unknown");
+  const svcName = String(process.env.RAILWAY_SERVICE_NAME || "HQS Backend");
+  const text = [
+    `:rotating_light: *Job failed* · \`${name}\``,
+    `*Service:* ${svcName}  |  *Env:* ${env}`,
+    `*Duration:* ${durationMs} ms`,
+    `*Error:* ${String(err?.message || err).slice(0, 500)}`,
+  ].join("\n");
+
+  try {
+    await axios.post(SLACK_WEBHOOK_URL, { text }, { timeout: 5000 });
+  } catch (_) {
+    // Fire-and-forget: never let alerting crash the job runner
+  }
 }
 
 /**
@@ -125,6 +159,9 @@ async function runJob(name, fn, opts = {}) {
       errorType,
       error: err.message,
     });
+
+    // Fire-and-forget Slack alert (does not block the return value)
+    sendSlackAlert(name, err, durationMs).catch(() => {});
 
     return {
       success: false,
