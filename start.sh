@@ -27,14 +27,14 @@ case "$SERVICE" in
   # ── API Server ────────────────────────────────────────────────────────────
   "HQS Backend")
     echo "[start.sh] Starting HQS Backend API server"
-    exec npm start
+    exec node server.js
     ;;
 
   # ── Cron / Worker Jobs ───────────────────────────────────────────────────
 
   "Scan Markt Snapshot")
     echo "[start.sh] Starting job: snapshot-scan"
-    exec npm run job:snapshot-scan
+    exec node jobs/snapshotScan.job.js
     ;;
 
   "Cron Markt-News"|"cron-markt-news-sammeln")
@@ -42,72 +42,72 @@ case "$SERVICE" in
     # Both names route to the same job. The duplicate should be removed in
     # Railway once confirmed that only one service exists.
     echo "[start.sh] Starting job: market-news-refresh (service: $SERVICE)"
-    exec npm run job:market-news-refresh
+    exec node jobs/marketNewsRefresh.job.js
     ;;
 
   "cron-entity-map-erstellen")
     echo "[start.sh] Starting job: build-entity-map"
-    exec npm run job:build-entity-map
+    exec node jobs/buildEntityMap.job.js
     ;;
 
   "Cron Aktien Universum")
     echo "[start.sh] Starting job: universe-refresh"
-    exec npm run job:universe-refresh
+    exec node jobs/universeRefresh.job.js
     ;;
 
   "Cron tägliches Briefing"|"Cron taegliches Briefing"|"cron-tagliches-briefing"|"cron-taegliches-briefing")
     echo "[start.sh] Starting job: daily-briefing"
-    exec npm run job:daily-briefing
+    exec node jobs/dailyBriefing.job.js
     ;;
 
   "Discovery Notify"|"discovery-notify")
     echo "[start.sh] Starting job: discovery-notify"
-    exec npm run job:discovery-notify
+    exec node jobs/discoveryNotify.job.js
     ;;
 
   "News Lifecycle Cleanup"|"news-lifecycle-cleanup")
     echo "[start.sh] Starting job: news-lifecycle-cleanup"
-    exec npm run job:news-lifecycle-cleanup
+    exec node jobs/newsLifecycleCleanup.job.js
     ;;
 
   "Forecast Verification"|"forecast-verification")
     echo "[start.sh] Starting job: forecast-verification"
-    exec npm run job:forecast-verification
+    exec node jobs/forecastVerification.job.js
     ;;
 
   "Causal Memory"|"causal-memory")
     echo "[start.sh] Starting job: causal-memory"
-    exec npm run job:causal-memory
+    exec node jobs/causalMemory.job.js
     ;;
 
   "Tech Radar"|"tech-radar")
     echo "[start.sh] Starting job: tech-radar"
-    exec npm run job:tech-radar
+    exec node jobs/techRadar.job.js
     ;;
 
   "Data Cleanup"|"data-cleanup")
     echo "[start.sh] Starting job: data-cleanup"
-    exec npm run job:data-cleanup
+    exec node jobs/dataCleanup.job.js
     ;;
 
   "UI Market List"|"ui-market-list")
     echo "[start.sh] Starting job: ui-market-list"
-    exec npm run job:ui-market-list
+    exec node jobs/uiMarketList.job.js
     ;;
 
   "UI Demo Portfolio"|"ui-demo-portfolio")
     echo "[start.sh] Starting job: ui-demo-portfolio"
-    exec npm run job:ui-demo-portfolio
+    exec node jobs/uiDemoPortfolio.job.js
     ;;
 
   "UI Guardian Status"|"ui-guardian-status")
     echo "[start.sh] Starting job: ui-guardian-status"
-    exec npm run job:ui-guardian-status
+    exec node jobs/uiGuardianStatus.job.js
     ;;
 
   "Historical Backfill"|"historical-backfill")
     echo "[start.sh] Starting job: historical-backfill"
-    exec npm run job:historical-backfill
+    exec python3 jobs/historicalBackfill.job.py
     ;;
 
   # ── Safety net ───────────────────────────────────────────────────────────
