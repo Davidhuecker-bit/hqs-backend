@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "packages": {
+    "node": "20",
+    "python": "3.11"
+  },
+  "steps": {
+    "install": {
+      "commands": [
+        "npm ci",
+        "pip3 install -r requirements.txt"
+      ]
+    }
+  }
+}
