@@ -1634,6 +1634,9 @@ async function buildMarketSnapshot() {
       successCount: summary.historicalOk,
       failedCount:  summary.quotesLoaded - summary.historicalOk - summary.skipped,
       skippedCount: summary.skipped,
+      errorMessage: summary.historicalOk === 0 && summary.quotesLoaded > 0
+        ? `0/${summary.quotesLoaded} symbols had sufficient historical data (need ≥30 daily prices). Check MASSIVE_API_KEY and prices_daily table.`
+        : null,
     }),
     updatePipelineStage("hqsScoring", {
       inputCount:   summary.normalizedOk,

@@ -2,20 +2,23 @@
 """
 python/historical-backfill/historicalBackfill.job.py
 
-Historical Price Backfill Job
-==============================
+Historical Price Backfill Job (OPTIONAL PRE-WARMING)
+=====================================================
 Source of truth : prices_daily table
 Data source     : Massive historical candles API
 Scheduling      : Railway cron service "Historical Backfill"
+
+NOTE: This Python service is an OPTIONAL batch pre-warming job.
+The canonical writer for prices_daily is the Node.js historicalService.js
+which performs lazy backfill on demand during the snapshot scan.
+This job can run in parallel to pre-fill data for symbols not yet scanned,
+but the pipeline does NOT depend on it.
 
 What it does:
   1. Queries all active symbols that have < MIN_POINTS rows in prices_daily.
   2. For each such symbol, fetches up to FETCH_DAYS of daily OHLCV from Massive.
   3. Upserts the fetched rows into prices_daily (idempotent).
   4. Writes a pipeline_status row for the historical_backfill stage.
-
-This job replaces the lazy write path that previously lived in
-historicalService.js. historicalService is now a pure reader.
 
 Usage:
   python3 historicalBackfill.job.py

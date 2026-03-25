@@ -2,8 +2,9 @@
 
 // services/pricesDaily.repository.js
 // Repository for the prices_daily table – canonical historical daily close prices.
-// Writer: jobs/historicalBackfill.job.py (scheduled Historical Backfill cron job).
-// Reader: historicalService.js (getHistoricalPrices).
+// Canonical writer: historicalService.js (lazy backfill via Massive API on demand).
+// Optional writer:  python/historical-backfill/ (batch pre-warming, not required).
+// Reader:           historicalService.js (getHistoricalPrices).
 
 let logger = null;
 try {

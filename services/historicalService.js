@@ -1,6 +1,7 @@
 "use strict";
 
-const { getPricesDaily } = require("./pricesDaily.repository");
+const { getPricesDaily, upsertPricesDailyBatch } = require("./pricesDaily.repository");
+const { fetchMassiveHistoricalCandles } = require("./providerService");
 
 let logger = null;
 try {
@@ -21,15 +22,26 @@ function parsePeriodToDays(period) {
   return 365;
 }
 
+// Minimum price points required for advanced metrics (must match marketService threshold)
+const MIN_POINTS = 30;
+
+// How far back to fetch from Massive when backfilling (2 years)
+const BACKFILL_FETCH_DAYS = 730;
+
+// Milliseconds per calendar day (24 * 60 * 60 * 1000)
+const MS_PER_DAY = 86400000;
+
 /**
- * historicalService – Historical price data reader.
+ * historicalService – Historical price data reader with lazy backfill.
  *
  * Source of truth : prices_daily table.
- * Writer          : jobs/historicalBackfill.job.py (separate scheduled job).
+ * Canonical writer: THIS service (lazy backfill via Massive API).
+ * Optional writer : python/historical-backfill/ (batch pre-warming, not required).
  *
- * This service is a pure reader. It never calls external APIs and never
- * writes to prices_daily. Backfilling is handled exclusively by the
- * Historical Backfill cron job.
+ * When prices_daily has insufficient data for a symbol (< MIN_POINTS rows),
+ * this service fetches historical candles from the Massive API and writes them
+ * to prices_daily before returning the result. Subsequent calls are served
+ * directly from the table without any API calls.
  *
  * No Finnhub. No market_snapshots dependency for this path.
  */
@@ -38,7 +50,58 @@ async function getHistoricalPrices(symbol, period) {
   const days = parsePeriodToDays(period);
 
   try {
-    const rows = await getPricesDaily(sym, days);
+    let rows = await getPricesDaily(sym, days);
+
+    // Lazy backfill: if prices_daily has insufficient data, fetch from Massive
+    // and write to prices_daily, then re-read.
+    if (rows.length < MIN_POINTS) {
+      if (logger?.info) {
+        logger.info("[historicalService] lazy backfill triggered", {
+          symbol: sym,
+          existingRows: rows.length,
+          minRequired: MIN_POINTS,
+        });
+      }
+
+      try {
+        const today = new Date();
+        const toDate   = today.toISOString().slice(0, 10);
+        const fromDate = new Date(today.getTime() - BACKFILL_FETCH_DAYS * MS_PER_DAY)
+          .toISOString().slice(0, 10);
+
+        const candles = await fetchMassiveHistoricalCandles(sym, fromDate, toDate);
+
+        if (candles && candles.length > 0) {
+          await upsertPricesDailyBatch(sym, candles);
+          if (logger?.info) {
+            logger.info("[historicalService] lazy backfill complete", {
+              symbol: sym,
+              candlesFetched: candles.length,
+            });
+          }
+          // Re-read from DB after backfill
+          rows = await getPricesDaily(sym, days);
+        } else {
+          if (logger?.warn) {
+            logger.warn("[historicalService] lazy backfill: Massive returned no candles", {
+              symbol: sym,
+              fromDate,
+              toDate,
+            });
+          }
+        }
+      } catch (backfillErr) {
+        // Backfill failed – log but still return whatever rows we have (may be empty).
+        // This ensures the pipeline degrades gracefully instead of crashing.
+        if (logger?.warn) {
+          logger.warn("[historicalService] lazy backfill failed", {
+            symbol: sym,
+            message: backfillErr.message,
+          });
+        }
+      }
+    }
+
     return rows.map((r) => ({ close: r.close }));
   } catch (err) {
     if (logger?.warn) {

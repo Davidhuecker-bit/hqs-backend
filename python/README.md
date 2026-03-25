@@ -24,7 +24,11 @@ Node.js install step.
 
 ### Historical Backfill (`python/historical-backfill/`)
 
-Bulk-backfills historical daily price data into the `prices_daily` table.
+**OPTIONAL** batch pre-warming job that bulk-backfills historical daily price
+data into the `prices_daily` table. The Node.js `historicalService.js` performs
+lazy backfill on demand during the snapshot scan, so the pipeline works without
+this Python service. Deploying it is recommended for faster initial data
+population but is not required for production operation.
 
 **Files:**
 - `historicalBackfill.job.py` — Main job script
