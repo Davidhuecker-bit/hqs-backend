@@ -16,7 +16,7 @@ require("dotenv").config();
 
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
-const { initJobLocksTable, acquireLock } = require("../services/jobLock.repository");
+const { initJobLocksTable, acquireLock, releaseLock } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 const { refreshMarketSummary } = require("../services/marketSummary.builder");
 
@@ -37,6 +37,7 @@ async function run() {
       return { skipped: true };
     }
 
+    try {
     logger.info("[job:ui-market-list] building market_list summary");
 
     const stocks = await refreshMarketSummary({ limit: MAX_MARKET_LIST_SYMBOLS });
@@ -50,6 +51,9 @@ async function run() {
 
     logger.info("[job:ui-market-list] complete", { symbolCount });
     return { processedCount: symbolCount };
+    } finally {
+      await releaseLock("ui_market_list_job").catch(() => {});
+    }
   }, { pool });
 }
 

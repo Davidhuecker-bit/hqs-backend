@@ -7,6 +7,7 @@ const { runJob } = require("../utils/jobRunner");
 const {
   initJobLocksTable,
   acquireLock,
+  releaseLock,
 } = require("../services/jobLock.repository");
 const {
   initMarketNewsTable,
@@ -25,6 +26,7 @@ async function run() {
       return { processedCount: 0 };
     }
 
+    try {
     await initMarketNewsTable();
 
     const lifecycleSummary = await syncMarketNewsLifecycleStates();
@@ -37,6 +39,9 @@ async function run() {
       failedCount: 0,
     });
     return { processedCount, ...lifecycleSummary, ...cleanupSummary };
+    } finally {
+      await releaseLock("news_lifecycle_cleanup_job").catch(() => {});
+    }
   });
 }
 

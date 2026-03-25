@@ -32,6 +32,8 @@
     "job:tech-radar:check": "node --check jobs/techRadar.job.js",
     "job:data-cleanup": "node jobs/dataCleanup.job.js",
     "job:data-cleanup:check": "node --check jobs/dataCleanup.job.js",
+    "job:evaluate-discoveries": "node jobs/evaluateDiscoveries.job.js",
+    "job:evaluate-discoveries:check": "node --check jobs/evaluateDiscoveries.job.js",
     "job:ui-market-list": "node jobs/uiMarketList.job.js",
     "job:ui-market-list:check": "node --check jobs/uiMarketList.job.js",
     "job:ui-demo-portfolio": "node jobs/uiDemoPortfolio.job.js",

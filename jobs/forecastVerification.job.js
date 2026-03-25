@@ -24,6 +24,7 @@ const {
 } = require("../services/outcomeTracking.repository");
 const {
   acquireLock,
+  releaseLock,
   initJobLocksTable,
 } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
@@ -93,6 +94,8 @@ async function runForecastVerificationJob() {
     let verified7d  = 0;
     let failedCount = 0;
 
+    try {
+
     // ── 24-hour agent forecast verification ──────────────────────────────────
     try {
       verified24h = await verifyAgentForecasts(fetchPriceDbFirst);
@@ -146,6 +149,10 @@ async function runForecastVerificationJob() {
       failedCount,
     });
     return { verified24h, verified7d, failedCount, processedCount };
+
+    } finally {
+      await releaseLock("forecast_verification_job").catch(() => {});
+    }
   });
 }
 

@@ -80,6 +80,7 @@ const { initTechRadarTable } = require("./services/techRadar.service");
 const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.service");
 const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
+const { initEntityMapTable } = require("./services/entityMap.repository");
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
@@ -650,6 +651,7 @@ async function runStartupInit() {
   await safeInit("initNotificationTables",                initNotificationTables);
   await safeInit("seedDemoUserIfEmpty",                   seedDemoUserIfEmpty);
   await safeInit("initSecEdgarTables",                    initSecEdgarTables);
+  await safeInit("initEntityMapTable",                    initEntityMapTable);
   await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);
   await safeInit("ensureSisHistoryTable",                 ensureSisHistoryTable);
   await safeInit("ensurePipelineStatusTable",             ensurePipelineStatusTable);

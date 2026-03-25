@@ -4,7 +4,7 @@ require("dotenv").config();
 
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
-const { acquireLock } = require("../services/jobLock.repository");
+const { acquireLock, releaseLock } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 const { discoverStocks } = require("../services/discoveryEngine.service");
@@ -752,6 +752,7 @@ async function runDiscoveryNotify() {
       return { processedCount: 0 };
     }
 
+    try {
     // 1) Hidden Winner Pick berechnen (einmal pro Job)
     const picks = await discoverStocks(1);
     const pick = Array.isArray(picks) && picks[0] ? picks[0] : null;
@@ -987,6 +988,9 @@ async function runDiscoveryNotify() {
       users: users.length,
       pick: pick.symbol,
     };
+    } finally {
+      await releaseLock("discovery_notify_job").catch(() => {});
+    }
   });
 }
 

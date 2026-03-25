@@ -7,7 +7,7 @@ require("dotenv").config();
 
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
-const { acquireLock, initJobLocksTable } = require("../services/jobLock.repository");
+const { acquireLock, releaseLock, initJobLocksTable } = require("../services/jobLock.repository");
 const { refreshUniverse } = require("../services/universe.service");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
@@ -26,6 +26,7 @@ async function run() {
         return { processedCount: 0 };
       }
 
+      try {
       const result = await refreshUniverse();
       const processedCount = result?.inserted ?? result?.total ?? 0;
 
@@ -39,6 +40,9 @@ async function run() {
       }).catch(() => {});
 
       return { processedCount, ...result };
+      } finally {
+        await releaseLock("universe_refresh_job").catch(() => {});
+      }
     },
     { pool, dbRetries: 5, dbDelayMs: 3000 }
   );

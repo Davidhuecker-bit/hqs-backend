@@ -26,7 +26,7 @@ require("dotenv").config();
 
 const logger = require("../utils/logger");
 const { runJob } = require("../utils/jobRunner");
-const { initJobLocksTable, acquireLock } = require("../services/jobLock.repository");
+const { initJobLocksTable, acquireLock, releaseLock } = require("../services/jobLock.repository");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 const { refreshDemoPortfolio } = require("../services/adminDemoPortfolio.service");
 
@@ -46,6 +46,7 @@ async function run() {
       return { skipped: true };
     }
 
+    try {
     logger.info("[job:ui-demo-portfolio] building demo_portfolio summary");
 
     const result = await refreshDemoPortfolio();
@@ -64,6 +65,9 @@ async function run() {
       freshness:  result?.freshness ?? "unknown",
     });
     return { processedCount: holdingCount };
+    } finally {
+      await releaseLock("ui_demo_portfolio_job").catch(() => {});
+    }
   }, { pool });
 }
 

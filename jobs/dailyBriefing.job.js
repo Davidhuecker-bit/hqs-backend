@@ -3,7 +3,7 @@
 require("dotenv").config();
 
 const logger = require("../utils/logger");
-const { acquireLock, initJobLocksTable } = require("../services/jobLock.repository");
+const { acquireLock, releaseLock, initJobLocksTable } = require("../services/jobLock.repository");
 const { runJob } = require("../utils/jobRunner");
 const { getMarketData } = require("../services/marketService");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
@@ -743,6 +743,7 @@ async function runDailyBriefing() {
       return { processedCount: 0, skippedCount: 0 };
     }
 
+    try {
     // Load stored discovery pick (produced by discoveryNotify job) – DB-first, no re-scoring
     let hiddenWinner = null;
     if (typeof getLatestDiscoveryPick === "function") {
@@ -1001,6 +1002,9 @@ async function runDailyBriefing() {
     alreadyToday,
     users: users.length,
   };
+    } finally {
+      await releaseLock("daily_briefing_job").catch(() => {});
+    }
   });
 }
 

@@ -87,6 +87,11 @@ case "$SERVICE" in
     exec node jobs/dataCleanup.job.js
     ;;
 
+  "Evaluate Discoveries"|"evaluate-discoveries")
+    echo "[start.sh] Starting job: evaluate-discoveries"
+    exec node jobs/evaluateDiscoveries.job.js
+    ;;
+
   "UI Market List"|"ui-market-list")
     echo "[start.sh] Starting job: ui-market-list"
     exec node jobs/uiMarketList.job.js
