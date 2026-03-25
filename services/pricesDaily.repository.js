@@ -35,6 +35,23 @@ async function ensurePricesDailyTable() {
       UNIQUE (symbol, price_date)
     )
   `);
+
+  // Migration: rename legacy 'date' column to 'price_date' if the table was
+  // created by an older schema version that used 'date' as the column name.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'prices_daily' AND column_name = 'date'
+      ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'prices_daily' AND column_name = 'price_date'
+      ) THEN
+        ALTER TABLE prices_daily RENAME COLUMN "date" TO price_date;
+      END IF;
+    END $$;
+  `);
 }
 
 let _tableReady = false;
