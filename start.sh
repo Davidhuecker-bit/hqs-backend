@@ -105,6 +105,11 @@ case "$SERVICE" in
     exec npm run job:ui-guardian-status
     ;;
 
+  "Historical Backfill"|"historical-backfill")
+    echo "[start.sh] Starting job: historical-backfill"
+    exec npm run job:historical-backfill
+    ;;
+
   # ── Safety net ───────────────────────────────────────────────────────────
   # Unknown or unset service names must NOT fall back to npm start.
   # This prevents cron services from accidentally booting the full backend.
