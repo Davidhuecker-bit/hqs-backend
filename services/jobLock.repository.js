@@ -60,7 +60,32 @@ async function acquireLock(name, ttlSeconds = 600) {
   return won;
 }
 
+/**
+ * Explicitly release a lock so the next run can proceed immediately
+ * instead of waiting for TTL expiry.
+ */
+async function releaseLock(name) {
+  const lockName = String(name || "").trim();
+  if (!lockName) return false;
+
+  try {
+    const res = await pool.query(
+      `DELETE FROM job_locks WHERE name = $1`,
+      [lockName]
+    );
+    const released = res.rowCount === 1;
+    if (logger?.info)
+      logger.info("lock release", { name: lockName, released });
+    return released;
+  } catch (err) {
+    if (logger?.warn)
+      logger.warn("lock release failed", { name: lockName, message: err.message });
+    return false;
+  }
+}
+
 module.exports = {
   initJobLocksTable,
   acquireLock,
+  releaseLock,
 };
