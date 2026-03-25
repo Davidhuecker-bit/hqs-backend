@@ -1,0 +1,19 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# nixpacks.toml — Railway build configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Explicitly forces Node.js as the primary provider so that the presence of
+# requirements.txt (used only by the Python Historical Backfill job) does NOT
+# cause nixpacks to switch to a Python-only build environment.
+#
+# Both Node.js/npm and Python3/pip are made available so that:
+#   - All Node.js services (HQS Backend API + every cron job) work normally
+#   - The "Historical Backfill" Railway service can run python3
+# ─────────────────────────────────────────────────────────────────────────────
+
+providers = ["node"]
+
+[phases.setup]
+nixPkgs = ["python3", "python3Packages.pip"]
+
+[phases.install]
+cmds = ["npm ci", "pip3 install -r requirements.txt"]
