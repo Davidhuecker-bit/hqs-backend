@@ -227,12 +227,14 @@ async function cleanOldMarketSnapshots() {
   }
   try {
     const res = await pool.query(
-      `DELETE FROM market_snapshots
-       WHERE created_at < NOW() - ($1 || ' days')::INTERVAL
-         AND id NOT IN (
-           SELECT DISTINCT ON (symbol) id
-           FROM market_snapshots
-           ORDER BY symbol, created_at DESC
+      `DELETE FROM market_snapshots ms
+       WHERE ms.created_at < NOW() - ($1 || ' days')::INTERVAL
+         AND NOT EXISTS (
+           SELECT 1 FROM (
+             SELECT DISTINCT ON (symbol) id
+             FROM market_snapshots
+             ORDER BY symbol, created_at DESC
+           ) keep WHERE keep.id = ms.id
          )`,
       [String(SNAPSHOTS_KEEP_DAYS)]
     );
@@ -255,12 +257,14 @@ async function cleanOldHqsScores() {
   }
   try {
     const res = await pool.query(
-      `DELETE FROM hqs_scores
-       WHERE created_at < NOW() - ($1 || ' days')::INTERVAL
-         AND id NOT IN (
-           SELECT DISTINCT ON (symbol) id
-           FROM hqs_scores
-           ORDER BY symbol, created_at DESC
+      `DELETE FROM hqs_scores hs
+       WHERE hs.created_at < NOW() - ($1 || ' days')::INTERVAL
+         AND NOT EXISTS (
+           SELECT 1 FROM (
+             SELECT DISTINCT ON (symbol) id
+             FROM hqs_scores
+             ORDER BY symbol, created_at DESC
+           ) keep WHERE keep.id = hs.id
          )`,
       [String(HQS_SCORES_KEEP_DAYS)]
     );
@@ -283,12 +287,14 @@ async function cleanOldFactorHistory() {
   }
   try {
     const res = await pool.query(
-      `DELETE FROM factor_history
-       WHERE created_at < NOW() - ($1 || ' days')::INTERVAL
-         AND id NOT IN (
-           SELECT DISTINCT ON (symbol) id
-           FROM factor_history
-           ORDER BY symbol, created_at DESC
+      `DELETE FROM factor_history fh
+       WHERE fh.created_at < NOW() - ($1 || ' days')::INTERVAL
+         AND NOT EXISTS (
+           SELECT 1 FROM (
+             SELECT DISTINCT ON (symbol) id
+             FROM factor_history
+             ORDER BY symbol, created_at DESC
+           ) keep WHERE keep.id = fh.id
          )`,
       [String(FACTOR_HISTORY_KEEP_DAYS)]
     );
@@ -303,8 +309,9 @@ async function cleanOldFactorHistory() {
 
 /**
  * Remove old outcome_tracking rows beyond the retention window.
- * Only removes rows that have been evaluated (is_evaluated = true or
- * created_at is very old) to prevent deleting pending evaluations.
+ * Deletes all rows older than the retention threshold regardless of
+ * evaluation status – the retention window is long enough that any
+ * pending evaluations will have been processed.
  */
 async function cleanOldOutcomeTracking() {
   if (!(await tableExists("outcome_tracking"))) {
