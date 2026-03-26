@@ -9,6 +9,13 @@
   - Erfolgsquote berechnen
   - durchschnittliche Performance messen
   - Memory Score erzeugen
+
+  Final compatible version:
+  - gleiche Exporte
+  - gleiche Hauptstruktur
+  - verbesserte Statistik mit leichter Zeitgewichtung
+  - robustere Konsistenzmessung
+  - konfigurierbare Grenzen / History-Limit
 */
 
 function safe(n, fallback = 0) {
@@ -19,6 +26,29 @@ function safe(n, fallback = 0) {
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
+
+function envNum(key, fallback) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeKeyPart(value, fallback = "none") {
+  const normalized = String(value ?? fallback)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
+  return normalized || fallback;
+}
+
+const MEMORY_HISTORY_LIMIT = Math.max(
+  20,
+  Math.floor(envNum("MEMORY_HISTORY_LIMIT", 500))
+);
+
+const MEMORY_FEATURE_THRESHOLD = envNum("MEMORY_FEATURE_THRESHOLD", 0.6);
+const MEMORY_NEUTRAL_STD_FLOOR = envNum("MEMORY_STD_FLOOR", 0.1);
 
 /* =========================================================
    SETUP SIGNATURE
@@ -32,28 +62,31 @@ function buildSetupSignature({
   features = {},
   crossSignals = [],
 } = {}) {
-  const featureKeys = Object.keys(features)
-    .filter((k) => safe(features[k]) > 0.6)
+  const featureKeys = Object.keys(features || {})
+    .filter((k) => safe(features[k]) > MEMORY_FEATURE_THRESHOLD)
     .sort();
 
   const discoveryKeys = (discoveries || [])
     .map((d) => d?.type)
     .filter(Boolean)
+    .map((v) => normalizeKeyPart(v))
     .sort();
 
   const narrativeKeys = (narratives || [])
     .map((n) => n?.type || n?.label)
     .filter(Boolean)
+    .map((v) => normalizeKeyPart(v))
     .sort();
 
   const crossKeys = (crossSignals || [])
     .map((s) => s?.type || s?.label)
     .filter(Boolean)
+    .map((v) => normalizeKeyPart(v))
     .sort();
 
   return [
-    `regime:${String(regime).toLowerCase()}`,
-    `strategy:${String(strategy).toLowerCase()}`,
+    `regime:${normalizeKeyPart(regime, "neutral")}`,
+    `strategy:${normalizeKeyPart(strategy, "balanced")}`,
     `features:${featureKeys.join("+") || "none"}`,
     `discoveries:${discoveryKeys.join("+") || "none"}`,
     `narratives:${narrativeKeys.join("+") || "none"}`,
@@ -65,43 +98,66 @@ function buildSetupSignature({
    MEMORY STATS
 ========================================================= */
 
-function calculateSuccessRate(history = []) {
-  if (!Array.isArray(history) || !history.length) return 0;
+function calculateWeightedStats(history = []) {
+  if (!Array.isArray(history) || !history.length) {
+    return { successRate: 0, averageReturn: 0 };
+  }
 
-  const wins = history.filter((h) => safe(h.actualReturn) > 0).length;
-  return clamp(wins / history.length, 0, 1);
+  let totalWeight = 0;
+  let weightedWins = 0;
+  let weightedReturn = 0;
+
+  history.forEach((h, index) => {
+    // leichte lineare Gewichtung: neuere Einträge zählen etwas mehr
+    const weight = (index + 1) / history.length;
+
+    totalWeight += weight;
+
+    if (safe(h?.actualReturn) > 0) {
+      weightedWins += weight;
+    }
+
+    weightedReturn += safe(h?.actualReturn) * weight;
+  });
+
+  return {
+    successRate: totalWeight > 0 ? weightedWins / totalWeight : 0,
+    averageReturn: totalWeight > 0 ? weightedReturn / totalWeight : 0,
+  };
+}
+
+function calculateSuccessRate(history = []) {
+  return calculateWeightedStats(history).successRate;
 }
 
 function calculateAverageReturn(history = []) {
-  if (!Array.isArray(history) || !history.length) return 0;
-
-  const avg =
-    history.reduce((sum, h) => sum + safe(h.actualReturn), 0) / history.length;
-
-  return avg;
+  return calculateWeightedStats(history).averageReturn;
 }
 
 function calculateAverageConfidence(history = []) {
   if (!Array.isArray(history) || !history.length) return 0;
 
   const avg =
-    history.reduce((sum, h) => sum + safe(h.confidence), 0) / history.length;
+    history.reduce((sum, h) => sum + safe(h?.confidence), 0) / history.length;
 
-  return clamp(avg / history.length, 0, 1);
+  return clamp(avg, 0, 1);
 }
 
 function calculateConsistency(history = []) {
-  if (!Array.isArray(history) || history.length < 2) return 0.5;
+  if (!Array.isArray(history) || history.length < 3) return 0.5;
 
-  const returns = history.map((h) => safe(h.actualReturn));
+  const returns = history.map((h) => safe(h?.actualReturn));
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
 
   const variance =
-    returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+    returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) /
+    returns.length;
 
-  const std = Math.sqrt(variance);
+  const std = Math.sqrt(Math.max(variance, 0));
 
-  return clamp(1 - std, 0, 1);
+  // sharpe-like consistency:
+  // je kleiner die Streuung relativ zum Mean, desto besser
+  return clamp(1 - std / (Math.abs(mean) + MEMORY_NEUTRAL_STD_FLOOR), 0, 1);
 }
 
 /* =========================================================
@@ -115,11 +171,11 @@ function calculateMemoryScore({
   consistency = 0.5,
   occurrences = 0,
 } = {}) {
-  const success = safe(successRate) * 45;
-  const avgReturnScore = clamp(safe(averageReturn) * 100, -20, 25);
+  const success = safe(successRate) * 50;
+  const avgReturnScore = clamp(safe(averageReturn) * 100, -10, 20);
   const conf = safe(averageConfidence) * 15;
-  const cons = safe(consistency) * 10;
-  const freq = clamp(safe(occurrences) / 10, 0, 5);
+  const cons = safe(consistency) * 20;
+  const freq = clamp(safe(occurrences) * 0.5, 0, 10);
 
   return clamp(
     Math.round(success + avgReturnScore + conf + cons + freq),
@@ -158,7 +214,9 @@ function updateMemoryStore(memoryStore = {}, entry = {}) {
     nextStore[signature] = [];
   }
 
-  nextStore[signature] = [...nextStore[signature], entry];
+  nextStore[signature] = [...nextStore[signature], entry].slice(
+    -MEMORY_HISTORY_LIMIT
+  );
 
   return nextStore;
 }
