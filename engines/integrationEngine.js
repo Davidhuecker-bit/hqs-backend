@@ -12,6 +12,13 @@
   sondern aus marketOrchestrator bzw. marketBrain konsumiert.
 
   Ablauf: marketOrchestrator → marketBrain (AI-Subscore) → integrationEngine (Finale Integration)
+
+  Final compatible version:
+  - gleiche Exporte
+  - gleiche Haupt-Rückgabeform
+  - bessere Konfigurierbarkeit
+  - stärkere News-/Signal-/Risk-Synthese
+  - weiterhin 1:1 ersetzbar
 */
 
 const { runPlugins } = require("./opportunityPluginRegistry");
@@ -25,11 +32,15 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+function envNum(key, fallback) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 /* =========================================================
    CANONICAL OUTPUT CONTRACT
-   Every consumer of buildIntegratedMarketView() depends on these six fields.
-   assertCanonicalOutput() surfaces missing fields via a warning instead of
-   letting broken output propagate silently through the pipeline.
 ========================================================= */
 
 const CANONICAL_OUTPUT_FIELDS = [
@@ -41,53 +52,67 @@ const CANONICAL_OUTPUT_FIELDS = [
   "components",
 ];
 
-/**
- * Validates that all canonical output fields are present and non-null.
- * Logs a warning listing any missing fields so broken pipelines are visible.
- * Returns a patched view with safe, clearly-degraded defaults for any gap.
- *
- * @param {object} view    – assembled output of buildIntegratedMarketView()
- * @param {string} symbol  – symbol string for diagnostics
- * @returns {object}  view (patched in place if necessary)
- */
 function assertCanonicalOutput(view, symbol) {
   const missing = CANONICAL_OUTPUT_FIELDS.filter((field) => view[field] == null);
   if (missing.length === 0) return view;
 
-  // Surface the gap – never silently pass through incomplete output.
   // eslint-disable-next-line no-console
   console.warn(
     `[integrationEngine] assertCanonicalOutput: missing fields for ${symbol || "?"}: ${missing.join(", ")}`
   );
 
-  // Patch with clearly-degraded safe defaults so downstream consumers
-  // receive a defined contract even when the pipeline is partially broken.
   const patched = { ...view };
   if (patched.finalConviction == null) patched.finalConviction = 0;
   if (patched.finalConfidence == null) patched.finalConfidence = 0;
-  if (patched.finalRating     == null) patched.finalRating     = "Low Conviction";
-  if (patched.finalDecision   == null) patched.finalDecision   = "IGNORIEREN";
-  if (patched.whyInteresting  == null) patched.whyInteresting  = [];
-  if (patched.components      == null) patched.components      = {};
+  if (patched.finalRating == null) patched.finalRating = "Low Conviction";
+  if (patched.finalDecision == null) patched.finalDecision = "IGNORIEREN";
+  if (patched.whyInteresting == null) patched.whyInteresting = [];
+  if (patched.components == null) patched.components = {};
   return patched;
 }
 
-const NEWS_CONVICTION_MAX_ABS = 8;
-// Final conviction uses a softer news profile than the orchestrator so that
-// prepared news context can move ranking meaningfully without dominating HQS/AI.
-// Relevance still leads, market impact remains material, but activity/freshness
-// are deliberately smaller because the scanner already pre-filters to scoring-active news.
-const NEWS_SIGNAL_RELEVANCE_WEIGHT = 0.28;
-const NEWS_SIGNAL_CONFIDENCE_WEIGHT = 0.18;
-const NEWS_SIGNAL_MARKET_IMPACT_WEIGHT = 0.24;
-const NEWS_SIGNAL_FRESHNESS_WEIGHT = 0.1;
-const NEWS_SIGNAL_PERSISTENCE_WEIGHT = 0.12;
-const NEWS_SIGNAL_ACTIVITY_WEIGHT = 0.08;
-const NEWS_PERSISTENCE_MAX = 160;
-const NEWS_ACTIVITY_CAP = 4;
-const NEWS_REASON_STRENGTH_THRESHOLD = 0.45;
-const SIGNAL_CONVICTION_MAX_ABS = 6;
-const SIGNAL_REASON_STRENGTH_THRESHOLD = 55;
+/* =========================================================
+   CONFIG
+========================================================= */
+
+const INTEGRATION_CONFIG = {
+  NEWS: {
+    MAX_CONVICTION_ADJUSTMENT: envNum("INTEGRATION_NEWS_MAX_ADJ", 8),
+    WEIGHTS: {
+      relevance: envNum("INTEGRATION_NEWS_W_RELEVANCE", 0.28),
+      confidence: envNum("INTEGRATION_NEWS_W_CONFIDENCE", 0.18),
+      marketImpact: envNum("INTEGRATION_NEWS_W_MARKET_IMPACT", 0.24),
+      freshness: envNum("INTEGRATION_NEWS_W_FRESHNESS", 0.10),
+      persistence: envNum("INTEGRATION_NEWS_W_PERSISTENCE", 0.12),
+      activity: envNum("INTEGRATION_NEWS_W_ACTIVITY", 0.08),
+    },
+    PERSISTENCE_MAX: envNum("INTEGRATION_NEWS_PERSISTENCE_MAX", 160),
+    ACTIVITY_CAP: envNum("INTEGRATION_NEWS_ACTIVITY_CAP", 4),
+    REASON_STRENGTH_THRESHOLD: envNum("INTEGRATION_NEWS_REASON_THRESHOLD", 0.45),
+    DIRECTION_THRESHOLD: envNum("INTEGRATION_NEWS_DIRECTION_THRESHOLD", 0.12),
+    CONFIDENCE_WEIGHT: envNum("INTEGRATION_NEWS_CONFIDENCE_WEIGHT", 8),
+    OPPORTUNITY_WEIGHT: envNum("INTEGRATION_NEWS_OPPORTUNITY_WEIGHT", 12),
+  },
+  SIGNAL: {
+    MAX_CONVICTION_ADJUSTMENT: envNum("INTEGRATION_SIGNAL_MAX_ADJ", 6),
+    REASON_STRENGTH_THRESHOLD: envNum("INTEGRATION_SIGNAL_REASON_THRESHOLD", 55),
+    STRENGTH_WEIGHT: envNum("INTEGRATION_SIGNAL_W_STRENGTH", 0.7),
+    CONFIDENCE_WEIGHT: envNum("INTEGRATION_SIGNAL_W_CONFIDENCE", 0.3),
+    OPPORTUNITY_WEIGHT: envNum("INTEGRATION_SIGNAL_OPPORTUNITY_WEIGHT", 10),
+    CONFIDENCE_SCORE_WEIGHT: envNum("INTEGRATION_SIGNAL_CONFIDENCE_SCORE_WEIGHT", 6),
+    DIRECTION_THRESHOLD: envNum("INTEGRATION_SIGNAL_DIRECTION_THRESHOLD", 0.12),
+  },
+  RISK: {
+    CONFIDENCE_DAMPING_THRESHOLD: envNum("INTEGRATION_CONFIDENCE_DAMPING_THRESHOLD", 40),
+    CONFIDENCE_DAMPING_MULTIPLIER: envNum("INTEGRATION_CONFIDENCE_DAMPING_MULT", 0.85),
+    RISK_OFF_EVENT_PENALTY_MULTIPLIER: envNum("INTEGRATION_RISK_OFF_EVENT_MULT", 1.5),
+    NEWS_SIGNAL_CONFLUENCE_BONUS: envNum("INTEGRATION_NEWS_SIGNAL_CONFLUENCE_BONUS", 8),
+  },
+};
+
+/* =========================================================
+   CONTEXT RESOLUTION
+========================================================= */
 
 function resolveNewsContext(newsContext = null, globalContext = {}) {
   if (newsContext && typeof newsContext === "object" && !Array.isArray(newsContext)) {
@@ -114,6 +139,10 @@ function resolveSignalContext(signalContext = null, globalContext = {}) {
 
   return null;
 }
+
+/* =========================================================
+   NEWS
+========================================================= */
 
 function calculateNewsDirectionScore(newsContext = null, globalContext = {}) {
   const news = resolveNewsContext(newsContext, globalContext);
@@ -143,16 +172,24 @@ function calculateNewsStrength(newsContext = null, globalContext = {}) {
   const confidence = clamp(safe(news?.weightedConfidence, 0), 0, 100) / 100;
   const marketImpact = clamp(safe(news?.weightedMarketImpact, 0), 0, 100) / 100;
   const freshness = clamp(safe(news?.weightedFreshness, 0), 0, 100) / 100;
-  const persistence = clamp(safe(news?.weightedPersistence, 0) / NEWS_PERSISTENCE_MAX, 0, 1);
-  const activity = clamp(safe(news?.activeCount, 0) / NEWS_ACTIVITY_CAP, 0, 1);
+  const persistence = clamp(
+    safe(news?.weightedPersistence, 0) / INTEGRATION_CONFIG.NEWS.PERSISTENCE_MAX,
+    0,
+    1
+  );
+  const activity = clamp(
+    safe(news?.activeCount, 0) / INTEGRATION_CONFIG.NEWS.ACTIVITY_CAP,
+    0,
+    1
+  );
 
   return clamp(
-    relevance * NEWS_SIGNAL_RELEVANCE_WEIGHT +
-      confidence * NEWS_SIGNAL_CONFIDENCE_WEIGHT +
-      marketImpact * NEWS_SIGNAL_MARKET_IMPACT_WEIGHT +
-      freshness * NEWS_SIGNAL_FRESHNESS_WEIGHT +
-      persistence * NEWS_SIGNAL_PERSISTENCE_WEIGHT +
-      activity * NEWS_SIGNAL_ACTIVITY_WEIGHT,
+    relevance * INTEGRATION_CONFIG.NEWS.WEIGHTS.relevance +
+      confidence * INTEGRATION_CONFIG.NEWS.WEIGHTS.confidence +
+      marketImpact * INTEGRATION_CONFIG.NEWS.WEIGHTS.marketImpact +
+      freshness * INTEGRATION_CONFIG.NEWS.WEIGHTS.freshness +
+      persistence * INTEGRATION_CONFIG.NEWS.WEIGHTS.persistence +
+      activity * INTEGRATION_CONFIG.NEWS.WEIGHTS.activity,
     0,
     1
   );
@@ -163,12 +200,21 @@ function calculateNewsAdjustment(newsContext = null, globalContext = {}) {
   if (newsStrength <= 0) return 0;
 
   const directionScore = calculateNewsDirectionScore(newsContext, globalContext);
+
   return clamp(
-    Math.round(newsStrength * directionScore * NEWS_CONVICTION_MAX_ABS),
-    -NEWS_CONVICTION_MAX_ABS,
-    NEWS_CONVICTION_MAX_ABS
+    Math.round(
+      newsStrength *
+        directionScore *
+        INTEGRATION_CONFIG.NEWS.MAX_CONVICTION_ADJUSTMENT
+    ),
+    -INTEGRATION_CONFIG.NEWS.MAX_CONVICTION_ADJUSTMENT,
+    INTEGRATION_CONFIG.NEWS.MAX_CONVICTION_ADJUSTMENT
   );
 }
+
+/* =========================================================
+   SIGNAL
+========================================================= */
 
 function calculateSignalDirectionScore(signalContext = null, globalContext = {}) {
   const signal = resolveSignalContext(signalContext, globalContext);
@@ -194,14 +240,17 @@ function calculateSignalStrength(signalContext = null, globalContext = {}) {
   const signal = resolveSignalContext(signalContext, globalContext);
   if (!signal) return 0;
 
-  const strength = clamp(
-    safe(signal?.signalStrength, signal?.trendScore),
-    0,
-    100
-  ) / 100;
-  const confidence = clamp(safe(signal?.signalConfidence, 0), 0, 100) / 100;
+  const strength =
+    clamp(safe(signal?.signalStrength, signal?.trendScore), 0, 100) / 100;
+  const confidence =
+    clamp(safe(signal?.signalConfidence, 0), 0, 100) / 100;
 
-  return clamp(strength * 0.7 + confidence * 0.3, 0, 1);
+  return clamp(
+    strength * INTEGRATION_CONFIG.SIGNAL.STRENGTH_WEIGHT +
+      confidence * INTEGRATION_CONFIG.SIGNAL.CONFIDENCE_WEIGHT,
+    0,
+    1
+  );
 }
 
 function calculateSignalAdjustment(signalContext = null, globalContext = {}) {
@@ -211,15 +260,19 @@ function calculateSignalAdjustment(signalContext = null, globalContext = {}) {
   const directionScore = calculateSignalDirectionScore(signalContext, globalContext);
 
   return clamp(
-    Math.round(signalStrength * directionScore * SIGNAL_CONVICTION_MAX_ABS),
-    -SIGNAL_CONVICTION_MAX_ABS,
-    SIGNAL_CONVICTION_MAX_ABS
+    Math.round(
+      signalStrength *
+        directionScore *
+        INTEGRATION_CONFIG.SIGNAL.MAX_CONVICTION_ADJUSTMENT
+    ),
+    -INTEGRATION_CONFIG.SIGNAL.MAX_CONVICTION_ADJUSTMENT,
+    INTEGRATION_CONFIG.SIGNAL.MAX_CONVICTION_ADJUSTMENT
   );
 }
 
-/* ===============================
+/* =========================================================
    GLOBAL REGIME EXTRACTION
-================================ */
+========================================================= */
 
 function extractGlobalRegime(globalContext = {}) {
   const orchestratorMode = String(
@@ -234,9 +287,9 @@ function extractGlobalRegime(globalContext = {}) {
   return "neutral";
 }
 
-/* ===============================
+/* =========================================================
    CONTEXT BOOSTS
-================================ */
+========================================================= */
 
 function calculateGlobalBoost(globalContext = {}) {
   let boost = 0;
@@ -246,7 +299,7 @@ function calculateGlobalBoost(globalContext = {}) {
   if (regime === "risk_on") boost += 4;
   if (regime === "neutral") boost += 1;
   if (regime === "risk_off") boost -= 4;
-  if (regime === "panic") boost -= 8;
+  if (regime === "panic" || regime === "crash") boost -= 8;
 
   const opportunityStrength = safe(
     globalContext?.orchestrator?.opportunityStrength,
@@ -270,7 +323,8 @@ function calculateGlobalBoost(globalContext = {}) {
 }
 
 function calculateMemoryBoost(globalContext = {}) {
-  const memoryScore = safe(globalContext?.marketMemory?.memoryScore, 0);
+  const memoryScore =
+    safe(globalContext?.marketMemory?.memoryScore, 0);
 
   if (memoryScore >= 85) return 6;
   if (memoryScore >= 70) return 4;
@@ -310,11 +364,9 @@ function calculateEventPenalty(globalContext = {}) {
   return penalty;
 }
 
-/* ===============================
+/* =========================================================
    FINAL CONVICTION SCORE
-   Konsumiert: aiScore von marketBrain (AI-Subscore),
-   globalContext.orchestrator von marketOrchestrator (Markt-Context).
-================================ */
+========================================================= */
 
 function calculateFinalConviction({
   hqsScore,
@@ -327,30 +379,30 @@ function calculateFinalConviction({
   globalContext,
   newsContext,
   signalContext,
+  finalConfidence,
 }) {
   const hqs = safe(hqsScore);
   const ai = safe(aiScore);
   const strategy = safe(strategyAdjustedScore);
   const resilience = safe(resilienceScore) * 100;
 
-  const narrativeBoost = Array.isArray(narratives)
-    ? narratives.length * 2
-    : 0;
-
-  const discoveryBoost = Array.isArray(discoveries)
-    ? discoveries.length * 2
-    : 0;
-
-  const researchBoost = Array.isArray(researchSignals)
-    ? researchSignals.length * 3
-    : 0;
+  const narrativeBoost = Array.isArray(narratives) ? narratives.length * 2 : 0;
+  const discoveryBoost = Array.isArray(discoveries) ? discoveries.length * 2 : 0;
+  const researchBoost = Array.isArray(researchSignals) ? researchSignals.length * 3 : 0;
 
   const globalBoost = calculateGlobalBoost(globalContext);
   const memoryBoost = calculateMemoryBoost(globalContext);
   const metaBoost = calculateMetaBoost(globalContext);
-  const eventPenalty = calculateEventPenalty(globalContext);
+
   const newsAdjustment = calculateNewsAdjustment(newsContext, globalContext);
   const signalAdjustment = calculateSignalAdjustment(signalContext, globalContext);
+
+  const riskMode = String(globalContext?.orchestrator?.riskMode?.mode || "").toLowerCase();
+  let eventPenalty = calculateEventPenalty(globalContext);
+
+  if (riskMode === "risk_off" || riskMode === "crash" || riskMode === "panic") {
+    eventPenalty *= INTEGRATION_CONFIG.RISK.RISK_OFF_EVENT_PENALTY_MULTIPLIER;
+  }
 
   let conviction =
     hqs * 0.22 +
@@ -362,17 +414,49 @@ function calculateFinalConviction({
     researchBoost +
     globalBoost +
     memoryBoost +
-    metaBoost -
-    eventPenalty +
+    metaBoost +
     newsAdjustment +
-    signalAdjustment;
+    signalAdjustment -
+    eventPenalty;
+
+  const resolvedNewsContext = resolveNewsContext(newsContext, globalContext);
+  const resolvedSignalContext = resolveSignalContext(signalContext, globalContext);
+
+  const newsDirection = resolvedNewsContext
+    ? (calculateNewsDirectionScore(newsContext, globalContext) >= INTEGRATION_CONFIG.NEWS.DIRECTION_THRESHOLD
+        ? "bullish"
+        : calculateNewsDirectionScore(newsContext, globalContext) <= -INTEGRATION_CONFIG.NEWS.DIRECTION_THRESHOLD
+          ? "bearish"
+          : "neutral")
+    : "neutral";
+
+  const signalDirection = resolvedSignalContext
+    ? (calculateSignalDirectionScore(signalContext, globalContext) >= INTEGRATION_CONFIG.SIGNAL.DIRECTION_THRESHOLD
+        ? "bullish"
+        : calculateSignalDirectionScore(signalContext, globalContext) <= -INTEGRATION_CONFIG.SIGNAL.DIRECTION_THRESHOLD
+          ? "bearish"
+          : "neutral")
+    : "neutral";
+
+  if (
+    newsDirection === signalDirection &&
+    newsDirection !== "neutral"
+  ) {
+    conviction += INTEGRATION_CONFIG.RISK.NEWS_SIGNAL_CONFLUENCE_BONUS;
+  }
+
+  if (
+    safe(finalConfidence) < INTEGRATION_CONFIG.RISK.CONFIDENCE_DAMPING_THRESHOLD
+  ) {
+    conviction *= INTEGRATION_CONFIG.RISK.CONFIDENCE_DAMPING_MULTIPLIER;
+  }
 
   return clamp(Math.round(conviction), 0, 100);
 }
 
-/* ===============================
+/* =========================================================
    FINAL RATING
-================================ */
+========================================================= */
 
 function buildFinalRating(score) {
   const s = safe(score);
@@ -384,9 +468,9 @@ function buildFinalRating(score) {
   return "Low Conviction";
 }
 
-/* ===============================
+/* =========================================================
    FINAL DECISION
-================================ */
+========================================================= */
 
 function buildFinalDecision(score) {
   const s = safe(score);
@@ -397,9 +481,9 @@ function buildFinalDecision(score) {
   return "IGNORIEREN";
 }
 
-/* ===============================
+/* =========================================================
    FINAL CONFIDENCE
-================================ */
+========================================================= */
 
 function buildFinalConfidence({
   learning,
@@ -421,9 +505,9 @@ function buildFinalConfidence({
   return clamp(Math.round(confidence), 0, 100);
 }
 
-/* ===============================
+/* =========================================================
    EXPLAINABILITY SUMMARY
-================================ */
+========================================================= */
 
 function buildWhyItIsInteresting({
   narratives = [],
@@ -449,7 +533,7 @@ function buildWhyItIsInteresting({
     calculateSignalStrength(signal, globalContext) * 100
   );
 
-  if (signalStrength >= SIGNAL_REASON_STRENGTH_THRESHOLD) {
+  if (signalStrength >= INTEGRATION_CONFIG.SIGNAL.REASON_STRENGTH_THRESHOLD) {
     if (signal?.earlySignalType === "potential_breakout") {
       reasons.push("frühes Breakout-Signal");
     } else if (signal?.earlySignalType === "early_interest") {
@@ -465,7 +549,7 @@ function buildWhyItIsInteresting({
     reasons.push(`Trend ${signal.trendLevel}`);
   } else if (
     signal?.trendLevel === "hot" &&
-    signalStrength >= SIGNAL_REASON_STRENGTH_THRESHOLD
+    signalStrength >= INTEGRATION_CONFIG.SIGNAL.REASON_STRENGTH_THRESHOLD
   ) {
     reasons.push("heißes Signal-Setup");
   }
@@ -474,10 +558,13 @@ function buildWhyItIsInteresting({
   const newsStrength = calculateNewsStrength(news, globalContext);
   const newsDirectionScore = calculateNewsDirectionScore(news, globalContext);
 
-  if (safe(news?.activeCount, 0) > 0 && newsStrength >= NEWS_REASON_STRENGTH_THRESHOLD) {
-    if (newsDirectionScore >= 0.12) {
+  if (
+    safe(news?.activeCount, 0) > 0 &&
+    newsStrength >= INTEGRATION_CONFIG.NEWS.REASON_STRENGTH_THRESHOLD
+  ) {
+    if (newsDirectionScore >= INTEGRATION_CONFIG.NEWS.DIRECTION_THRESHOLD) {
       reasons.push("positive News-Lage");
-    } else if (newsDirectionScore <= -0.12) {
+    } else if (newsDirectionScore <= -INTEGRATION_CONFIG.NEWS.DIRECTION_THRESHOLD) {
       reasons.push("belastende News-Lage");
     } else {
       reasons.push("relevante News-Lage");
@@ -507,7 +594,7 @@ function buildWhyItIsInteresting({
   return reasons.slice(0, 5);
 }
 
-/* ===============================
+/* =========================================================
    MAIN INTEGRATION
 ================================ */
 
@@ -533,6 +620,12 @@ async function buildIntegratedMarketView({
     signalContext: resolveSignalContext(signalContext, globalContext),
   };
 
+  const finalConfidence = buildFinalConfidence({
+    learning,
+    globalContext: mergedGlobalContext,
+    resilienceScore,
+  });
+
   const finalConviction = calculateFinalConviction({
     hqsScore: hqs?.hqsScore,
     aiScore: brain?.aiScore,
@@ -544,12 +637,7 @@ async function buildIntegratedMarketView({
     globalContext: mergedGlobalContext,
     newsContext,
     signalContext,
-  });
-
-  const finalConfidence = buildFinalConfidence({
-    learning,
-    globalContext: mergedGlobalContext,
-    resilienceScore,
+    finalConfidence,
   });
 
   const finalRating = buildFinalRating(finalConviction);
@@ -580,20 +668,20 @@ async function buildIntegratedMarketView({
   const baseView = {
     symbol,
 
-    // ── Canonical final output fields (contract for all consumers) ──
+    // ── Canonical final output fields ──
     finalConviction,
     finalConfidence,
     finalRating,
     finalDecision,
     whyInteresting,
 
-    // ── Conviction inputs (reference scores) ──
+    // ── Reference scores ──
     hqsScore: safe(hqs?.hqsScore),
     aiScore: safe(brain?.aiScore),
 
     regime: hqs?.regime ?? null,
 
-    // ── Conviction breakdown (labeled components of finalConviction) ──
+    // ── Conviction breakdown ──
     components: {
       hqs: safe(hqs?.hqsScore),
       ai: safe(brain?.aiScore),
@@ -618,7 +706,7 @@ async function buildIntegratedMarketView({
     source: "integrationEngine",
     timestamp: new Date().toISOString(),
 
-    // ── Raw pipeline inputs (carried for downstream context) ──
+    // ── Raw pipeline inputs ──
     features: features ?? {},
     discoveries: discoveries ?? [],
     learning: learning ?? {},
