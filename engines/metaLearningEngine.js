@@ -5,6 +5,17 @@
 
   Lernt, welchen Engines in welchem Marktumfeld
   wie stark vertraut werden sollte.
+
+  Final compatible version:
+  - gleiche Exporte
+  - gleiche Rückgabeform
+  - gleicher persist/preview-Mechanismus
+  - verbessert um:
+    - robustere Konfiguration
+    - riskMode-abhängige Lernrate
+    - glattere Outcome-Normalisierung
+    - nur Engines mit echter Contribution werden angepasst
+    - konfigurierbare Grenzen / History-Limit
 */
 
 function safe(n, fallback = 0) {
@@ -13,7 +24,22 @@ function safe(n, fallback = 0) {
 }
 
 function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
+  return Math.max(min, Math.min(max, safe(v, min)));
+}
+
+function envNum(key, fallback) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeKeyPart(value, fallback = "none") {
+  const normalized = String(value ?? fallback)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
+  return normalized || fallback;
 }
 
 /* =========================================================
@@ -21,15 +47,39 @@ function clamp(v, min, max) {
 ========================================================= */
 
 const DEFAULT_ENGINE_WEIGHTS = {
-  trendEngine: 1,
-  discoveryEngine: 1,
-  capitalFlowEngine: 1,
-  eventIntelligenceEngine: 1,
-  marketMemoryEngine: 1,
-  narrativeEngine: 1,
-  strategyEngine: 1,
-  crossAssetEngine: 1,
+  trendEngine: envNum("META_WEIGHT_TREND", 1),
+  discoveryEngine: envNum("META_WEIGHT_DISCOVERY", 1),
+  capitalFlowEngine: envNum("META_WEIGHT_CAPITAL_FLOW", 1),
+  eventIntelligenceEngine: envNum("META_WEIGHT_EVENT_INTEL", 1),
+  marketMemoryEngine: envNum("META_WEIGHT_MARKET_MEMORY", 1),
+  narrativeEngine: envNum("META_WEIGHT_NARRATIVE", 1),
+  strategyEngine: envNum("META_WEIGHT_STRATEGY", 1),
+  crossAssetEngine: envNum("META_WEIGHT_CROSS_ASSET", 1),
 };
+
+const META_WEIGHT_MIN = envNum("META_WEIGHT_MIN", 0.2);
+const META_WEIGHT_MAX = envNum("META_WEIGHT_MAX", 3);
+const META_HISTORY_LIMIT = Math.max(
+  10,
+  Math.floor(envNum("META_HISTORY_LIMIT", 500))
+);
+const META_MIN_CONTRIBUTION = envNum("META_MIN_CONTRIBUTION", 0.1);
+
+/* =========================================================
+   LEARNING RATE LOGIC
+========================================================= */
+
+function getLearningRate(riskMode = "neutral") {
+  const normalized = normalizeKeyPart(riskMode, "neutral");
+
+  const rates = {
+    risk_off: envNum("META_LR_RISK_OFF", 0.08),
+    neutral: envNum("META_LR_NEUTRAL", 0.05),
+    risk_on: envNum("META_LR_RISK_ON", 0.06),
+  };
+
+  return rates[normalized] || rates.neutral;
+}
 
 /* =========================================================
    CONTEXT KEY
@@ -42,10 +92,10 @@ function buildContextKey({
   dominantNarrative = "none",
 } = {}) {
   return [
-    `regime:${String(regime).toLowerCase()}`,
-    `risk:${String(riskMode).toLowerCase()}`,
-    `strategy:${String(strategy).toLowerCase()}`,
-    `narrative:${String(dominantNarrative).toLowerCase()}`,
+    `regime:${normalizeKeyPart(regime, "neutral")}`,
+    `risk:${normalizeKeyPart(riskMode, "neutral")}`,
+    `strategy:${normalizeKeyPart(strategy, "balanced")}`,
+    `narrative:${normalizeKeyPart(dominantNarrative, "none")}`,
   ].join("|");
 }
 
@@ -99,29 +149,44 @@ function calculateEngineContributions({
 function normalizeOutcome(actualReturn = 0) {
   const r = safe(actualReturn);
 
-  if (r > 0.20) return 1;
-  if (r > 0.10) return 0.75;
-  if (r > 0.03) return 0.4;
-  if (r > -0.03) return 0;
-  if (r > -0.10) return -0.5;
+  const neutralBand = envNum("META_OUTCOME_NEUTRAL_BAND", 0.01);
+  const scale = envNum("META_OUTCOME_SCALE", 5);
+  const minScore = envNum("META_OUTCOME_MIN", -1.5);
+  const maxScore = envNum("META_OUTCOME_MAX", 1.5);
 
-  return -1;
+  if (Math.abs(r) < neutralBand) return 0;
+
+  return clamp(r * scale, minScore, maxScore);
 }
 
 /* =========================================================
    ADJUST ENGINE WEIGHTS
 ========================================================= */
 
-function adjustEngineWeights(currentWeights = {}, contributions = {}, outcomeScore = 0) {
+function adjustEngineWeights(
+  currentWeights = {},
+  contributions = {},
+  outcomeScore = 0,
+  riskMode = "neutral"
+) {
   const updated = { ...currentWeights };
+  const learningRate = getLearningRate(riskMode);
 
-  for (const engine of Object.keys(contributions)) {
+  for (const engine of Object.keys(DEFAULT_ENGINE_WEIGHTS)) {
     const contribution = safe(contributions[engine], 0);
-    const current = safe(updated[engine], 1);
+    const current = safe(
+      updated[engine],
+      DEFAULT_ENGINE_WEIGHTS[engine] ?? 1
+    );
 
-    const delta = contribution * safe(outcomeScore) * 0.05;
+    // Nur Engines anpassen, die wirklich etwas beigetragen haben
+    if (contribution <= META_MIN_CONTRIBUTION) {
+      updated[engine] = clamp(current, META_WEIGHT_MIN, META_WEIGHT_MAX);
+      continue;
+    }
 
-    updated[engine] = clamp(current + delta, 0.2, 3);
+    const delta = contribution * safe(outcomeScore) * learningRate;
+    updated[engine] = clamp(current + delta, META_WEIGHT_MIN, META_WEIGHT_MAX);
   }
 
   return updated;
@@ -166,7 +231,8 @@ function updateMetaLearningStore({
   const newWeights = adjustEngineWeights(
     currentContext.engineWeights,
     contributions,
-    outcomeScore
+    outcomeScore,
+    context?.riskMode
   );
 
   const historyEntry = {
@@ -181,7 +247,9 @@ function updateMetaLearningStore({
     ...preparedStore,
     [contextKey]: {
       engineWeights: newWeights,
-      history: [...currentContext.history, historyEntry].slice(-500),
+      history: [...currentContext.history, historyEntry].slice(
+        -META_HISTORY_LIMIT
+      ),
     },
   };
 
