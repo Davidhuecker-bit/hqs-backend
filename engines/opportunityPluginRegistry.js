@@ -7,28 +7,39 @@
   Register plugins that receive the fully integrated market view and
   can enrich, filter, or annotate it without touching core engine code.
 
-  Usage:
-    const { registerPlugin, runPlugins } = require('./opportunityPluginRegistry');
-
-    registerPlugin('myAIAgent', async (context) => {
-      context.agentSignal = await myAIAgent.analyze(context);
-      return context;
-    });
+  Compatible upgraded version:
+  - supports plugin priority
+  - supports per-plugin timeout protection
+  - keeps the same public API
 */
 
 const logger = require("../utils/logger");
 
-/** @type {Map<string, Function>} */
+/** @type {Map<string, { fn: Function, priority: number }>} */
 const _plugins = new Map();
+
+function safePriority(value, fallback = 100) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function pluginTimeoutMs() {
+  const raw = Number(process.env.OPPORTUNITY_PLUGIN_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5000;
+}
 
 /**
  * Register a named plugin function.
  *
- * @param {string} name   - Unique plugin identifier (used for logging and removal).
- * @param {Function} fn   - Async or sync function: (context) => context | augmentedContext.
- *                          Must return the (possibly enriched) context object.
+ * Backward compatible:
+ * - old usage: registerPlugin(name, fn)
+ * - new usage: registerPlugin(name, fn, priority)
+ *
+ * @param {string} name
+ * @param {Function} fn
+ * @param {number} [priority=100]
  */
-function registerPlugin(name, fn) {
+function registerPlugin(name, fn, priority = 100) {
   if (!name || typeof name !== "string") {
     throw new TypeError("Plugin name must be a non-empty string");
   }
@@ -36,8 +47,13 @@ function registerPlugin(name, fn) {
     throw new TypeError(`Plugin '${name}' must be a function`);
   }
 
-  _plugins.set(name, fn);
-  logger.info(`OpportunityPlugin registered: ${name}`);
+  const normalizedPriority = safePriority(priority, 100);
+
+  _plugins.set(name, { fn, priority: normalizedPriority });
+
+  logger.info(
+    `OpportunityPlugin registered: ${name} (priority=${normalizedPriority})`
+  );
 }
 
 /**
@@ -60,24 +76,44 @@ function listPlugins() {
   return [..._plugins.keys()];
 }
 
+function getSortedPlugins() {
+  return [..._plugins.entries()].sort(
+    (a, b) => b[1].priority - a[1].priority
+  );
+}
+
 /**
  * Run all registered plugins sequentially on the given context object.
  * Each plugin receives the (possibly already enriched) context from the
  * previous plugin. Plugin failures are caught and logged so that one
  * failing plugin never blocks the rest of the pipeline.
  *
- * @param {object} context  - The integrated market view produced by integrationEngine.
- * @returns {Promise<object>} The final, potentially enriched context.
+ * @param {object} context
+ * @returns {Promise<object>}
  */
 async function runPlugins(context) {
   if (!_plugins.size) return context;
 
   let result = context;
+  const timeoutMs = pluginTimeoutMs();
 
-  for (const [name, fn] of _plugins) {
+  for (const [name, plugin] of getSortedPlugins()) {
     try {
-      const augmented = await fn(result);
-      if (augmented && typeof augmented === "object" && !Array.isArray(augmented)) {
+      const pluginPromise = Promise.resolve(plugin.fn(result));
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Timeout after ${timeoutMs}ms`)),
+          timeoutMs
+        )
+      );
+
+      const augmented = await Promise.race([pluginPromise, timeoutPromise]);
+
+      if (
+        augmented &&
+        typeof augmented === "object" &&
+        !Array.isArray(augmented)
+      ) {
         result = augmented;
       } else if (augmented !== undefined) {
         logger.warn(
@@ -85,7 +121,7 @@ async function runPlugins(context) {
         );
       }
     } catch (err) {
-      logger.warn(`OpportunityPlugin '${name}' failed – skipping`, {
+      logger.warn(`OpportunityPlugin '${name}' failed or timed out – skipping`, {
         message: err.message,
       });
     }
