@@ -9,7 +9,7 @@
   the same opportunity conditions.
 
   Verantwortung: Ableitung von Hypothesen aus discoveryEngine-Output und
-  Konfidenz-Bewertung.  Bearish-Pressure ist das einzige research-eigene
+  Konfidenz-Bewertung. Bearish-Pressure ist das einzige research-eigene
   Signal ohne discoveryEngine-Gegenstück.
 
   Ablauf: discoveryEngine → researchEngine → marketBrain → strategyEngine → integrationEngine
@@ -20,6 +20,44 @@ function safe(n, fallback = 0) {
   return Number.isFinite(v) ? v : fallback;
 }
 
+function envNum(key, fallback) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function clamp(val, min = 0, max = 1) {
+  const n = safe(val, min);
+  return Math.max(min, Math.min(max, n));
+}
+
+const DEFAULT_CONFIG = {
+  momentumHighScore: envNum("RESEARCH_MOMENTUM_HIGH_SCORE", 70),
+  momentumHighConf: envNum("RESEARCH_MOMENTUM_HIGH_CONF", 0.8),
+  momentumBaseConf: envNum("RESEARCH_MOMENTUM_BASE_CONF", 0.5),
+
+  breakoutHighScore: envNum("RESEARCH_BREAKOUT_HIGH_SCORE", 65),
+  breakoutHighConf: envNum("RESEARCH_BREAKOUT_HIGH_CONF", 0.7),
+  breakoutBaseConf: envNum("RESEARCH_BREAKOUT_BASE_CONF", 0.4),
+
+  bearishLowScore: envNum("RESEARCH_BEARISH_LOW_SCORE", 40),
+  bearishHighConf: envNum("RESEARCH_BEARISH_HIGH_CONF", 0.75),
+  bearishBaseConf: envNum("RESEARCH_BEARISH_BASE_CONF", 0.3),
+
+  bearishTrendThreshold: envNum("RESEARCH_BEARISH_TREND", -0.1),
+  bearishVolThreshold: envNum("RESEARCH_BEARISH_VOL", 0.6),
+
+  signalThreshold: envNum("RESEARCH_SIGNAL_THRESHOLD", 0.6),
+};
+
+function normalizeDiscoveries(discoveries) {
+  if (!Array.isArray(discoveries)) return [];
+  return discoveries.filter(
+    (d) => d && typeof d === "object" && typeof d.type === "string"
+  );
+}
+
 /* ===============================
    HYPOTHESIS GENERATION
    Derives hypotheses from discoveryEngine output (no re-detection).
@@ -27,33 +65,46 @@ function safe(n, fallback = 0) {
    discoveryEngine counterpart.
 ================================ */
 
-function generateHypotheses(discoveries, features, advanced) {
-
+function generateHypotheses(discoveries, features, advanced, config = DEFAULT_CONFIG) {
+  const cfg = { ...DEFAULT_CONFIG, ...config };
   const hypotheses = [];
 
-  const discoveryTypes = new Set((discoveries || []).map(d => d.type));
+  const normalized = normalizeDiscoveries(discoveries);
+  const discoveryTypes = new Set(normalized.map((d) => d.type));
 
-  if (discoveryTypes.has("momentum_explosion") || discoveryTypes.has("trend_acceleration")) {
+  if (
+    discoveryTypes.has("momentum_explosion") ||
+    discoveryTypes.has("trend_acceleration")
+  ) {
     hypotheses.push({
       type: "momentum_continuation",
-      label: "Momentum Continuation Hypothesis"
+      label: "Momentum Continuation Hypothesis",
     });
   }
 
   if (discoveryTypes.has("volatility_compression")) {
     hypotheses.push({
       type: "volatility_breakout",
-      label: "Volatility Compression Breakout"
+      label: "Volatility Compression Breakout",
     });
   }
 
   const trend = safe(advanced?.trend);
-  const volatility = safe(advanced?.volatilityAnnual);
+  const volatility = Math.max(0, safe(advanced?.volatilityAnnual));
+  const trendStrength = safe(features?.trendStrength);
 
-  if (trend < -0.1 && volatility > 0.6) {
+  if (
+    trend <= cfg.bearishTrendThreshold &&
+    volatility >= cfg.bearishVolThreshold
+  ) {
     hypotheses.push({
       type: "bearish_pressure",
-      label: "Bearish Pressure Hypothesis"
+      label: "Bearish Pressure Hypothesis",
+      context: {
+        trend,
+        volatility,
+        trendStrength,
+      },
     });
   }
 
@@ -64,32 +115,64 @@ function generateHypotheses(discoveries, features, advanced) {
    HYPOTHESIS EVALUATION
 ================================ */
 
-function evaluateHypotheses(hypotheses, aiScore) {
-
+function evaluateHypotheses(hypotheses, aiScore, features, advanced, config = DEFAULT_CONFIG) {
+  const cfg = { ...DEFAULT_CONFIG, ...config };
   const evaluations = [];
 
-  for (const h of hypotheses) {
+  const score = safe(aiScore);
+  const trend = safe(advanced?.trend);
+  const volatility = Math.max(0, safe(advanced?.volatilityAnnual));
+  const trendStrength = safe(features?.trendStrength);
+  const momentum = safe(features?.momentum);
+  const acceleration = safe(features?.acceleration);
 
+  for (const h of hypotheses || []) {
     let confidence = 0;
 
-    if (h.type === "momentum_continuation") {
-      confidence = aiScore > 70 ? 0.8 : 0.5;
-    }
+    switch (h.type) {
+      case "momentum_continuation":
+        confidence =
+          score > cfg.momentumHighScore
+            ? cfg.momentumHighConf
+            : cfg.momentumBaseConf;
 
-    if (h.type === "volatility_breakout") {
-      confidence = aiScore > 65 ? 0.7 : 0.4;
-    }
+        if (trendStrength > 1.2) confidence += 0.05;
+        if (momentum > 0.05) confidence += 0.03;
+        if (acceleration > 0) confidence += 0.02;
+        break;
 
-    if (h.type === "bearish_pressure") {
-      confidence = aiScore < 40 ? 0.75 : 0.3;
+      case "volatility_breakout":
+        confidence =
+          score > cfg.breakoutHighScore
+            ? cfg.breakoutHighConf
+            : cfg.breakoutBaseConf;
+
+        if (volatility < cfg.bearishVolThreshold / 2) confidence += 0.05;
+        if (trend > 0.05) confidence += 0.03;
+        if (acceleration > 0) confidence += 0.02;
+        break;
+
+      case "bearish_pressure":
+        confidence =
+          score < cfg.bearishLowScore
+            ? cfg.bearishHighConf
+            : cfg.bearishBaseConf;
+
+        if (trend < -0.15) confidence += 0.05;
+        if (volatility > 0.8) confidence += 0.05;
+        if (trendStrength < -0.5) confidence += 0.03;
+        break;
+
+      default:
+        confidence = 0;
+        break;
     }
 
     evaluations.push({
       hypothesis: h.type,
       label: h.label,
-      confidence
+      confidence: clamp(confidence, 0, 1),
     });
-
   }
 
   return evaluations;
@@ -99,15 +182,17 @@ function evaluateHypotheses(hypotheses, aiScore) {
    RESEARCH SUMMARY
 ================================ */
 
-function buildResearchReport(symbol, hypotheses, evaluations) {
+function buildResearchReport(symbol, hypotheses, evaluations, config = DEFAULT_CONFIG) {
+  const cfg = { ...DEFAULT_CONFIG, ...config };
 
   return {
     symbol,
     hypotheses,
     evaluations,
-    researchSignals: evaluations.filter(e => e.confidence > 0.6)
+    researchSignals: (evaluations || []).filter(
+      (e) => safe(e.confidence) >= cfg.signalThreshold
+    ),
   };
-
 }
 
 /* ===============================
@@ -117,15 +202,17 @@ function buildResearchReport(symbol, hypotheses, evaluations) {
 ================================ */
 
 function runResearch(symbol, symbolData, features, advanced, aiScore, discoveries = []) {
-
   const hypotheses = generateHypotheses(discoveries, features, advanced);
-
-  const evaluations = evaluateHypotheses(hypotheses, aiScore);
+  const evaluations = evaluateHypotheses(
+    hypotheses,
+    aiScore,
+    features,
+    advanced
+  );
 
   return buildResearchReport(symbol, hypotheses, evaluations);
-
 }
 
 module.exports = {
-  runResearch
+  runResearch,
 };
