@@ -9,9 +9,12 @@
  * - trend: total return over window (e.g. 1y)  -> e.g. 0.12 = +12%
  * - volatilityAnnual: annualized volatility   -> e.g. 0.25 = 25%
  *
- * ✅ NEW:
- * - less flip-flop by using small neutral zones and volatility-aware checks
- * - env tuning optional
+ * Improvements:
+ * - safer env parsing (0 is preserved, invalid values fall back cleanly)
+ * - defensive sanitization
+ * - volatility cannot become negative
+ * - partial custom thresholds are easier to maintain internally
+ * - same output contract as before (string only)
  */
 
 function safe(x, fallback = 0) {
@@ -26,41 +29,55 @@ function envNum(key, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function clamp(x, min = -Infinity, max = Infinity, fallback = 0) {
+  const n = safe(x, fallback);
+  return Math.max(min, Math.min(max, n));
+}
+
 // Default thresholds (good for stocks)
-const T_CRASH = envNum("REGIME_CRASH_T", -0.20);
-const V_CRASH = envNum("REGIME_CRASH_V", 0.35);
+const DEFAULT_CONFIG = {
+  crashTrend: envNum("REGIME_CRASH_T", -0.20),
+  crashVol: envNum("REGIME_CRASH_V", 0.35),
 
-const T_EXPANSION = envNum("REGIME_EXPANSION_T", 0.20);
-const V_EXPANSION = envNum("REGIME_EXPANSION_V", 0.25);
+  expansionTrend: envNum("REGIME_EXPANSION_T", 0.20),
+  expansionVol: envNum("REGIME_EXPANSION_V", 0.25),
 
-// "bull/bear" thresholds (use neutral band)
-const T_BULL = envNum("REGIME_BULL_T", 0.08);
-const T_BEAR = envNum("REGIME_BEAR_T", -0.08);
+  bullTrend: envNum("REGIME_BULL_T", 0.08),
+  bearTrend: envNum("REGIME_BEAR_T", -0.08),
 
-// volatility neutral band: if volatility very low, allow smaller trend to be bull/bear
-const V_LOW = envNum("REGIME_LOWVOL_V", 0.18);
-const V_HIGH = envNum("REGIME_HIGHVOL_V", 0.35);
+  lowVolThreshold: envNum("REGIME_LOWVOL_V", 0.18),
+  highVolThreshold: envNum("REGIME_HIGHVOL_V", 0.35),
+
+  // adaptive thresholds
+  bullTrendHighVol: envNum("REGIME_BULL_HIGHVOL", 0.12),
+  bearTrendHighVol: envNum("REGIME_BEAR_HIGHVOL", -0.12),
+  bullTrendLowVol: envNum("REGIME_BULL_LOWVOL", 0.06),
+  bearTrendLowVol: envNum("REGIME_BEAR_LOWVOL", -0.06),
+};
 
 function detectMarketRegime(trend, volatilityAnnual) {
-  const t = safe(trend, 0);
-  const v = safe(volatilityAnnual, 0);
+  const cfg = DEFAULT_CONFIG;
+
+  // Trend can be negative/positive, volatility must not be negative
+  const t = clamp(trend, -Infinity, Infinity, 0);
+  const v = clamp(volatilityAnnual, 0, Infinity, 0);
 
   // 1) Extreme regimes first
-  if (t <= T_CRASH && v >= V_CRASH) return "crash";
-  if (t >= T_EXPANSION && v <= V_EXPANSION) return "expansion";
+  if (t <= cfg.crashTrend && v >= cfg.crashVol) return "crash";
+  if (t >= cfg.expansionTrend && v <= cfg.expansionVol) return "expansion";
 
   // 2) Volatility-aware bull/bear
   // If volatility is very high, require stronger trend signal to call bull/bear
   // If volatility is very low, accept slightly smaller trend signal
-  let bullT = T_BULL;
-  let bearT = T_BEAR;
+  let bullT = cfg.bullTrend;
+  let bearT = cfg.bearTrend;
 
-  if (v >= V_HIGH) {
-    bullT = Math.max(bullT, 0.12);
-    bearT = Math.min(bearT, -0.12);
-  } else if (v <= V_LOW) {
-    bullT = Math.min(bullT, 0.06);
-    bearT = Math.max(bearT, -0.06);
+  if (v >= cfg.highVolThreshold) {
+    bullT = Math.max(bullT, cfg.bullTrendHighVol);
+    bearT = Math.min(bearT, cfg.bearTrendHighVol);
+  } else if (v <= cfg.lowVolThreshold) {
+    bullT = Math.min(bullT, cfg.bullTrendLowVol);
+    bearT = Math.max(bearT, cfg.bearTrendLowVol);
   }
 
   if (t >= bullT) return "bull";
