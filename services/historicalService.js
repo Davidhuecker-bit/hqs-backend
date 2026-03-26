@@ -1,7 +1,13 @@
 "use strict";
 
-const { getPricesDaily, upsertPricesDailyBatch } = require("./pricesDaily.repository");
+const {
+  getPricesDaily,
+  upsertPricesDailyBatch,
+  getExistingDatesForSymbol,
+} = require("./pricesDaily.repository");
 const { fetchMassiveHistoricalCandles } = require("./providerService");
+const { MassiveFlatfileService } = require("./massiveFlatfile.service");
+const { Pool } = require("pg");
 
 let logger = null;
 try {
@@ -10,102 +16,347 @@ try {
   logger = null;
 }
 
-/**
- * Parse a period string (e.g. "1y", "6m", "3m", "30d") into a number of days.
- */
+/* ============================================================
+   CONFIG
+============================================================ */
+
+const MIN_POINTS = parseInt(process.env.HISTORICAL_MIN_POINTS || "30", 10);
+const BACKFILL_FETCH_DAYS = parseInt(process.env.HISTORICAL_BACKFILL_DAYS || "730", 10);
+const ENABLE_FLATFILE_BACKFILL =
+  String(process.env.HISTORICAL_ENABLE_FLATFILE_BACKFILL || "true").toLowerCase() !== "false";
+const FLATFILE_MAX_DAYS = parseInt(process.env.HISTORICAL_FLATFILE_MAX_DAYS || "120", 10);
+const TRIGGER_FEATURE_UPDATE =
+  String(process.env.HISTORICAL_TRIGGER_FEATURE_UPDATE || "false").toLowerCase() === "true";
+const DATABASE_URL = process.env.DATABASE_URL;
+
+let pool = null;
+if (TRIGGER_FEATURE_UPDATE && DATABASE_URL) {
+  pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 2,
+  });
+}
+
+/* ============================================================
+   HELPERS
+============================================================ */
+
 function parsePeriodToDays(period) {
   const s = String(period || "1y").toLowerCase().trim();
   const num = parseFloat(s);
-  if (s.endsWith("y")) return Math.round((isNaN(num) ? 1 : num) * 365);
-  if (s.endsWith("m")) return Math.round((isNaN(num) ? 1 : num) * 30);
-  if (s.endsWith("d")) return isNaN(num) ? 365 : Math.round(num);
+
+  if (s.endsWith("y")) return Math.round((Number.isNaN(num) ? 1 : num) * 365);
+  if (s.endsWith("m")) return Math.round((Number.isNaN(num) ? 1 : num) * 30);
+  if (s.endsWith("d")) return Number.isNaN(num) ? 365 : Math.round(num);
+
   return 365;
 }
 
-// Minimum price points required for advanced metrics (must match marketService threshold)
-const MIN_POINTS = 30;
+function toIsoDate(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
 
-// How far back to fetch from Massive when backfilling (2 years)
-const BACKFILL_FETCH_DAYS = 730;
+function safeNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
 
-// Milliseconds per calendar day (24 * 60 * 60 * 1000)
-const MS_PER_DAY = 86400000;
+function clamp(v, min, max) {
+  return Math.min(max, Math.max(min, safeNum(v, min)));
+}
 
-/**
- * historicalService – Historical price data reader with lazy backfill.
- *
- * Source of truth : prices_daily table.
- * Canonical writer: THIS service (lazy backfill via Massive API).
- * Optional writer : python/historical-backfill/ (batch pre-warming, not required).
- *
- * When prices_daily has insufficient data for a symbol (< MIN_POINTS rows),
- * this service fetches historical candles from the Massive API and writes them
- * to prices_daily before returning the result. Subsequent calls are served
- * directly from the table without any API calls.
- *
- * No Finnhub. No market_snapshots dependency for this path.
- */
+function buildDateRangeFromDays(days) {
+  const safeDays = clamp(days, 1, 3650);
+  const end = new Date();
+  end.setUTCHours(0, 0, 0, 0);
+
+  const dates = [];
+  for (let i = safeDays - 1; i >= 0; i--) {
+    const d = new Date(end);
+    d.setUTCDate(end.getUTCDate() - i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+
+  return dates;
+}
+
+function hasExistingDatesHelper() {
+  return typeof getExistingDatesForSymbol === "function";
+}
+
+async function getMissingDatesForSymbol(symbol, dates) {
+  if (!hasExistingDatesHelper()) {
+    return dates;
+  }
+
+  const existing = await getExistingDatesForSymbol(symbol, dates);
+  const existingSet = new Set(
+    (existing || []).map((d) => toIsoDate(d)).filter(Boolean)
+  );
+
+  return dates.filter((d) => !existingSet.has(d));
+}
+
+/* ============================================================
+   FLATFILE BACKFILL
+============================================================ */
+
+async function tryFlatfileBackfillBulk(symbol, days) {
+  if (!ENABLE_FLATFILE_BACKFILL) return 0;
+
+  const sym = String(symbol || "").toUpperCase();
+  const targetDays = clamp(days, 1, FLATFILE_MAX_DAYS);
+  const neededDates = buildDateRangeFromDays(targetDays);
+
+  if (!neededDates.length) return 0;
+
+  let missingDates = [];
+  try {
+    missingDates = await getMissingDatesForSymbol(sym, neededDates);
+  } catch (err) {
+    if (logger?.warn) {
+      logger.warn("[historicalService] failed to resolve missing dates, fallback to full date range", {
+        symbol: sym,
+        message: err.message,
+      });
+    }
+    missingDates = neededDates;
+  }
+
+  if (!missingDates.length) return 0;
+
+  let service;
+  try {
+    service = new MassiveFlatfileService();
+  } catch (err) {
+    if (logger?.warn) {
+      logger.warn("[historicalService] flatfile service init failed", {
+        symbol: sym,
+        message: err.message,
+      });
+    }
+    return 0;
+  }
+
+  let totalUpserted = 0;
+  const pLimit = require("p-limit");
+  const limit = pLimit(5);
+
+  const tasks = missingDates.map((date) =>
+    limit(async () => {
+      try {
+        const rows = await service.loadDailyAggregatesForSymbols({
+          date,
+          symbols: [sym],
+          useCache: true,
+        });
+
+        if (!rows.length) return 0;
+
+        const candles = rows
+          .map((r) => ({
+            date: r.date,
+            open: r.open,
+            high: r.high,
+            low: r.low,
+            close: r.close,
+            volume: r.volume,
+            transactions: r.transactions,
+            source: r.source || "massive_flatfiles",
+          }))
+          .filter((c) => c.date && c.close != null);
+
+        if (!candles.length) return 0;
+
+        await upsertPricesDailyBatch(sym, candles);
+        return candles.length;
+      } catch (err) {
+        if (logger?.warn) {
+          logger.warn("[historicalService] flatfile day backfill failed", {
+            symbol: sym,
+            date,
+            message: err.message,
+          });
+        }
+        return 0;
+      }
+    })
+  );
+
+  const results = await Promise.allSettled(tasks);
+  for (const res of results) {
+    if (res.status === "fulfilled") {
+      totalUpserted += safeNum(res.value, 0);
+    }
+  }
+
+  if (totalUpserted > 0 && logger?.info) {
+    logger.info("[historicalService] flatfile backfill complete", {
+      symbol: sym,
+      rowsUpserted: totalUpserted,
+    });
+  }
+
+  return totalUpserted;
+}
+
+/* ============================================================
+   REST BACKFILL FALLBACK
+============================================================ */
+
+async function tryRestBackfill(symbol) {
+  const sym = String(symbol || "").toUpperCase();
+  const today = new Date();
+  const toDate = toIsoDate(today);
+  const fromDate = toIsoDate(
+    new Date(today.getTime() - BACKFILL_FETCH_DAYS * 86400000)
+  );
+
+  try {
+    const candles = await fetchMassiveHistoricalCandles(sym, fromDate, toDate);
+
+    if (!candles || !candles.length) {
+      return 0;
+    }
+
+    await upsertPricesDailyBatch(sym, candles);
+
+    if (logger?.info) {
+      logger.info("[historicalService] REST backfill complete", {
+        symbol: sym,
+        candlesFetched: candles.length,
+      });
+    }
+
+    return candles.length;
+  } catch (err) {
+    if (logger?.warn) {
+      logger.warn("[historicalService] REST backfill failed", {
+        symbol: sym,
+        message: err.message,
+      });
+    }
+    return 0;
+  }
+}
+
+/* ============================================================
+   BACKFILL LOCK
+============================================================ */
+
+const backfillLocks = new Map();
+
+async function withBackfillLock(symbol, fn) {
+  const sym = String(symbol || "").toUpperCase();
+
+  if (backfillLocks.has(sym)) {
+    if (logger?.debug) {
+      logger.debug("[historicalService] backfill already running, waiting", {
+        symbol: sym,
+      });
+    }
+    return backfillLocks.get(sym);
+  }
+
+  const promise = Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      backfillLocks.delete(sym);
+    });
+
+  backfillLocks.set(sym, promise);
+  return promise;
+}
+
+/* ============================================================
+   OPTIONAL FEATURE UPDATE TRIGGER
+============================================================ */
+
+async function triggerFeatureUpdate(symbol) {
+  if (!TRIGGER_FEATURE_UPDATE || !pool) return;
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO pipeline_status (job_name, status, meta, updated_at)
+      VALUES ('feature_history_update', 'pending', jsonb_build_object('symbol', $1), NOW())
+      ON CONFLICT (job_name)
+      DO UPDATE SET
+        status = 'pending',
+        updated_at = NOW(),
+        meta = EXCLUDED.meta
+      `,
+      [symbol]
+    );
+
+    if (logger?.info) {
+      logger.info("[historicalService] triggered feature_history_update", {
+        symbol,
+      });
+    }
+  } catch (err) {
+    if (logger?.warn) {
+      logger.warn("[historicalService] failed to trigger feature update", {
+        symbol,
+        message: err.message,
+      });
+    }
+  }
+}
+
+/* ============================================================
+   MAIN PUBLIC API
+============================================================ */
+
 async function getHistoricalPrices(symbol, period) {
-  const sym  = String(symbol || "").toUpperCase();
+  const sym = String(symbol || "").toUpperCase();
   const days = parsePeriodToDays(period);
 
   try {
     let rows = await getPricesDaily(sym, days);
 
-    // Lazy backfill: if prices_daily has insufficient data, fetch from Massive
-    // and write to prices_daily, then re-read.
-    if (rows.length < MIN_POINTS) {
-      if (logger?.info) {
-        logger.info("[historicalService] lazy backfill triggered", {
-          symbol: sym,
-          existingRows: rows.length,
-          minRequired: MIN_POINTS,
-        });
+    if (rows.length >= MIN_POINTS) {
+      return rows.map((r) => ({ close: r.close }));
+    }
+
+    if (logger?.info) {
+      logger.info("[historicalService] insufficient DB history, starting backfill", {
+        symbol: sym,
+        existingRows: rows.length,
+        minRequired: MIN_POINTS,
+        requestedDays: days,
+      });
+    }
+
+    const backfilledCount = await withBackfillLock(sym, async () => {
+      let total = 0;
+
+      if (ENABLE_FLATFILE_BACKFILL) {
+        total += await tryFlatfileBackfillBulk(sym, days);
       }
 
-      try {
-        const today = new Date();
-        const toDate   = today.toISOString().slice(0, 10);
-        const fromDate = new Date(today.getTime() - BACKFILL_FETCH_DAYS * MS_PER_DAY)
-          .toISOString().slice(0, 10);
-
-        const candles = await fetchMassiveHistoricalCandles(sym, fromDate, toDate);
-
-        if (candles && candles.length > 0) {
-          await upsertPricesDailyBatch(sym, candles);
-          if (logger?.info) {
-            logger.info("[historicalService] lazy backfill complete", {
-              symbol: sym,
-              candlesFetched: candles.length,
-            });
-          }
-          // Re-read from DB after backfill
-          rows = await getPricesDaily(sym, days);
-        } else {
-          if (logger?.warn) {
-            logger.warn("[historicalService] lazy backfill: Massive returned no candles", {
-              symbol: sym,
-              fromDate,
-              toDate,
-            });
-          }
-        }
-      } catch (backfillErr) {
-        // Backfill failed – log but still return whatever rows we have (may be empty).
-        // This ensures the pipeline degrades gracefully instead of crashing.
-        if (logger?.warn) {
-          logger.warn("[historicalService] lazy backfill failed", {
-            symbol: sym,
-            message: backfillErr.message,
-          });
-        }
+      rows = await getPricesDaily(sym, days);
+      if (rows.length >= MIN_POINTS) {
+        return total;
       }
+
+      total += await tryRestBackfill(sym);
+
+      rows = await getPricesDaily(sym, days);
+      return total;
+    });
+
+    if (backfilledCount > 0) {
+      await triggerFeatureUpdate(sym);
     }
 
     return rows.map((r) => ({ close: r.close }));
   } catch (err) {
     if (logger?.warn) {
-      logger.warn("[historicalService] prices_daily read failed", {
+      logger.warn("[historicalService] failed", {
         symbol: sym,
         message: err.message,
       });
@@ -116,5 +367,5 @@ async function getHistoricalPrices(symbol, period) {
 
 module.exports = {
   getHistoricalPrices,
+  parsePeriodToDays,
 };
-
