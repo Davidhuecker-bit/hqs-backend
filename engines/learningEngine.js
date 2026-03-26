@@ -1,8 +1,17 @@
 "use strict";
 
 /*
- Ultra Learning Engine
- Self adapting prediction intelligence
+  Ultra Learning Engine
+  Self adapting prediction intelligence
+
+  Final compatible version:
+  - same export
+  - same input signature
+  - same output fields
+  - smarter confidence curve
+  - adaptive learning rate by regime + surprise factor
+  - configurable thresholds
+  - safer feature/weight handling
 */
 
 function safe(n, fallback = 0) {
@@ -11,225 +20,240 @@ function safe(n, fallback = 0) {
 }
 
 function clamp(v, min, max) {
-  return Math.max(min, Math.min(max, v));
+  return Math.max(min, Math.min(max, safe(v, min)));
+}
+
+function envNum(key, fallback) {
+  const raw = process.env[key];
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeKeyPart(value, fallback = "none") {
+  const normalized = String(value ?? fallback)
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
+  return normalized || fallback;
 }
 
 /* ===============================
- PREDICTION ERROR
+   CONFIG
+================================ */
+
+const FEATURE_COMBINATION_THRESHOLD = envNum("ULTRA_FEATURE_THRESHOLD", 0.6);
+const FEATURE_IMPACT_MIN = envNum("ULTRA_FEATURE_IMPACT_MIN", 0.1);
+
+const LR_CRASH = envNum("ULTRA_LR_CRASH", 0.005);
+const LR_BEAR = envNum("ULTRA_LR_BEAR", 0.003);
+const LR_BULL = envNum("ULTRA_LR_BULL", 0.002);
+const LR_NEUTRAL = envNum("ULTRA_LR_NEUTRAL", 0.002);
+
+const LEARNING_SURPRISE_THRESHOLD = envNum("ULTRA_SURPRISE_THRESHOLD", 0.5);
+const LEARNING_SURPRISE_MULTIPLIER = envNum("ULTRA_SURPRISE_MULTIPLIER", 2);
+
+const MIN_WEIGHT = envNum("ULTRA_WEIGHT_MIN", 0.01);
+const MAX_WEIGHT = envNum("ULTRA_WEIGHT_MAX", 1);
+
+const PERFORMANCE_STRONG_POS = envNum("ULTRA_PERF_STRONG_POS", 0.20);
+const PERFORMANCE_POS = envNum("ULTRA_PERF_POS", 0.10);
+const PERFORMANCE_MILD_POS = envNum("ULTRA_PERF_MILD_POS", 0.03);
+const PERFORMANCE_NEUTRAL_LOW = envNum("ULTRA_PERF_NEUTRAL_LOW", -0.03);
+const PERFORMANCE_NEG = envNum("ULTRA_PERF_NEG", -0.10);
+
+const CONFIDENCE_MIN = envNum("ULTRA_CONFIDENCE_MIN", 0);
+const CONFIDENCE_MAX = envNum("ULTRA_CONFIDENCE_MAX", 1);
+const CONFIDENCE_CURVE_POWER = envNum("ULTRA_CONFIDENCE_CURVE_POWER", 1.5);
+
+/* ===============================
+   PREDICTION ERROR
 ================================ */
 
 function calculatePredictionError(predicted, actual) {
-
   const p = safe(predicted);
   const a = safe(actual);
-
   return a - p;
-
 }
 
 /* ===============================
- TIME ADJUSTMENT
+   TIME ADJUSTMENT
 ================================ */
 
 function calculateHorizonAdjustment(actualReturn, horizonDays) {
-
   const r = safe(actualReturn);
-  const h = safe(horizonDays);
+  const h = Math.max(1, safe(horizonDays, 30));
 
-  if (!h) return r;
-
-  const normalized = r / Math.sqrt(h);
-
-  return normalized;
-
+  // keep cross-horizon comparability
+  return r / Math.sqrt(h);
 }
 
 /* ===============================
- PERFORMANCE SCORE
+   PERFORMANCE SCORE
 ================================ */
 
 function normalizePerformance(actualReturn) {
-
   const r = safe(actualReturn);
 
-  if (r > 0.20) return 1;
-  if (r > 0.10) return 0.7;
-  if (r > 0.03) return 0.4;
-  if (r > -0.03) return 0;
-  if (r > -0.10) return -0.5;
+  if (r > PERFORMANCE_STRONG_POS) return 1;
+  if (r > PERFORMANCE_POS) return 0.7;
+  if (r > PERFORMANCE_MILD_POS) return 0.4;
+  if (r > PERFORMANCE_NEUTRAL_LOW) return 0;
+  if (r > PERFORMANCE_NEG) return -0.5;
 
   return -1;
-
 }
 
 /* ===============================
- FEATURE IMPACT
+   FEATURE IMPACT
 ================================ */
 
 function calculateFeatureImpact(features, performanceScore) {
-
   const impacts = {};
 
-  for (const key of Object.keys(features)) {
+  for (const [key, value] of Object.entries(features || {})) {
+    const val = safe(value, NaN);
+    if (!Number.isFinite(val)) continue;
 
-    const value = safe(features[key]);
+    // ignore tiny noise features
+    if (Math.abs(val) <= FEATURE_IMPACT_MIN) continue;
 
-    impacts[key] = value * performanceScore;
-
+    impacts[key] = val * safe(performanceScore);
   }
 
   return impacts;
-
 }
 
 /* ===============================
- SIGNAL COMBINATION
+   SIGNAL COMBINATION
 ================================ */
 
 function detectFeatureCombination(features) {
-
-  const keys = Object.keys(features)
-    .filter(k => safe(features[k]) > 0.6)
+  const keys = Object.keys(features || {})
+    .filter((k) => safe(features[k]) > FEATURE_COMBINATION_THRESHOLD)
+    .map((k) => normalizeKeyPart(k))
     .sort();
 
-  return keys.join("+");
-
+  return keys.join("+") || "none";
 }
 
 /* ===============================
- LEARNING RATE
+   LEARNING RATE
 ================================ */
 
-function calculateLearningRate(regime) {
+function getAdaptiveLearningRate(regime, error) {
+  const normalized = normalizeKeyPart(regime, "neutral");
 
-  if (regime === "crash") return 0.005;
+  let rate = LR_NEUTRAL;
+  if (normalized === "crash") rate = LR_CRASH;
+  else if (normalized === "bear") rate = LR_BEAR;
+  else if (normalized === "bull") rate = LR_BULL;
 
-  if (regime === "bear") return 0.003;
+  // surprise factor: learn faster from large misses
+  if (Math.abs(safe(error)) > LEARNING_SURPRISE_THRESHOLD) {
+    rate *= LEARNING_SURPRISE_MULTIPLIER;
+  }
 
-  if (regime === "bull") return 0.002;
-
-  return 0.002;
-
+  return rate;
 }
 
 /* ===============================
- WEIGHT ADJUSTMENT
+   WEIGHT ADJUSTMENT
 ================================ */
 
 function adjustWeights(currentWeights, impacts, learningRate) {
+  const updated = { ...(currentWeights || {}) };
 
-  const updated = { ...currentWeights };
+  for (const [key, impactRaw] of Object.entries(impacts || {})) {
+    const impact = safe(impactRaw);
 
-  for (const key of Object.keys(impacts)) {
+    // keep compatibility: only update existing weights
+    if (!Object.prototype.hasOwnProperty.call(updated, key)) continue;
 
-    const impact = safe(impacts[key]);
-
-    if (!updated[key]) continue;
-
-    updated[key] =
-      clamp(
-        updated[key] + impact * learningRate,
-        0.01,
-        1
-      );
-
+    updated[key] = clamp(
+      safe(updated[key]) + impact * safe(learningRate),
+      MIN_WEIGHT,
+      MAX_WEIGHT
+    );
   }
 
   return updated;
-
 }
 
 /* ===============================
- CONFIDENCE SCORE
+   CONFIDENCE SCORE
 ================================ */
 
 function calculateConfidence(error) {
-
   const e = Math.abs(safe(error));
 
-  const confidence = 1 - clamp(e, 0, 1);
+  // non-linear confidence drop:
+  // small misses are tolerable, big misses are punished harder
+  const normalizedError = clamp(e, 0, 1);
+  const confidence = 1 - Math.pow(normalizedError, CONFIDENCE_CURVE_POWER);
 
-  return clamp(confidence, 0, 1);
-
+  return clamp(confidence, CONFIDENCE_MIN, CONFIDENCE_MAX);
 }
 
 /* ===============================
- MAIN LEARNING FUNCTION
+   MAIN LEARNING FUNCTION
 ================================ */
 
 function evaluateLearning({
-
   symbol,
   prediction,
   actualReturn,
   features = {},
   weights = {},
   regime = "neutral",
-  horizonDays = 30
-
+  horizonDays = 30,
 }) {
+  const horizonAdjusted = calculateHorizonAdjustment(
+    actualReturn,
+    horizonDays
+  );
 
-  const horizonAdjusted =
-    calculateHorizonAdjustment(
-      actualReturn,
-      horizonDays
-    );
+  const error = calculatePredictionError(
+    prediction,
+    horizonAdjusted
+  );
 
-  const error =
-    calculatePredictionError(
-      prediction,
-      horizonAdjusted
-    );
+  const performanceScore = normalizePerformance(
+    horizonAdjusted
+  );
 
-  const performanceScore =
-    normalizePerformance(
-      horizonAdjusted
-    );
+  const impacts = calculateFeatureImpact(
+    features,
+    performanceScore
+  );
 
-  const impacts =
-    calculateFeatureImpact(
-      features,
-      performanceScore
-    );
+  const learningRate = getAdaptiveLearningRate(
+    regime,
+    error
+  );
 
-  const learningRate =
-    calculateLearningRate(regime);
+  const newWeights = adjustWeights(
+    weights,
+    impacts,
+    learningRate
+  );
 
-  const newWeights =
-    adjustWeights(
-      weights,
-      impacts,
-      learningRate
-    );
+  const confidence = calculateConfidence(error);
 
-  const confidence =
-    calculateConfidence(error);
-
-  const featureCombination =
-    detectFeatureCombination(features);
+  const featureCombination = detectFeatureCombination(features);
 
   return {
-
     symbol,
-
     error,
-
     confidence,
-
     performanceScore,
-
     learningRate,
-
     featureCombination,
-
     impacts,
-
-    newWeights
-
+    newWeights,
   };
-
 }
 
 module.exports = {
-  evaluateLearning
+  evaluateLearning,
 };
