@@ -142,7 +142,7 @@ async function tryFlatfileBackfillBulk(symbol, days) {
   }
 
   let totalUpserted = 0;
-  const pLimit = require("p-limit");
+  const pLimit = require("p-limit").default;
   const limit = pLimit(5);
 
   const tasks = missingDates.map((date) =>
