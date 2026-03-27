@@ -699,11 +699,23 @@ async function ensureTablesExist() {
       fx_rate NUMERIC,
       changes_percentage NUMERIC,
       previous_close NUMERIC,
+      hqs_score NUMERIC,
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_snapshots_symbol_created ON market_snapshots (symbol, created_at DESC);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_market_snapshots_created_at ON market_snapshots (created_at DESC);`);
+  // One-time migration: add hqs_score to market_snapshots for tables created before this column was introduced.
+  // The information_schema query is cheap (no lock); ALTER TABLE is only executed once per environment.
+  {
+    const { rows: colRows } = await pool.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name='market_snapshots' AND column_name='hqs_score'`
+    );
+    if (!colRows.length) {
+      await pool.query(`ALTER TABLE market_snapshots ADD COLUMN hqs_score NUMERIC`);
+      logger.info("[startup] ensureTablesExist.market_snapshots: added hqs_score column (one-time migration)");
+    }
+  }
   logger.info("[startup] ensureTablesExist.market_snapshots: ok");
 
   // ── hqs_scores ────────────────────────────────────────────────────────────
@@ -1162,6 +1174,17 @@ async function buildMarketSnapshot() {
               tier,
               trendSource,
             });
+            // Refresh updated_at so market_advanced_metrics reflects today's run
+            // even when we are re-using persisted values due to insufficient history.
+            await upsertAdvancedMetrics(symbol, {
+              regime,
+              trend: trendData.trend,
+              volatilityAnnual: trendData.volatilityAnnual,
+              volatilityDaily: trendData.volatilityDaily,
+              scenarios,
+            }).catch((e) =>
+              logger.warn("snapshot: failed to refresh advanced metrics updated_at (fallback path – staleness may persist)", { symbol, message: e.message })
+            );
           } else {
             trendSource = prices.length >= 2 ? "computed_low_quality" : "zeroed_no_prices";
             logger.warn("snapshot: historical insufficient – no persisted advanced metrics fallback available", {
@@ -1439,8 +1462,8 @@ async function buildMarketSnapshot() {
       await pool.query(
         `
         INSERT INTO market_snapshots
-        (symbol, price, price_usd, open, high, low, volume, source, currency, fx_rate, changes_percentage, previous_close, created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+        (symbol, price, price_usd, open, high, low, volume, source, currency, fx_rate, changes_percentage, previous_close, hqs_score, created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())
         `,
         [
           normalized.symbol,
@@ -1455,6 +1478,7 @@ async function buildMarketSnapshot() {
           normalized.fxRate ?? null,
           normalized.changesPercentage ?? null,
           normalized.previousClose ?? null,
+          hqs?.hqsScore ?? null,
         ]
       );
       logger.info("snapshot: market snapshot stored", {
