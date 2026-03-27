@@ -7,7 +7,7 @@
   real existing data sources only (no new tables, no live provider calls):
 
     - virtual_positions  (open positions in the portfolio twin)
-    - watchlist_symbols  (active tracked symbols)
+    - universe_symbols   (active symbol membership – replaces decommissioned watchlist_symbols)
 
   Exported:
     buildPortfolioContextForSymbols(symbols)   → Map<symbol, context>
@@ -202,10 +202,10 @@ async function buildPortfolioContextForSymbols(symbols) {
     );
     const ownedSet = new Set(vpRes.rows.map((r) => String(r.symbol).toUpperCase()));
 
-    // ── 2. Active watchlist symbols ────────────────────────────────────────
+    // ── 2. Active universe symbols (canonical symbol source) ─────────────
     const wlRes = await pool.query(
       `SELECT DISTINCT symbol
-         FROM watchlist_symbols
+         FROM universe_symbols
         WHERE is_active = TRUE
           AND symbol = ANY($1::text[])`,
       [upper]

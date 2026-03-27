@@ -48,12 +48,6 @@ const { orchestrateMarket } = require("../engines/marketOrchestrator");
 const { computeAdaptiveWeights } = require("./weightHistory.repository");
 
 const {
-  initWatchlistTable,
-  seedDefaultWatchlist,
-  getActiveWatchlistSymbols,
-} = require("./watchlist.repository");
-
-const {
   initAdvancedMetricsTable,
   upsertAdvancedMetrics,
   loadAdvancedMetrics,
@@ -425,20 +419,7 @@ async function hydrateMarketRuntimeState() {
 
 async function loadPrimaryMarketSymbols(limit = 250) {
   const safeLimit = clamp(Number(limit) || 250, 1, 2000);
-  const universeSymbols = await listActiveUniverseSymbols(safeLimit, {
-    country: SNAPSHOT_REGION,
-  });
-
-  if (universeSymbols.length) {
-    return universeSymbols;
-  }
-
-  logger.warn("Universe empty for market data list; falling back to watchlist_symbols", {
-    limit: safeLimit,
-    region: SNAPSHOT_REGION,
-  });
-
-  return getActiveWatchlistSymbols(safeLimit);
+  return listActiveUniverseSymbols(safeLimit, { country: SNAPSHOT_REGION });
 }
 
 function pct(part, total) {
@@ -581,20 +562,6 @@ function buildRunRecommendations(summary, health) {
   }
 
   return recommendations;
-}
-
-async function countActiveSnapshotSymbols(region = SNAPSHOT_REGION) {
-  const res = await pool.query(
-    `
-    SELECT COUNT(*)::int AS c
-    FROM watchlist_symbols
-    WHERE is_active = TRUE
-      AND LOWER(COALESCE(region, 'us')) = $1
-    `,
-    [String(region || "us").toLowerCase()]
-  );
-
-  return safeNum(res.rows?.[0]?.c, 0);
 }
 
 async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
@@ -745,14 +712,6 @@ async function ensureTablesExist() {
   logger.info("[startup] ensureTablesExist.initJobLocksTable: start");
   await initJobLocksTable();
   logger.info("[startup] ensureTablesExist.initJobLocksTable: ok");
-
-  logger.info("[startup] ensureTablesExist.initWatchlistTable: start");
-  await initWatchlistTable();
-  logger.info("[startup] ensureTablesExist.initWatchlistTable: ok");
-
-  logger.info("[startup] ensureTablesExist.seedDefaultWatchlist: start");
-  await seedDefaultWatchlist();
-  logger.info("[startup] ensureTablesExist.seedDefaultWatchlist: ok");
 
   logger.info("[startup] ensureTablesExist.initOutcomeTrackingTable: start");
   await initOutcomeTrackingTable();
@@ -1047,10 +1006,9 @@ async function buildMarketSnapshot() {
   }
 
   // ── Per-batch weight cache ──────────────────────────────────────────────
-  // computeAdaptiveWeights() writes to weight_history + mirrors to
-  // dynamic_weights on every call.  Within a single batch the factor_history
-  // data is identical for a given regime, so caching avoids N×80 redundant
-  // DB writes and ensures exactly one weight_history entry per regime.
+  // computeAdaptiveWeights() mirrors weights to dynamic_weights on every
+  // call.  Within a single batch the factor_history data is identical for a
+  // given regime, so caching avoids N×80 redundant DB writes.
   const weightCache = {};
 
   async function cachedAdaptiveWeights(regime) {

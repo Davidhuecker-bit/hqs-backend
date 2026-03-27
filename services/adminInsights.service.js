@@ -153,69 +153,6 @@ async function getRecentCount(tableName, lookbackHours = DEFAULT_LOOKBACK_HOURS)
   }
 }
 
-async function getWatchlistStats() {
-  const exists = await tableExists("watchlist_symbols");
-  if (!exists) {
-    return {
-      total: 0,
-      active: 0,
-      byRegion: {},
-      byPriorityTier: {},
-    };
-  }
-
-  const totalRes = await pool.query(`
-    SELECT COUNT(*)::int AS c
-    FROM watchlist_symbols
-  `);
-
-  const activeRes = await pool.query(`
-    SELECT COUNT(*)::int AS c
-    FROM watchlist_symbols
-    WHERE is_active = TRUE
-  `);
-
-  const regionRes = await pool.query(`
-    SELECT LOWER(COALESCE(region, 'us')) AS region, COUNT(*)::int AS c
-    FROM watchlist_symbols
-    WHERE is_active = TRUE
-    GROUP BY 1
-    ORDER BY 2 DESC
-  `);
-
-  const tierRes = await pool.query(`
-    SELECT
-      CASE
-        WHEN COALESCE(priority, 100) <= 30 THEN 'core'
-        WHEN COALESCE(priority, 100) <= 80 THEN 'high'
-        WHEN COALESCE(priority, 100) <= 180 THEN 'standard'
-        ELSE 'extended'
-      END AS tier,
-      COUNT(*)::int AS c
-    FROM watchlist_symbols
-    WHERE is_active = TRUE
-    GROUP BY 1
-    ORDER BY 2 DESC
-  `);
-
-  const byRegion = {};
-  for (const row of regionRes.rows || []) {
-    byRegion[row.region] = safeNum(row.c, 0);
-  }
-
-  const byPriorityTier = {};
-  for (const row of tierRes.rows || []) {
-    byPriorityTier[row.tier] = safeNum(row.c, 0);
-  }
-
-  return {
-    total: safeNum(totalRes.rows?.[0]?.c, 0),
-    active: safeNum(activeRes.rows?.[0]?.c, 0),
-    byRegion,
-    byPriorityTier,
-  };
-}
-
 async function getUniverseStats() {
   const exists = await tableExists("universe_symbols");
   if (!exists) {
@@ -411,41 +348,6 @@ async function getFactorHistoryStats(
   };
 }
 
-async function getWeightHistoryStats(lookbackHours = DEFAULT_LOOKBACK_HOURS) {
-  const exists = await tableExists("weight_history");
-  if (!exists) {
-    return {
-      totalRows: 0,
-      recentRows: 0,
-      latestAt: null,
-      regimesTracked: 0,
-    };
-  }
-
-  const totalRows = await getRowCount("weight_history");
-  const recentRows = await getRecentCount("weight_history", lookbackHours);
-  const latestAt = await getLatestTimestamp("weight_history");
-
-  const cols = await getTableColumns("weight_history");
-  let regimesTracked = 0;
-
-  if (cols.includes("regime")) {
-    const regimeRes = await pool.query(`
-      SELECT COUNT(DISTINCT regime)::int AS c
-      FROM weight_history
-      WHERE regime IS NOT NULL
-    `);
-    regimesTracked = safeNum(regimeRes.rows?.[0]?.c, 0);
-  }
-
-  return {
-    totalRows,
-    recentRows,
-    latestAt,
-    regimesTracked,
-  };
-}
-
 async function getAdvancedMetricsStats(lookbackHours = DEFAULT_LOOKBACK_HOURS) {
   const exists = await tableExists("market_advanced_metrics");
   if (!exists) {
@@ -592,21 +494,10 @@ async function getJobLockStats() {
 }
 
 async function getNotificationStats() {
-  const usersExists = await tableExists("briefing_users");
   const sentExists = await tableExists("notifications");
 
-  let activeUsers = 0;
   let notificationsSent24h = 0;
   let latestNotificationAt = null;
-
-  if (usersExists) {
-    const res = await pool.query(`
-      SELECT COUNT(*)::int AS c
-      FROM briefing_users
-      WHERE is_active = TRUE
-    `);
-    activeUsers = safeNum(res.rows?.[0]?.c, 0);
-  }
 
   if (sentExists) {
     notificationsSent24h = await getRecentCount("notifications", DEFAULT_LOOKBACK_HOURS);
@@ -614,7 +505,6 @@ async function getNotificationStats() {
   }
 
   return {
-    activeUsers,
     notificationsSent24h,
     latestNotificationAt,
   };
@@ -658,11 +548,9 @@ async function getAdminInsights(options = {}) {
   // Run all independent stats queries in parallel to cut serial latency.
   const [
     universeStats,
-    watchlist,
     snapshots,
     hqs,
     factorHistory,
-    weightHistory,
     advancedMetrics,
     outcomes,
     discovery,
@@ -673,11 +561,6 @@ async function getAdminInsights(options = {}) {
       "universe",
       () => getUniverseStats(),
       { total: 0, active: 0, byRegion: {} }
-    ),
-    safeCall(
-      "watchlist",
-      () => getWatchlistStats(),
-      { total: 0, active: 0, byRegion: {}, byPriorityTier: {} }
     ),
     safeCall(
       "snapshots",
@@ -702,11 +585,6 @@ async function getAdminInsights(options = {}) {
       }
     ),
     safeCall(
-      "weightHistory",
-      () => getWeightHistoryStats(lookbackHours),
-      { totalRows: 0, recentRows: 0, latestAt: null, regimesTracked: 0 }
-    ),
-    safeCall(
       "advancedMetrics",
       () => getAdvancedMetricsStats(lookbackHours),
       { totalRows: 0, recentRows: 0, latestAt: null }
@@ -729,7 +607,7 @@ async function getAdminInsights(options = {}) {
     safeCall(
       "notifications",
       () => getNotificationStats(),
-      { activeUsers: 0, notificationsSent24h: 0, latestNotificationAt: null }
+      { notificationsSent24h: 0, latestNotificationAt: null }
     ),
   ]);
 
@@ -748,11 +626,9 @@ async function getAdminInsights(options = {}) {
   }
 
   if (universeStats.active === 0) emptyFields.push("universe_symbols");
-  if (watchlist.active === 0) emptyFields.push("watchlist_symbols");
   if (snapshots.totalRows === 0) emptyFields.push("market_snapshots");
   if (hqs.totalRows === 0) emptyFields.push("hqs_scores");
   if (factorHistory.totalRows === 0) emptyFields.push("factor_history");
-  if (weightHistory.totalRows === 0) emptyFields.push("weight_history");
   if (advancedMetrics.totalRows === 0) emptyFields.push("market_advanced_metrics");
   if (outcomes.totalRows === 0) emptyFields.push("outcome_tracking");
   if (discovery.totalRows === 0) emptyFields.push("discovery_history");
@@ -774,12 +650,10 @@ async function getAdminInsights(options = {}) {
       notifications,
     },
     universe: universeStats,
-    watchlist,
     activity: {
       snapshots,
       hqs,
       factorHistory,
-      weightHistory,
       advancedMetrics,
       outcomes,
       discovery,
@@ -790,7 +664,6 @@ async function getAdminInsights(options = {}) {
       recentProcessedSymbols: snapshots.recentSymbols,
       latestSnapshotAt: snapshots.latestRunAt,
       latestFactorUpdateAt: factorHistory.latestAt,
-      latestWeightUpdateAt: weightHistory.latestAt,
       latestDiscoveryAt: discovery.latestAt,
       latestAdvancedMetricsAt: advancedMetrics.latestAt,
       latestOutcomeTrackingAt: outcomes.latestAt,

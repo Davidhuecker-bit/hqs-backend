@@ -36,7 +36,6 @@ const { optimizePortfolio } = require("./services/portfolioOptimizer");
 const { buildGuardianPayload } = require("./services/frontendAdapter.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
-const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { initJobLocksTable } = require("./services/jobLock.repository");
 const {
@@ -102,7 +101,6 @@ NOTIFICATIONS
 
 const {
   initNotificationTables,
-  seedDemoUserIfEmpty,
 } = require("./services/notifications.repository");
 
 /* =========================================================
@@ -639,7 +637,6 @@ async function runStartupInit() {
   await safeInit("ensureTablesExist",   ensureTablesExist,   true);
   await safeInit("initJobLocksTable",   initJobLocksTable,   true);
   await safeInit("initFactorTable",     initFactorTable,     true);
-  await safeInit("initWeightTable",     initWeightTable,     true);
 
   // ── NON-CRITICAL steps – auxiliary tables ─────────────────────────────────
   await safeInit("initDiscoveryTable",                    initDiscoveryTable);
@@ -652,7 +649,6 @@ async function runStartupInit() {
   await safeInit("initTechRadarTable",                    initTechRadarTable);
   await safeInit("initAutomationAuditTable",              initAutomationAuditTable);
   await safeInit("initNotificationTables",                initNotificationTables);
-  await safeInit("seedDemoUserIfEmpty",                   seedDemoUserIfEmpty);
   await safeInit("initSecEdgarTables",                    initSecEdgarTables);
   await safeInit("initEntityMapTable",                    initEntityMapTable);
   await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);

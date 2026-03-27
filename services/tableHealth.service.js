@@ -43,7 +43,6 @@ const ALLOWED_TABLES = new Set([
   "outcome_tracking",
   "agent_forecasts",
   "agents",
-  "weight_history",
   "dynamic_weights",
   // Pipeline / ops
   "pipeline_status",
@@ -53,9 +52,6 @@ const ALLOWED_TABLES = new Set([
   "universe_symbols",
   "universe_scan_state",
   // User / notification
-  "watchlist_symbols",
-  "briefing_users",
-  "briefing_watchlist",
   "user_devices",
   "notifications",
   // News / entity
@@ -207,10 +203,6 @@ const TABLE_CONFIGS = [
     minRowsYellow: 1,
   },
   {
-    name: "weight_history",
-    tsColumns: ["created_at"],
-  },
-  {
     name: "dynamic_weights",
     tsColumns: ["last_updated", "created_at"],
   },
@@ -246,22 +238,6 @@ const TABLE_CONFIGS = [
     minRowsYellow: 0,
   },
   // ── User / notification ───────────────────────────────────────────────────
-  {
-    name: "watchlist_symbols",
-    tsColumns: ["created_at", "updated_at"],
-  },
-  {
-    name: "briefing_users",
-    tsColumns: ["created_at", "updated_at"],
-    minRowsGreen:  1,
-    minRowsYellow: 0,
-  },
-  {
-    name: "briefing_watchlist",
-    tsColumns: ["created_at"],
-    minRowsGreen:  1,
-    minRowsYellow: 0,
-  },
   {
     name: "user_devices",
     tsColumns: ["created_at"],
