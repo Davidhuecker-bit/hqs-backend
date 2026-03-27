@@ -30,6 +30,12 @@ function toIsoDate(value) {
   return d.toISOString().slice(0, 10);
 }
 
+function isWeekendDate(isoDate) {
+  const d = new Date(`${isoDate}T12:00:00Z`);
+  const day = d.getUTCDay();
+  return day === 0 || day === 6;
+}
+
 function buildDateRange({ dateFrom, dateTo, daysBack }) {
   if (dateFrom && dateTo) {
     const start = new Date(dateFrom);
@@ -47,7 +53,8 @@ function buildDateRange({ dateFrom, dateTo, daysBack }) {
     const current = new Date(start);
 
     while (current <= end) {
-      dates.push(current.toISOString().slice(0, 10));
+      const iso = current.toISOString().slice(0, 10);
+      if (!isWeekendDate(iso)) dates.push(iso);
       current.setUTCDate(current.getUTCDate() + 1);
     }
 
@@ -62,7 +69,8 @@ function buildDateRange({ dateFrom, dateTo, daysBack }) {
   for (let i = back - 1; i >= 0; i--) {
     const d = new Date(end);
     d.setUTCDate(end.getUTCDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
+    const iso = d.toISOString().slice(0, 10);
+    if (!isWeekendDate(iso)) dates.push(iso);
   }
 
   return dates;
