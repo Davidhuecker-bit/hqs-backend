@@ -5,7 +5,7 @@ const {
   upsertPricesDailyBatch,
   getExistingDatesForSymbol,
 } = require("./pricesDaily.repository");
-const { fetchMassiveHistoricalCandles } = require("./providerService");
+const { fetchMassiveHistoricalCandles, fetchGroupedDailyCandles } = require("./providerService");
 const { MassiveFlatfileService } = require("./massiveFlatfile.service");
 const { Pool } = require("pg");
 
@@ -68,9 +68,13 @@ function clamp(v, min, max) {
   return Math.min(max, Math.max(min, safeNum(v, min)));
 }
 
+/**
+ * Returns true for Saturday (6) and Sunday (0).
+ * Stock exchange flatfiles and grouped daily data are only published for
+ * trading days; skipping weekends avoids guaranteed "no data" fetches.
+ */
 function isWeekendDate(isoDate) {
-  const d = new Date(`${isoDate}T12:00:00Z`);
-  const day = d.getUTCDay();
+  const day = new Date(`${isoDate}T12:00:00Z`).getUTCDay();
   return day === 0 || day === 6;
 }
 
@@ -83,8 +87,7 @@ function buildDateRangeFromDays(days) {
   for (let i = safeDays - 1; i >= 0; i--) {
     const d = new Date(end);
     d.setUTCDate(end.getUTCDate() - i);
-    const iso = d.toISOString().slice(0, 10);
-    if (!isWeekendDate(iso)) dates.push(iso);
+    dates.push(d.toISOString().slice(0, 10));
   }
 
   return dates;
@@ -202,6 +205,81 @@ async function tryFlatfileBackfillBulk(symbol, days) {
 
   if (totalUpserted > 0 && logger?.info) {
     logger.info("[historicalService] flatfile backfill complete", {
+      symbol: sym,
+      rowsUpserted: totalUpserted,
+    });
+  }
+
+  return totalUpserted;
+}
+
+/* ============================================================
+   GROUPED DAILY BACKFILL (recent trading days, broad coverage)
+============================================================ */
+
+const GROUPED_DAILY_MAX_DAYS = parseInt(process.env.HISTORICAL_GROUPED_DAILY_MAX_DAYS || "30", 10);
+const ENABLE_GROUPED_DAILY_BACKFILL =
+  String(process.env.HISTORICAL_ENABLE_GROUPED_DAILY_BACKFILL || "true").toLowerCase() !== "false";
+
+async function tryGroupedDailyBackfill(symbol, days) {
+  if (!ENABLE_GROUPED_DAILY_BACKFILL) return 0;
+
+  const sym = String(symbol || "").toUpperCase();
+  const targetDays = clamp(days, 1, GROUPED_DAILY_MAX_DAYS);
+  const neededDates = buildDateRangeFromDays(targetDays).filter(
+    (d) => !isWeekendDate(d)
+  );
+
+  if (!neededDates.length) return 0;
+
+  let missingDates = [];
+  try {
+    missingDates = await getMissingDatesForSymbol(sym, neededDates);
+  } catch (_) {
+    missingDates = neededDates;
+  }
+
+  if (!missingDates.length) return 0;
+
+  let totalUpserted = 0;
+
+  for (const date of missingDates) {
+    try {
+      const allRows = await fetchGroupedDailyCandles(date);
+      const rows = allRows.filter((r) => r.symbol === sym);
+
+      if (!rows.length) continue;
+
+      const candles = rows
+        .map((r) => ({
+          date: r.date,
+          open: r.open,
+          high: r.high,
+          low: r.low,
+          close: r.close,
+          volume: r.volume,
+          transactions: r.transactions,
+          source: r.source || "MASSIVE_GROUPED",
+        }))
+        .filter((c) => c.date && c.close != null);
+
+      if (!candles.length) continue;
+
+      await upsertPricesDailyBatch(sym, candles);
+      totalUpserted += candles.length;
+    } catch (err) {
+      if (logger?.warn) {
+        logger.warn("[historicalService] grouped daily backfill day failed", {
+          symbol: sym,
+          date,
+          message: err.message,
+        });
+      }
+    }
+  }
+
+  if (totalUpserted > 0 && logger?.info) {
+    logger.info("[historicalService] grouped daily backfill complete", {
       symbol: sym,
       rowsUpserted: totalUpserted,
     });
@@ -341,18 +419,26 @@ async function getHistoricalPrices(symbol, period) {
     const backfilledCount = await withBackfillLock(sym, async () => {
       let total = 0;
 
-      // REST is the primary path for operative / recent history
-      total += await tryRestBackfill(sym);
+      // Step 1: Flatfile bulk for larger gaps / older history
+      if (ENABLE_FLATFILE_BACKFILL) {
+        total += await tryFlatfileBackfillBulk(sym, days);
+      }
 
       rows = await getPricesDaily(sym, days);
       if (rows.length >= MIN_POINTS) {
         return total;
       }
 
-      // Flatfile is the bulk/gap fallback when REST alone is not enough
-      if (ENABLE_FLATFILE_BACKFILL) {
-        total += await tryFlatfileBackfillBulk(sym, days);
+      // Step 2: Grouped daily for recent trading days
+      total += await tryGroupedDailyBackfill(sym, Math.min(days, GROUPED_DAILY_MAX_DAYS));
+
+      rows = await getPricesDaily(sym, days);
+      if (rows.length >= MIN_POINTS) {
+        return total;
       }
+
+      // Step 3: REST per-symbol fallback
+      total += await tryRestBackfill(sym);
 
       rows = await getPricesDaily(sym, days);
       return total;
