@@ -44,6 +44,8 @@
     "job:ui-demo-portfolio:check": "node --check jobs/uiDemoPortfolio.job.js",
     "job:ui-guardian-status": "node jobs/uiGuardianStatus.job.js",
     "job:ui-guardian-status:check": "node --check jobs/uiGuardianStatus.job.js",
+    "job:historical-flatfile-backfill": "node jobs/historicalFlatfileBackfill.job.js",
+    "job:historical-flatfile-backfill:check": "node --check jobs/historicalFlatfileBackfill.job.js",
     "smoke-check": "node scripts/smoke-check.js",
     "smoke-check:check": "node --check scripts/smoke-check.js",
     "db:health": "node scripts/database-health-check.js",
@@ -55,12 +57,15 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.882.0",
     "axios": "^1.13.5",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
     "express-rate-limit": "^8.3.1",
     "openai": "^4.57.0",
+    "p-limit": "^6.2.0",
+    "p-retry": "^6.2.1",
     "pg": "^8.11.5",
     "web-push": "^3.6.7",
     "winston": "^3.13.1"
