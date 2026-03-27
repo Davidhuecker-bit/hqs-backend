@@ -403,6 +403,12 @@ async function initMlModelsTable() {
     );
   `);
 
+  // Prevent duplicate (model_type, version) registrations
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_models_type_version
+    ON ml_models (model_type, version);
+  `);
+
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_ml_models_active
     ON ml_models (model_type, active) WHERE active = TRUE;
@@ -483,16 +489,26 @@ async function upsertFeatureHistory(features) {
 
   const client = await pool.connect();
   let upserted = 0;
+  let skipped = 0;
 
   try {
     await client.query("BEGIN");
 
     for (const f of features) {
+      // --- defensive normalisation ---
       const symbol = String(f.symbol || "").trim().toUpperCase();
-      const indicator = String(f.indicator || "").trim();
-      if (!symbol || !indicator || !f.timestamp) continue;
+      if (!symbol) { skipped++; continue; }
 
-      const ts = f.timestamp instanceof Date ? f.timestamp.toISOString() : String(f.timestamp);
+      const indicator = String(f.indicator || "").trim();
+      if (!indicator) { skipped++; continue; }
+
+      // timestamp: must resolve to a valid Date
+      if (f.timestamp == null) { skipped++; continue; }
+      const tsDate = f.timestamp instanceof Date ? f.timestamp : new Date(f.timestamp);
+      if (!Number.isFinite(tsDate.getTime())) { skipped++; continue; }
+      const ts = tsDate.toISOString();
+
+      // numeric fields: only finite numbers, otherwise null
       const val     = typeof f.value === "number" && Number.isFinite(f.value) ? f.value : null;
       const med     = typeof f.median === "number" && Number.isFinite(f.median) ? f.median : null;
       const madVal  = typeof f.mad === "number" && Number.isFinite(f.mad) ? f.mad : null;
@@ -523,6 +539,10 @@ async function upsertFeatureHistory(features) {
     upserted = 0;
   } finally {
     client.release();
+  }
+
+  if (skipped > 0) {
+    logger.warn("upsertFeatureHistory: skipped invalid rows", { skipped, total: features.length });
   }
 
   return upserted;
