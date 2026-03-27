@@ -39,6 +39,12 @@ function hasNum(x) {
   return x !== null && x !== undefined && Number.isFinite(Number(x));
 }
 
+function toIsoDate(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
 function calcChangesPercentage(price, previousClose) {
   const p = num(price, null);
   const prev = num(previousClose, null);
@@ -252,6 +258,108 @@ async function fetchFromTwelveData(symbol) {
 }
 
 /* =========================================================
+   GROUPED DAILY CANDLES FROM MASSIVE
+   Polygon-compatible endpoint:
+   GET /v2/aggs/grouped/locale/us/market/stocks/{date}
+   Returns all US stocks for a single trading day.
+========================================================= */
+
+/**
+ * fetchMassiveGroupedDailyCandles(date)
+ *
+ * Fetches all US-stock OHLCV candles for a single date from the Massive
+ * grouped-daily endpoint. Returns an empty array for holidays / non-trading
+ * days (HTTP 404) so callers can treat this as "no data available".
+ *
+ * @param {string} date – ISO date string "YYYY-MM-DD"
+ * @returns {Promise<Array<{symbol: string, date: string, open: number|null, high: number|null, low: number|null, close: number, volume: number|null, transactions: number|null, source: string}>>}
+ */
+async function fetchMassiveGroupedDailyCandles(date) {
+  if (!MASSIVE_API_KEY) {
+    throw new Error("Missing MASSIVE_API_KEY – cannot fetch grouped daily candles");
+  }
+
+  const iso = toIsoDate(date);
+  if (!iso) throw new Error(`Invalid date for grouped daily fetch: ${date}`);
+
+  const url =
+    `https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/${encodeURIComponent(iso)}` +
+    `?adjusted=true&apiKey=${MASSIVE_API_KEY}`;
+
+  const maxTries = Number(process.env.MASSIVE_RETRIES || 3);
+
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    try {
+      const response = await http.get(url);
+      const data = response?.data;
+      const status = String(data?.status || "").toUpperCase();
+
+      if (!data || (status !== "OK" && status !== "")) {
+        throw new Error(
+          `Massive grouped daily response not OK (${data?.status || "no status"}) for ${iso}`
+        );
+      }
+
+      if (!Array.isArray(data.results) || data.results.length === 0) {
+        if (logger?.warn) {
+          logger.warn("[providerService] Massive grouped daily: empty results", { date: iso });
+        }
+        return [];
+      }
+
+      return data.results
+        .map((r) => {
+          const close = num(r.c, null);
+          const symbol = String(r.T || "").trim().toUpperCase();
+          if (!symbol || close == null || close <= 0) return null;
+
+          return {
+            symbol,
+            date: iso,
+            open: num(r.o, null),
+            high: num(r.h, null),
+            low: num(r.l, null),
+            close,
+            volume: num(r.v, null),
+            transactions: num(r.n, null),
+            source: "MASSIVE",
+          };
+        })
+        .filter(Boolean);
+    } catch (err) {
+      const httpStatus = err?.response?.status;
+
+      // 404 = date is a holiday or not yet published – treat as "no data"
+      if (httpStatus === 404) {
+        if (logger?.warn) {
+          logger.warn("[providerService] Massive grouped daily: 404 – likely holiday or not published", {
+            date: iso,
+          });
+        }
+        return [];
+      }
+
+      const msg = `Massive grouped daily fetch failed (attempt ${attempt}/${maxTries}) for ${iso}: ${err.message}`;
+      if (logger?.warn) {
+        logger.warn(msg, {
+          httpStatus: httpStatus ?? null,
+          url: safeUrlWithoutKey(url),
+        });
+      } else {
+        console.warn("⚠️ " + msg);
+      }
+
+      const retry = attempt < maxTries && shouldRetry(err);
+      if (!retry) throw err;
+
+      await sleep(400 * attempt);
+    }
+  }
+
+  throw new Error(`Massive grouped daily fetch failed after retries for ${iso}`);
+}
+
+/* =========================================================
    HISTORICAL CANDLES FROM MASSIVE
    Polygon-compatible endpoint:
    GET /v2/aggs/ticker/{symbol}/range/1/day/{from}/{to}
@@ -441,4 +549,5 @@ async function fetchQuote(symbol) {
 module.exports = {
   fetchQuote,
   fetchMassiveHistoricalCandles,
+  fetchMassiveGroupedDailyCandles,
 };
