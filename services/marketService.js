@@ -941,6 +941,12 @@ async function buildMarketSnapshot() {
     failed: 0,
     byTier: {},
     bySource: {},
+    worldStateFreshness: "unknown",
+    worldStateUsed: false,
+    worldStateWarnings: [],
+    advancedMetricsFallbacks: 0,
+    historicalInsufficient: 0,
+    historicalFetchErrors: 0,
   };
 
   const batch = await getSnapshotCandidates(SNAPSHOT_BATCH_SIZE);
@@ -992,18 +998,33 @@ async function buildMarketSnapshot() {
     if (_wsFreshness === "hard_stale") {
       // Hard-stale world_state must not be used as authoritative macro truth.
       // Discard and rely on per-symbol fallbacks (buildMacroContextFallback etc.).
+      summary.worldStateFreshness = "hard_stale";
+      summary.worldStateUsed = false;
+      summary.worldStateWarnings.push("world_state_hard_stale");
       logger.warn("buildMarketSnapshot: world_state is hard_stale – discarding, using per-symbol fallbacks", {
         created_at: globalWs?.created_at,
       });
       globalWs = null;
+      await updatePipelineStage("advancedMetrics", { errorMessage: "world_state is hard_stale – global macro context discarded, using per-symbol fallbacks" });
     } else if (_wsFreshness === "stale") {
+      summary.worldStateFreshness = "stale";
+      summary.worldStateUsed = true;
+      summary.worldStateWarnings.push("world_state_stale");
       logger.warn("buildMarketSnapshot: world_state is stale – using with degraded trust", {
         created_at: globalWs?.created_at,
       });
+      await updatePipelineStage("advancedMetrics", { errorMessage: "world_state is stale – using degraded global macro context" });
+    } else {
+      summary.worldStateFreshness = "fresh";
+      summary.worldStateUsed = true;
     }
   } catch (_) {
     // Non-critical – per-symbol fallbacks remain active when world_state is
     // unavailable (e.g. first startup before initial build completes).
+    summary.worldStateFreshness = "unavailable";
+    summary.worldStateUsed = false;
+    summary.worldStateWarnings.push("world_state_unavailable");
+    await updatePipelineStage("advancedMetrics", { errorMessage: "world_state unavailable – using per-symbol fallbacks" }).catch(() => {});
   }
 
   let socialPosts = [];
@@ -1028,6 +1049,8 @@ async function buildMarketSnapshot() {
     weightCache[regime] = w;
     return w;
   }
+
+  let _processedCount = 0;
 
   for (const candidate of batch.candidates) {
     const symbol = candidate.symbol;
@@ -1122,25 +1145,63 @@ async function buildMarketSnapshot() {
           });
         } else {
           // Trend is computed but unreliable; advanced_metrics NOT persisted.
-          trendSource = prices.length >= 2 ? "computed_low_quality" : "zeroed_no_prices";
-          logger.warn("snapshot: historical insufficient – trend computed but advanced_metrics not upserted", {
+          summary.historicalInsufficient++;
+          const persistedAdvanced = await loadAdvancedMetrics(symbol);
+          if (persistedAdvanced) {
+            summary.advancedMetricsFallbacks++;
+            trendSource = prices.length >= 2 ? "computed_low_quality_with_persisted_fallback" : "persisted_advanced_fallback";
+            regime = persistedAdvanced.regime || "neutral";
+            scenarios = persistedAdvanced.scenarios || null;
+            if (Number.isFinite(persistedAdvanced.trend))            trendData.trend            = persistedAdvanced.trend;
+            if (Number.isFinite(persistedAdvanced.volatilityAnnual)) trendData.volatilityAnnual = persistedAdvanced.volatilityAnnual;
+            if (Number.isFinite(persistedAdvanced.volatilityDaily))  trendData.volatilityDaily  = persistedAdvanced.volatilityDaily;
+            logger.warn("snapshot: historical insufficient – using persisted advanced metrics fallback", {
+              symbol,
+              points: prices.length,
+              period: HIST_PERIOD,
+              tier,
+              trendSource,
+            });
+          } else {
+            trendSource = prices.length >= 2 ? "computed_low_quality" : "zeroed_no_prices";
+            logger.warn("snapshot: historical insufficient – no persisted advanced metrics fallback available", {
+              symbol,
+              points: prices.length,
+              period: HIST_PERIOD,
+              tier,
+              trendSource,
+            });
+          }
+        }
+      } catch (histErr) {
+        // Fetch failed entirely – attempt persisted advanced metrics fallback.
+        summary.historicalFetchErrors++;
+        const persistedAdvanced = await loadAdvancedMetrics(symbol).catch(() => null);
+        if (persistedAdvanced) {
+          summary.advancedMetricsFallbacks++;
+          trendData = buildTrendScore([]);
+          trendSource = "persisted_advanced_fallback_after_fetch_error";
+          regime = persistedAdvanced.regime || "neutral";
+          scenarios = persistedAdvanced.scenarios || null;
+          if (Number.isFinite(persistedAdvanced.trend))            trendData.trend            = persistedAdvanced.trend;
+          if (Number.isFinite(persistedAdvanced.volatilityAnnual)) trendData.volatilityAnnual = persistedAdvanced.volatilityAnnual;
+          if (Number.isFinite(persistedAdvanced.volatilityDaily))  trendData.volatilityDaily  = persistedAdvanced.volatilityDaily;
+          logger.warn("snapshot: historical fetch failed – using persisted advanced metrics fallback", {
             symbol,
-            points: prices.length,
-            period: HIST_PERIOD,
             tier,
+            message: histErr.message,
+            trendSource,
+          });
+        } else {
+          trendData = buildTrendScore([]);
+          trendSource = "zeroed_fetch_error";
+          logger.warn("snapshot: historical fetch failed – trendData zeroed, advanced_metrics skipped", {
+            symbol,
+            tier,
+            message: histErr.message,
             trendSource,
           });
         }
-      } catch (histErr) {
-        // Fetch failed entirely – fall back to all-zero trendData object.
-        trendData = buildTrendScore([]);
-        trendSource = "zeroed_fetch_error";
-        logger.warn("snapshot: historical fetch failed – trendData zeroed, advanced_metrics skipped", {
-          symbol,
-          tier,
-          message: histErr.message,
-          trendSource,
-        });
       }
 
       logger.info("snapshot: trendData ready", {
@@ -1549,6 +1610,42 @@ async function buildMarketSnapshot() {
       }
 
       logger.info(`Snapshot saved for ${symbol}`);
+
+      // ── Incremental pipeline progress (every 10 successfully processed symbols) ──
+      _processedCount++;
+      if (_processedCount % 10 === 0) {
+        await Promise.all([
+          updatePipelineStage("snapshot", {
+            inputCount:   summary.symbolsTotal,
+            successCount: summary.snapshotsSaved,
+            failedCount:  summary.failed,
+            skippedCount: summary.skipped,
+          }),
+          updatePipelineStage("advancedMetrics", {
+            inputCount:   summary.quotesLoaded,
+            successCount: summary.historicalOk,
+            failedCount:  summary.historicalFetchErrors,
+            skippedCount: summary.historicalInsufficient,
+            errorMessage: summary.historicalFetchErrors > 0
+              ? `${summary.historicalFetchErrors} historical fetch errors so far (fallbacks: ${summary.advancedMetricsFallbacks})`
+              : null,
+          }),
+          updatePipelineStage("hqsScoring", {
+            inputCount:   summary.normalizedOk,
+            successCount: summary.hqsSaved,
+            failedCount:  summary.failed,
+            skippedCount: summary.skipped,
+          }),
+          updatePipelineStage("outcome", {
+            inputCount:   summary.hqsSaved,
+            successCount: summary.outcomeTracked,
+            failedCount:  summary.hqsSaved - summary.outcomeTracked,
+            skippedCount: 0,
+          }),
+        ]).catch((stageErr) => {
+          logger.warn("snapshot: incremental pipeline stage update failed", { message: stageErr.message });
+        });
+      }
     } catch (err) {
       summary.failed++;
       ensureTierBucket(summary, tier).failed++;
@@ -1636,11 +1733,13 @@ async function buildMarketSnapshot() {
     updatePipelineStage("advancedMetrics", {
       inputCount:   summary.quotesLoaded,
       successCount: summary.historicalOk,
-      failedCount:  summary.quotesLoaded - summary.historicalOk - summary.skipped,
-      skippedCount: summary.skipped,
+      failedCount:  summary.historicalFetchErrors,
+      skippedCount: summary.historicalInsufficient,
       errorMessage: summary.historicalOk === 0 && summary.quotesLoaded > 0
         ? `0/${summary.quotesLoaded} symbols had sufficient historical data (need ≥30 daily prices). Check MASSIVE_API_KEY and prices_daily table.`
-        : null,
+        : summary.historicalFetchErrors > 0
+          ? `${summary.historicalFetchErrors} historical fetch errors (fallbacks: ${summary.advancedMetricsFallbacks})`
+          : null,
     }),
     updatePipelineStage("hqsScoring", {
       inputCount:   summary.normalizedOk,
