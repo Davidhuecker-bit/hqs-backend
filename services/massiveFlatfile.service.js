@@ -50,6 +50,35 @@ function toIsoDate(value) {
   return d.toISOString().slice(0, 10);
 }
 
+/**
+ * Returns true for Saturday (6) and Sunday (0) – no exchange flatfiles exist
+ * for non-trading days.
+ */
+function isWeekend(isoDate) {
+  const d = new Date(`${isoDate}T12:00:00Z`);
+  const day = d.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+/**
+ * Returns true when an S3 error signals "object not found" (NoSuchKey / 404)
+ * or "access denied" (403). A 403 from the Massive flatfile endpoint typically
+ * means the subscription does not cover that particular date/dataset segment,
+ * which is equivalent to "no data available" for our purposes.
+ */
+function isNoSuchKeyError(err) {
+  if (!err) return false;
+  const name = String(err.name || "");
+  const code = String(err.code || err.Code || "");
+  const status = err.$metadata?.httpStatusCode ?? err.$response?.statusCode;
+  return (
+    name === "NoSuchKey" ||
+    code === "NoSuchKey" ||
+    status === 404 ||
+    status === 403
+  );
+}
+
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -189,6 +218,10 @@ class MassiveFlatfileService {
         return await fn();
       } catch (err) {
         lastErr = err;
+
+        // NoSuchKey is a permanent condition for that key – retrying will not
+        // help and only wastes time and quota.
+        if (isNoSuchKeyError(err)) break;
 
         const isLast = attempt >= this.maxRetries;
         logger.warn(`[MassiveFlatfileService] ${contextLabel} failed`, {
@@ -392,12 +425,23 @@ class MassiveFlatfileService {
         await onRow(row);
       }
     } catch (err) {
-      logger.error("[MassiveFlatfileService] streamCsvRowsFromGzipKey failed", {
-        endpoint: this.endpoint,
-        bucket: this.bucket,
-        key,
-        error: extractErrorContext(err),
-      });
+      // Downgrade "file not found" to warn – it is expected for holidays and
+      // any date for which Massive has not yet published a flatfile.
+      if (isNoSuchKeyError(err)) {
+        logger.warn("[MassiveFlatfileService] streamCsvRowsFromGzipKey: object not found", {
+          endpoint: this.endpoint,
+          bucket: this.bucket,
+          key,
+          error: extractErrorContext(err),
+        });
+      } else {
+        logger.error("[MassiveFlatfileService] streamCsvRowsFromGzipKey failed", {
+          endpoint: this.endpoint,
+          bucket: this.bucket,
+          key,
+          error: extractErrorContext(err),
+        });
+      }
       throw err;
     } finally {
       try {
@@ -419,6 +463,18 @@ class MassiveFlatfileService {
    * Danach kann beliebig nach Symbolen gefiltert werden.
    */
   async loadDailyAggFileRows(date, options = {}) {
+    const iso = toIsoDate(date);
+    if (!iso) throw new Error(`Invalid date: ${date}`);
+
+    // Stock-exchange flatfiles are only published for trading days (Mon–Fri).
+    // Skip weekends early to avoid guaranteed NoSuchKey errors.
+    if (isWeekend(iso)) {
+      logger.info("[MassiveFlatfileService] skipping weekend date – no flatfile available", {
+        date: iso,
+      });
+      return [];
+    }
+
     const key = this.buildDailyAggKey(date, options);
 
     const cached = options.useCache === false ? null : this._cacheGet(key);
@@ -431,11 +487,24 @@ class MassiveFlatfileService {
 
     const rows = [];
 
-    await this.streamCsvRowsFromGzipKey(key, async (raw) => {
-      const normalized = this.normalizeDailyAggRow(raw);
-      if (!normalized) return;
-      rows.push(normalized);
-    });
+    try {
+      await this.streamCsvRowsFromGzipKey(key, async (raw) => {
+        const normalized = this.normalizeDailyAggRow(raw);
+        if (!normalized) return;
+        rows.push(normalized);
+      });
+    } catch (err) {
+      // Holidays and future dates produce NoSuchKey – treat as "no data" rather
+      // than a hard failure so the rest of the backfill can continue.
+      if (isNoSuchKeyError(err)) {
+        logger.warn(
+          "[MassiveFlatfileService] flatfile not found – date is likely a holiday or not yet available",
+          { key, date: iso }
+        );
+        return [];
+      }
+      throw err;
+    }
 
     if (options.useCache !== false) {
       this._cacheSet(key, rows);
