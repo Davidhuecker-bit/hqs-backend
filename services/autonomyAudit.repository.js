@@ -516,6 +516,8 @@ async function upsertFeatureHistory(features) {
 
     await client.query("COMMIT");
   } catch (error) {
+    // Rollback best-effort: if the connection is already broken the rollback
+    // itself may fail, which is harmless since the transaction is aborted anyway.
     await client.query("ROLLBACK").catch(() => {});
     logger.warn("upsertFeatureHistory: transaction failed", { message: error.message });
     upserted = 0;
@@ -646,6 +648,8 @@ async function registerModel(model) {
     if (logger?.info) logger.info("registerModel: registered", { modelType: type, version, id });
     return id;
   } catch (error) {
+    // Rollback best-effort: if the connection is already broken the rollback
+    // itself may fail, which is harmless since the transaction is aborted anyway.
     await client.query("ROLLBACK").catch(() => {});
     logger.warn("registerModel: transaction failed", { modelType: type, message: error.message });
     return null;
