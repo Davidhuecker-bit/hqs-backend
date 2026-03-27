@@ -75,7 +75,7 @@ DISCOVERY
 const { initDiscoveryTable } = require("./services/discoveryLearning.repository");
 const { initSecEdgarTables } = require("./services/secEdgar.repository");
 const { initAdminSnapshotsTable } = require("./services/adminSnapshots.repository");
-const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable } = require("./services/autonomyAudit.repository");
+const { initAutonomyAuditTable, initNearMissTable, initAutomationAuditTable, initFeatureHistoryTable, initDiscoveryLabelsTable, initMlModelsTable } = require("./services/autonomyAudit.repository");
 const { initAgentForecastTable, initAgentsTable } = require("./services/agentForecast.repository");
 const { initDynamicWeightsTable } = require("./services/causalMemory.repository");
 const { initTechRadarTable } = require("./services/techRadar.service");
@@ -648,6 +648,9 @@ async function runStartupInit() {
   await safeInit("initDynamicWeightsTable",               initDynamicWeightsTable);
   await safeInit("initTechRadarTable",                    initTechRadarTable);
   await safeInit("initAutomationAuditTable",              initAutomationAuditTable);
+  await safeInit("initFeatureHistoryTable",               initFeatureHistoryTable);
+  await safeInit("initDiscoveryLabelsTable",              initDiscoveryLabelsTable);
+  await safeInit("initMlModelsTable",                     initMlModelsTable);
   await safeInit("initNotificationTables",                initNotificationTables);
   await safeInit("initSecEdgarTables",                    initSecEdgarTables);
   await safeInit("initEntityMapTable",                    initEntityMapTable);
