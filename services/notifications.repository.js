@@ -325,7 +325,6 @@ async function createDiscoveryNotification({ userId, pick, onWatchlist = false }
   });
 }
 
-/**
 async function listNotifications(userId, limit = 50) {
   const res = await pool.query(
     `
