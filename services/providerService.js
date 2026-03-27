@@ -446,6 +446,107 @@ async function fetchMassiveHistoricalCandles(symbol, fromDate, toDate) {
 }
 
 /* =========================================================
+   GROUPED DAILY CANDLES FROM MASSIVE
+   Polygon-compatible endpoint:
+   GET /v2/aggs/grouped/locale/us/market/stocks/{date}
+   Returns aggregates for ALL US stocks for a given trading day.
+   Ideal for broad daily filling without per-symbol REST calls.
+========================================================= */
+
+function toIsoDate(value) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * fetchGroupedDailyCandles(date)
+ *
+ * Fetches daily OHLCV candles for ALL US stocks for a single trading day.
+ * Returns an empty array for weekends and days with no data.
+ *
+ * @param {string|Date} date – ISO date string or Date object (YYYY-MM-DD)
+ * @returns {Promise<Array<{symbol: string, date: string, open: number|null, high: number|null, low: number|null, close: number, volume: number|null, transactions: number|null, source: string}>>}
+ */
+async function fetchGroupedDailyCandles(date) {
+  if (!MASSIVE_API_KEY) {
+    throw new Error("Missing MASSIVE_API_KEY – cannot fetch grouped daily candles");
+  }
+
+  const isoDate = toIsoDate(date);
+  if (!isoDate) throw new Error(`fetchGroupedDailyCandles: invalid date: ${date}`);
+
+  const url =
+    `https://api.massive.com/v2/aggs/grouped/locale/us/market/stocks/${encodeURIComponent(isoDate)}` +
+    `?adjusted=true&apiKey=${MASSIVE_API_KEY}`;
+
+  const maxTries = Number(process.env.MASSIVE_RETRIES || 3);
+
+  for (let attempt = 1; attempt <= maxTries; attempt++) {
+    try {
+      const response = await http.get(url);
+      const data = response?.data;
+      const status = String(data?.status || "").toUpperCase();
+
+      // "OK"      → data returned successfully
+      // ""        → Massive omits status field on some successful responses
+      // "NO_DATA" → Massive returns this for holidays / market-closed days
+      if (!data || (status !== "OK" && status !== "" && status !== "NO_DATA")) {
+        throw new Error(`Massive grouped daily response not OK (${data?.status || "no status"})`);
+      }
+
+      if (!Array.isArray(data.results) || data.results.length === 0) {
+        if (logger?.info) {
+          logger.info("[providerService] Massive grouped daily: empty results (holiday or market closed?)", {
+            date: isoDate,
+          });
+        }
+        return [];
+      }
+
+      return data.results
+        .map((r) => {
+          const symbol = String(r?.T || "").trim().toUpperCase();
+          const close = num(r?.c, null);
+          if (!symbol || close == null || close <= 0) return null;
+
+          return {
+            symbol,
+            date: isoDate,
+            open: num(r?.o, null),
+            high: num(r?.h, null),
+            low: num(r?.l, null),
+            close,
+            volume: num(r?.v, null),
+            transactions: num(r?.n, null),
+            source: "MASSIVE_GROUPED",
+          };
+        })
+        .filter(Boolean);
+    } catch (err) {
+      const httpStatus = err?.response?.status;
+      const msg = `Massive grouped daily fetch failed (attempt ${attempt}/${maxTries}) for ${isoDate}: ${err.message}`;
+
+      if (logger?.warn) {
+        logger.warn(msg, {
+          httpStatus: httpStatus ?? null,
+          url: safeUrlWithoutKey(url),
+        });
+      } else {
+        console.warn("⚠️ " + msg);
+      }
+
+      const retry = attempt < maxTries && shouldRetry(err);
+      if (!retry) throw err;
+
+      await sleep(400 * attempt);
+    }
+  }
+
+  throw new Error(`Massive grouped daily fetch failed after retries for ${isoDate}`);
+}
+
+/* =========================================================
    MAIN FETCH
 ========================================================= */
 
@@ -550,4 +651,5 @@ module.exports = {
   fetchQuote,
   fetchMassiveHistoricalCandles,
   fetchMassiveGroupedDailyCandles,
+  fetchGroupedDailyCandles,
 };

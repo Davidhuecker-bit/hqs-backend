@@ -79,6 +79,28 @@ function isNoSuchKeyError(err) {
   );
 }
 
+/**
+ * Returns true when a zlib/gunzip error indicates that the response body is
+ * NOT a valid GZIP file. This happens when the S3-compatible endpoint returns
+ * an XML or JSON error document instead of the actual flatfile – e.g. for
+ * dates that have not yet been published or whose access is restricted.
+ * These are permanent conditions; retrying will not help.
+ */
+function isGzipParseError(err) {
+  if (!err) return false;
+  const code = String(err.code || "");
+  const msg = String(err.message || "").toLowerCase();
+  return (
+    code === "Z_DATA_ERROR" ||
+    code === "Z_BUF_ERROR" ||
+    code === "Z_STREAM_ERROR" ||
+    msg.includes("incorrect header check") ||
+    msg.includes("invalid block type") ||
+    msg.includes("unknown compression method") ||
+    msg.includes("invalid stored block")
+  );
+}
+
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -219,9 +241,9 @@ class MassiveFlatfileService {
       } catch (err) {
         lastErr = err;
 
-        // NoSuchKey is a permanent condition for that key – retrying will not
-        // help and only wastes time and quota.
-        if (isNoSuchKeyError(err)) break;
+        // NoSuchKey and GZIP parse errors are permanent conditions – retrying
+        // will not help and only wastes time and quota.
+        if (isNoSuchKeyError(err) || isGzipParseError(err)) break;
 
         const isLast = attempt >= this.maxRetries;
         logger.warn(`[MassiveFlatfileService] ${contextLabel} failed`, {
@@ -434,6 +456,16 @@ class MassiveFlatfileService {
           key,
           error: extractErrorContext(err),
         });
+      } else if (isGzipParseError(err)) {
+        // The server returned an XML/JSON error document instead of a real
+        // GZIP file. Treat as "not available" – the date is not published yet
+        // or the content is not accessible. No retry needed.
+        logger.warn("[MassiveFlatfileService] streamCsvRowsFromGzipKey: response is not valid GZIP (error payload?)", {
+          endpoint: this.endpoint,
+          bucket: this.bucket,
+          key,
+          error: extractErrorContext(err),
+        });
       } else {
         logger.error("[MassiveFlatfileService] streamCsvRowsFromGzipKey failed", {
           endpoint: this.endpoint,
@@ -496,9 +528,11 @@ class MassiveFlatfileService {
     } catch (err) {
       // Holidays and future dates produce NoSuchKey – treat as "no data" rather
       // than a hard failure so the rest of the backfill can continue.
-      if (isNoSuchKeyError(err)) {
+      // Gzip parse errors (Z_DATA_ERROR etc.) indicate the server returned an
+      // XML/JSON error document instead of a real flatfile – same treatment.
+      if (isNoSuchKeyError(err) || isGzipParseError(err)) {
         logger.warn(
-          "[MassiveFlatfileService] flatfile not found – date is likely a holiday or not yet available",
+          "[MassiveFlatfileService] flatfile not available – date is likely a holiday, not yet published, or returned an error payload",
           { key, date: iso }
         );
         return [];
