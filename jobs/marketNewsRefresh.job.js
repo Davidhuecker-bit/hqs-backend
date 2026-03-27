@@ -100,34 +100,6 @@ function parsePublishedAt(value) {
   return date.toISOString();
 }
 
-async function loadWatchlistSymbols(limit = SYMBOL_LIMIT, region = TARGET_REGION) {
-  try {
-    const normalizedRegion = String(region || TARGET_REGION).trim().toLowerCase();
-    const res = await pool.query(
-      `
-      SELECT symbol
-      FROM watchlist_symbols
-      WHERE is_active = TRUE
-        AND LOWER(COALESCE(region, 'us')) = $2
-      ORDER BY priority ASC, symbol ASC
-      LIMIT $1
-      `,
-      [limit, normalizedRegion]
-    );
-
-    return (res.rows || [])
-      .map((row) => normalizeSymbol(row.symbol))
-      .filter(Boolean);
-  } catch (error) {
-    if (logger?.warn) {
-      logger.warn("Failed to load watchlist_symbols", {
-        message: error.message,
-      });
-    }
-    return [];
-  }
-}
-
 async function loadEntityMapSymbols(limit = SYMBOL_LIMIT) {
   try {
     const res = await pool.query(
@@ -168,21 +140,10 @@ async function loadTargetSymbols(limit = SYMBOL_LIMIT) {
     return universeSymbols;
   }
 
-  const watchlistSymbols = await loadWatchlistSymbols(limit, TARGET_REGION);
-  if (watchlistSymbols.length) {
-    if (logger?.info) {
-      logger.info("Universe empty - fallback to watchlist_symbols", {
-        count: watchlistSymbols.length,
-        region: TARGET_REGION,
-      });
-    }
-    return watchlistSymbols;
-  }
-
   const entitySymbols = await loadEntityMapSymbols(limit);
   if (entitySymbols.length) {
     if (logger?.info) {
-      logger.info("Universe + watchlist empty - fallback to entity_map", {
+      logger.info("Universe empty - fallback to entity_map", {
         count: entitySymbols.length,
       });
     }
@@ -192,11 +153,10 @@ async function loadTargetSymbols(limit = SYMBOL_LIMIT) {
   // ERROR instead of silent empty - makes job failures visible
   logger.error("marketNewsRefresh: No symbols available from any source", {
     universe: 0,
-    watchlist: 0,
     entityMap: 0,
     region: TARGET_REGION,
     action: "job_failed",
-    recommendation: "run universe refresh or populate watchlist_symbols",
+    recommendation: "run universe refresh",
   });
   throw new Error("No symbols available for news collection");
 }
@@ -262,7 +222,7 @@ async function run() {
 
   if (!symbols.length) {
     if (logger?.warn) {
-      logger.warn("No symbols found in universe_symbols, watchlist_symbols or entity_map");
+      logger.warn("No symbols found in universe_symbols or entity_map");
     }
     return {
       skipped: true,

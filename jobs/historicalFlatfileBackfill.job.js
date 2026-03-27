@@ -170,60 +170,38 @@ async function ensureJobMetricsTable(pool) {
 async function loadTargetSymbols(pool, limit, filters = {}) {
   const safeLimit = clamp(limit, 1, 10000);
   const countryFilter = String(filters.country || "US").toUpperCase();
-  const source = String(filters.source || "universe").toLowerCase();
 
   try {
-    if (source === "universe") {
-      const res = await pool.query(
-        `
-        SELECT symbol
-        FROM universe_symbols
-        WHERE is_active = true
-          AND UPPER(COALESCE(country, 'US')) = $1
-        ORDER BY priority ASC NULLS LAST, symbol ASC
-        LIMIT $2
-        `,
-        [countryFilter, safeLimit]
-      );
+    const res = await pool.query(
+      `
+      SELECT symbol
+      FROM universe_symbols
+      WHERE is_active = true
+        AND UPPER(COALESCE(country, 'US')) = $1
+      ORDER BY priority ASC NULLS LAST, symbol ASC
+      LIMIT $2
+      `,
+      [countryFilter, safeLimit]
+    );
 
-      const symbols = res.rows
-        .map((r) => String(r.symbol || "").trim().toUpperCase())
-        .filter(Boolean);
+    const symbols = res.rows
+      .map((r) => String(r.symbol || "").trim().toUpperCase())
+      .filter(Boolean);
 
-      if (symbols.length) {
-        logger.info("[historicalFlatfileBackfill] loaded symbols from universe_symbols", {
-          count: symbols.length,
-        });
-        return symbols;
-      }
+    if (symbols.length) {
+      logger.info("[historicalFlatfileBackfill] loaded symbols from universe_symbols", {
+        count: symbols.length,
+      });
+      return symbols;
     }
   } catch (err) {
-    logger.warn("[historicalFlatfileBackfill] universe_symbols load failed, fallback to watchlist_symbols", {
+    logger.warn("[historicalFlatfileBackfill] universe_symbols load failed", {
       message: err.message,
     });
   }
 
-  const res = await pool.query(
-    `
-    SELECT symbol
-    FROM watchlist_symbols
-    WHERE is_active = true
-      AND LOWER(COALESCE(region, 'us')) = $1
-    ORDER BY priority ASC NULLS LAST, symbol ASC
-    LIMIT $2
-    `,
-    ["us", safeLimit]
-  );
-
-  const symbols = res.rows
-    .map((r) => String(r.symbol || "").trim().toUpperCase())
-    .filter(Boolean);
-
-  logger.info("[historicalFlatfileBackfill] loaded symbols from watchlist_symbols", {
-    count: symbols.length,
-  });
-
-  return symbols;
+  logger.warn("[historicalFlatfileBackfill] no symbols found in universe_symbols – skipping");
+  return [];
 }
 
 /* ============================================================

@@ -748,11 +748,9 @@ async function getAdminInsights(options = {}) {
   }
 
   if (universeStats.active === 0) emptyFields.push("universe_symbols");
-  if (watchlist.active === 0) emptyFields.push("watchlist_symbols");
   if (snapshots.totalRows === 0) emptyFields.push("market_snapshots");
   if (hqs.totalRows === 0) emptyFields.push("hqs_scores");
   if (factorHistory.totalRows === 0) emptyFields.push("factor_history");
-  if (weightHistory.totalRows === 0) emptyFields.push("weight_history");
   if (advancedMetrics.totalRows === 0) emptyFields.push("market_advanced_metrics");
   if (outcomes.totalRows === 0) emptyFields.push("outcome_tracking");
   if (discovery.totalRows === 0) emptyFields.push("discovery_history");

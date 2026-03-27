@@ -33,79 +33,60 @@ function normalizeRegime(regime) {
 
 /* =========================================================
    INIT TABLE
+   weight_history is decommissioned – dynamic_weights is the
+   canonical live store for factor weights.  This function is
+   kept as a no-op so existing callers don't break.
 ========================================================= */
 
 async function initWeightTable() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS weight_history (
-      id SERIAL PRIMARY KEY,
-      created_at TIMESTAMP DEFAULT NOW(),
-      regime TEXT NOT NULL,
-      weights JSONB NOT NULL,
-      performance JSONB NOT NULL
-    );
-  `);
-
-  if (logger?.info) logger.info("weight_history ready");
-  else console.log("✅ weight_history ready");
+  if (logger?.info) logger.info("weight_history: decommissioned, skipping table creation");
 }
 
 /* =========================================================
    SAVE WEIGHTS
+   Decommissioned – weights are mirrored to dynamic_weights
+   inside computeAdaptiveWeights(). No-op retained for compat.
 ========================================================= */
 
-async function saveWeightSnapshot(regime, weights, performance) {
-  const normalizedRegime = normalizeRegime(regime);
-
-  try {
-    await pool.query(
-      `
-      INSERT INTO weight_history (regime, weights, performance)
-      VALUES ($1, $2, $3)
-      `,
-      [normalizedRegime, weights, performance]
-    );
-  } catch (err) {
-    if (logger?.error) logger.error("saveWeightSnapshot error", { message: err.message });
-    else console.error("❌ saveWeightSnapshot error:", err.message);
-  }
+// eslint-disable-next-line no-unused-vars
+async function saveWeightSnapshot(_regime, _weights, _performance) {
+  // no-op: weight_history table is no longer written to.
+  // This stub can be removed once all callers of computeAdaptiveWeights()
+  // have been verified not to call saveWeightSnapshot() directly.
 }
 
 /* =========================================================
    LOAD LAST WEIGHTS
-   - tries regime-specific first
-   - falls back to latest global
+   Reads FACTOR_* rows from dynamic_weights (the live canonical
+   store) instead of the decommissioned weight_history table.
 ========================================================= */
 
-async function loadLastWeights(regime = null) {
+async function loadLastWeights() {
   try {
-    const normalizedRegime = regime ? normalizeRegime(regime) : null;
-
-    if (normalizedRegime) {
-      const res = await pool.query(
-        `
-        SELECT weights
-        FROM weight_history
-        WHERE regime = $1
-        ORDER BY created_at DESC
-        LIMIT 1
-        `,
-        [normalizedRegime]
-      );
-
-      if (res.rows.length) return res.rows[0].weights;
-      // fallback to global if none found for regime
-    }
-
     const res = await pool.query(`
-      SELECT weights
-      FROM weight_history
-      ORDER BY created_at DESC
-      LIMIT 1
+      SELECT agent_name, weight
+      FROM dynamic_weights
+      WHERE agent_name IN (
+        'FACTOR_MOMENTUM', 'FACTOR_QUALITY',
+        'FACTOR_STABILITY', 'FACTOR_RELATIVE'
+      )
     `);
 
     if (!res.rows.length) return null;
-    return res.rows[0].weights;
+
+    const weights = {};
+    for (const row of res.rows) {
+      // agent_name is one of FACTOR_MOMENTUM / FACTOR_QUALITY / FACTOR_STABILITY / FACTOR_RELATIVE
+      const match = String(row.agent_name).match(/^FACTOR_([A-Z]+)$/);
+      if (!match) continue;
+      const factor = match[1].toLowerCase();
+      weights[factor] = Number(row.weight);
+    }
+
+    const required = ["momentum", "quality", "stability", "relative"];
+    if (required.some((k) => !Number.isFinite(weights[k]))) return null;
+
+    return weights;
   } catch (err) {
     if (logger?.error) logger.error("loadLastWeights error", { message: err.message });
     else console.error("❌ loadLastWeights error:", err.message);
@@ -196,13 +177,6 @@ async function computeAdaptiveWeights(regime = "neutral") {
     };
 
     const learningSamples = res.rows.length;
-
-    await saveWeightSnapshot(normalizedRegime, weights, {
-      learningSamples,
-      mode: "reinforcement",
-      updatedAt: new Date().toISOString(),
-      usedRegime: normalizedRegime,
-    });
 
     // ── Mirror current factor weights to dynamic_weights (live state) ──
     try {

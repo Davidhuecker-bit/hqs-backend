@@ -208,11 +208,11 @@ function buildAliases(symbol) {
   return [...aliases];
 }
 
-async function loadWatchlistSymbols(limit = 2000) {
+async function loadUniverseSymbols(limit = 2000) {
   const res = await pool.query(
     `
     SELECT symbol
-    FROM watchlist_symbols
+    FROM universe_symbols
     WHERE is_active = TRUE
     ORDER BY priority ASC, symbol ASC
     LIMIT $1
@@ -228,10 +228,10 @@ async function loadWatchlistSymbols(limit = 2000) {
 async function buildEntityMapBody() {
   await initEntityMapTable();
 
-  const symbols = await loadWatchlistSymbols(3000);
+  const symbols = await loadUniverseSymbols(3000);
 
   if (!symbols.length) {
-    logger.warn("[buildEntityMap] No active watchlist symbols found – skipping");
+    logger.warn("[buildEntityMap] No active universe symbols found – skipping");
     return { processedCount: 0, skippedCount: 1, failedCount: 0 };
   }
 

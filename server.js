@@ -36,7 +36,6 @@ const { optimizePortfolio } = require("./services/portfolioOptimizer");
 const { buildGuardianPayload } = require("./services/frontendAdapter.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
-const { initWeightTable } = require("./services/weightHistory.repository");
 
 const { initJobLocksTable } = require("./services/jobLock.repository");
 const {
@@ -639,7 +638,6 @@ async function runStartupInit() {
   await safeInit("ensureTablesExist",   ensureTablesExist,   true);
   await safeInit("initJobLocksTable",   initJobLocksTable,   true);
   await safeInit("initFactorTable",     initFactorTable,     true);
-  await safeInit("initWeightTable",     initWeightTable,     true);
 
   // ── NON-CRITICAL steps – auxiliary tables ─────────────────────────────────
   await safeInit("initDiscoveryTable",                    initDiscoveryTable);
