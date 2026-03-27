@@ -112,19 +112,14 @@ async function seedDemoUserIfEmpty() {
   if ((r.rows?.[0]?.c ?? 0) > 0) return;
 
   // Demo User ohne Email (nur intern). Kannst du später ersetzen.
-  const ins = await pool.query(
-    `INSERT INTO briefing_users(email, is_active, wants_push) VALUES ($1, TRUE, FALSE) RETURNING id`,
+  await pool.query(
+    `INSERT INTO briefing_users(email, is_active, wants_push) VALUES ($1, TRUE, FALSE)`,
     ["demo@local"]
   );
-  const userId = ins.rows[0].id;
 
-  const defaults = ["AAPL", "MSFT", "NVDA", "AMD"];
-  for (const s of defaults) {
-    await pool.query(
-      `INSERT INTO briefing_watchlist(user_id, symbol) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
-      [userId, s]
-    );
-  }
+  // No watchlist symbols are seeded for the demo user.
+  // The daily briefing job skips users with an empty watchlist, so the demo
+  // user does not flow into live snapshot/historical/scan paths.
   if (logger?.info) logger.info("✅ demo user seeded");
 }
 
