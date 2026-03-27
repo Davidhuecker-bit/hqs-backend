@@ -32,30 +32,6 @@ function normalizeRegime(regime) {
 }
 
 /* =========================================================
-   INIT TABLE
-   weight_history is decommissioned – dynamic_weights is the
-   canonical live store for factor weights.  This function is
-   kept as a no-op so existing callers don't break.
-========================================================= */
-
-async function initWeightTable() {
-  if (logger?.info) logger.info("weight_history: decommissioned, skipping table creation");
-}
-
-/* =========================================================
-   SAVE WEIGHTS
-   Decommissioned – weights are mirrored to dynamic_weights
-   inside computeAdaptiveWeights(). No-op retained for compat.
-========================================================= */
-
-// eslint-disable-next-line no-unused-vars
-async function saveWeightSnapshot(_regime, _weights, _performance) {
-  // no-op: weight_history table is no longer written to.
-  // This stub can be removed once all callers of computeAdaptiveWeights()
-  // have been verified not to call saveWeightSnapshot() directly.
-}
-
-/* =========================================================
    LOAD LAST WEIGHTS
    Reads FACTOR_* rows from dynamic_weights (the live canonical
    store) instead of the decommissioned weight_history table.
@@ -215,9 +191,7 @@ async function computeAdaptiveWeights(regime = "neutral") {
 }
 
 module.exports = {
-  initWeightTable,
-  saveWeightSnapshot,
   loadLastWeights,
   computeAdaptiveWeights,
-  normalizeRegime, // export for reuse if needed
+  normalizeRegime,
 };

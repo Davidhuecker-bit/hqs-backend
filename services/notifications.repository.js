@@ -6,33 +6,12 @@ try { logger = require("../utils/logger"); } catch (_) { logger = null; }
 const { getSharedPool } = require("../config/database");
 const pool = getSharedPool();
 async function initNotificationTables() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS briefing_users (
-      id SERIAL PRIMARY KEY,
-      email TEXT UNIQUE,
-      is_active BOOLEAN DEFAULT TRUE,
-      timezone TEXT DEFAULT 'Europe/Berlin',
-      wants_push BOOLEAN DEFAULT FALSE,
-      created_at TIMESTAMP DEFAULT NOW(),
-      updated_at TIMESTAMP DEFAULT NOW()
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS briefing_watchlist (
-      id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL REFERENCES briefing_users(id) ON DELETE CASCADE,
-      symbol TEXT NOT NULL,
-      weight FLOAT,
-      created_at TIMESTAMP DEFAULT NOW(),
-      UNIQUE(user_id, symbol)
-    );
-  `);
-
+  // briefing_users and briefing_watchlist are decommissioned.
+  // notifications and user_devices use a plain user_id (no FK to briefing_users).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL REFERENCES briefing_users(id) ON DELETE CASCADE,
+      user_id INT NOT NULL,
       title TEXT NOT NULL,
       body TEXT NOT NULL,
       kind TEXT DEFAULT 'daily_briefing',
@@ -59,7 +38,6 @@ async function initNotificationTables() {
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS reason TEXT`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS action_type TEXT`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS delivery_mode TEXT`);
-    // Step 5: feedback/reaction columns
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMP`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS seen_at TIMESTAMP`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS acted_at TIMESTAMP`);
@@ -67,17 +45,51 @@ async function initNotificationTables() {
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS response_type TEXT`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS feedback_signal TEXT`);
     await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS follow_up_outcome TEXT`);
+    // Drop legacy FK constraints that referenced the decommissioned briefing_users table.
+    // Queries the referenced table name to handle any naming convention.
+    await pool.query(`
+      DO $$ DECLARE r RECORD; BEGIN
+        FOR r IN
+          SELECT tc.constraint_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.referential_constraints rc
+            ON tc.constraint_name = rc.constraint_name
+          JOIN information_schema.table_constraints tc2
+            ON rc.unique_constraint_name = tc2.constraint_name
+          WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_name = 'notifications'
+            AND tc2.table_name = 'briefing_users'
+        LOOP
+          EXECUTE 'ALTER TABLE notifications DROP CONSTRAINT IF EXISTS ' || quote_ident(r.constraint_name);
+        END LOOP;
+      END $$;
+    `);
+    await pool.query(`
+      DO $$ DECLARE r RECORD; BEGIN
+        FOR r IN
+          SELECT tc.constraint_name
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.referential_constraints rc
+            ON tc.constraint_name = rc.constraint_name
+          JOIN information_schema.table_constraints tc2
+            ON rc.unique_constraint_name = tc2.constraint_name
+          WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_name = 'user_devices'
+            AND tc2.table_name = 'briefing_users'
+        LOOP
+          EXECUTE 'ALTER TABLE user_devices DROP CONSTRAINT IF EXISTS ' || quote_ident(r.constraint_name);
+        END LOOP;
+      END $$;
+    `);
   } catch (migErr) {
-    // Warn but continue – migration may fail if columns already exist in some PG versions
-    // or due to transient lock issues; table is still usable without these columns.
-    if (logger?.warn) logger.warn("notifications columns migration skipped", { message: migErr.message });
+    if (logger?.warn) logger.warn("notifications migration skipped", { message: migErr.message });
   }
 
   // tokens für Web Push / spätere App Push
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_devices (
       id SERIAL PRIMARY KEY,
-      user_id INT NOT NULL REFERENCES briefing_users(id) ON DELETE CASCADE,
+      user_id INT NOT NULL,
       device_type TEXT DEFAULT 'web',
       fcm_token TEXT NOT NULL,
       is_active BOOLEAN DEFAULT TRUE,
@@ -87,7 +99,7 @@ async function initNotificationTables() {
     );
   `);
 
-  // ✅ Performance Indexe (safe)
+  // Performance Indexes (safe / idempotent)
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_notifications_user_created
     ON notifications(user_id, created_at DESC);
@@ -103,55 +115,7 @@ async function initNotificationTables() {
     ON user_devices(user_id, is_active);
   `);
 
-  if (logger?.info) logger.info("✅ notification tables ready");
-}
-
-async function seedDemoUserIfEmpty() {
-  // Nur für Start, damit du sofort testen kannst
-  const r = await pool.query(`SELECT COUNT(*)::int AS c FROM briefing_users;`);
-  if ((r.rows?.[0]?.c ?? 0) > 0) return;
-
-  // Demo User ohne Email (nur intern). Kannst du später ersetzen.
-  await pool.query(
-    `INSERT INTO briefing_users(email, is_active, wants_push) VALUES ($1, TRUE, FALSE)`,
-    ["demo@local"]
-  );
-
-  // No watchlist symbols are seeded for the demo user.
-  // The daily briefing job skips users with an empty watchlist, so the demo
-  // user does not flow into live snapshot/historical/scan paths.
-  if (logger?.info) logger.info("✅ demo user seeded");
-}
-
-async function getActiveBriefingUsers(limit = 500) {
-  const res = await pool.query(
-    `
-    SELECT id, email, timezone, wants_push
-    FROM briefing_users
-    WHERE is_active = TRUE
-    ORDER BY id ASC
-    LIMIT $1
-    `,
-    [limit]
-  );
-  return res.rows;
-}
-
-async function getUserWatchlistSymbols(userId, limit = 200) {
-  const res = await pool.query(
-    `
-    SELECT symbol, weight
-    FROM briefing_watchlist
-    WHERE user_id = $1
-    ORDER BY symbol ASC
-    LIMIT $2
-    `,
-    [userId, limit]
-  );
-  return res.rows.map(r => ({
-    symbol: String(r.symbol).toUpperCase(),
-    weight: r.weight !== null ? Number(r.weight) : null,
-  }));
+  if (logger?.info) logger.info("notification tables ready");
 }
 
 async function createNotification({ userId, title, body, kind = "daily_briefing", priority = "normal", reason = null, actionType = null, deliveryMode = null }) {
@@ -362,22 +326,6 @@ async function createDiscoveryNotification({ userId, pick, onWatchlist = false }
 }
 
 /**
- * Returns the set of user IDs that have a given symbol on their briefing watchlist.
- * Used by discoveryNotify to check per-user relevance in a single DB round-trip.
- *
- * @param {string} symbol
- * @returns {Promise<Set<number>>}
- */
-async function getUserIdsWithSymbolOnWatchlist(symbol) {
-  const sym = String(symbol || "").toUpperCase();
-  if (!sym) return new Set();
-  const res = await pool.query(
-    `SELECT DISTINCT user_id FROM briefing_watchlist WHERE symbol = $1`,
-    [sym]
-  );
-  return new Set(res.rows.map((r) => Number(r.user_id)));
-}
-
 async function listNotifications(userId, limit = 50) {
   const res = await pool.query(
     `
@@ -1246,36 +1194,31 @@ async function computeAdaptiveDeliveryPriority(userId, { days = 30, topicType = 
 
 module.exports = {
   initNotificationTables,
-  seedDemoUserIfEmpty,
-  getActiveBriefingUsers,
-  getUserWatchlistSymbols,
-  getUserIdsWithSymbolOnWatchlist,   // ✅ Step 5: batch watchlist check for discovery notify
 
-  computeUserAttentionLevel,             // ✅ Step 5: user attention logic
-  computeUserState,                      // ✅ Step 5 User-State: consolidated user state from notification data
-  computeProductSignals,                 // ✅ Step 6: adaptive product signals (engagement/action/dismissal scores)
-  computeUserPreferenceHints,            // ✅ Step 6 Block 2: per-user behavioral preference hints
-  computeAdaptiveDeliveryPriority,       // ✅ Step 6 Block 3: slim delivery-decision helper
-  isReliableAdaptiveSignal,              // ✅ Step 6 Block 4: guardrail – min-sample reliability check
+  computeUserAttentionLevel,             // Step 5: user attention logic
+  computeUserState,                      // Step 5 User-State: consolidated user state from notification data
+  computeProductSignals,                 // Step 6: adaptive product signals (engagement/action/dismissal scores)
+  computeUserPreferenceHints,            // Step 6 Block 2: per-user behavioral preference hints
+  computeAdaptiveDeliveryPriority,       // Step 6 Block 3: slim delivery-decision helper
+  isReliableAdaptiveSignal,              // Step 6 Block 4: guardrail – min-sample reliability check
 
   createNotification,
-  createNotificationOncePerDay,          // ✅ accepts priority/reason
-  getLatestNotificationByKind,           // ✅ new
-  createDiscoveryNotification,           // ✅ uses attention level + onWatchlist
+  createNotificationOncePerDay,
+  getLatestNotificationByKind,
+  createDiscoveryNotification,
 
   listNotifications,
   unreadCount,
   markRead,
-  markSeen,                              // ✅ Step 5: reaction – seen/opened
-  markActed,                             // ✅ Step 5: reaction – user acted (positive)
-  markDismissed,                         // ✅ Step 5: reaction – user dismissed (negative)
-  linkFollowUpOutcome,                   // ✅ Step 5: link notification to outcome_tracking result
-  getRecentFeedbackSignals,              // ✅ Step 5: aggregate feedback signals per user/kind
+  markSeen,
+  markActed,
+  markDismissed,
+  linkFollowUpOutcome,
+  getRecentFeedbackSignals,
 
-  // ✅ Step 5 Follow-up/Reminder
-  computeFollowUpStatus,                 // pure – derives follow-up/reminder status from notification fields
-  getOpenFollowUps,                      // DB – notifications with open follow_up_outcome
-  getReminderEligibleNotifications,      // DB – notifications that qualify for a reminder push
+  computeFollowUpStatus,
+  getOpenFollowUps,
+  getReminderEligibleNotifications,
 
   saveDeviceToken,
   getActiveDeviceTokens,

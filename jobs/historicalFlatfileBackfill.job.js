@@ -195,7 +195,7 @@ async function loadTargetSymbols(pool, limit, filters = {}) {
       return symbols;
     }
   } catch (err) {
-    logger.warn("[historicalFlatfileBackfill] universe_symbols load failed", {
+    logger.warn("[historicalFlatfileBackfill] universe_symbols load failed – returning empty symbol list", {
       message: err.message,
     });
   }

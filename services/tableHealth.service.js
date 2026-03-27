@@ -52,8 +52,6 @@ const ALLOWED_TABLES = new Set([
   "universe_symbols",
   "universe_scan_state",
   // User / notification
-  "briefing_users",
-  "briefing_watchlist",
   "user_devices",
   "notifications",
   // News / entity
@@ -240,18 +238,6 @@ const TABLE_CONFIGS = [
     minRowsYellow: 0,
   },
   // ── User / notification ───────────────────────────────────────────────────
-  {
-    name: "briefing_users",
-    tsColumns: ["created_at", "updated_at"],
-    minRowsGreen:  1,
-    minRowsYellow: 0,
-  },
-  {
-    name: "briefing_watchlist",
-    tsColumns: ["created_at"],
-    minRowsGreen:  1,
-    minRowsYellow: 0,
-  },
   {
     name: "user_devices",
     tsColumns: ["created_at"],

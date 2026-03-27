@@ -101,7 +101,6 @@ NOTIFICATIONS
 
 const {
   initNotificationTables,
-  seedDemoUserIfEmpty,
 } = require("./services/notifications.repository");
 
 /* =========================================================
@@ -650,7 +649,6 @@ async function runStartupInit() {
   await safeInit("initTechRadarTable",                    initTechRadarTable);
   await safeInit("initAutomationAuditTable",              initAutomationAuditTable);
   await safeInit("initNotificationTables",                initNotificationTables);
-  await safeInit("seedDemoUserIfEmpty",                   seedDemoUserIfEmpty);
   await safeInit("initSecEdgarTables",                    initSecEdgarTables);
   await safeInit("initEntityMapTable",                    initEntityMapTable);
   await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);

@@ -9,13 +9,11 @@ const { getMarketData } = require("../services/marketService");
 const { savePipelineStage } = require("../services/pipelineStatus.repository");
 
 const {
-  getActiveBriefingUsers,
-  getUserWatchlistSymbols,
-  createNotificationOncePerDay, // ✅ NEW (anti spam)
-  computeUserAttentionLevel,    // ✅ Step 5: attention-level priority
-  computeUserState,             // ✅ Step 5 User-State: consolidated state for briefing prioritization
-  getOpenFollowUps,             // ✅ Step 5 Follow-up: open follow-ups for review-due boost
-  computeUserPreferenceHints,   // ✅ Step 6 Block 2: per-user preference hints
+  createNotificationOncePerDay,
+  computeUserAttentionLevel,
+  computeUserState,
+  getOpenFollowUps,
+  computeUserPreferenceHints,
 } = require("../services/notifications.repository");
 
 // ✅ OpenAI
@@ -756,252 +754,20 @@ async function runDailyBriefing() {
       }
     }
 
-  // 1) Aktive User laden
-    const users = await getActiveBriefingUsers(500);
-    if (!users.length) {
-      logger.warn("No active briefing users found");
-      return { processedCount: 0, skippedCount: 0 };
-    }
+  // briefing_users and briefing_watchlist are decommissioned.
+  // Per-user briefing requires a user source – return early until a new user
+  // management system is in place.
+  logger.warn("[dailyBriefing] No user source available (briefing_users decommissioned)");
 
-  let createdCount = 0;
-  let skippedCount = 0;
-  let alreadyToday = 0;
-
-  for (const u of users) {
-    try {
-      const userId = u.id;
-
-      // Step 5 User-State: load consolidated state for this user (single DB call).
-      // Used to boost briefing priority when there is a critical/high attention backlog.
-      let userState = null;
-      try {
-        userState = await computeUserState(userId);
-      } catch (usErr) {
-        logger.warn("Daily briefing: computeUserState failed (ignored)", { userId, message: usErr.message });
-      }
-
-      // Step 5 Follow-up/Reminder: load count of open follow-ups for sort-order boost.
-      // Uses activeFollowUpCount from userState (no extra DB round-trip).
-      const userHasOpenFollowUps = (userState?.activeFollowUpCount ?? 0) > 0;
-
-      // 2) Watchlist je User laden
-      const wl = await getUserWatchlistSymbols(userId, 50);
-      const symbols = wl.map((x) => x.symbol).filter(Boolean);
-
-      if (!symbols.length) {
-        skippedCount++;
-        logger.warn("User has no watchlist, skipping", { userId });
-        continue;
-      }
-
-      // 3) Marktdaten holen (DB-first steckt ja in getMarketData)
-      const stocks = [];
-      for (const sym of symbols) {
-        const arr = await getMarketData(sym);
-        if (Array.isArray(arr) && arr[0]) stocks.push(arr[0]);
-      }
-
-      if (!stocks.length) {
-        skippedCount++;
-        logger.warn("No market data for user symbols, skipping", { userId });
-        continue;
-      }
-
-      // Step 5: Compute attention level per stock, then derive Action-Orchestration,
-      // and sort by orchestration priority first (escalation/follow-up), then attention rank.
-      for (const s of stocks) {
-        const attn = _stockAttentionLevel(s);
-        s._attentionLevel = attn.level;
-        s._attentionReason = attn.reason;
-        // Derive minimal orchestration from attention level for briefing ordering
-        s._orchestration = _deriveBriefingOrchestration(s);
-        // Step 7 Block 1: derive action-readiness tier from orchestration + attention
-        s._actionReadiness = _deriveBriefingActionReadiness(s);
-        // Step 7 Block 2: derive approval-queue bucket for clearer briefing labelling
-        s._approvalQueueBucket = _deriveBriefingApprovalBucket(s);
-        // Step 7 Block 3: derive decision status for review-case language/order
-        s._decisionStatus = _deriveBriefingDecisionStatus(s);
-        // Step 7 Block 4: derive controlled approval flow status for follow-up language/order
-        s._approvalFlowStatus = _deriveBriefingApprovalFlowStatus(s);
-        // Step 7 Block 5: derive compact audit/safety hints for fact-line and ordering
-        s._auditHints = _deriveBriefingAuditHints(s);
-        // Step 10 Block 2: derive attention/delivery output for briefing fact lines.
-        // Uses already-computed attention level, audit hints, and follow-up context (no new DB call).
-        const _ado_isBlocked   = s._auditHints?.blockedByGuardrail === true;
-        const _ado_isCritical  = s._attentionLevel === "critical";
-        const _ado_isHigh      = s._attentionLevel === "high";
-        const _ado_isOverdue   = s._approvalFlowStatus === "deferred" && s._attentionLevel !== "low";
-        let _ado_mode;
-        if (_ado_isBlocked || _ado_isCritical || _ado_isOverdue) {
-          _ado_mode = "interrupt_now";
-        } else if (_ado_isHigh) {
-          _ado_mode = "include_in_briefing";
-        } else if (s._attentionLevel === "medium" || s._actionReadiness === "proposal_ready") {
-          _ado_mode = "bundle_for_digest";
-        } else {
-          _ado_mode = "monitor_silently";
-        }
-        s.attentionDeliveryOutput = {
-          deliveryMode:        _ado_mode,
-          attentionStatus:     { interrupt_now: "Sofortiger Handlungsbedarf", include_in_briefing: "Für das Tages-Briefing", bundle_for_digest: "Bündeln", monitor_silently: "Still beobachten" }[_ado_mode] || _ado_mode,
-          deliveryUrgency:     _ado_isCritical ? "critical" : _ado_isHigh ? "medium" : _ado_mode === "bundle_for_digest" ? "low" : "minimal",
-          shouldInterrupt:     _ado_mode === "interrupt_now",
-          bundleCandidate:     _ado_mode === "bundle_for_digest",
-          quietModeRecommended: _ado_mode === "monitor_silently",
-          attentionBasis:      "step10_block2_briefing",
-        };
-      }
-      // Primary sort: orchestration rank (escalation/follow-up urgency, review-due boost when user has open follow-ups)
-      // Secondary sort: Step 7 action-readiness (review_required > proposal_ready > monitor_only)
-      // Tertiary sort: Step 7 Block 3 decision-status (approved_candidate > pending_review > deferred > needs_more_data)
-      // Step 7 Block 4: approval-flow-status as additional tie-breaker after decision-status
-      // Quaternary sort: attention level rank (critical → high → medium → low)
-      // Step 10 Block 2: attention/delivery mode tie-breaker (interrupt_now > include_in_briefing > bundle > silent)
-      // Quinary sort: Step 6 Block 3 adaptive tie-breaker (risk/exploration preference)
-      const ATTENTION_DELIVERY_RANK = { interrupt_now: 0, include_in_briefing: 1, bundle_for_digest: 2, monitor_silently: 3 };
-      stocks.sort((a, b) => {
-        const orchDiff = _briefingOrchestrationRank(a, userHasOpenFollowUps) - _briefingOrchestrationRank(b, userHasOpenFollowUps);
-        if (orchDiff !== 0) return orchDiff;
-        const arDiff = (ACTION_READINESS_RANK[a._actionReadiness] ?? 3) - (ACTION_READINESS_RANK[b._actionReadiness] ?? 3);
-        if (arDiff !== 0) return arDiff;
-        // Step 7 Block 3: decision-status tie-breaker within same action-readiness tier
-        const dsDiff = (DECISION_STATUS_RANK[a._decisionStatus] ?? 4) - (DECISION_STATUS_RANK[b._decisionStatus] ?? 4);
-        if (dsDiff !== 0) return dsDiff;
-        // Step 7 Block 4: approval-flow-status tie-breaker within same decision-status
-        const afsDiff = (APPROVAL_FLOW_STATUS_RANK[a._approvalFlowStatus] ?? APPROVAL_FLOW_UNRANKED) - (APPROVAL_FLOW_STATUS_RANK[b._approvalFlowStatus] ?? APPROVAL_FLOW_UNRANKED);
-        if (afsDiff !== 0) return afsDiff;
-        const attnDiff = (ATTENTION_RANK[a._attentionLevel] ?? 3) - (ATTENTION_RANK[b._attentionLevel] ?? 3);
-        if (attnDiff !== 0) return attnDiff;
-        // Step 10 Block 2: attention/delivery mode tie-breaker
-        const adDiff = (ATTENTION_DELIVERY_RANK[a.attentionDeliveryOutput?.deliveryMode] ?? 3) - (ATTENTION_DELIVERY_RANK[b.attentionDeliveryOutput?.deliveryMode] ?? 3);
-        if (adDiff !== 0) return adDiff;
-        return _adaptiveBriefingBoost(a, userPreferenceHints) - _adaptiveBriefingBoost(b, userPreferenceHints);
-      });
-
-      // Derive briefing priority from the highest escalation/attention level found.
-      // Step 5 User-State: if the user has a critical/high urgency backlog, escalate
-      // the briefing priority even when the current stock signals are moderate.
-      const topOrch = stocks[0]?._orchestration || {};
-      const topAttention = stocks[0]?._attentionLevel || "low";
-      const topAttentionReason = stocks[0]?._attentionReason || null;
-      const topDeliveryMode = topOrch.deliveryMode || "passive_briefing";
-
-      // Resolve effective priority: user-state urgency may escalate stock-level attention
-      const stateBriefingUrgency = userState?.briefingUrgency || "low";
-      const effectivePriority = _resolveEffectivePriority(stateBriefingUrgency, topAttention);
-
-      // Step 6 Block 2 / Block 4: User preference hints – use notificationFatigue for
-      // delivery downgrade and briefingAffinity / preferredActionType for light adaptation.
-      // One CTE query replaces the old computeProductSignals call. Non-fatal.
-      //
-      // adaptedDeliveryMode starts from the stock-/orchestration-level delivery mode.
-      // adaptedActionType starts from urgency logic: "reduce_risk" on high urgency, else null.
-      //   → If null, the user's historically preferred action type can fill the slot below.
-      //
-      // GUARDRAIL (Block 4): delivery-mode downgrade is never applied when effectivePriority
-      // or topAttention is "critical". Critical topics must use briefing_and_notification
-      // regardless of user fatigue – safety and governance override comfort.
-      let adaptedDeliveryMode = topDeliveryMode;
-      let adaptedActionType = topOrch.escalationLevel === "high" || stateBriefingUrgency === "critical" ? "reduce_risk" : null;
-      let userPreferenceHints = null;
-      try {
-        userPreferenceHints = await computeUserPreferenceHints(userId, { days: 30 });
-        if (userPreferenceHints.sampleSize >= 5) {
-          // Downgrade delivery mode for users with high notification fatigue –
-          // GUARDRAIL: never downgrade critical priority topics.
-          const hasCriticalTopic = (effectivePriority === "critical" || topAttention === "critical");
-          if (topDeliveryMode === "briefing_and_notification" &&
-              userPreferenceHints.notificationFatigue === "high") {
-            if (!hasCriticalTopic) {
-              adaptedDeliveryMode = "briefing";
-              logger.info("dailyBriefing: delivery downgraded (high notification fatigue)", {
-                userId, notificationFatigue: userPreferenceHints.notificationFatigue,
-                sampleSize: userPreferenceHints.sampleSize,
-              });
-            } else {
-              // Guardrail triggered: log that downgrade was blocked for critical topic.
-              logger.info("dailyBriefing: delivery downgrade blocked (critical topic protected from fatigue gate)", {
-                userId, effectivePriority, topAttention,
-              });
-            }
-          }
-          // If no urgent action type is set, use the user's historically preferred action type
-          if (adaptedActionType === null && userPreferenceHints.preferredActionType) {
-            adaptedActionType = userPreferenceHints.preferredActionType;
-          }
-          if (userPreferenceHints.briefingAffinity) {
-            logger.info("dailyBriefing: user briefing affinity", {
-              userId, briefingAffinity: userPreferenceHints.briefingAffinity,
-            });
-          }
-        }
-      } catch (sigErr) {
-        logger.warn("dailyBriefing: computeUserPreferenceHints failed (ignored)", { userId, message: sigErr.message });
-      }
-
-      // 4) Fakten bauen
-      const facts = buildFactsFromMarket(stocks);
-
-      // 5) OpenAI Text erstellen
-      const text = await generateBriefingText({
-        userName: "Nutzer",
-        symbols,
-        facts,
-      });
-
-      const titleMatch = text.match(/^TITEL:\s*(.+)$/m);
-      const title = titleMatch ? titleMatch[1].trim() : "Dein Morgen-Update";
-
-      // ✅ NEW: Hidden Winner Block anhängen (wenn vorhanden)
-      const body = hiddenWinner ? `${text}\n\n${buildHiddenWinnerBlock(hiddenWinner)}` : text;
-
-      // ✅ 6) In-App Notification speichern (nur 1x pro Tag pro User)
-      const created = await createNotificationOncePerDay({
-        userId,
-        title,
-        body,
-        kind: "daily_briefing",
-        priority: effectivePriority,
-        reason: topAttentionReason || userState?.userStateSummary || null,
-        actionType: adaptedActionType,
-        deliveryMode: adaptedDeliveryMode,
-      });
-
-      if (created.inserted) {
-        createdCount++;
-        logger.info("Daily briefing created", {
-          userId, deliveryMode: adaptedDeliveryMode, userStateUrgency: stateBriefingUrgency,
-          notificationFatigue: userPreferenceHints?.notificationFatigue || null,
-        });
-      } else {
-        alreadyToday++;
-        logger.info("Daily briefing skipped (already today)", { userId });
-      }
-    } catch (e) {
-      // Wichtig: pro User abfangen, damit Job weiterläuft
-      logger.error("Daily briefing user failed", {
-        userId: u?.id,
-        message: e.message,
-      });
-    }
-  }
-
-  // Persist pipeline status for monitoring
   savePipelineStage("daily_briefing", {
-    inputCount:   users.length,
-    successCount: createdCount,
+    inputCount:   0,
+    successCount: 0,
     failedCount:  0,
-    skippedCount: skippedCount + alreadyToday,
-    status:       createdCount > 0 ? "success" : (users.length > 0 ? "failed" : "success"),
+    skippedCount: 0,
+    status:       "success",
   }).catch(() => {});
 
-  return {
-    processedCount: createdCount,
-    skippedCount: skippedCount + alreadyToday,
-    created: createdCount,
-    alreadyToday,
-    users: users.length,
-  };
+  return { processedCount: 0, skippedCount: 0, created: 0, alreadyToday: 0, users: 0 };
     } finally {
       await releaseLock("daily_briefing_job").catch(() => {});
     }

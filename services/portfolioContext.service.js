@@ -7,7 +7,7 @@
   real existing data sources only (no new tables, no live provider calls):
 
     - virtual_positions  (open positions in the portfolio twin)
-    - watchlist_symbols  (replaced by universe_symbols)
+    - universe_symbols   (active symbol membership – replaces decommissioned watchlist_symbols)
 
   Exported:
     buildPortfolioContextForSymbols(symbols)   → Map<symbol, context>
