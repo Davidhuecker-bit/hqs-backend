@@ -85,7 +85,7 @@ async function ensurePricesDailyTable(pool) {
     CREATE TABLE IF NOT EXISTS prices_daily (
       id BIGSERIAL PRIMARY KEY,
       symbol TEXT NOT NULL,
-      date DATE NOT NULL,
+      price_date DATE NOT NULL,
       open NUMERIC,
       high NUMERIC,
       low NUMERIC,
@@ -95,18 +95,39 @@ async function ensurePricesDailyTable(pool) {
       source TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(symbol, date)
+      UNIQUE(symbol, price_date)
     );
+  `);
+
+  // Migration: rename legacy "date" column -> "price_date"
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'prices_daily'
+          AND column_name = 'date'
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'prices_daily'
+          AND column_name = 'price_date'
+      ) THEN
+        ALTER TABLE prices_daily RENAME COLUMN "date" TO price_date;
+      END IF;
+    END $$;
   `);
 
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_prices_daily_symbol_date
-    ON prices_daily(symbol, date DESC);
+    ON prices_daily(symbol, price_date DESC);
   `);
 
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_prices_daily_date
-    ON prices_daily(date DESC);
+    ON prices_daily(price_date DESC);
   `);
 
   logger.info("[historicalFlatfileBackfill] prices_daily ensured");
@@ -204,10 +225,10 @@ async function getMissingPairs(pool, symbols, dates) {
 
   const existing = await pool.query(
     `
-    SELECT symbol, date::date AS date
+    SELECT symbol, price_date::date AS date
     FROM prices_daily
     WHERE symbol = ANY($1::text[])
-      AND date = ANY($2::date[])
+      AND price_date = ANY($2::date[])
     `,
     [symbols, dateValues]
   );
@@ -271,9 +292,9 @@ async function upsertDailyRowsBatch(pool, rows, batchSize = 500) {
 
       const sql = `
         INSERT INTO prices_daily
-          (symbol, date, open, high, low, close, volume, transactions, source)
+          (symbol, price_date, open, high, low, close, volume, transactions, source)
         VALUES ${placeholders.join(", ")}
-        ON CONFLICT (symbol, date) DO UPDATE SET
+        ON CONFLICT (symbol, price_date) DO UPDATE SET
           open         = EXCLUDED.open,
           high         = EXCLUDED.high,
           low          = EXCLUDED.low,

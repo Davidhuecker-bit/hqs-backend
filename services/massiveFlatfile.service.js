@@ -267,13 +267,17 @@ class MassiveFlatfileService {
 
     if (!date) return null;
 
+    // close is mandatory for a usable price row – reject null / empty / zero
+    const close = row?.close != null && row?.close !== "" ? safeNum(row.close) : null;
+    if (close == null || close <= 0) return null;
+
     return {
       symbol,
       date,
       open: safeNum(row?.open),
       high: safeNum(row?.high),
       low: safeNum(row?.low),
-      close: safeNum(row?.close),
+      close,
       volume: safeNum(row?.volume),
       transactions: safeNum(row?.transactions),
       source: "massive_flatfiles",
