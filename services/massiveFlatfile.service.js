@@ -1,9 +1,33 @@
 "use strict";
 
 const { S3Client, GetObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
+const { Readable } = require("stream");
 const readline = require("readline");
 const zlib = require("zlib");
 const logger = require("../utils/logger");
+
+/**
+ * Extract a structured, loggable error context from any error value.
+ * Covers standard Error properties as well as AWS SDK v3-specific fields
+ * ($fault, $metadata, Code, code) that are otherwise invisible when only
+ * `err.message` is logged.
+ */
+function extractErrorContext(err) {
+  if (!err || typeof err !== "object") {
+    return { raw: String(err) };
+  }
+
+  return {
+    name: err.name,
+    message: err.message,
+    code: err.code || err.Code,
+    httpStatusCode: err.$metadata?.httpStatusCode ?? err.$response?.statusCode,
+    fault: err.$fault,
+    requestId: err.$metadata?.requestId,
+    cfId: err.$metadata?.cfId,
+    stack: err.stack,
+  };
+}
 
 function env(name, fallback = "") {
   const value = process.env[name];
@@ -86,6 +110,21 @@ class MassiveFlatfileService {
         },
       });
 
+    // Log config on startup so the effective values are visible in logs
+    // without exposing credentials.
+    logger.info("[MassiveFlatfileService] initialized", {
+      endpoint: this.endpoint,
+      bucket: this.bucket,
+      region: this.region,
+      forcePathStyle: this.forcePathStyle,
+      maxRetries: this.maxRetries,
+      retryBaseDelayMs: this.retryBaseDelayMs,
+      cacheMaxSize: this.cacheMaxSize,
+      cacheTTLms: this.cacheTTLms,
+      hasAccessKey: Boolean(this.accessKeyId),
+      hasSecretKey: Boolean(this.secretAccessKey),
+    });
+
     /**
      * Datei-Cache:
      * key -> { rows, expiresAt, lastAccessedAt }
@@ -155,7 +194,7 @@ class MassiveFlatfileService {
         logger.warn(`[MassiveFlatfileService] ${contextLabel} failed`, {
           attempt,
           maxRetries: this.maxRetries,
-          message: err.message,
+          error: extractErrorContext(err),
         });
 
         if (isLast) break;
@@ -205,18 +244,49 @@ class MassiveFlatfileService {
 
   async getObjectStream(key) {
     return this._withRetry(async () => {
-      const res = await this.client.send(
-        new GetObjectCommand({
-          Bucket: this.bucket,
-          Key: key,
-        })
-      );
+      logger.debug("[MassiveFlatfileService] GetObject request", {
+        endpoint: this.endpoint,
+        bucket: this.bucket,
+        key,
+        forcePathStyle: this.forcePathStyle,
+      });
+
+      let res;
+      try {
+        res = await this.client.send(
+          new GetObjectCommand({
+            Bucket: this.bucket,
+            Key: key,
+          })
+        );
+      } catch (err) {
+        logger.error("[MassiveFlatfileService] GetObject S3 error", {
+          endpoint: this.endpoint,
+          bucket: this.bucket,
+          key,
+          error: extractErrorContext(err),
+        });
+        throw err;
+      }
 
       if (!res || !res.Body) {
         throw new Error(`No body returned for flatfile key: ${key}`);
       }
 
-      return res.Body;
+      // AWS SDK v3 returns a Node.js Readable in Node.js environments, but can
+      // return a Web ReadableStream in certain configurations (e.g. custom fetch
+      // handler, edge runtimes). Normalise to a Node.js Readable so that
+      // .pipe() always works downstream.
+      const body = res.Body;
+      if (Readable.isReadable(body)) {
+        return body;
+      }
+      // Web ReadableStream → Node.js Readable (Node >= 16.5.0)
+      if (typeof body.getReader === "function") {
+        return Readable.fromWeb(body);
+      }
+      // Fallback: wrap any async-iterable (covers older SDK betas)
+      return Readable.from(body);
     }, `getObjectStream(${key})`);
   }
 
@@ -293,6 +363,8 @@ class MassiveFlatfileService {
       body = await this.getObjectStream(key);
       gunzip = zlib.createGunzip();
 
+      // body is guaranteed to be a Node.js Readable at this point (normalised
+      // inside getObjectStream).
       const stream = body.pipe(gunzip);
 
       rl = readline.createInterface({
@@ -321,8 +393,10 @@ class MassiveFlatfileService {
       }
     } catch (err) {
       logger.error("[MassiveFlatfileService] streamCsvRowsFromGzipKey failed", {
+        endpoint: this.endpoint,
+        bucket: this.bucket,
         key,
-        message: err.message,
+        error: extractErrorContext(err),
       });
       throw err;
     } finally {
