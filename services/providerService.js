@@ -305,12 +305,13 @@ async function fetchMassiveHistoricalCandles(symbol, fromDate, toDate) {
       }
 
       return data.results.map((r) => ({
-        date:   new Date(r.t).toISOString().slice(0, 10),
-        open:   num(r.o, null),
-        high:   num(r.h, null),
-        low:    num(r.l, null),
-        close:  num(r.c, null),
-        volume: num(r.v, null),
+        date:         new Date(r.t).toISOString().slice(0, 10),
+        open:         num(r.o, null),
+        high:         num(r.h, null),
+        low:          num(r.l, null),
+        close:        num(r.c, null),
+        volume:       num(r.v, null),
+        transactions: num(r.n, null),
         source: "MASSIVE",
       }));
     } catch (err) {
