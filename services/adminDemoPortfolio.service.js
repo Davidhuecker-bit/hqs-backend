@@ -51,7 +51,7 @@ const DEMO_SUMMARY_TYPE = "demo_portfolio";
    Default: 20 well-known stocks (USA)
    Can be overridden via DEMO_ADMIN_SYMBOLS env var (comma-separated)
    Examples:
-     DEMO_ADMIN_SYMBOLS="AAPL,MSFT,NVDA,SAP.DE,VOW3.DE"
+     DEMO_ADMIN_SYMBOLS="AAPL,MSFT,NVDA,GOOGL,AMZN"
      DEMO_ADMIN_SYMBOLS="use_universe"  (loads from universe_symbols)
 ========================================================= */
 
