@@ -5,6 +5,7 @@ const pLimit = require("p-limit").default;
 const pRetry = require("p-retry");
 const logger = require("../utils/logger");
 const { MassiveFlatfileService } = require("../services/massiveFlatfile.service");
+const { fetchMassiveGroupedDailyCandles } = require("../services/providerService");
 
 /* ============================================================
    HELPERS
@@ -82,6 +83,10 @@ function shouldEnableJobMetrics() {
 
 function shouldTriggerFeatureUpdate() {
   return String(env("FLATFILE_BACKFILL_TRIGGER_FEATURE_UPDATE", "false")).toLowerCase() === "true";
+}
+
+function shouldUseRestFallback() {
+  return String(env("FLATFILE_BACKFILL_REST_FALLBACK", "true")).toLowerCase() === "true";
 }
 
 /* ============================================================
@@ -406,7 +411,30 @@ async function processDay({ date, missingPairs, massiveService, pool, chunkSize,
   });
 
   const missingSet = new Set(missingPairs.map((p) => `${p.symbol}|${p.date}`));
-  const filteredRows = loadedRows.filter((row) => missingSet.has(`${row.symbol}|${row.date}`));
+  let filteredRows = loadedRows.filter((row) => missingSet.has(`${row.symbol}|${row.date}`));
+
+  // When the flatfile for this date is unavailable (NoSuchKey / holiday / not yet
+  // published), fall back to the Massive grouped-daily REST endpoint so that very
+  // recent trading days are still filled in.
+  if (!filteredRows.length && shouldUseRestFallback()) {
+    try {
+      const groupedRows = await fetchMassiveGroupedDailyCandles(date);
+      const symbolSet = new Set(symbolsForDay);
+      filteredRows = groupedRows.filter((r) => symbolSet.has(r.symbol));
+
+      if (filteredRows.length) {
+        logger.info("[historicalFlatfileBackfill] grouped-daily fallback supplied rows", {
+          date,
+          rows: filteredRows.length,
+        });
+      }
+    } catch (err) {
+      logger.warn("[historicalFlatfileBackfill] grouped-daily fallback failed – skipping date", {
+        date,
+        message: err.message,
+      });
+    }
+  }
 
   if (!filteredRows.length) {
     return {

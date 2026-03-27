@@ -68,6 +68,12 @@ function clamp(v, min, max) {
   return Math.min(max, Math.max(min, safeNum(v, min)));
 }
 
+function isWeekendDate(isoDate) {
+  const d = new Date(`${isoDate}T12:00:00Z`);
+  const day = d.getUTCDay();
+  return day === 0 || day === 6;
+}
+
 function buildDateRangeFromDays(days) {
   const safeDays = clamp(days, 1, 3650);
   const end = new Date();
@@ -77,7 +83,8 @@ function buildDateRangeFromDays(days) {
   for (let i = safeDays - 1; i >= 0; i--) {
     const d = new Date(end);
     d.setUTCDate(end.getUTCDate() - i);
-    dates.push(d.toISOString().slice(0, 10));
+    const iso = d.toISOString().slice(0, 10);
+    if (!isWeekendDate(iso)) dates.push(iso);
   }
 
   return dates;
@@ -334,16 +341,18 @@ async function getHistoricalPrices(symbol, period) {
     const backfilledCount = await withBackfillLock(sym, async () => {
       let total = 0;
 
-      if (ENABLE_FLATFILE_BACKFILL) {
-        total += await tryFlatfileBackfillBulk(sym, days);
-      }
+      // REST is the primary path for operative / recent history
+      total += await tryRestBackfill(sym);
 
       rows = await getPricesDaily(sym, days);
       if (rows.length >= MIN_POINTS) {
         return total;
       }
 
-      total += await tryRestBackfill(sym);
+      // Flatfile is the bulk/gap fallback when REST alone is not enough
+      if (ENABLE_FLATFILE_BACKFILL) {
+        total += await tryFlatfileBackfillBulk(sym, days);
+      }
 
       rows = await getPricesDaily(sym, days);
       return total;
