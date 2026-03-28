@@ -1486,6 +1486,7 @@ let _adminKey = sessionStorage.getItem('hqs_admin_key') || '';
  */
 function adminFetch(url, opts = {}) {
   if (!_adminKey) {
+    showReauthPrompt('Admin-Schlüssel fehlt – bitte erneut anmelden.');
     return Promise.reject(new Error('Admin key not set'));
   }
   const headers = Object.assign({}, opts.headers || {}, { 'X-Admin-Key': _adminKey });
@@ -1543,7 +1544,8 @@ async function attemptAdminLogin() {
 }
 
 // Allow Enter key to submit
-document.getElementById('adminKeyInput').addEventListener('keydown', function(e) {
+const _keyInput = document.getElementById('adminKeyInput');
+if (_keyInput) _keyInput.addEventListener('keydown', function(e) {
   if (e.key === 'Enter') attemptAdminLogin();
 });
 
@@ -1563,7 +1565,8 @@ document.getElementById('adminKeyInput').addEventListener('keydown', function(e)
     document.getElementById('adminLoginOverlay').style.display = 'none';
     initDashboard();
   } catch (_) {
-    // Network error – still hide overlay and try (user is likely on same origin)
+    // Network error during cached-key validation – leave login overlay visible
+    // so user can re-enter key or wait for connectivity
   }
 })();
 
