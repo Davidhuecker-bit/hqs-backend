@@ -181,7 +181,7 @@ async function _batchSnapshots(symbols) {
 }
 
 /**
- * Batch-load latest HQS scores.
+ * Batch-load latest HQS scores (including sub-components).
  * Returns Map<SYMBOL, hqsRow>.
  */
 async function _batchHqsScores(symbols) {
@@ -191,7 +191,8 @@ async function _batchHqsScores(symbols) {
     const { rows } = await pool.query(
       `
       SELECT DISTINCT ON (symbol)
-        symbol, hqs_score, regime, created_at AS score_at
+        symbol, hqs_score, momentum, quality, stability, relative,
+        regime, created_at AS score_at
       FROM hqs_scores
       WHERE symbol = ANY($1::text[])
       ORDER BY symbol, created_at DESC NULLS LAST
@@ -201,6 +202,10 @@ async function _batchHqsScores(symbols) {
     for (const r of rows) {
       map.set(r.symbol, {
         hqsScore: r.hqs_score !== null ? Number(r.hqs_score) : null,
+        momentum: r.momentum !== null ? Number(r.momentum) : null,
+        quality: r.quality !== null ? Number(r.quality) : null,
+        stability: r.stability !== null ? Number(r.stability) : null,
+        relative: r.relative !== null ? Number(r.relative) : null,
         regime: r.regime ?? null,
         scoreAt: r.score_at ? new Date(r.score_at).toISOString() : null,
       });
@@ -271,7 +276,7 @@ async function _batchNewsCount(symbols) {
 }
 
 /**
- * Batch-load latest outcome tracking by symbol.
+ * Batch-load latest outcome tracking by symbol (with all key fields).
  * Returns Map<SYMBOL, outcomeRow>.
  */
 async function _batchOutcomes(symbols) {
@@ -281,7 +286,9 @@ async function _batchOutcomes(symbols) {
     const { rows } = await pool.query(
       `
       SELECT DISTINCT ON (symbol)
-        symbol, final_conviction, final_confidence, regime, predicted_at
+        symbol, final_conviction, final_confidence, regime, strategy,
+        hqs_score AS outcome_hqs, ai_score, memory_score,
+        opportunity_strength, orchestrator_confidence, predicted_at
       FROM outcome_tracking
       WHERE symbol = ANY($1::text[])
         AND prediction_type = 'market_view'
@@ -294,6 +301,12 @@ async function _batchOutcomes(symbols) {
         finalConviction: r.final_conviction !== null ? Number(r.final_conviction) : null,
         finalConfidence: r.final_confidence !== null ? Number(r.final_confidence) : null,
         outcomeRegime: r.regime ?? null,
+        strategy: r.strategy ?? null,
+        outcomeHqs: r.outcome_hqs !== null ? Number(r.outcome_hqs) : null,
+        aiScore: r.ai_score !== null ? Number(r.ai_score) : null,
+        memoryScore: r.memory_score !== null ? Number(r.memory_score) : null,
+        opportunityStrength: r.opportunity_strength !== null ? Number(r.opportunity_strength) : null,
+        orchestratorConfidence: r.orchestrator_confidence !== null ? Number(r.orchestrator_confidence) : null,
         predictedAt: r.predicted_at ? new Date(r.predicted_at).toISOString() : null,
       });
     }
@@ -301,6 +314,95 @@ async function _batchOutcomes(symbols) {
     if (logger?.warn) logger.warn("adminReferencePortfolio: outcomes batch error", { message: err.message });
   }
   return map;
+}
+
+/**
+ * Batch-load latest news headlines per symbol (up to 3).
+ * Returns Map<SYMBOL, Array<{title, source, sentiment, publishedAt}>>.
+ */
+async function _batchLatestNews(symbols) {
+  const map = new Map();
+  if (!symbols.length) return map;
+  try {
+    const { rows } = await pool.query(
+      `
+      SELECT symbol, title, source, sentiment_raw, published_at, source_type
+      FROM (
+        SELECT symbol, title, source, sentiment_raw, published_at, source_type,
+          ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY published_at DESC NULLS LAST) AS rn
+        FROM market_news
+        WHERE symbol = ANY($1::text[])
+          AND lifecycle_state NOT IN ('expired', 'archived')
+      ) ranked
+      WHERE rn <= 3
+      ORDER BY symbol ASC, published_at DESC NULLS LAST
+      `,
+      [symbols]
+    );
+    for (const r of rows) {
+      if (!map.has(r.symbol)) map.set(r.symbol, []);
+      map.get(r.symbol).push({
+        title: r.title ?? null,
+        source: r.source ?? null,
+        sentiment: r.sentiment_raw ?? null,
+        sourceType: r.source_type ?? null,
+        publishedAt: r.published_at ? new Date(r.published_at).toISOString() : null,
+      });
+    }
+  } catch (err) {
+    if (logger?.warn) logger.warn("adminReferencePortfolio: latestNews batch error", { message: err.message });
+  }
+  return map;
+}
+
+// ── freshness helpers ────────────────────────────────────────────────────────
+const FRESHNESS_THRESHOLDS_H = {
+  snapshot: 4,   // market snapshots should be < 4h old
+  score: 6,      // HQS scores should be < 6h old
+  metrics: 48,   // advanced metrics should be < 48h old
+  news: 72,      // news should be < 72h old
+};
+
+/**
+ * Compute data-age in hours and freshness flags.
+ * @param {{snapshotAt:string|null, scoreAt:string|null, metricsAt:string|null, latestNewsAt:string|null}} ts
+ * @returns {{dataAgeHours:object, freshness:object}}
+ */
+function _computeFreshness(ts) {
+  const now = Date.now();
+  const age = (isoStr) => {
+    if (!isoStr) return null;
+    const ms = now - new Date(isoStr).getTime();
+    return ms > 0 ? Math.round((ms / 3_600_000) * 10) / 10 : 0;
+  };
+  const snapshotAgeHours = age(ts.snapshotAt);
+  const scoreAgeHours = age(ts.scoreAt);
+  const metricsAgeHours = age(ts.metricsAt);
+  const newsAgeHours = age(ts.latestNewsAt);
+
+  return {
+    dataAgeHours: { snapshotAgeHours, scoreAgeHours, metricsAgeHours, newsAgeHours },
+    freshness: {
+      snapshotFresh: snapshotAgeHours !== null && snapshotAgeHours <= FRESHNESS_THRESHOLDS_H.snapshot,
+      scoreFresh: scoreAgeHours !== null && scoreAgeHours <= FRESHNESS_THRESHOLDS_H.score,
+      metricsFresh: metricsAgeHours !== null && metricsAgeHours <= FRESHNESS_THRESHOLDS_H.metrics,
+      newsFresh: newsAgeHours !== null && newsAgeHours <= FRESHNESS_THRESHOLDS_H.news,
+    },
+  };
+}
+
+/**
+ * Derive a traffic-light dataStatus from component availability and freshness.
+ * "green"  = all 4 components present & fresh
+ * "yellow" = ≤ 1 missing or stale
+ * "red"    = ≥ 2 missing or stale
+ */
+function _deriveDataStatus(missing, freshness) {
+  const staleCount = Object.values(freshness).filter((v) => v === false).length;
+  const totalIssues = missing.length + staleCount;
+  if (totalIssues === 0) return "green";
+  if (totalIssues <= 1) return "yellow";
+  return "red";
 }
 
 // ── conviction bucketing thresholds ──────────────────────────────────────────
@@ -331,24 +433,34 @@ function _convictionToRecommendation(conviction) {
 /**
  * Enrich a list of reference entries with live backend data.
  *
+ * Delivers both the "Endprodukt-Sicht" (final product view) and the
+ * "Integritäts-/Kontrollsicht" (integrity/control view) per symbol.
+ *
  * @param {Array<{symbol:string, name:string, position_order:number, note:string|null}>} entries
  * @returns {Promise<{items: Array, summary: object}>}
  */
 async function enrichReferencePortfolio(entries) {
   const symbols = entries.map((e) => e.symbol);
 
-  const [snapshots, hqsScores, advancedMetrics, newsCounts, outcomes] =
+  const [snapshots, hqsScores, advancedMetrics, newsCounts, latestNews, outcomes] =
     await Promise.all([
       _batchSnapshots(symbols),
       _batchHqsScores(symbols),
       _batchAdvancedMetrics(symbols),
       _batchNewsCount(symbols),
+      _batchLatestNews(symbols),
       _batchOutcomes(symbols),
     ]);
 
   let fullyServed = 0;
   let partiallyServed = 0;
   const missingComponentCounts = {};
+  let hqsScoreSum = 0;
+  let hqsScoreCount = 0;
+  let completenessSum = 0;
+  let greenCount = 0;
+  let yellowCount = 0;
+  let redCount = 0;
 
   const items = entries.map((entry) => {
     const sym = entry.symbol;
@@ -356,6 +468,7 @@ async function enrichReferencePortfolio(entries) {
     const hqs = hqsScores.get(sym) ?? null;
     const adv = advancedMetrics.get(sym) ?? null;
     const newsCount = newsCounts.get(sym) ?? 0;
+    const newsItems = latestNews.get(sym) ?? [];
     const outcome = outcomes.get(sym) ?? null;
 
     const hasSnapshot = snap !== null;
@@ -377,8 +490,31 @@ async function enrichReferencePortfolio(entries) {
     if (isFull) fullyServed += 1;
     else partiallyServed += 1;
 
+    // Completeness: 25% per component present
+    const completenessScore = (hasSnapshot ? 25 : 0) + (hasScore ? 25 : 0) + (hasMetrics ? 25 : 0) + (hasNews ? 25 : 0);
+    completenessSum += completenessScore;
+
     // Regime: prefer advanced metrics, fall back to hqs, then outcome
     const regime = adv?.regime ?? hqs?.regime ?? outcome?.outcomeRegime ?? null;
+
+    // Freshness & data status
+    const latestNewsAt = newsItems.length > 0 ? newsItems[0].publishedAt : null;
+    const { dataAgeHours, freshness } = _computeFreshness({
+      snapshotAt: snap?.snapshotAt ?? null,
+      scoreAt: hqs?.scoreAt ?? null,
+      metricsAt: adv?.metricsAt ?? null,
+      latestNewsAt,
+    });
+    const dataStatus = _deriveDataStatus(missing, freshness);
+    if (dataStatus === "green") greenCount += 1;
+    else if (dataStatus === "yellow") yellowCount += 1;
+    else redCount += 1;
+
+    // HQS score aggregation
+    if (hqs?.hqsScore !== null && hqs?.hqsScore !== undefined) {
+      hqsScoreSum += hqs.hqsScore;
+      hqsScoreCount += 1;
+    }
 
     return {
       symbol: sym,
@@ -386,27 +522,56 @@ async function enrichReferencePortfolio(entries) {
       positionOrder: entry.position_order,
       note: entry.note,
 
+      // ── Endprodukt-Sicht (final product view) ─────────────────
+
       // market data
       price: snap?.price ?? null,
       priceUsd: snap?.priceUsd ?? null,
       changePercent: snap?.changePercent ?? null,
 
-      // scoring
+      // scoring (HQS)
       hqsScore: hqs?.hqsScore ?? null,
+      momentum: hqs?.momentum ?? null,
+      quality: hqs?.quality ?? null,
+      stability: hqs?.stability ?? null,
+      relative: hqs?.relative ?? null,
       regime,
 
-      // signal – derived from outcome conviction (no separate signal_history table)
+      // advanced metrics
+      trend: adv?.trend ?? null,
+      volatilityAnnual: adv?.volatilityAnnual ?? null,
+
+      // recommendation / signal / conviction
       recommendation: _convictionToRecommendation(outcome?.finalConviction),
       signalStrength: outcome?.finalConviction ?? null,
+      confidence: outcome?.finalConfidence ?? null,
+      strategy: outcome?.strategy ?? null,
+
+      // orchestrator / memory sub-scores
+      aiScore: outcome?.aiScore ?? null,
+      memoryScore: outcome?.memoryScore ?? null,
+      opportunityStrength: outcome?.opportunityStrength ?? null,
+      orchestratorConfidence: outcome?.orchestratorConfidence ?? null,
+
+      // latest news headlines
+      latestNews: newsItems,
+      newsCount,
+
+      // ── Integritäts-/Kontrollsicht (integrity/control view) ───
 
       // component flags
       hasSnapshot,
       hasScore,
       hasMetrics,
       hasNews,
-      newsCount,
 
-      // outcome
+      // data quality
+      dataStatus,
+      completenessScore,
+      freshness,
+      dataAgeHours,
+
+      // outcome timestamps
       lastOutcomeConviction: outcome?.finalConviction ?? null,
       lastOutcomeConfidence: outcome?.finalConfidence ?? null,
       lastOutcomePredictedAt: outcome?.predictedAt ?? null,
@@ -434,6 +599,10 @@ async function enrichReferencePortfolio(entries) {
     totalSymbols: items.length,
     fullyServed,
     partiallyServed,
+    supplyRate: items.length > 0 ? Math.round((fullyServed / items.length) * 100) : 0,
+    avgHqsScore: hqsScoreCount > 0 ? Math.round((hqsScoreSum / hqsScoreCount) * 10) / 10 : null,
+    avgCompleteness: items.length > 0 ? Math.round(completenessSum / items.length) : 0,
+    statusBreakdown: { green: greenCount, yellow: yellowCount, red: redCount },
     missingComponents: missingComponentCounts,
     mostMissingComponent,
     lastUpdate: new Date().toISOString(),
