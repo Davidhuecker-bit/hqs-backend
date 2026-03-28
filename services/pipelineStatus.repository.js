@@ -49,6 +49,8 @@ const ALLOWED_STAGES = new Set([
   "ui_demo_portfolio",
   "ui_guardian_status",
   "historical_backfill",
+  "update_feature_history",
+  "generate_labels",
 ]);
 
 let tableReady = false;

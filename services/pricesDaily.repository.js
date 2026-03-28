@@ -254,6 +254,48 @@ async function getEarliestDateForSymbol(symbol) {
 }
 
 /**
+ * Retrieve daily prices for a symbol within a calendar date range, oldest first.
+ * Designed for forward-return calculations anchored to a specific historical date.
+ *
+ * @param {string}       symbol
+ * @param {Date|string}  fromDate  inclusive start date (e.g. signal_time)
+ * @param {Date|string}  toDate    inclusive end date
+ * @param {number}       [limit=40] max rows to return
+ * @returns {Promise<Array<{price_date: Date, close: string, open: string|null, high: string|null, low: string|null, volume: string|null}>>}
+ */
+async function getPricesDailyInRange(symbol, fromDate, toDate, limit = 40) {
+  await _ensureOnce();
+
+  const sym = String(symbol || "").toUpperCase();
+  const safeLimit = Number.isFinite(Number(limit)) && Number(limit) > 0
+    ? Math.min(Number(limit), 200)
+    : 40;
+
+  const res = await pool.query(
+    `
+    SELECT
+      price_date,
+      close,
+      open,
+      high,
+      low,
+      volume
+    FROM prices_daily
+    WHERE symbol = $1
+      AND price_date >= $2::date
+      AND price_date <= $3::date
+      AND close IS NOT NULL
+      AND close > 0
+    ORDER BY price_date ASC
+    LIMIT $4
+    `,
+    [sym, fromDate, toDate, safeLimit]
+  );
+
+  return res.rows;
+}
+
+/**
  * Get the latest date for which we have a price for a symbol.
  *
  * @param {string} symbol
@@ -354,6 +396,7 @@ async function upsertPricesDailyBatch(symbol, rows) {
 module.exports = {
   ensurePricesDailyTable,
   getPricesDaily,
+  getPricesDailyInRange,
   getExistingDatesForSymbol,
   getDateRangeForSymbol,
   countPricesDaily,
