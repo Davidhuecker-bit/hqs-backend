@@ -1708,9 +1708,27 @@ const STRESS_MIN_HQS_SCORE = 35;
 const STRESS_MIN_OPPORTUNITY_SCORE = 30;
 const STRESS_MIN_OPPORTUNITY_STRENGTH = 20;
 
-function randomStressFactor() {
-  return STRESS_PERCENT_MIN + Math.random() * (STRESS_PERCENT_MAX - STRESS_PERCENT_MIN);
+/**
+ * Derive the robustness score for an opportunity.
+ *
+ * When historical context provides a validated robustness value, it is used
+ * directly. When no historical data exists (outcome_tracking not yet populated),
+ * a conservative proxy is derived from the raw HQS score, capped at 0.85 to
+ * reflect the absence of historical validation.
+ *
+ * @param {number|null|undefined} rawRobustness - historicalContext?.robustness
+ * @param {number} hqsScore                    - row.hqs_score
+ * @returns {number}  0–1 robustness score
+ */
+function deriveRobustnessScore(rawRobustness, hqsScore) {
+  if (rawRobustness !== null && rawRobustness !== undefined) {
+    return safeNum(rawRobustness, 0);
+  }
+  // No historical robustness data – proxy from HQS score, cap at 0.85
+  return Math.min(0.85, safeNum(hqsScore, 0) / 100);
 }
+
+
 
 function simulateMarketStress(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return [];
@@ -1960,7 +1978,7 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
   const confidence = chainConfidence > 0
     ? chainConfidence
     : calculateConfidence(row, opportunityScore);
-  const robustnessScore = safeNum(historicalContext?.robustness, 0);
+  const robustnessScore = deriveRobustnessScore(historicalContext?.robustness, row?.hqs_score);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
@@ -2063,7 +2081,7 @@ function buildFallbackOpportunity(row, tracked = null) {
       ? finalView.narratives
       : [];
   const opportunityScore = calculateOpportunityScore(row);
-  const robustnessScore = safeNum(historicalContext?.robustness, 0);
+  const robustnessScore = deriveRobustnessScore(historicalContext?.robustness, row?.hqs_score);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),

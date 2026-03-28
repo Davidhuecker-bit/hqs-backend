@@ -123,6 +123,8 @@ const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyP
 const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta, getRecentHqsExplainabilityMeta, getRecentHqsShadowMeta } = require("../services/factorHistory.repository");
 const { getServiceDiagnostics } = require("../services/serviceDiagnostics.service");
 const { getLearningDiagnostics } = require("../services/learningDiagnostics.service");
+const { getAdminDemoPortfolio } = require("../services/adminDemoPortfolio.service");
+const { refreshGuardianStatusSummary } = require("../services/guardianStatusSummary.builder");
 
 const router = express.Router();
 
@@ -1705,20 +1707,35 @@ router.post("/market-news/collect", async (req, res) => {
 router.get("/demo-portfolio", async (req, res) => {
   try {
     const result = await readSummary("demo_portfolio");
-    if (!result.payload) {
-      throw new Error("Demo portfolio not yet written by job – no data available");
+    if (result.payload) {
+      const payload = result.payload;
+      return res.json({
+        ...payload,
+        freshnessMetadata: {
+          source:      "ui_summary",
+          builtAt:     result.builtAt,
+          freshness:   result.freshnessLabel,
+          dataAge:     result.ageMs != null ? Math.round(result.ageMs / 1000) : null,
+          isPartial:   result.isPartial,
+          rebuilding:  false,
+          writer:      result.writer,
+        },
+      });
     }
-    const payload = result.payload;
+
+    // ui_summaries not yet written by job – fall back to live build from DB tables
+    logger.warn("Admin demo-portfolio: ui_summary empty, falling back to live build");
+    const livePayload = await getAdminDemoPortfolio();
     return res.json({
-      ...payload,
+      ...livePayload,
       freshnessMetadata: {
-        source:      "ui_summary",
-        builtAt:     result.builtAt,
-        freshness:   result.freshnessLabel,
-        dataAge:     result.ageMs != null ? Math.round(result.ageMs / 1000) : null,
-        isPartial:   result.isPartial,
-        rebuilding:  false,
-        writer:      result.writer,
+        source:    "live_build",
+        builtAt:   livePayload.generatedAt ?? new Date().toISOString(),
+        freshness: "live",
+        dataAge:   0,
+        isPartial: livePayload.dataStatus === "missing" || livePayload.dataStatus === "error",
+        rebuilding: false,
+        writer:    "adminDemoPortfolio.service (on-demand fallback)",
       },
     });
   } catch (error) {
@@ -3528,21 +3545,38 @@ router.get("/ui-summaries-health", async (_req, res) => {
  * GET /api/admin/guardian-status-summary
  * Returns the prepared guardian/system status summary (worldState + pipeline health).
  * Read-only from ui_summaries – written by job:ui-guardian-status.
+ * Falls back to a live build when the summary has not yet been written by the job.
  */
 router.get("/guardian-status-summary", async (_req, res) => {
   try {
     const result = await readSummary("guardian_status");
-    const payload = result.payload ?? {};
+    if (result.payload) {
+      return res.json({
+        success:           true,
+        freshnessLabel:    result.freshnessLabel,
+        operationalStatus: result.operationalStatus,
+        ageMs:             result.ageMs,
+        builtAt:           result.builtAt,
+        isPartial:         result.isPartial,
+        rebuilding:        false,
+        writer:            result.writer,
+        ...result.payload,
+      });
+    }
+
+    // ui_summaries not yet written by job – fall back to live build
+    logger.warn("Admin guardian-status-summary: ui_summary empty, falling back to live build");
+    const liveSummary = await refreshGuardianStatusSummary();
     return res.json({
-      success:             true,
-      freshnessLabel:      result.freshnessLabel,
-      operationalStatus:   result.operationalStatus,
-      ageMs:               result.ageMs,
-      builtAt:             result.builtAt,
-      isPartial:           result.isPartial,
-      rebuilding:          false,
-      writer:              result.writer,
-      ...payload,
+      success:           true,
+      freshnessLabel:    "live",
+      operationalStatus: liveSummary ? "healthy" : "empty",
+      ageMs:             0,
+      builtAt:           new Date().toISOString(),
+      isPartial:         false,
+      rebuilding:        false,
+      writer:            "guardianStatusSummary.builder (on-demand fallback)",
+      ...(liveSummary ?? {}),
     });
   } catch (error) {
     logger.error("Admin guardian-status-summary route error", { message: error.message });
