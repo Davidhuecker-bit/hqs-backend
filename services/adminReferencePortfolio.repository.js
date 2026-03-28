@@ -355,6 +355,10 @@ async function _batchLatestNews(symbols) {
   return map;
 }
 
+// ── completeness scoring ──────────────────────────────────────────────────────
+const COMPONENT_COUNT = 4; // snapshot, hqsScore, metrics, news
+const COMPLETENESS_PER_COMPONENT = Math.round(100 / COMPONENT_COUNT);
+
 // ── freshness helpers ────────────────────────────────────────────────────────
 const FRESHNESS_THRESHOLDS_H = {
   snapshot: 4,   // market snapshots should be < 4h old
@@ -490,8 +494,12 @@ async function enrichReferencePortfolio(entries) {
     if (isFull) fullyServed += 1;
     else partiallyServed += 1;
 
-    // Completeness: 25% per component present
-    const completenessScore = (hasSnapshot ? 25 : 0) + (hasScore ? 25 : 0) + (hasMetrics ? 25 : 0) + (hasNews ? 25 : 0);
+    // Completeness: COMPLETENESS_PER_COMPONENT per component present
+    const completenessScore =
+      (hasSnapshot ? COMPLETENESS_PER_COMPONENT : 0) +
+      (hasScore ? COMPLETENESS_PER_COMPONENT : 0) +
+      (hasMetrics ? COMPLETENESS_PER_COMPONENT : 0) +
+      (hasNews ? COMPLETENESS_PER_COMPONENT : 0);
     completenessSum += completenessScore;
 
     // Regime: prefer advanced metrics, fall back to hqs, then outcome
