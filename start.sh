@@ -122,6 +122,16 @@ case "$SERVICE" in
     exec node jobs/historicalFlatfileBackfill.job.js
     ;;
 
+  "Update Feature History"|"update-feature-history")
+    echo "[start.sh] Starting job: update-feature-history"
+    exec node jobs/updateFeatureHistory.job.js
+    ;;
+
+  "Generate Labels"|"generate-labels")
+    echo "[start.sh] Starting job: generate-labels"
+    exec node jobs/generateLabels.job.js
+    ;;
+
   # ── Python services (OPTIONAL pre-warming – NOT required for pipeline) ──────
   # "Historical Backfill" is a Python job. It cannot run inside this Node-only
   # container. If deployed, it runs as a separate Railway service pointing at

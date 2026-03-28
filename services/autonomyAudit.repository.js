@@ -377,6 +377,12 @@ async function initDiscoveryLabelsTable() {
     ON discovery_labels (symbol, signal_time DESC);
   `);
 
+  // Unique constraint required for ON CONFLICT (symbol, signal_time) upserts
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_discovery_labels_uniq_symbol_signal
+    ON discovery_labels (symbol, signal_time);
+  `);
+
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_discovery_labels_regime
     ON discovery_labels (regime_context);
