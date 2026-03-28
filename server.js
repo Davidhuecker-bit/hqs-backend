@@ -83,6 +83,7 @@ const { ensureVirtualPositionsTable } = require("./services/portfolioTwin.servic
 const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
 const { initEntityMapTable } = require("./services/entityMap.repository");
+const { initAdminReferencePortfolioTable } = require("./services/adminReferencePortfolio.repository");
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
@@ -660,6 +661,7 @@ async function runStartupInit() {
   await safeInit("initNotificationTables",                initNotificationTables);
   await safeInit("initSecEdgarTables",                    initSecEdgarTables);
   await safeInit("initEntityMapTable",                    initEntityMapTable);
+  await safeInit("initAdminReferencePortfolioTable",      initAdminReferencePortfolioTable);
   await safeInit("ensureVirtualPositionsTable",           ensureVirtualPositionsTable);
   await safeInit("ensureSisHistoryTable",                 ensureSisHistoryTable);
   await safeInit("ensurePipelineStatusTable",             ensurePipelineStatusTable);
