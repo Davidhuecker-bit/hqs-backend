@@ -112,9 +112,10 @@ const PORT = process.env.PORT || 8080;
 const DEFAULT_CORS_ORIGINS = [
   "https://dhsystemhqs.de",
   "https://www.dhsystemhqs.de",
-  "https://hqs-frontend-v8.vercel.app",
-  /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
+  "https://hqs-private-quant.vercel.app",
+  /^https:\/\/hqs-private-quant-[a-z0-9-]+(-david-hucker-s-projects)?\.vercel\.app$/,
   "http://localhost:3000",
+  "http://localhost:5173",
 ];
 
 const STARTUP_DB_MAX_RETRIES    = Number(process.env.STARTUP_DB_MAX_RETRIES    || 10);
@@ -151,7 +152,7 @@ app.use(
       return callback(null, isAllowedCorsOrigin(origin));
     },
     methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
   })
 );
 
@@ -255,6 +256,7 @@ app.get("/health", (_req, res) => {
   return res.json({
     success: true,
     alive: true,
+    service: "hqs-backend",
     ready: startupState.ready,
     startedAt: startupState.startedAt,
     completedAt: startupState.completedAt,
@@ -293,7 +295,7 @@ app.get("/api/health", async (_req, res) => {
 MARKET ROUTE
 ========================================================= */
 
-app.get("/api/market", async (req, res) => {
+async function handleMarketRequest(req, res) {
   try {
     const symbolResult = parseSymbol(req.query.symbol, {
       label: "symbol",
@@ -355,7 +357,11 @@ app.get("/api/market", async (req, res) => {
       error: error.message,
     });
   }
-});
+}
+
+app.get("/api/market", handleMarketRequest);
+// Alias: flat /market path used by frontend BFF (without /api prefix)
+app.get("/market", handleMarketRequest);
 
 /* =========================================================
 HQS ROUTE
