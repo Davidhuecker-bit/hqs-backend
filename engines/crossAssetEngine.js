@@ -230,6 +230,126 @@ function discoverOpportunities(symbol, marketData, features, advanced) {
   }));
 }
 
+/* ===============================
+   CROSS-ASSET ENVIRONMENT ANALYSIS
+   ────────────────────────────────
+   Analyzes macro-context variables (vixTrend, marketBreadth, goldTrend, etc.)
+   and produces cross-asset signals, sector impact estimates, and a macro summary.
+
+   Input:  macroContext { vixTrend, marketBreadth, dollarTrend, marketTrend,
+                          oilTrend, goldTrend, bondTrend, techTrend }
+   Output: { signals: [...], sectorImpact: {...}, macroSummary: [...] }
+================================ */
+
+function analyzeCrossAssetEnvironment(macroContext) {
+  if (!macroContext || typeof macroContext !== "object") {
+    return { signals: [], sectorImpact: {}, macroSummary: [] };
+  }
+
+  const vix     = safe(macroContext.vixTrend);
+  const breadth = safe(macroContext.marketBreadth);
+  const dollar  = safe(macroContext.dollarTrend);
+  const market  = safe(macroContext.marketTrend);
+  const oil     = safe(macroContext.oilTrend);
+  const gold    = safe(macroContext.goldTrend);
+  const bond    = safe(macroContext.bondTrend);
+  const tech    = safe(macroContext.techTrend);
+
+  const signals = [];
+  const macroSummary = [];
+
+  // ── VIX / Volatility signal ──
+  if (vix > 0.15) {
+    signals.push({ type: "volatility_spike", direction: "risk_off", strength: clamp(vix, 0, 1) });
+    macroSummary.push("Elevated volatility – risk-off bias");
+  } else if (vix < -0.1) {
+    signals.push({ type: "volatility_decline", direction: "risk_on", strength: clamp(Math.abs(vix), 0, 1) });
+    macroSummary.push("Declining volatility – risk-on bias");
+  }
+
+  // ── Market breadth signal ──
+  if (breadth >= 0.65) {
+    signals.push({ type: "broad_rally", direction: "bullish", strength: clamp(breadth, 0, 1) });
+    macroSummary.push("Broad market participation – bullish breadth");
+  } else if (breadth <= 0.35) {
+    signals.push({ type: "narrow_market", direction: "bearish", strength: clamp(1 - breadth, 0, 1) });
+    macroSummary.push("Narrow market breadth – bearish undercurrent");
+  }
+
+  // ── Gold trend (safe-haven proxy) ──
+  if (gold > 0.02) {
+    signals.push({ type: "gold_rally", direction: "risk_off", strength: clamp(gold * 5, 0, 1) });
+    macroSummary.push("Gold rallying – safe-haven demand");
+  } else if (gold < -0.02) {
+    signals.push({ type: "gold_decline", direction: "risk_on", strength: clamp(Math.abs(gold) * 5, 0, 1) });
+    macroSummary.push("Gold declining – risk appetite returning");
+  }
+
+  // ── Dollar trend ──
+  if (dollar > 0.05) {
+    signals.push({ type: "dollar_strength", direction: "mixed", strength: clamp(dollar * 3, 0, 1) });
+    macroSummary.push("Strong dollar – headwind for commodities/EM");
+  } else if (dollar < -0.05) {
+    signals.push({ type: "dollar_weakness", direction: "mixed", strength: clamp(Math.abs(dollar) * 3, 0, 1) });
+    macroSummary.push("Weak dollar – tailwind for commodities/EM");
+  }
+
+  // ── Oil trend ──
+  if (oil > 0.05) {
+    signals.push({ type: "oil_rally", direction: "inflationary", strength: clamp(oil * 3, 0, 1) });
+    macroSummary.push("Rising oil – inflationary pressure");
+  } else if (oil < -0.05) {
+    signals.push({ type: "oil_decline", direction: "deflationary", strength: clamp(Math.abs(oil) * 3, 0, 1) });
+    macroSummary.push("Falling oil – deflationary signal");
+  }
+
+  // ── Bond trend ──
+  if (bond > 0.03) {
+    signals.push({ type: "bond_rally", direction: "risk_off", strength: clamp(bond * 5, 0, 1) });
+    macroSummary.push("Bond rally – flight to safety");
+  } else if (bond < -0.03) {
+    signals.push({ type: "bond_selloff", direction: "risk_on", strength: clamp(Math.abs(bond) * 5, 0, 1) });
+    macroSummary.push("Bond sell-off – rising rate expectations");
+  }
+
+  // ── Tech trend ──
+  if (tech > 0.05) {
+    signals.push({ type: "tech_leadership", direction: "bullish", strength: clamp(tech * 3, 0, 1) });
+    macroSummary.push("Tech sector leading – growth momentum");
+  } else if (tech < -0.05) {
+    signals.push({ type: "tech_lagging", direction: "bearish", strength: clamp(Math.abs(tech) * 3, 0, 1) });
+    macroSummary.push("Tech sector lagging – rotation out of growth");
+  }
+
+  // ── Sector impact estimates ──
+  const sectorImpact = {};
+  if (oil > 0.05) {
+    sectorImpact.energy = "positive";
+    sectorImpact.transport = "negative";
+  } else if (oil < -0.05) {
+    sectorImpact.energy = "negative";
+    sectorImpact.transport = "positive";
+  }
+  if (bond > 0.03) {
+    sectorImpact.financials = "negative";
+    sectorImpact.utilities = "positive";
+  } else if (bond < -0.03) {
+    sectorImpact.financials = "positive";
+    sectorImpact.utilities = "negative";
+  }
+  if (gold > 0.02) {
+    sectorImpact.materials = "positive";
+  }
+  if (tech > 0.05) {
+    sectorImpact.technology = "positive";
+  } else if (tech < -0.05) {
+    sectorImpact.technology = "negative";
+  }
+
+  return { signals, sectorImpact, macroSummary };
+}
+
 module.exports = {
   discoverOpportunities,
+  analyzeCrossAssetEnvironment,
 };

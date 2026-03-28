@@ -106,7 +106,13 @@ async function savePipelineStage(stage, counts) {
     await ensurePipelineStatusTable();
     const successCount = Number(counts.successCount) || 0;
     const failedCount = Number(counts.failedCount) || 0;
-    const derivedStatus = counts.status || (failedCount > 0 && successCount === 0 ? "failed" : successCount > 0 ? "success" : "unknown");
+    const skippedCount = Number(counts.skippedCount) || 0;
+    const inputCount = Number(counts.inputCount) || 0;
+    const derivedStatus = counts.status
+      || (failedCount > 0 && successCount === 0 ? "failed"
+        : successCount > 0 ? "success"
+        : skippedCount > 0 && inputCount > 0 ? "degraded"
+        : "unknown");
     const errorMessage = counts.errorMessage || null;
     await pool.query(
       `INSERT INTO pipeline_status

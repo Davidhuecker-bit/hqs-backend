@@ -1111,8 +1111,13 @@ async function _buildDemoPortfolio() {
   result.source = "adminDemoPortfolio.service";
   result.buildDurationSec = Math.round(durationMs / 1000);
 
-  // Determine partial status: only "error" or "missing" (both core absent) counts as partial
-  const isPartial = result.dataStatus === "error" || result.dataStatus === "missing";
+  // Determine partial status:
+  // isPartial = true only when the summary is truly empty/broken (no holdings at all
+  // or a hard error). "missing" (all red = all core absent) with actual holdings is
+  // still a valid, informative summary that the frontend can render – it shows which
+  // symbols lack data. Only mark partial when there is genuinely nothing to display.
+  const holdingsExist = Array.isArray(result.holdings) && result.holdings.length > 0;
+  const isPartial = !holdingsExist || result.dataStatus === "error";
   result.partial = isPartial;
 
   // Freshness classification for the overall portfolio
