@@ -112,9 +112,11 @@ const PORT = process.env.PORT || 8080;
 const DEFAULT_CORS_ORIGINS = [
   "https://dhsystemhqs.de",
   "https://www.dhsystemhqs.de",
+  "https://hqs-private-quant.vercel.app",
   "https://hqs-frontend-v8.vercel.app",
-  /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-hucker-s-projects\.vercel\.app$/,
+  /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-huecker-s-projects\.vercel\.app$/,
   "http://localhost:3000",
+  "http://localhost:5173",
 ];
 
 const STARTUP_DB_MAX_RETRIES    = Number(process.env.STARTUP_DB_MAX_RETRIES    || 10);
@@ -293,7 +295,7 @@ app.get("/api/health", async (_req, res) => {
 MARKET ROUTE
 ========================================================= */
 
-app.get("/api/market", async (req, res) => {
+async function handleMarketRoute(req, res) {
   try {
     const symbolResult = parseSymbol(req.query.symbol, {
       label: "symbol",
@@ -355,7 +357,11 @@ app.get("/api/market", async (req, res) => {
       error: error.message,
     });
   }
-});
+}
+
+/* Legacy / BFF compatibility alias – frontend BFF calls /market directly */
+app.get("/market", handleMarketRoute);
+app.get("/api/market", handleMarketRoute);
 
 /* =========================================================
 HQS ROUTE
