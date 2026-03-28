@@ -113,8 +113,7 @@ const DEFAULT_CORS_ORIGINS = [
   "https://dhsystemhqs.de",
   "https://www.dhsystemhqs.de",
   "https://hqs-private-quant.vercel.app",
-  "https://hqs-frontend-v8.vercel.app",
-  /^https:\/\/hqs-private-quant-[a-z0-9-]+-david-huecker-s-projects\.vercel\.app$/,
+  /^https:\/\/hqs-private-quant-[a-z0-9-]+(-david-huecker-s-projects)?\.vercel\.app$/,
   "http://localhost:3000",
   "http://localhost:5173",
 ];
@@ -153,7 +152,7 @@ app.use(
       return callback(null, isAllowedCorsOrigin(origin));
     },
     methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
   })
 );
 
@@ -257,6 +256,7 @@ app.get("/health", (_req, res) => {
   return res.json({
     success: true,
     alive: true,
+    service: "hqs-backend",
     ready: startupState.ready,
     startedAt: startupState.startedAt,
     completedAt: startupState.completedAt,
