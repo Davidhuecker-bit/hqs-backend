@@ -1431,6 +1431,37 @@
   </div>
 </div>
 
+<!-- ═══════════════════ ADMIN LOGIN GATE ═══════════════════ -->
+<div id="adminLoginOverlay" style="
+  position:fixed;inset:0;z-index:9999;
+  background:var(--bg-deep);
+  display:flex;align-items:center;justify-content:center;
+">
+  <div style="
+    background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);
+    padding:40px 36px;max-width:400px;width:90%;text-align:center;box-shadow:var(--shadow);
+  ">
+    <div style="font-size:32px;margin-bottom:12px">🔐</div>
+    <div style="font-size:20px;font-weight:700;margin-bottom:6px">HQS Admin</div>
+    <div style="font-size:13px;color:var(--text-muted);margin-bottom:24px">Admin-Schlüssel eingeben, um fortzufahren</div>
+    <input id="adminKeyInput" type="password" placeholder="Admin Key"
+      autocomplete="off" spellcheck="false"
+      style="
+        width:100%;padding:12px 16px;font-size:15px;
+        background:var(--bg-deep);color:var(--text);
+        border:1px solid var(--border);border-radius:var(--radius-sm);
+        outline:none;margin-bottom:14px;
+      "
+    />
+    <div id="adminLoginError" style="color:var(--red);font-size:12px;margin-bottom:12px;display:none"></div>
+    <button id="adminLoginBtn" onclick="attemptAdminLogin()" style="
+      width:100%;padding:12px;font-size:15px;font-weight:700;
+      background:linear-gradient(135deg,var(--accent),var(--accent2));
+      color:#fff;border:none;border-radius:var(--radius-sm);cursor:pointer;
+    ">Anmelden</button>
+  </div>
+</div>
+
 <script>
 /* ═══════════════════ STATE ═══════════════════ */
 let portfolioData   = [];
@@ -1445,6 +1476,96 @@ const HISTORY_LIMIT = 3;
 
 // Current deep-dive level (1=Fokus, 2=Mehr Kontext, 3=Technische Tiefe)
 let currentDeepDiveLevel = 1;
+
+/* ═══════════════════ ADMIN AUTH ═══════════════════ */
+let _adminKey = sessionStorage.getItem('hqs_admin_key') || '';
+
+/**
+ * Wrapper around fetch() that injects the X-Admin-Key header
+ * into every request to admin endpoints.
+ */
+function adminFetch(url, opts = {}) {
+  if (!_adminKey) {
+    return Promise.reject(new Error('Admin key not set'));
+  }
+  const headers = Object.assign({}, opts.headers || {}, { 'X-Admin-Key': _adminKey });
+  return fetch(url, Object.assign({}, opts, { headers }));
+}
+
+/**
+ * Called when a 401 response is received – shows the login overlay
+ * so the user can re-enter their admin key.
+ */
+function showReauthPrompt(message) {
+  const overlay = document.getElementById('adminLoginOverlay');
+  const errEl   = document.getElementById('adminLoginError');
+  if (overlay) overlay.style.display = 'flex';
+  if (errEl) {
+    errEl.textContent = message || 'Sitzung abgelaufen – bitte erneut anmelden.';
+    errEl.style.display = 'block';
+  }
+}
+
+/**
+ * Login gate – validates the key against the backend before proceeding.
+ */
+async function attemptAdminLogin() {
+  const input = document.getElementById('adminKeyInput');
+  const errEl = document.getElementById('adminLoginError');
+  const btn   = document.getElementById('adminLoginBtn');
+  const key   = (input ? input.value : '').trim();
+  if (!key) {
+    if (errEl) { errEl.textContent = 'Bitte Admin Key eingeben.'; errEl.style.display = 'block'; }
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Prüfe…';
+  try {
+    // Validate the key with a lightweight admin endpoint
+    const res = await fetch(API_BASE + '/operational-status', {
+      headers: { 'X-Admin-Key': key },
+    });
+    if (res.status === 401 || res.status === 403) {
+      if (errEl) { errEl.textContent = 'Ungültiger Admin Key.'; errEl.style.display = 'block'; }
+      return;
+    }
+    // Key accepted – store and proceed
+    _adminKey = key;
+    sessionStorage.setItem('hqs_admin_key', key);
+    document.getElementById('adminLoginOverlay').style.display = 'none';
+    initDashboard();
+  } catch (err) {
+    if (errEl) { errEl.textContent = 'Verbindungsfehler: ' + err.message; errEl.style.display = 'block'; }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Anmelden';
+  }
+}
+
+// Allow Enter key to submit
+document.getElementById('adminKeyInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') attemptAdminLogin();
+});
+
+// If we have a cached key, try it silently; if it fails, show login
+(async function checkCachedKey() {
+  if (!_adminKey) return; // no cached key, login overlay already visible
+  try {
+    const res = await fetch(API_BASE + '/operational-status', {
+      headers: { 'X-Admin-Key': _adminKey },
+    });
+    if (res.status === 401 || res.status === 403) {
+      _adminKey = '';
+      sessionStorage.removeItem('hqs_admin_key');
+      return; // login overlay stays visible
+    }
+    // Cached key is valid – hide overlay and start dashboard
+    document.getElementById('adminLoginOverlay').style.display = 'none';
+    initDashboard();
+  } catch (_) {
+    // Network error – still hide overlay and try (user is likely on same origin)
+  }
+})();
 
 /* ═══════════════════ CURRENCY / NUMBER HELPERS ═══════════════════ */
 function normalizeCurrency(currencyInput) {
@@ -1749,7 +1870,7 @@ async function toggleHistory(symbol) {
   body.innerHTML = `<div class="history-empty">Wird geladen…</div>`;
 
   try {
-    const res  = await fetch(`${API_BASE}/portfolio/${encodeURIComponent(symbol)}/audit-history?limit=${HISTORY_LIMIT}`);
+    const res  = await adminFetch(`${API_BASE}/portfolio/${encodeURIComponent(symbol)}/audit-history?limit=${HISTORY_LIMIT}`);
     const data = await res.json();
     const entries = (data.history || []);
     historyCache[symbol] = entries;
@@ -1782,7 +1903,7 @@ async function openSnapshot(source, id) {
   openModal('snapshotModal');
 
   try {
-    const res  = await fetch(`${API_BASE}/snapshot/${encodeURIComponent(source)}/${id}`);
+    const res  = await adminFetch(`${API_BASE}/snapshot/${encodeURIComponent(source)}/${id}`);
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'Fehler');
 
@@ -1847,7 +1968,7 @@ async function loadAuditFeed() {
   const btn  = document.getElementById('reloadAuditBtn');
   btn.classList.add('spinning');
   try {
-    const res  = await fetch(`${API_BASE}/audit-feed?limit=25`);
+    const res  = await adminFetch(`${API_BASE}/audit-feed?limit=25`);
     const data = await res.json();
     const feed = data.feed || [];
     auditFeedData = feed;
@@ -1903,8 +2024,8 @@ async function loadPortfolio() {
 
   try {
     const [portfolioRes, wsRes] = await Promise.all([
-      fetch(`${API_BASE}/portfolio`),
-      fetch(`${API_BASE}/world-state`).catch(() => null),
+      adminFetch(`${API_BASE}/portfolio`),
+      adminFetch(`${API_BASE}/world-state`).catch(() => null),
     ]);
     const data = await portfolioRes.json();
     portfolioData = data.portfolio || [];
@@ -1964,7 +2085,7 @@ function wisdomAccColor(acc) {
 
 async function loadAgentWisdom() {
   try {
-    const res  = await fetch(`${API_BASE}/agent-wisdom`);
+    const res  = await adminFetch(`${API_BASE}/agent-wisdom`);
     const data = await res.json();
     if (!data.success) return;
 
@@ -2011,7 +2132,7 @@ async function loadAgentWisdom() {
 /* ═══════════════════ SAVED CAPITAL ═══════════════════ */
 async function loadSavedCapital() {
   try {
-    const res  = await fetch(`${API_BASE}/saved-capital`);
+    const res  = await adminFetch(`${API_BASE}/saved-capital`);
     const data = await res.json();
     if (!data.success) return;
 
@@ -2047,7 +2168,7 @@ async function loadEvolutionBoard() {
   if (btn) { btn.disabled = true; btn.querySelector('.refresh-icon').textContent = '⟳'; }
 
   try {
-    const res  = await fetch(`${API_BASE}/evolution-board`);
+    const res  = await adminFetch(`${API_BASE}/evolution-board`);
     const data = await res.json();
     if (!data.success) return;
 
@@ -2123,7 +2244,7 @@ async function loadSystemIntelligence() {
   if (btn) { btn.disabled = true; btn.querySelector('.refresh-icon').textContent = '⟳'; }
 
   try {
-    const res  = await fetch(`${API_BASE}/system-intelligence`);
+    const res  = await adminFetch(`${API_BASE}/system-intelligence`);
     const data = await res.json();
     if (!data.success) return;
 
@@ -2218,9 +2339,9 @@ async function loadSisTrend() {
 
   try {
     const [trendRes, regRes, histRes] = await Promise.all([
-      fetch(`${API_BASE}/sis-trend-summary`),
-      fetch(`${API_BASE}/sis-regressions`),
-      fetch(`${API_BASE}/sis-history?range=7d`),
+      adminFetch(`${API_BASE}/sis-trend-summary`),
+      adminFetch(`${API_BASE}/sis-regressions`),
+      adminFetch(`${API_BASE}/sis-history?range=7d`),
     ]);
     const trend = await trendRes.json();
     const reg   = await regRes.json();
@@ -2338,7 +2459,7 @@ async function loadOperationalStatus() {
   if (btn) { btn.disabled = true; btn.querySelector('.refresh-icon').textContent = '⟳'; }
 
   try {
-    const res  = await fetch(`${API_BASE}/operational-status`);
+    const res  = await adminFetch(`${API_BASE}/operational-status`);
     const data = await res.json();
     if (!data.success) return;
 
@@ -2471,7 +2592,7 @@ async function loadOperationalStatus() {
 /* ═══════════════════ PORTFOLIO TWIN STAGE 4 ═══════════════════ */
 async function loadTwin4() {
   try {
-    const res  = await fetch(`${API_BASE}/portfolio-twin/stage4`);
+    const res  = await adminFetch(`${API_BASE}/portfolio-twin/stage4`);
     const data = await res.json();
     if (!data.success) return;
     const s4 = data.stage4 || {};
@@ -2624,7 +2745,7 @@ const _STANCE_LABELS = {
 
 async function loadInterfaceState() {
   try {
-    const res  = await fetch(`${API_BASE}/interface-state`);
+    const res  = await adminFetch(`${API_BASE}/interface-state`);
     const data = await res.json();
     if (!data.success) throw new Error(data.error || 'Unbekannter Fehler');
 
@@ -2950,30 +3071,36 @@ function _applyDeepDiveRecommendation(level) {
 }
 
 /* ═══════════════════ INIT ═══════════════════ */
-loadInterfaceState();
-loadSavedCapital();
-loadSystemIntelligence();
-loadOperationalStatus();
-loadSisTrend();
-loadTwin4();
-loadAuditFeed();
-// Deferred: portfolio, wisdom, evolution only loaded when deep-dive level requires it
-// Auto-refresh audit feed every 60 seconds
-setInterval(loadAuditFeed, 60000);
-// Refresh wisdom scores every 5 minutes
-setInterval(loadAgentWisdom, 5 * 60 * 1000);
-// Refresh saved capital every 10 minutes
-setInterval(loadSavedCapital, 10 * 60 * 1000);
-// Refresh interface state every 5 minutes
-setInterval(loadInterfaceState, 5 * 60 * 1000);
-// Refresh system intelligence every 15 minutes
-setInterval(loadSystemIntelligence, 15 * 60 * 1000);
-// Refresh operational status every 15 minutes
-setInterval(loadOperationalStatus, 15 * 60 * 1000);
-// Refresh SIS trend every 15 minutes
-setInterval(loadSisTrend, 15 * 60 * 1000);
-// Refresh Stage 4 every 15 minutes
-setInterval(loadTwin4, 15 * 60 * 1000);
+let _dashboardStarted = false;
+function initDashboard() {
+  if (_dashboardStarted) return;
+  _dashboardStarted = true;
+
+  loadInterfaceState();
+  loadSavedCapital();
+  loadSystemIntelligence();
+  loadOperationalStatus();
+  loadSisTrend();
+  loadTwin4();
+  loadAuditFeed();
+  // Deferred: portfolio, wisdom, evolution only loaded when deep-dive level requires it
+  // Auto-refresh audit feed every 60 seconds
+  setInterval(loadAuditFeed, 60000);
+  // Refresh wisdom scores every 5 minutes
+  setInterval(loadAgentWisdom, 5 * 60 * 1000);
+  // Refresh saved capital every 10 minutes
+  setInterval(loadSavedCapital, 10 * 60 * 1000);
+  // Refresh interface state every 5 minutes
+  setInterval(loadInterfaceState, 5 * 60 * 1000);
+  // Refresh system intelligence every 15 minutes
+  setInterval(loadSystemIntelligence, 15 * 60 * 1000);
+  // Refresh operational status every 15 minutes
+  setInterval(loadOperationalStatus, 15 * 60 * 1000);
+  // Refresh SIS trend every 15 minutes
+  setInterval(loadSisTrend, 15 * 60 * 1000);
+  // Refresh Stage 4 every 15 minutes
+  setInterval(loadTwin4, 15 * 60 * 1000);
+}
 </script>
 </body>
 </html>

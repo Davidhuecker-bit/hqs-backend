@@ -22,6 +22,7 @@ const https = require("https");
 const http  = require("http");
 
 const BASE_URL = (process.argv[2] || process.env.SMOKE_BASE_URL || "http://localhost:3000").replace(/\/$/, "");
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "";
 const DEMO_SNAPSHOT_HARD_STALE_HOURS = Number(process.env.DEMO_SNAPSHOT_HARD_STALE_HOURS || 72);
 
 const REQUEST_TIMEOUT_MS = 10000;
@@ -76,7 +77,11 @@ const CHECKS = [
 function fetch(url) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith("https") ? https : http;
-    const req = mod.get(url, { timeout: REQUEST_TIMEOUT_MS }, (res) => {
+    const options = { timeout: REQUEST_TIMEOUT_MS };
+    if (ADMIN_API_KEY && url.includes("/api/admin")) {
+      options.headers = { "X-Admin-Key": ADMIN_API_KEY };
+    }
+    const req = mod.get(url, options, (res) => {
       let data = "";
       res.on("data", (chunk) => { data += chunk; });
       res.on("end", () => {
