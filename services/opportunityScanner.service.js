@@ -1960,7 +1960,12 @@ function buildOpportunityFromBatchResult(row, tracked = null) {
   const confidence = chainConfidence > 0
     ? chainConfidence
     : calculateConfidence(row, opportunityScore);
-  const robustnessScore = safeNum(historicalContext?.robustness, 0);
+  // When no historical robustness data exists, derive a conservative proxy from the
+  // raw HQS score so that high-quality signals are not all blocked by the AR-0 guard.
+  const rawRobustness = historicalContext?.robustness;
+  const robustnessScore = (rawRobustness !== null && rawRobustness !== undefined)
+    ? safeNum(rawRobustness, 0)
+    : Math.min(0.85, safeNum(row?.hqs_score, 0) / 100);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
@@ -2063,7 +2068,13 @@ function buildFallbackOpportunity(row, tracked = null) {
       ? finalView.narratives
       : [];
   const opportunityScore = calculateOpportunityScore(row);
-  const robustnessScore = safeNum(historicalContext?.robustness, 0);
+  // When no historical robustness data exists, derive a conservative proxy from the
+  // raw HQS score so that high-quality signals are not all blocked by the AR-0 guard.
+  // The proxy is capped at 0.85 (never "full") to reflect the absence of historical validation.
+  const rawRobustness = historicalContext?.robustness;
+  const robustnessScore = (rawRobustness !== null && rawRobustness !== undefined)
+    ? safeNum(rawRobustness, 0)
+    : Math.min(0.85, safeNum(row?.hqs_score, 0) / 100);
 
   return {
     symbol: String(row?.symbol || "").trim().toUpperCase(),
