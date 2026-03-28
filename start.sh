@@ -117,6 +117,11 @@ case "$SERVICE" in
     exec node jobs/uiGuardianStatus.job.js
     ;;
 
+  "Historical Flatfile Backfill"|"historical-flatfile-backfill")
+    echo "[start.sh] Starting job: historical-flatfile-backfill"
+    exec node jobs/historicalFlatfileBackfill.job.js
+    ;;
+
   # ── Python services (OPTIONAL pre-warming – NOT required for pipeline) ──────
   # "Historical Backfill" is a Python job. It cannot run inside this Node-only
   # container. If deployed, it runs as a separate Railway service pointing at
