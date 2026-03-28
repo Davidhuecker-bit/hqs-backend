@@ -125,6 +125,11 @@ const { getServiceDiagnostics } = require("../services/serviceDiagnostics.servic
 const { getLearningDiagnostics } = require("../services/learningDiagnostics.service");
 const { getAdminDemoPortfolio } = require("../services/adminDemoPortfolio.service");
 const { refreshGuardianStatusSummary } = require("../services/guardianStatusSummary.builder");
+const {
+  getActiveReferenceSymbols,
+  enrichReferencePortfolio,
+  upsertReferencePortfolioEntry,
+} = require("../services/adminReferencePortfolio.repository");
 
 const router = express.Router();
 
@@ -3653,6 +3658,72 @@ router.get("/learning-diagnostics", async (_req, res) => {
     return res.json({ success: true, data: diagnostics });
   } catch (error) {
     logger.error("[admin] learning-diagnostics error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/reference-portfolio
+   Canonical admin reference basket – loads the
+   admin_reference_portfolio table and enriches each entry
+   with live backend data (snapshot, HQS score, advanced
+   metrics, news count, latest outcome).
+
+   Response shape:
+     { success, generatedAt, items[], summary{} }
+
+   No dependency on demo/briefing/watchlist tables.
+========================================================= */
+
+router.get("/reference-portfolio", async (_req, res) => {
+  try {
+    const activeEntries = await getActiveReferenceSymbols();
+    if (!activeEntries.length) {
+      return res.json({
+        success: true,
+        generatedAt: new Date().toISOString(),
+        items: [],
+        summary: {
+          totalSymbols: 0,
+          fullyServed: 0,
+          partiallyServed: 0,
+          missingComponents: {},
+          mostMissingComponent: null,
+          lastUpdate: new Date().toISOString(),
+        },
+      });
+    }
+
+    const { items, summary } = await enrichReferencePortfolio(activeEntries);
+    return res.json({
+      success: true,
+      generatedAt: new Date().toISOString(),
+      items,
+      summary,
+    });
+  } catch (error) {
+    logger.error("[admin] reference-portfolio GET error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   PUT /api/admin/reference-portfolio/:symbol
+   Upsert a single entry in the reference portfolio.
+   Body: { name?, position_order?, is_active?, note? }
+========================================================= */
+
+router.put("/reference-portfolio/:symbol", async (req, res) => {
+  const symbol = String(req.params.symbol || "").trim().toUpperCase();
+  if (!symbol) {
+    return res.status(400).json({ success: false, error: "symbol is required" });
+  }
+  try {
+    const { name, position_order, is_active, note } = req.body || {};
+    await upsertReferencePortfolioEntry({ symbol, name, position_order, is_active, note });
+    return res.json({ success: true, symbol });
+  } catch (error) {
+    logger.error("[admin] reference-portfolio PUT error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
