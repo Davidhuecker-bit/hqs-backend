@@ -122,6 +122,7 @@ const { computeGovernanceContext, computeOperatingConsoleContext, computePolicyP
 // HQS 2.1 Block 4: Explainability, Versioning & Event-Awareness meta from factor history
 const { getRecentHqsDataQuality, getRecentHqsSectorMeta, getRecentHqsRegimeMeta, getRecentHqsExplainabilityMeta, getRecentHqsShadowMeta } = require("../services/factorHistory.repository");
 const { getServiceDiagnostics } = require("../services/serviceDiagnostics.service");
+const { getLearningDiagnostics } = require("../services/learningDiagnostics.service");
 
 const router = express.Router();
 
@@ -3602,6 +3603,22 @@ router.get("/service-diagnostics", async (_req, res) => {
     return res.json({ success: true, ...report });
   } catch (error) {
     logger.error("Admin service-diagnostics route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/learning-diagnostics
+   Diagnose-/Status-Block für die Learning-Schicht:
+   feature_history, discovery_labels, outcome_tracking
+========================================================= */
+
+router.get("/learning-diagnostics", async (_req, res) => {
+  try {
+    const diagnostics = await getLearningDiagnostics();
+    return res.json({ success: true, data: diagnostics });
+  } catch (error) {
+    logger.error("[admin] learning-diagnostics error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
