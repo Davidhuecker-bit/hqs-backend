@@ -89,6 +89,7 @@ const {
 const { collectSocialSignals } = require("./socialScanner.service");
 const { getWorldState, classifyWorldStateAge } = require("./worldState.service");
 const { buildMaturityProfile } = require("./maturityProfile.service");
+const { writeUiSummary } = require("./uiSummary.repository");
 
 const logger = require("../utils/logger");
 const { getSharedPool } = require("../config/database");
@@ -1946,6 +1947,15 @@ async function buildMarketSnapshot() {
       skippedCount: 0,
     }),
   ]);
+
+  // Persist maturitySummary so the admin control-center engines can read it
+  // without re-computing per-symbol maturity profiles.
+  // Fire-and-forget: persistence failure is non-critical and must never block
+  // the snapshot pipeline; the admin stack falls back to original hard messages
+  // when no maturitySummary is available.
+  writeUiSummary("maturity_summary", summary.maturitySummary).catch((err) => {
+    logger.warn("maturitySummary persistence failed", { message: err?.message });
+  });
 
   return { processedCount: summary.snapshotsSaved };
 

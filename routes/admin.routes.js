@@ -125,6 +125,7 @@ const { getServiceDiagnostics } = require("../services/serviceDiagnostics.servic
 const { getLearningDiagnostics } = require("../services/learningDiagnostics.service");
 const { getAdminDemoPortfolio } = require("../services/adminDemoPortfolio.service");
 const { refreshGuardianStatusSummary } = require("../services/guardianStatusSummary.builder");
+const { readUiSummary } = require("../services/uiSummary.repository");
 const {
   getActiveReferenceSymbols,
   enrichReferencePortfolio,
@@ -292,6 +293,16 @@ async function _runBuildAdminStack(options = {}) {
     safeLoadSnapshot("30 days"),
   ]);
 
+  // Load the latest maturitySummary persisted by buildMarketSnapshot().
+  // Never throws – returns null if unavailable (no maturity data yet).
+  let maturitySummary = null;
+  try {
+    const stored = await readUiSummary("maturity_summary");
+    maturitySummary = stored?.payload || null;
+  } catch (err) {
+    logger.warn("buildAdminStack: maturitySummary load failed", { message: err.message });
+  }
+
   const trends = safeEngine("buildAdminTrends", () => buildAdminTrends({
     current: currentState,
     previous24h: previous24h || currentState,
@@ -305,6 +316,7 @@ async function _runBuildAdminStack(options = {}) {
     validation,
     tuning,
     trends,
+    maturitySummary,
   }));
 
   const priorities = safeEngine("buildAdminPriorities", () => buildAdminPriorities({
@@ -313,6 +325,7 @@ async function _runBuildAdminStack(options = {}) {
     validation,
     tuning,
     alerts,
+    maturitySummary,
   }));
 
   const targets = safeEngine("buildAdminTargets", () => buildAdminTargets({
@@ -354,6 +367,7 @@ async function _runBuildAdminStack(options = {}) {
     targets,
     causality,
     release,
+    maturitySummary,
   }));
 
   if (persistSnapshot) {

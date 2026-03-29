@@ -4,6 +4,8 @@
 // Baut ein Frühwarnsystem für dein Kontrollzentrum.
 // Erkennt kritische Zustände, Beobachtungspunkte und positive Signale.
 
+const { classifyMaturityPhase } = require("./maturityClassification");
+
 function safeNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -42,6 +44,7 @@ function buildAdminAlerts({
   validation = {},
   tuning = {},
   trends = {},
+  maturitySummary = null,
 } = {}) {
   const alerts = [];
 
@@ -98,14 +101,49 @@ function buildAdminAlerts({
   }
 
   if (advancedCoverage < 50) {
-    pushAlert(alerts, {
-      key: "advanced_metrics_low",
-      severity: "high",
-      score: 95,
-      title: "Advanced Metrics zu schwach",
-      detail: "Die Weiterverarbeitung der Snapshots reicht noch nicht für starke Skalierung und tiefes Lernen.",
-      action: "Advanced-Metrics-Pipeline priorisieren.",
-    });
+    const mc = classifyMaturityPhase(maturitySummary);
+
+    if (mc.phase === "hard_problems") {
+      // Genuine data problem – keep hard blocker
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "high",
+        score: 95,
+        title: "Advanced Metrics: echte Datenprobleme erkannt",
+        detail: `${mc.hardProblems} von ${mc.total} Symbolen zeigen harte Datenlücken (no_history, stale_snapshot, Fetch-Fehler). Das begrenzt Skalierung und Lernen.`,
+        action: "Datenpipeline und Provider-Anbindung prüfen.",
+      });
+    } else if (mc.phase === "early_phase") {
+      // Mostly seed/early – natural build-up phase
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "medium",
+        score: 72,
+        title: "Datenbasis noch im Aufbau",
+        detail: `${mc.earlyPhaseCount} von ${mc.total} Symbolen sind noch in früher Aufbauphase (seed/early). Frühe Einschätzungen vorhanden, aber noch begrenzt.`,
+        action: "Datenbasis weiter reifen lassen – kein akuter Handlungsbedarf.",
+      });
+    } else if (mc.phase === "developing") {
+      // Mix with developing symbols – growing base
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "medium",
+        score: 70,
+        title: "Datenbasis wächst, aber noch nicht voll belastbar",
+        detail: `${mc.devCount} Symbole sind bereits belastbarer (developing), ${mc.matCount} stabil (mature). Noch ${mc.earlyPhaseCount} in früher Phase.`,
+        action: "System weiter beobachten – Datenlage verbessert sich.",
+      });
+    } else {
+      // Fallback: no maturitySummary or unclear situation
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "high",
+        score: 95,
+        title: "Advanced Metrics zu schwach",
+        detail: "Die Weiterverarbeitung der Snapshots reicht noch nicht für starke Skalierung und tiefes Lernen.",
+        action: "Advanced-Metrics-Pipeline priorisieren.",
+      });
+    }
   }
 
   if (outcomeCoverage < 45 || outcomeCompletion < 35) {

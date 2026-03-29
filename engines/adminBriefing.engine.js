@@ -12,6 +12,7 @@ const {
   resolveScalingStatusText,
   resolveExpansionStatusText,
 } = require("./adminRecommendations.engine");
+const { classifyMaturityPhase } = require("./maturityClassification");
 
 function safeNum(value, fallback = 0) {
   const n = Number(value);
@@ -33,6 +34,7 @@ function buildAdminBriefing({
   targets = {},
   causality = {},
   release = {},
+  maturitySummary = null,
 } = {}) {
   const systemHealth = safeNum(diagnostics?.health?.systemHealthScore, 0);
   const systemBand = diagnostics?.health?.systemHealthBand || "warning";
@@ -151,10 +153,24 @@ function buildAdminBriefing({
     },
   };
 
+  // ── Maturity context for narratives ──────────────────────────────────────
+  let maturityStatusLine = null;
+  const mc = classifyMaturityPhase(maturitySummary);
+  if (mc.phase === "hard_problems") {
+    maturityStatusLine = `Datenreife: ${mc.hardProblems} von ${mc.total} Symbolen zeigen echte Datenprobleme.`;
+  } else if (mc.phase === "early_phase") {
+    maturityStatusLine = `Datenreife: Viele Werte noch im Aufbau (${mc.earlyPhaseCount} von ${mc.total} in Frühphase). Datenbasis wächst noch.`;
+  } else if (mc.phase === "developing") {
+    maturityStatusLine = `Datenreife: Nur ein Teil der Datenbasis ist schon stabil (${mc.matCount} mature, ${mc.devCount} developing von ${mc.total}).`;
+  } else if (mc.total > 0) {
+    maturityStatusLine = `Datenreife: ${mc.total} Symbole – ${mc.matCount} stabil, ${mc.devCount} wachsend, ${mc.earlyPhaseCount} in Frühphase.`;
+  }
+
   const adminText = [
     overallStatus,
     `Der aktuelle Hauptengpass ist: ${topBottleneck}.`,
     trustStatus,
+    maturityStatusLine,
     scaleStatus,
     expansionStatus,
     topChain ? `Die wichtigste Ursache-Wirkung-Kette lautet: ${topChain.title}.` : null,
@@ -168,6 +184,7 @@ function buildAdminBriefing({
     `System Health liegt bei ${systemHealth}.`,
     `Calculation Trust liegt bei ${calcTrust}.`,
     `Größter Engpass: ${topBottleneck}.`,
+    maturityStatusLine,
     scale450?.allowed
       ? "450 Aktien sind aktuell testbar."
       : "450 Aktien sind aktuell noch nicht freigegeben.",
@@ -179,7 +196,9 @@ function buildAdminBriefing({
     chinaRelease?.allowed
       ? "China ist als nächster Ausbau freigegeben."
       : "China ist aktuell noch nicht freigegeben.",
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const weeklyBrief = [
     overallStatus,
@@ -203,6 +222,7 @@ function buildAdminBriefing({
       trustStatus,
       scaleStatus,
       expansionStatus,
+      maturityStatus: maturityStatusLine,
     },
 
     biggestRisk,
