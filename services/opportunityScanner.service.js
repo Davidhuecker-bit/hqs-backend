@@ -57,6 +57,7 @@ const { deriveOpportunityGovernance, computeGovernanceContext, computePolicyPlan
 
 const { getSharedPool } = require("../config/database");
 const pool = getSharedPool();
+const { getOrBuildSymbolSummary } = require("./symbolSummary.builder");
 /* =========================================================
    IN-MEMORY PREVIEW STORES
 ========================================================= */
@@ -2163,6 +2164,79 @@ async function hydrateOpportunityRuntimeState() {
 }
 
 /* =========================================================
+   SYMBOL SUMMARY ENRICHMENT
+   Batch-fetch symbol_summary for a list of symbols. Returns
+   a Map<symbol, summary|null>. Errors per symbol are caught
+   so a single failed fetch never blocks the rest.
+========================================================= */
+
+async function buildOpportunitySymbolSummaryMap(symbols = []) {
+  const unique = [...new Set(symbols.filter(Boolean))];
+  const entries = await Promise.all(
+    unique.map(async (symbol) => {
+      try {
+        const summary = await getOrBuildSymbolSummary(symbol);
+        return [symbol, summary];
+      } catch (err) {
+        logger.warn("[opportunityScanner] getOrBuildSymbolSummary failed", {
+          symbol,
+          message: err.message,
+        });
+        return [symbol, null];
+      }
+    })
+  );
+  return new Map(entries);
+}
+
+/**
+ * Merges general symbol fields from symbol_summary into an opportunity object.
+ * Discovery-/opportunity-specific fields (opportunityScore, type, confidence,
+ * portfolioContext, governance layers, etc.) remain untouched.
+ *
+ * Priority: symbol_summary (primary) → existing opportunity value (fallback).
+ */
+function enrichOpportunityWithSymbolSummary(opp, summary) {
+  if (!summary) {
+    return { ...opp, symbolSummaryStatus: "missing" };
+  }
+  return {
+    ...opp,
+    // General symbol identification
+    name: summary.name || opp.name || null,
+    // Price / market data
+    price: summary.price ?? opp.price ?? null,
+    change: summary.change ?? opp.change ?? null,
+    changesPercentage: summary.changesPercentage ?? opp.changesPercentage ?? null,
+    currency: summary.currency || opp.currency || null,
+    // Core quality metric – prefer row-level (already HQS from DB), supplement if null/undefined
+    hqsScore: opp.hqsScore ?? summary.hqsScore ?? 0,
+    // Analysis layer – prefer chain-derived values already in opp, fill gaps from symbol_summary
+    rating: opp.finalRating || summary.rating || null,
+    decision: opp.finalDecision || summary.decision || null,
+    finalConfidence: opp.finalConfidence ?? summary.finalConfidence ?? null,
+    // Market state – prefer row-level, supplement from symbol_summary
+    regime: opp.regime ?? summary.regime ?? null,
+    trend: opp.trend ?? summary.trend ?? null,
+    volatility: opp.volatility ?? summary.volatility ?? null,
+    // Why interesting – prefer chain-derived list (if non-empty), fall back to symbol_summary
+    whyInteresting: (Array.isArray(opp.whyInteresting) && opp.whyInteresting.length > 0)
+      ? opp.whyInteresting
+      : (Array.isArray(summary.whyInteresting) ? summary.whyInteresting : []),
+    // Maturity profile (not previously in opportunity output)
+    maturityProfile: summary.maturityProfile ?? null,
+    maturityLevel: summary.maturityLevel ?? null,
+    maturityScore: summary.maturityScore ?? null,
+    // News summary (structural news block – separate from operational newsContext)
+    newsSummary: Array.isArray(summary.newsSummary) ? summary.newsSummary : [],
+    // Summary-level data quality metadata
+    symbolSummaryStatus: summary.status || "building",
+    missingComponents: Array.isArray(summary.missingComponents) ? summary.missingComponents : [],
+    symbolSummaryUpdatedAt: summary.updatedAt || null,
+  };
+}
+
+/* =========================================================
    GUARDIAN PROTOCOL
 ========================================================= */
 
@@ -2989,6 +3063,23 @@ async function getTopOpportunities(arg = 10) {
 
   const out = allocatedWithVp.slice(0, limit);
 
+  // ── symbol_summary enrichment ────────────────────────────────────────────
+  // Batch-fetch canonical symbol_summary for the final output slice.
+  // General symbol fields (name, price, change, changesPercentage, maturity,
+  // newsSummary, status) are pulled from symbol_summary as the primary source.
+  // Discovery-/opportunity-specific fields remain untouched.
+  let summaryMap = new Map();
+  try {
+    summaryMap = await buildOpportunitySymbolSummaryMap(out.map((o) => o.symbol));
+  } catch (summaryErr) {
+    logger.warn("getTopOpportunities: symbol_summary batch load failed – returning without enrichment", {
+      message: summaryErr.message,
+    });
+  }
+  const enrichedOut = out.map((opp) =>
+    enrichOpportunityWithSymbolSummary(opp, summaryMap.get(opp.symbol) || null)
+  );
+
   logger.info("getTopOpportunities", {
     limit,
     minHqs,
@@ -3012,7 +3103,7 @@ async function getTopOpportunities(arg = 10) {
     returned: out.length,
   });
 
-  return out;
+  return enrichedOut;
 }
 
 module.exports = {
