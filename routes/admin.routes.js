@@ -238,10 +238,22 @@ async function _runBuildAdminStack(options = {}) {
   const { persistSnapshot = false } = options;
   const t0 = Date.now();
 
+  // Load insights and maturitySummary in parallel – both are DB reads
+  // that are independent of each other.  maturitySummary is needed already
+  // by buildAdminDiagnostics so that detectBottlenecks() can produce
+  // maturity-aware bottleneck titles instead of hard-coded fallbacks.
   let insights;
-  try {
-    insights = await getAdminInsights();
-  } catch (err) {
+  let maturitySummary = null;
+
+  const [insightsResult, maturityStored] = await Promise.allSettled([
+    getAdminInsights(),
+    readUiSummary("maturity_summary"),
+  ]);
+
+  if (insightsResult.status === "fulfilled") {
+    insights = insightsResult.value;
+  } else {
+    const err = insightsResult.reason;
     logger.warn("buildAdminStack: getAdminInsights failed", { message: err.message });
     insights = {
       generatedAt: new Date().toISOString(),
@@ -258,6 +270,12 @@ async function _runBuildAdminStack(options = {}) {
     };
   }
 
+  if (maturityStored.status === "fulfilled") {
+    maturitySummary = maturityStored.value?.payload || null;
+  } else {
+    logger.warn("buildAdminStack: maturitySummary load failed", { message: maturityStored.reason?.message });
+  }
+
   function safeEngine(name, fn, fallback = {}) {
     try {
       return fn();
@@ -267,7 +285,7 @@ async function _runBuildAdminStack(options = {}) {
     }
   }
 
-  const diagnostics = safeEngine("buildAdminDiagnostics", () => buildAdminDiagnostics(insights));
+  const diagnostics = safeEngine("buildAdminDiagnostics", () => buildAdminDiagnostics(insights, maturitySummary));
   const validation = safeEngine("buildAdminValidation", () => buildAdminValidation(insights, diagnostics));
   const tuning = safeEngine("buildAdminTuning", () => buildAdminTuning(insights, diagnostics, validation));
 
@@ -292,16 +310,6 @@ async function _runBuildAdminStack(options = {}) {
     safeLoadSnapshot("7 days"),
     safeLoadSnapshot("30 days"),
   ]);
-
-  // Load the latest maturitySummary persisted by buildMarketSnapshot().
-  // Never throws – returns null if unavailable (no maturity data yet).
-  let maturitySummary = null;
-  try {
-    const stored = await readUiSummary("maturity_summary");
-    maturitySummary = stored?.payload || null;
-  } catch (err) {
-    logger.warn("buildAdminStack: maturitySummary load failed", { message: err.message });
-  }
 
   const trends = safeEngine("buildAdminTrends", () => buildAdminTrends({
     current: currentState,

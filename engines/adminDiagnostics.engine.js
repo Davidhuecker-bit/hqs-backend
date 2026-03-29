@@ -4,6 +4,8 @@
 // Baut aus den Rohdaten von adminInsights.service.js
 // eine klare Systemdiagnose für dein Admin-Kontrollzentrum.
 
+const { classifyMaturityPhase } = require("./maturityClassification");
+
 function safeNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -108,7 +110,7 @@ function buildHealthScores(insights) {
   };
 }
 
-function detectBottlenecks(insights) {
+function detectBottlenecks(insights, maturitySummary = null) {
   const issues = [];
 
   const snapshotUniverseCoverage = safeNum(insights?.coverage?.snapshotUniverseCoverage, 0);
@@ -127,13 +129,42 @@ function detectBottlenecks(insights) {
   }
 
   if (advancedCoverageVsSnapshots < 50) {
-    issues.push({
-      key: "advanced_metrics",
-      severity: "high",
-      score: 92,
-      title: "Advanced Metrics zu schwach",
-      detail: "Zu wenige Snapshot-Daten werden in Advanced Metrics weiterverarbeitet.",
-    });
+    const mc = classifyMaturityPhase(maturitySummary);
+
+    if (mc.phase === "hard_problems") {
+      issues.push({
+        key: "advanced_metrics",
+        severity: "high",
+        score: 92,
+        title: "Advanced Metrics: echte Datenprobleme erkannt",
+        detail: `${mc.hardProblems} von ${mc.total} Symbolen zeigen harte Datenlücken (no_history, stale_snapshot, Fetch-Fehler). Datenpipeline prüfen.`,
+      });
+    } else if (mc.phase === "early_phase") {
+      issues.push({
+        key: "advanced_metrics",
+        severity: "medium",
+        score: 72,
+        title: "Datenbasis noch im Aufbau",
+        detail: `${mc.earlyPhaseCount} von ${mc.total} Symbolen sind noch in früher Aufbauphase (seed/early). Datenbasis wächst – keine akute Pipeline-Störung.`,
+      });
+    } else if (mc.phase === "developing") {
+      issues.push({
+        key: "advanced_metrics",
+        severity: "medium",
+        score: 70,
+        title: "Datenbasis wächst, aber noch nicht voll belastbar",
+        detail: `${mc.devCount} Symbole bereits belastbarer (developing), ${mc.matCount} stabil (mature). Weiter beobachten.`,
+      });
+    } else {
+      // Fallback: kein maturitySummary oder unklare Situation
+      issues.push({
+        key: "advanced_metrics",
+        severity: "high",
+        score: 92,
+        title: "Advanced Metrics zu schwach",
+        detail: "Zu wenige Snapshot-Daten werden in Advanced Metrics weiterverarbeitet.",
+      });
+    }
   }
 
   if (outcomeCoverageVsSnapshots < 45) {
@@ -357,9 +388,9 @@ function buildWarningsAndOpportunities(insights, healthScores, bottlenecks, scal
   };
 }
 
-function buildAdminDiagnostics(insights = {}) {
+function buildAdminDiagnostics(insights = {}, maturitySummary = null) {
   const health = buildHealthScores(insights);
-  const bottlenecks = detectBottlenecks(insights);
+  const bottlenecks = detectBottlenecks(insights, maturitySummary);
   const scaling = buildScalingReadiness(insights, health);
   const expansion = buildExpansionReadiness(insights, health);
   const signals = buildWarningsAndOpportunities(
