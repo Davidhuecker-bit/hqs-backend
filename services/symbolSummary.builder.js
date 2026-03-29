@@ -16,10 +16,26 @@
  *   trend, volatility, whyInteresting, maturityProfile (maturityLevel,
  *   maturityScore), newsSummary, status, missingComponents, updatedAt.
  *
+ * Base-field source priority
+ * ──────────────────────────
+ *   name              : market_snapshots.name (N/A) → universe_symbols.name
+ *                       → entity_map.company_name → null
+ *   price             : market_snapshots.price → null
+ *   change            : price − previousClose (direct) →
+ *                       previousClose × changesPercentage / 100 → null
+ *   changesPercentage : market_snapshots.changes_percentage → null
+ *   currency          : market_snapshots.currency →
+ *                       universe_symbols.currency → null
+ *   snapshotTimestamp : market_snapshots.created_at → null
+ *
  * Status logic:
- *   ready    – snapshot + hqsScore both present
- *   partial  – snapshot present but ≥1 component missing
- *   building – no snapshot yet (symbol known but pipeline hasn't run)
+ *   ready    – snapshot present with non-null price AND hqsScore present
+ *   partial  – snapshot + price present but hqsScore or other core data missing
+ *   building – no snapshot yet, OR snapshot exists but price is null
+ *
+ * missingComponents lists all absent pieces; core ones tracked explicitly:
+ *   "snapshot" | "price" | "hqsScore" | "advancedMetrics" |
+ *   "outcomeTracking" | "news" | "maturityProfile"
  *
  * Read path  : readSymbolSummary(symbol)          → single DB read
  * Build path : refreshSymbolSummary(symbol)       → fetch + write ui_summaries
@@ -80,6 +96,10 @@ function _safeStr(v, fallback = null) {
 /**
  * Load the latest market snapshot for a single symbol directly from DB.
  * Returns null if missing or on error.
+ *
+ * NOTE: market_snapshots has no `name` column; name resolution is done
+ * separately via _loadName() which queries universe_symbols / entity_map.
+ *
  * @param {string} symbol
  * @returns {Promise<object|null>}
  */
@@ -88,7 +108,7 @@ async function _loadSnapshot(symbol) {
     const res = await pool.query(
       `
       SELECT
-        symbol, name, price, price_usd, open, high, low, volume,
+        symbol, price, price_usd, open, high, low, volume,
         source, currency, fx_rate, changes_percentage, previous_close,
         created_at AS snapshot_ts
       FROM market_snapshots
@@ -100,7 +120,8 @@ async function _loadSnapshot(symbol) {
     );
     if (!res.rows.length) return null;
     const row = res.rows[0];
-    const currency = _safeStr(row.currency, "USD").toUpperCase();
+    // Currency: preserve null so _buildPayload can apply the universe fallback.
+    const currency = _safeStr(row.currency);
     return {
       symbol:            row.symbol,
       price:             _safeNum(row.price),
@@ -149,17 +170,25 @@ async function _loadHqs(symbol) {
 }
 
 /**
- * Load the company name for a symbol from universe_symbols (primary)
- * with entity_map as fallback.
- * Returns null if not found or on error.
+ * Load company name and currency for a symbol.
+ *
+ * Priority:
+ *   1. universe_symbols.name / universe_symbols.currency  (canonical active source)
+ *   2. entity_map.company_name                            (secondary name fallback)
+ *   3. null
+ *
+ * Returns { name: string|null, currency: string|null }.
+ *
  * @param {string} symbol
- * @returns {Promise<string|null>}
+ * @returns {Promise<{name: string|null, currency: string|null}>}
  */
 async function _loadName(symbol) {
   try {
     const res = await pool.query(
       `
-      SELECT COALESCE(u.name, e.company_name) AS resolved_name
+      SELECT
+        COALESCE(u.name, e.company_name) AS resolved_name,
+        u.currency                       AS currency
       FROM universe_symbols u
       FULL OUTER JOIN entity_map e ON e.symbol = u.symbol
       WHERE COALESCE(u.symbol, e.symbol) = $1
@@ -167,22 +196,30 @@ async function _loadName(symbol) {
       `,
       [symbol]
     );
-    if (res.rows.length && res.rows[0].resolved_name) {
-      return _safeStr(res.rows[0].resolved_name);
+    if (res.rows.length) {
+      return {
+        name:     _safeStr(res.rows[0].resolved_name),
+        currency: _safeStr(res.rows[0].currency),
+      };
     }
   } catch (_) {
-    // Fallback: try universe only
+    // Fallback: try universe_symbols only
     try {
       const r = await pool.query(
-        `SELECT name FROM universe_symbols WHERE symbol = $1 LIMIT 1`,
+        `SELECT name, currency FROM universe_symbols WHERE symbol = $1 LIMIT 1`,
         [symbol]
       );
-      if (r.rows.length) return _safeStr(r.rows[0].name);
+      if (r.rows.length) {
+        return {
+          name:     _safeStr(r.rows[0].name),
+          currency: _safeStr(r.rows[0].currency),
+        };
+      }
     } catch (err2) {
       logger.warn("[symbolSummary] _loadName failed", { symbol, message: err2.message });
     }
   }
-  return null;
+  return { name: null, currency: null };
 }
 
 /* =========================================================
@@ -193,12 +230,21 @@ async function _loadName(symbol) {
  * Assemble the canonical symbol summary payload from all available sources.
  * Defensive: every source is optional; no null/NaN leaks.
  *
+ * Base-field source priority (see file-level comment for full details):
+ *   name              → universe_symbols / entity_map
+ *   price             → market_snapshots.price
+ *   change            → price − previousClose  (direct, primary)
+ *                       OR previousClose × changesPercentage / 100 (fallback)
+ *   changesPercentage → market_snapshots.changes_percentage
+ *   currency          → market_snapshots.currency → universe_symbols.currency
+ *   snapshotTimestamp → market_snapshots.created_at
+ *
  * @param {string} symbol
  * @returns {Promise<object>}   Full payload ready for writeUiSummary.
  */
 async function _buildPayload(symbol) {
   // Fetch all sources in parallel, each catches its own errors.
-  const [snapshot, hqs, adv, outcomeMap, newsMap, name] = await Promise.all([
+  const [snapshot, hqs, adv, outcomeMap, newsMap, nameMeta] = await Promise.all([
     _loadSnapshot(symbol),
     _loadHqs(symbol),
     loadAdvancedMetrics(symbol).catch((err) => {
@@ -213,12 +259,27 @@ async function _buildPayload(symbol) {
       logger.warn("[symbolSummary] loadLatestMarketNewsBySymbols failed", { symbol, message: err.message });
       return {};
     }),
-    _loadName(symbol),
+    _loadName(symbol),  // returns { name, currency }
   ]);
 
-  const tracked  = outcomeMap?.[symbol] ?? null;
+  const tracked   = outcomeMap?.[symbol] ?? null;
   const finalView = tracked?.payload?.finalView ?? null;
   const matProf   = tracked?.payload?.maturityProfile ?? null;
+
+  // ── name / currency resolution ────────────────────────────────────────────
+  // name:     universe_symbols / entity_map (market_snapshots has no name column)
+  // currency: market_snapshots.currency → universe_symbols.currency → null
+  const resolvedName     = nameMeta?.name ?? null;
+  const universeCurrency = nameMeta?.currency ?? null;
+  const resolvedCurrency = snapshot?.currency ?? universeCurrency ?? null;
+
+  // ── change: prefer direct price arithmetic over derived formula ───────────
+  let resolvedChange = null;
+  if (snapshot?.price != null && snapshot?.previousClose != null) {
+    resolvedChange = _safeNum(snapshot.price - snapshot.previousClose);
+  } else if (snapshot?.previousClose != null && snapshot?.changesPercentage != null) {
+    resolvedChange = _safeNum(snapshot.previousClose * snapshot.changesPercentage / 100);
+  }
 
   // ── news summary ──────────────────────────────────────────────────────────
   const newsItems = Array.isArray(newsMap?.[symbol]) ? newsMap[symbol] : [];
@@ -230,8 +291,18 @@ async function _buildPayload(symbol) {
   }));
 
   // ── determine missing components ─────────────────────────────────────────
+  // Core (determine status tier):
+  //   "snapshot" – no market data at all
+  //   "price"    – snapshot row exists but price column is null
+  //   "hqsScore" – no HQS score
+  // Secondary (informational, don't block `ready`):
+  //   "advancedMetrics" | "outcomeTracking" | "news" | "maturityProfile"
   const missingComponents = [];
-  if (!snapshot)              missingComponents.push("snapshot");
+  if (!snapshot) {
+    missingComponents.push("snapshot");
+  } else if (snapshot.price == null) {
+    missingComponents.push("price");
+  }
   if (!hqs?.hqsScore)         missingComponents.push("hqsScore");
   if (!adv)                   missingComponents.push("advancedMetrics");
   if (!tracked)               missingComponents.push("outcomeTracking");
@@ -239,10 +310,13 @@ async function _buildPayload(symbol) {
   if (!matProf)               missingComponents.push("maturityProfile");
 
   // ── status ────────────────────────────────────────────────────────────────
+  // building – no usable market data (no snapshot, or snapshot with null price)
+  // ready    – snapshot with non-null price AND hqsScore present
+  // partial  – snapshot + price present, but hqsScore or other core data missing
   let status;
-  if (!snapshot) {
+  if (!snapshot || snapshot.price == null) {
     status = "building";
-  } else if (missingComponents.length === 0) {
+  } else if (hqs?.hqsScore != null) {
     status = "ready";
   } else {
     status = "partial";
@@ -251,15 +325,13 @@ async function _buildPayload(symbol) {
   // ── assemble final payload ────────────────────────────────────────────────
   return {
     symbol,
-    name:              name ?? null,
+    name:              resolvedName,
 
     // price layer (from snapshot)
     price:             snapshot?.price ?? null,
-    change:            snapshot?.previousClose != null && snapshot?.changesPercentage != null
-                         ? _safeNum(snapshot.previousClose * snapshot.changesPercentage / 100)
-                         : null,
+    change:            resolvedChange,
     changesPercentage: snapshot?.changesPercentage ?? null,
-    currency:          snapshot?.currency ?? null,
+    currency:          resolvedCurrency,
     source:            snapshot?.source ?? null,
     snapshotTimestamp: snapshot?.snapshotTimestamp ?? null,
 
