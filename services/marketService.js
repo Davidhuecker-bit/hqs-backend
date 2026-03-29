@@ -384,6 +384,84 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+/* =========================================================
+   MATURITY-AWARE TRUST MAPPING
+   Maps maturityProfile.maturityLevel to a technical trust
+   classification for downstream decision logic.
+========================================================= */
+
+const MATURITY_TRUST_MAP = {
+  seed:       "early_visibility",
+  early:      "building_confidence",
+  developing: "usable_with_caution",
+  mature:     "fully_reliable",
+};
+
+// Weights used when blending maturity-adjusted historical coverage into system health.
+// Developing symbols count at 60%, early at 25%, seed at 0% (same as raw ≥30-day gate).
+const MATURITY_COVERAGE_WEIGHT_DEVELOPING = 0.6;
+const MATURITY_COVERAGE_WEIGHT_EARLY      = 0.25;
+// Blend ratio: 60% maturity-adjusted, 40% raw coverage
+const MATURITY_BLEND_ADJUSTED = 0.6;
+const MATURITY_BLEND_RAW      = 0.4;
+// Threshold for considering the batch as having genuine data problems
+const HARD_DATA_PROBLEM_RATIO = 0.5;
+
+function mapMaturityToTrust(maturityLevel) {
+  return MATURITY_TRUST_MAP[maturityLevel] || "early_visibility";
+}
+
+/**
+ * Determines whether a maturity level represents a hard data problem
+ * (no data, stale, major gaps, pipeline errors) vs. a natural early-stage
+ * situation that should NOT be treated as a failure.
+ */
+function isHardDataProblem(maturityProfile) {
+  if (!maturityProfile) return true;
+  const warnings = maturityProfile.warnings || [];
+  // Hard problems: no history at all, stale snapshots, or very low overall score with gaps
+  return (
+    warnings.includes("no_history") ||
+    warnings.includes("stale_snapshot") ||
+    (maturityProfile.maturityScore <= 15 && warnings.includes("history_gaps"))
+  );
+}
+
+function createEmptyMaturitySummary() {
+  return {
+    seed: 0,
+    early: 0,
+    developing: 0,
+    mature: 0,
+    total: 0,
+    trustDistribution: {
+      early_visibility: 0,
+      building_confidence: 0,
+      usable_with_caution: 0,
+      fully_reliable: 0,
+    },
+    _scoreSum: 0,
+    avgMaturityScore: 0,
+    hardDataProblems: 0,
+  };
+}
+
+function updateMaturitySummary(matSummary, maturityProfile) {
+  if (!maturityProfile) return;
+  const level = maturityProfile.maturityLevel || "seed";
+  const trust = mapMaturityToTrust(level);
+
+  matSummary.total++;
+  if (matSummary[level] !== undefined) matSummary[level]++;
+  if (matSummary.trustDistribution[trust] !== undefined) matSummary.trustDistribution[trust]++;
+
+  // Accumulate sum for averaging at the end (avoids precision drift)
+  matSummary._scoreSum += safeNum(maturityProfile.maturityScore);
+  matSummary.avgMaturityScore = Math.round(matSummary._scoreSum / matSummary.total);
+
+  if (isHardDataProblem(maturityProfile)) matSummary.hardDataProblems++;
+}
+
 async function ensureRuntimePreviewStoresLoaded() {
   if (runtimePreviewStoresLoaded) return;
 
@@ -481,6 +559,51 @@ function ensureSourceBucket(summary, source) {
   return summary.bySource[key];
 }
 
+/**
+ * Build a maturity-aware error/status message for the advancedMetrics pipeline stage.
+ * Replaces the previous hard "X symbols had insufficient data" messaging with nuanced
+ * language that differentiates between natural early-stage symbols and real problems.
+ */
+function buildAdvancedMetricsStageMessage(summary) {
+  const quotesLoaded = safeNum(summary?.quotesLoaded, 0);
+  const historicalOk = safeNum(summary?.historicalOk, 0);
+  const historicalInsufficient = safeNum(summary?.historicalInsufficient, 0);
+  const historicalFetchErrors = safeNum(summary?.historicalFetchErrors, 0);
+  const fallbacks = safeNum(summary?.advancedMetricsFallbacks, 0);
+  const matSummary = summary?.maturitySummary;
+
+  // Real fetch errors are always reported
+  if (historicalFetchErrors > 0) {
+    return `${historicalFetchErrors} Fetch-Fehler (Fallbacks: ${fallbacks}). ` +
+      (matSummary && matSummary.total > 0
+        ? `Maturity: ${matSummary.mature} mature, ${matSummary.developing} developing, ${matSummary.early} early, ${matSummary.seed} seed.`
+        : "");
+  }
+
+  // No symbols had ≥30 days, but we have quotes loaded
+  if (historicalOk === 0 && quotesLoaded > 0) {
+    if (matSummary && matSummary.total > 0 && matSummary.hardDataProblems < matSummary.total * HARD_DATA_PROBLEM_RATIO) {
+      // Most symbols are just early-stage, not hard failures
+      return `0/${quotesLoaded} Symbole erreichen ≥30 Tage Historie – Datenbasis im Aufbau (${matSummary.early + matSummary.developing} Symbole bauen Vertrauen auf). Keine kritischen Fehler.`;
+    }
+    // Genuine data problem
+    return `0/${quotesLoaded} Symbole haben ausreichende Historie (≥30 Tage). MASSIVE_API_KEY und prices_daily-Tabelle prüfen.`;
+  }
+
+  // Some symbols insufficient but not all — provide context
+  if (historicalInsufficient > 0 && matSummary && matSummary.total > 0) {
+    const earlyStage = matSummary.seed + matSummary.early;
+    if (earlyStage > 0 && matSummary.hardDataProblems === 0) {
+      return `${historicalInsufficient} Symbole noch unter 30 Tage – frühe Datenlage, Aufbau läuft. ${historicalOk} Symbole voll nutzbar.`;
+    }
+    if (matSummary.hardDataProblems > 0) {
+      return `${historicalInsufficient} Symbole unter 30 Tage (davon ${matSummary.hardDataProblems} mit echten Datenproblemen). ${historicalOk} voll nutzbar.`;
+    }
+  }
+
+  return null;
+}
+
 function buildSystemHealth(summary) {
   const symbolsTotal = safeNum(summary?.symbolsTotal, 0);
   const normalizedOk = safeNum(summary?.normalizedOk, 0);
@@ -491,11 +614,30 @@ function buildSystemHealth(summary) {
   const skipped = safeNum(summary?.skipped, 0);
 
   const successRate = pct(normalizedOk, symbolsTotal);
-  const historicalCoverage = pct(historicalOk, normalizedOk || symbolsTotal);
+  const rawHistoricalCoverage = pct(historicalOk, normalizedOk || symbolsTotal);
   const trackingCoverage = pct(outcomeTracked, snapshotsSaved || normalizedOk || symbolsTotal);
   const failureRate = pct(failed, symbolsTotal);
   const skipRate = pct(skipped, symbolsTotal);
   const snapshotCoverage = pct(snapshotsSaved, symbolsTotal);
+
+  // ── Maturity-aware historical coverage adjustment ──
+  // When many symbols are in early maturity stages (seed/early/developing),
+  // the raw historicalCoverage (≥30 days threshold) under-represents actual
+  // data health.  We blend in a maturity-adjusted coverage that credits
+  // developing/early symbols instead of treating them as total failures.
+  const matSummary = summary?.maturitySummary;
+  let historicalCoverage = rawHistoricalCoverage;
+  if (matSummary && matSummary.total > 0) {
+    const maturityAdjustedOk =
+      historicalOk +
+      safeNum(matSummary.developing, 0) * MATURITY_COVERAGE_WEIGHT_DEVELOPING +
+      safeNum(matSummary.early, 0) * MATURITY_COVERAGE_WEIGHT_EARLY;
+    const maturityAdjustedCoverage = pct(
+      Math.min(maturityAdjustedOk, normalizedOk || symbolsTotal),
+      normalizedOk || symbolsTotal
+    );
+    historicalCoverage = rawHistoricalCoverage * MATURITY_BLEND_RAW + maturityAdjustedCoverage * MATURITY_BLEND_ADJUSTED;
+  }
 
   const score = clamp(
     Math.round(
@@ -518,6 +660,7 @@ function buildSystemHealth(summary) {
   return {
     successRate: Number(successRate.toFixed(2)),
     historicalCoverage: Number(historicalCoverage.toFixed(2)),
+    rawHistoricalCoverage: Number(rawHistoricalCoverage.toFixed(2)),
     trackingCoverage: Number(trackingCoverage.toFixed(2)),
     snapshotCoverage: Number(snapshotCoverage.toFixed(2)),
     failureRate: Number(failureRate.toFixed(2)),
@@ -542,8 +685,28 @@ function buildRunRecommendations(summary, health) {
     recommendations.push("Quote-/Normalisierungs-Erfolgsrate prüfen.");
   }
 
+  // ── Maturity-aware historical coverage recommendation ──
+  const matSummary = summary?.maturitySummary;
   if (safeNum(health.historicalCoverage, 0) < 70) {
-    recommendations.push("Historische Datenabdeckung ist zu niedrig.");
+    if (matSummary && matSummary.total > 0) {
+      const earlyPct = Math.round(pct(matSummary.seed + matSummary.early, matSummary.total));
+      const developingPct = Math.round(pct(matSummary.developing, matSummary.total));
+      if (earlyPct > 50) {
+        recommendations.push(
+          `Datenbasis im Aufbau: ${earlyPct}% der Symbole haben noch begrenzte Historie – Abdeckung wächst mit der Zeit.`
+        );
+      } else if (developingPct > 30) {
+        recommendations.push(
+          `Historische Abdeckung wächst: ${developingPct}% der Symbole erreichen bereits nutzbare Datenlage.`
+        );
+      } else if (matSummary.hardDataProblems > matSummary.total * HARD_DATA_PROBLEM_RATIO * 0.6) {
+        recommendations.push("Historische Datenabdeckung ist zu niedrig – echte Datenlücken oder Fetch-Fehler prüfen.");
+      } else {
+        recommendations.push("Historische Datenabdeckung ist noch begrenzt, erste Einschätzungen vorhanden.");
+      }
+    } else {
+      recommendations.push("Historische Datenabdeckung ist zu niedrig.");
+    }
   }
 
   if (safeNum(health.trackingCoverage, 0) < 85) {
@@ -556,6 +719,23 @@ function buildRunRecommendations(summary, health) {
 
   if (safeNum(summary.failed, 0) >= SNAPSHOT_FAIL_FAST_THRESHOLD) {
     recommendations.push("Viele Symbolfehler in einem Lauf: genauer Log-Check nötig.");
+  }
+
+  // ── Maturity-aware summary recommendations ──
+  if (matSummary && matSummary.total > 0) {
+    const maturePct = Math.round(pct(matSummary.mature, matSummary.total));
+    const developingPct = Math.round(pct(matSummary.developing, matSummary.total));
+    const seedPct = Math.round(pct(matSummary.seed, matSummary.total));
+
+    if (maturePct >= 60) {
+      recommendations.push(`Stabile Abdeckung: ${maturePct}% der Symbole haben ausgereifte Datenbasis.`);
+    } else if (developingPct + maturePct >= 50) {
+      recommendations.push(`Stabile Abdeckung nimmt zu: ${developingPct + maturePct}% der Symbole liefern bereits verwertbare Daten.`);
+    }
+
+    if (seedPct > 30 && matSummary.hardDataProblems < matSummary.seed * HARD_DATA_PROBLEM_RATIO) {
+      recommendations.push(`${seedPct}% der Symbole sind noch sehr früh – Datenbasis wächst, keine echten Fehler.`);
+    }
   }
 
   if (!recommendations.length) {
@@ -919,6 +1099,7 @@ async function buildMarketSnapshot() {
     advancedMetricsFallbacks: 0,
     historicalInsufficient: 0,
     historicalFetchErrors: 0,
+    maturitySummary: createEmptyMaturitySummary(),
   };
 
   const batch = await getSnapshotCandidates(SNAPSHOT_BATCH_SIZE);
@@ -1253,6 +1434,10 @@ async function buildMarketSnapshot() {
         volatilityDaily:          trendData?.volatilityDaily,
       });
 
+      // Track maturity distribution across the batch
+      updateMaturitySummary(summary.maturitySummary, maturityProfile);
+      const maturityTrust = mapMaturityToTrust(maturityProfile?.maturityLevel);
+
       if (hqs) {
         summary.hqsBuilt++;
       }
@@ -1541,6 +1726,7 @@ async function buildMarketSnapshot() {
         entryPrice: normalized?.price,
         capturedAt: new Date().toISOString(),
         maturityProfile,
+        maturityTrust,
       };
 
       const robustnessScore = calculateRobustnessScore(rawInputSnapshotData);
@@ -1595,6 +1781,7 @@ async function buildMarketSnapshot() {
           finalView,
           historicalContext: { robustness: robustnessScore },
           maturityProfile,
+          maturityTrust,
         },
         rawInputSnapshot: rawInputSnapshotData,
         analysisRationale: buildAnalysisRationale({
@@ -1636,9 +1823,7 @@ async function buildMarketSnapshot() {
             successCount: summary.historicalOk,
             failedCount:  summary.historicalFetchErrors,
             skippedCount: summary.historicalInsufficient,
-            errorMessage: summary.historicalFetchErrors > 0
-              ? `${summary.historicalFetchErrors} historical fetch errors so far (fallbacks: ${summary.advancedMetricsFallbacks})`
-              : null,
+            errorMessage: buildAdvancedMetricsStageMessage(summary),
           }),
           updatePipelineStage("hqsScoring", {
             inputCount:   summary.normalizedOk,
@@ -1685,6 +1870,7 @@ async function buildMarketSnapshot() {
     skipped_total: summary.skipped,
     failed_total: summary.failed,
     fx_dependent_symbols: summary.symbolsTotal, // All USD symbols need FX
+    maturitySummary: summary.maturitySummary,
   };
 
   logger.info("Snapshot complete", {
@@ -1745,11 +1931,7 @@ async function buildMarketSnapshot() {
       successCount: summary.historicalOk,
       failedCount:  summary.historicalFetchErrors,
       skippedCount: summary.historicalInsufficient,
-      errorMessage: summary.historicalOk === 0 && summary.quotesLoaded > 0
-        ? `0/${summary.quotesLoaded} symbols had sufficient historical data (need ≥30 daily prices). Check MASSIVE_API_KEY and prices_daily table.`
-        : summary.historicalFetchErrors > 0
-          ? `${summary.historicalFetchErrors} historical fetch errors (fallbacks: ${summary.advancedMetricsFallbacks})`
-          : null,
+      errorMessage: buildAdvancedMetricsStageMessage(summary),
     }),
     updatePipelineStage("hqsScoring", {
       inputCount:   summary.normalizedOk,
