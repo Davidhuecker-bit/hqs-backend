@@ -170,6 +170,7 @@ app.use("/api/portfolio", apiLimiter, portfolioRoutes);
 app.use("/api/admin", adminLimiter, adminAuth, adminRoutes);
 app.use("/api/market-news", apiLimiter, marketNewsRoutes);
 app.use("/api/sec-edgar", apiLimiter, secEdgarRoutes);
+app.use("/api/portfolio", apiLimiter, portfolioRoutes);
 
 /* Alias: flat path used by some clients – read-only from DB (DB-first architecture) */
 app.get("/api/admin-demo-portfolio", async (_req, res) => {
