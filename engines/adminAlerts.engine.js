@@ -42,6 +42,7 @@ function buildAdminAlerts({
   validation = {},
   tuning = {},
   trends = {},
+  maturitySummary = null,
 } = {}) {
   const alerts = [];
 
@@ -98,14 +99,56 @@ function buildAdminAlerts({
   }
 
   if (advancedCoverage < 50) {
-    pushAlert(alerts, {
-      key: "advanced_metrics_low",
-      severity: "high",
-      score: 95,
-      title: "Advanced Metrics zu schwach",
-      detail: "Die Weiterverarbeitung der Snapshots reicht noch nicht für starke Skalierung und tiefes Lernen.",
-      action: "Advanced-Metrics-Pipeline priorisieren.",
-    });
+    const matTotal = maturitySummary?.total || 0;
+    const hardProblems = maturitySummary?.hardDataProblems || 0;
+    const seedCount = maturitySummary?.seed || 0;
+    const earlyCount = maturitySummary?.early || 0;
+    const devCount = maturitySummary?.developing || 0;
+    const matureCount = maturitySummary?.mature || 0;
+    const earlyPhaseCount = seedCount + earlyCount;
+    const hardProblemDominant = matTotal > 0 && hardProblems > matTotal * 0.5;
+
+    if (hardProblemDominant) {
+      // Genuine data problem – keep hard blocker
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "high",
+        score: 95,
+        title: "Advanced Metrics: echte Datenprobleme erkannt",
+        detail: `${hardProblems} von ${matTotal} Symbolen zeigen harte Datenlücken (no_history, stale_snapshot, Fetch-Fehler). Das begrenzt Skalierung und Lernen.`,
+        action: "Datenpipeline und Provider-Anbindung prüfen.",
+      });
+    } else if (matTotal > 0 && earlyPhaseCount > matTotal * 0.5) {
+      // Mostly seed/early – natural build-up phase
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "medium",
+        score: 72,
+        title: "Datenbasis noch im Aufbau",
+        detail: `${earlyPhaseCount} von ${matTotal} Symbolen sind noch in früher Aufbauphase (seed/early). Frühe Einschätzungen vorhanden, aber noch begrenzt.`,
+        action: "Datenbasis weiter reifen lassen – kein akuter Handlungsbedarf.",
+      });
+    } else if (matTotal > 0 && devCount > 0) {
+      // Mix with developing symbols – growing base
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "medium",
+        score: 70,
+        title: "Datenbasis wächst, aber noch nicht voll belastbar",
+        detail: `${devCount} Symbole sind bereits belastbarer (developing), ${matureCount} stabil (mature). Noch ${earlyPhaseCount} in früher Phase.`,
+        action: "System weiter beobachten – Datenlage verbessert sich.",
+      });
+    } else {
+      // Fallback: no maturitySummary or unclear situation
+      pushAlert(alerts, {
+        key: "advanced_metrics_low",
+        severity: "high",
+        score: 95,
+        title: "Advanced Metrics zu schwach",
+        detail: "Die Weiterverarbeitung der Snapshots reicht noch nicht für starke Skalierung und tiefes Lernen.",
+        action: "Advanced-Metrics-Pipeline priorisieren.",
+      });
+    }
   }
 
   if (outcomeCoverage < 45 || outcomeCompletion < 35) {

@@ -46,6 +46,7 @@ function buildAdminPriorities({
   validation = {},
   tuning = {},
   alerts = {},
+  maturitySummary = null,
 } = {}) {
   const priorities = [];
 
@@ -91,14 +92,55 @@ function buildAdminPriorities({
   }
 
   if (advancedCoverage < 50) {
-    pushIf(priorities, {
-      key: "improve_advanced_metrics_pipeline",
-      bucket: "immediate",
-      score: 97,
-      title: "Advanced-Metrics-Pipeline priorisieren",
-      detail: "Die Weiterverarbeitung nach dem Snapshot ist aktuell ein Haupthebel für bessere Aussagekraft und Skalierung.",
-      reason: "Advanced Metrics Coverage zu niedrig",
-    });
+    const matTotal = maturitySummary?.total || 0;
+    const hardProblems = maturitySummary?.hardDataProblems || 0;
+    const seedCount = maturitySummary?.seed || 0;
+    const earlyCount = maturitySummary?.early || 0;
+    const devCount = maturitySummary?.developing || 0;
+    const earlyPhaseCount = seedCount + earlyCount;
+    const hardProblemDominant = matTotal > 0 && hardProblems > matTotal * 0.5;
+
+    if (hardProblemDominant) {
+      // Genuine data problem – immediate priority
+      pushIf(priorities, {
+        key: "improve_advanced_metrics_pipeline",
+        bucket: "immediate",
+        score: 97,
+        title: "Datenpipeline: echte Probleme beheben",
+        detail: `${hardProblems} von ${matTotal} Symbolen haben harte Datenlücken. Die Pipeline muss vor Skalierung repariert werden.`,
+        reason: "Harte Datenprobleme dominieren",
+      });
+    } else if (matTotal > 0 && earlyPhaseCount > matTotal * 0.5) {
+      // Natural early phase – no immediate action needed
+      pushIf(priorities, {
+        key: "improve_advanced_metrics_pipeline",
+        bucket: "next",
+        score: 68,
+        title: "Datenbasis weiter reifen lassen",
+        detail: `Viele Werte sind noch im Aufbau (${earlyPhaseCount} von ${matTotal} in früher Phase). US-Abdeckung und historische Tiefe wachsen noch.`,
+        reason: "Natürliche Frühphase – Datenbasis wächst",
+      });
+    } else if (matTotal > 0 && devCount > 0) {
+      // Mix – developing symbols present, growing confidence
+      pushIf(priorities, {
+        key: "improve_advanced_metrics_pipeline",
+        bucket: "next",
+        score: 72,
+        title: "Datenbasis weiter ausbauen",
+        detail: `Mehrere Werte sind bereits belastbarer. Datenbasis wächst noch – weiter beobachten und US-Abdeckung ausbauen.`,
+        reason: "Aufbauphase – Datenlage verbessert sich",
+      });
+    } else {
+      // Fallback: no maturitySummary available
+      pushIf(priorities, {
+        key: "improve_advanced_metrics_pipeline",
+        bucket: "immediate",
+        score: 97,
+        title: "Advanced-Metrics-Pipeline priorisieren",
+        detail: "Die Weiterverarbeitung nach dem Snapshot ist aktuell ein Haupthebel für bessere Aussagekraft und Skalierung.",
+        reason: "Advanced Metrics Coverage zu niedrig",
+      });
+    }
   }
 
   if (outcomeCoverage < 45 || outcomeCompletion < 35) {
@@ -190,14 +232,38 @@ function buildAdminPriorities({
   }
 
   if (topBottleneck === "advanced_metrics") {
-    pushIf(priorities, {
-      key: "fix_top_bottleneck_advanced",
-      bucket: "immediate",
-      score: 94,
-      title: "Top-Engpass: Advanced Metrics beheben",
-      detail: "Das Kontrollzentrum erkennt die Advanced-Metrics-Schicht aktuell als Hauptblocker.",
-      reason: "Top Bottleneck erkannt",
-    });
+    const matTotal = maturitySummary?.total || 0;
+    const hardProblems = maturitySummary?.hardDataProblems || 0;
+    const hardProblemDominant = matTotal > 0 && hardProblems > matTotal * 0.5;
+
+    if (hardProblemDominant) {
+      pushIf(priorities, {
+        key: "fix_top_bottleneck_advanced",
+        bucket: "immediate",
+        score: 94,
+        title: "Top-Engpass: echte Datenprobleme in Advanced Metrics",
+        detail: `Die Advanced-Metrics-Schicht hat harte Datenlücken (${hardProblems} von ${matTotal} Symbolen). Pipeline-Fehler prüfen.`,
+        reason: "Top Bottleneck erkannt – echte Probleme",
+      });
+    } else if (matTotal > 0) {
+      pushIf(priorities, {
+        key: "fix_top_bottleneck_advanced",
+        bucket: "next",
+        score: 74,
+        title: "Top-Engpass: Advanced Metrics – Datenbasis reift",
+        detail: "Advanced Metrics ist aktuell limitierender Faktor, aber primär durch natürliche Frühphase – nicht durch echte Fehler.",
+        reason: "Top Bottleneck erkannt – Aufbauphase",
+      });
+    } else {
+      pushIf(priorities, {
+        key: "fix_top_bottleneck_advanced",
+        bucket: "immediate",
+        score: 94,
+        title: "Top-Engpass: Advanced Metrics beheben",
+        detail: "Das Kontrollzentrum erkennt die Advanced-Metrics-Schicht aktuell als Hauptblocker.",
+        reason: "Top Bottleneck erkannt",
+      });
+    }
   }
 
   if (topBottleneck === "snapshot_coverage") {
