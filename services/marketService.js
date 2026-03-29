@@ -1950,6 +1950,9 @@ async function buildMarketSnapshot() {
 
   // Persist maturitySummary so the admin control-center engines can read it
   // without re-computing per-symbol maturity profiles.
+  // Fire-and-forget: persistence failure is non-critical and must never block
+  // the snapshot pipeline; the admin stack falls back to original hard messages
+  // when no maturitySummary is available.
   writeUiSummary("maturity_summary", summary.maturitySummary).catch((err) => {
     logger.warn("maturitySummary persistence failed", { message: err?.message });
   });

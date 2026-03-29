@@ -4,6 +4,8 @@
 // Baut aus Diagnostics, Validation, Tuning und Alerts
 // eine klare Prioritätenliste für dein Admin-Kontrollzentrum.
 
+const { classifyMaturityPhase } = require("./maturityClassification");
+
 function safeNum(value, fallback = 0) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
@@ -92,35 +94,29 @@ function buildAdminPriorities({
   }
 
   if (advancedCoverage < 50) {
-    const matTotal = maturitySummary?.total || 0;
-    const hardProblems = maturitySummary?.hardDataProblems || 0;
-    const seedCount = maturitySummary?.seed || 0;
-    const earlyCount = maturitySummary?.early || 0;
-    const devCount = maturitySummary?.developing || 0;
-    const earlyPhaseCount = seedCount + earlyCount;
-    const hardProblemDominant = matTotal > 0 && hardProblems > matTotal * 0.5;
+    const mc = classifyMaturityPhase(maturitySummary);
 
-    if (hardProblemDominant) {
+    if (mc.phase === "hard_problems") {
       // Genuine data problem – immediate priority
       pushIf(priorities, {
         key: "improve_advanced_metrics_pipeline",
         bucket: "immediate",
         score: 97,
         title: "Datenpipeline: echte Probleme beheben",
-        detail: `${hardProblems} von ${matTotal} Symbolen haben harte Datenlücken. Die Pipeline muss vor Skalierung repariert werden.`,
+        detail: `${mc.hardProblems} von ${mc.total} Symbolen haben harte Datenlücken. Die Pipeline muss vor Skalierung repariert werden.`,
         reason: "Harte Datenprobleme dominieren",
       });
-    } else if (matTotal > 0 && earlyPhaseCount > matTotal * 0.5) {
+    } else if (mc.phase === "early_phase") {
       // Natural early phase – no immediate action needed
       pushIf(priorities, {
         key: "improve_advanced_metrics_pipeline",
         bucket: "next",
         score: 68,
         title: "Datenbasis weiter reifen lassen",
-        detail: `Viele Werte sind noch im Aufbau (${earlyPhaseCount} von ${matTotal} in früher Phase). US-Abdeckung und historische Tiefe wachsen noch.`,
+        detail: `Viele Werte sind noch im Aufbau (${mc.earlyPhaseCount} von ${mc.total} in früher Phase). US-Abdeckung und historische Tiefe wachsen noch.`,
         reason: "Natürliche Frühphase – Datenbasis wächst",
       });
-    } else if (matTotal > 0 && devCount > 0) {
+    } else if (mc.phase === "developing") {
       // Mix – developing symbols present, growing confidence
       pushIf(priorities, {
         key: "improve_advanced_metrics_pipeline",
@@ -232,20 +228,18 @@ function buildAdminPriorities({
   }
 
   if (topBottleneck === "advanced_metrics") {
-    const matTotal = maturitySummary?.total || 0;
-    const hardProblems = maturitySummary?.hardDataProblems || 0;
-    const hardProblemDominant = matTotal > 0 && hardProblems > matTotal * 0.5;
+    const mc = classifyMaturityPhase(maturitySummary);
 
-    if (hardProblemDominant) {
+    if (mc.phase === "hard_problems") {
       pushIf(priorities, {
         key: "fix_top_bottleneck_advanced",
         bucket: "immediate",
         score: 94,
         title: "Top-Engpass: echte Datenprobleme in Advanced Metrics",
-        detail: `Die Advanced-Metrics-Schicht hat harte Datenlücken (${hardProblems} von ${matTotal} Symbolen). Pipeline-Fehler prüfen.`,
+        detail: `Die Advanced-Metrics-Schicht hat harte Datenlücken (${mc.hardProblems} von ${mc.total} Symbolen). Pipeline-Fehler prüfen.`,
         reason: "Top Bottleneck erkannt – echte Probleme",
       });
-    } else if (matTotal > 0) {
+    } else if (mc.phase !== "unknown") {
       pushIf(priorities, {
         key: "fix_top_bottleneck_advanced",
         bucket: "next",

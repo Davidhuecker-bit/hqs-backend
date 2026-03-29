@@ -12,6 +12,7 @@ const {
   resolveScalingStatusText,
   resolveExpansionStatusText,
 } = require("./adminRecommendations.engine");
+const { classifyMaturityPhase } = require("./maturityClassification");
 
 function safeNum(value, fallback = 0) {
   const n = Number(value);
@@ -154,22 +155,15 @@ function buildAdminBriefing({
 
   // ── Maturity context for narratives ──────────────────────────────────────
   let maturityStatusLine = null;
-  if (maturitySummary && maturitySummary.total > 0) {
-    const ms = maturitySummary;
-    const earlyPhase = (ms.seed || 0) + (ms.early || 0);
-    const devCount = ms.developing || 0;
-    const matCount = ms.mature || 0;
-    const hardProblems = ms.hardDataProblems || 0;
-
-    if (hardProblems > ms.total * 0.5) {
-      maturityStatusLine = `Datenreife: ${hardProblems} von ${ms.total} Symbolen zeigen echte Datenprobleme.`;
-    } else if (earlyPhase > ms.total * 0.5) {
-      maturityStatusLine = `Datenreife: Viele Werte noch im Aufbau (${earlyPhase} von ${ms.total} in Frühphase). Datenbasis wächst noch.`;
-    } else if (devCount + matCount > ms.total * 0.5) {
-      maturityStatusLine = `Datenreife: Nur ein Teil der Datenbasis ist schon stabil (${matCount} mature, ${devCount} developing von ${ms.total}).`;
-    } else {
-      maturityStatusLine = `Datenreife: ${ms.total} Symbole – ${matCount} stabil, ${devCount} wachsend, ${earlyPhase} in Frühphase.`;
-    }
+  const mc = classifyMaturityPhase(maturitySummary);
+  if (mc.phase === "hard_problems") {
+    maturityStatusLine = `Datenreife: ${mc.hardProblems} von ${mc.total} Symbolen zeigen echte Datenprobleme.`;
+  } else if (mc.phase === "early_phase") {
+    maturityStatusLine = `Datenreife: Viele Werte noch im Aufbau (${mc.earlyPhaseCount} von ${mc.total} in Frühphase). Datenbasis wächst noch.`;
+  } else if (mc.phase === "developing") {
+    maturityStatusLine = `Datenreife: Nur ein Teil der Datenbasis ist schon stabil (${mc.matCount} mature, ${mc.devCount} developing von ${mc.total}).`;
+  } else if (mc.total > 0) {
+    maturityStatusLine = `Datenreife: ${mc.total} Symbole – ${mc.matCount} stabil, ${mc.devCount} wachsend, ${mc.earlyPhaseCount} in Frühphase.`;
   }
 
   const adminText = [
