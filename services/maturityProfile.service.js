@@ -21,7 +21,7 @@
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Clamp a number to [min, max]. Returns 0 for non-finite values. */
+/** Clamp a number to [min, max]. Returns min for non-finite values. */
 function clamp(value, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return min;
@@ -234,15 +234,15 @@ function buildWarnings({ historyDays, missingDays, hasNews, snapshotAgeHours, co
  * Build a complete maturity profile for a symbol.
  *
  * @param {Object} input
- * @param {number}  input.historyDays            – number of usable price data points
- * @param {number}  [input.missingDays=0]         – estimated missing/gap days
- * @param {boolean} [input.hasNews=false]         – whether news is available
- * @param {boolean} [input.hasPriceFields=true]   – basic OHLC fields present?
- * @param {number}  [input.snapshotAgeHours=0]    – hours since last snapshot
- * @param {number}  [input.advancedMetricsAgeHours] – hours since last adv. metrics
- * @param {number}  [input.trend=0]               – trend score (-1..1)
- * @param {number}  [input.volatilityAnnual=0]    – annualized volatility
- * @param {number}  [input.volatilityDaily=0]     – daily volatility
+ * @param {number}  input.historyDays             - number of usable price data points
+ * @param {number}  [input.missingDays=0]          - estimated missing/gap days
+ * @param {boolean} [input.hasNews=false]           - whether news is available
+ * @param {boolean} [input.hasPriceFields=true]     - basic OHLC fields present?
+ * @param {number}  [input.snapshotAgeHours=0]      - hours since last snapshot
+ * @param {number}  [input.advancedMetricsAgeHours] - hours since last adv. metrics
+ * @param {number}  [input.trend=0]                 - trend score (-1..1)
+ * @param {number}  [input.volatilityAnnual=0]      - annualized volatility
+ * @param {number}  [input.volatilityDaily=0]       - daily volatility
  *
  * @returns {Object} maturity_profile
  */

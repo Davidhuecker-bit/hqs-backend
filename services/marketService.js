@@ -1231,9 +1231,19 @@ async function buildMarketSnapshot() {
       );
 
       // ── Maturity Profile (V1) ──────────────────────────────────────────
+      // Basic gap estimation: compare actual price count against expected
+      // trading days (~252/year). HIST_PERIOD defaults to "1y" → ~252 trading days.
+      const _expectedTradingDays = HIST_PERIOD.includes("y")
+        ? 252 * (parseInt(HIST_PERIOD, 10) || 1)
+        : HIST_PERIOD.includes("m")
+          ? Math.round(21 * (parseInt(HIST_PERIOD, 10) || 1))
+          : 252;
+      const _estimatedMissingDays = _priceCount > 0
+        ? Math.max(0, Math.min(_expectedTradingDays, _expectedTradingDays - _priceCount))
+        : 0;
       const maturityProfile = buildMaturityProfile({
         historyDays:              _priceCount,
-        missingDays:              0, // TODO: refine gap estimation in future iteration
+        missingDays:              _estimatedMissingDays,
         hasNews:                  (newsContext?.activeCount || 0) > 0,
         hasPriceFields:           normalized?.price != null,
         snapshotAgeHours:         0, // current run = fresh
