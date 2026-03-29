@@ -8,6 +8,7 @@ const {
   wasRecentlyDiscovered,
 } = require("./discoveryLearning.repository");
 const { getUsdToEurRate, convertUsdToEur } = require("./fx.service");
+const { getOrBuildSymbolSummary } = require("./symbolSummary.builder");
 
 const { getSharedPool } = require("../config/database");
 const pool = getSharedPool();
@@ -295,7 +296,7 @@ async function discoverStocks(limit = DEFAULT_LIMIT) {
     cooldownDays: COOLDOWN_DAYS,
   });
 
-  return final;
+  return enrichDiscoveriesWithSymbolSummary(final);
 }
 
 /**
@@ -340,7 +341,7 @@ async function getLatestDiscoveryPick(limit = 1) {
       [lim]
     );
 
-    return (res.rows || []).map((row) => {
+    const rawPicks = (res.rows || []).map((row) => {
       const discoveryScore = safeNum(row.discovery_score, 0);
       return {
         symbol: String(row.symbol || "").toUpperCase(),
@@ -351,10 +352,75 @@ async function getLatestDiscoveryPick(limit = 1) {
         reason: generateReason(row),
       };
     });
+    return enrichDiscoveriesWithSymbolSummary(rawPicks);
   } catch (err) {
     logger.warn("[discovery] getLatestDiscoveryPick failed", { message: err.message });
     return [];
   }
+}
+
+/* =========================================================
+   SYMBOL SUMMARY ENRICHMENT
+   Batch-fetch symbol_summary and merge general symbol fields
+   into each discovery entry. Discovery-specific fields
+   (discoveryScore, confidence, reason) remain untouched.
+========================================================= */
+
+async function enrichDiscoveriesWithSymbolSummary(discoveries = []) {
+  if (!discoveries.length) return discoveries;
+
+  const summaryMap = new Map();
+  await Promise.all(
+    discoveries.map(async (d) => {
+      try {
+        const summary = await getOrBuildSymbolSummary(d.symbol);
+        summaryMap.set(d.symbol, summary);
+      } catch (err) {
+        logger.warn("[discovery] getOrBuildSymbolSummary failed", {
+          symbol: d.symbol,
+          message: err.message,
+        });
+      }
+    })
+  );
+
+  return discoveries.map((d) => {
+    const summary = summaryMap.get(d.symbol) || null;
+    if (!summary) {
+      return { ...d, symbolSummaryStatus: "missing" };
+    }
+    return {
+      ...d,
+      // General symbol fields from symbol_summary (primary source)
+      name: summary.name || null,
+      price: summary.price ?? null,
+      change: summary.change ?? null,
+      changesPercentage: summary.changesPercentage ?? null,
+      currency: summary.currency || null,
+      // Analysis layer
+      rating: summary.rating || null,
+      decision: summary.decision || null,
+      finalConfidence: d.finalConfidence ?? summary.finalConfidence ?? null,
+      // Market state – prefer existing row values (already from DB), supplement if missing
+      regime: d.regime ?? summary.regime ?? null,
+      trend: d.trend ?? summary.trend ?? null,
+      volatility: d.volatility ?? summary.volatility ?? null,
+      // Why interesting – prefer existing value (if non-empty), fall back to symbol_summary
+      whyInteresting: (Array.isArray(d.whyInteresting) && d.whyInteresting.length > 0)
+        ? d.whyInteresting
+        : (Array.isArray(summary.whyInteresting) ? summary.whyInteresting : []),
+      // Maturity profile
+      maturityProfile: summary.maturityProfile ?? null,
+      maturityLevel: summary.maturityLevel ?? null,
+      maturityScore: summary.maturityScore ?? null,
+      // News summary
+      newsSummary: Array.isArray(summary.newsSummary) ? summary.newsSummary : [],
+      // Data quality metadata
+      symbolSummaryStatus: summary.status || "building",
+      missingComponents: Array.isArray(summary.missingComponents) ? summary.missingComponents : [],
+      symbolSummaryUpdatedAt: summary.updatedAt || null,
+    };
+  });
 }
 
 module.exports = {
