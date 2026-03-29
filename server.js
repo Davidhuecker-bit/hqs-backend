@@ -31,8 +31,6 @@ const {
 
 const { analyzeStockWithGuardian } = require("./services/guardianService");
 
-const { calculatePortfolioHQS } = require("./services/portfolioHqs.service");
-const { optimizePortfolio } = require("./services/portfolioOptimizer");
 const { buildGuardianPayload } = require("./services/frontendAdapter.service");
 
 const { initFactorTable } = require("./services/factorHistory.repository");
@@ -64,6 +62,7 @@ const notificationsRoutes = require("./routes/notifications.routes");
 const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
 const secEdgarRoutes = require("./routes/secEdgar.routes");
+const portfolioRoutes = require("./routes/portfolio.routes");
 
 const { adminAuth } = require("./middleware/adminAuth");
 const { apiLimiter, adminLimiter } = require("./middleware/rateLimiter");
@@ -167,6 +166,7 @@ ROUTES
 app.use("/api/notifications", apiLimiter, notificationsRoutes);
 app.use("/api/opportunities", apiLimiter, opportunitiesRoutes);
 app.use("/api/discovery", apiLimiter, discoveryRoutes);
+app.use("/api/portfolio", apiLimiter, portfolioRoutes);
 app.use("/api/admin", adminLimiter, adminAuth, adminRoutes);
 app.use("/api/market-news", apiLimiter, marketNewsRoutes);
 app.use("/api/sec-edgar", apiLimiter, secEdgarRoutes);
@@ -543,53 +543,6 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      error: error.message,
-    });
-  }
-});
-
-/* =========================================================
-PORTFOLIO ROUTE
-========================================================= */
-
-app.post("/api/portfolio", async (req, res) => {
-  try {
-    const portfolio = Array.isArray(req.body?.portfolio) ? req.body.portfolio : [];
-
-    if (!portfolio.length) {
-      return badRequest(res, "portfolio is required and must be a non-empty array");
-    }
-
-    const result = await calculatePortfolioHQS(portfolio);
-
-    if (result.error) {
-      return res.json({
-        success: false,
-        ...result,
-        optimizedAllocation: [],
-      });
-    }
-
-    // Use breakdown (the DB-first output field) – never the old positions field
-    const breakdown = Array.isArray(result.breakdown) ? result.breakdown : [];
-    const availableForOptimization = breakdown.filter((p) => p.available === true);
-
-    const optimizedAllocation =
-      availableForOptimization.length > 0
-        ? optimizePortfolio(availableForOptimization)
-        : [];
-
-    return res.json({
-      success: true,
-      ...result,
-      optimizedAllocation,
-    });
-  } catch (error) {
-    logger.error("Portfolio route error", { message: error.message });
-
-    return res.status(500).json({
-      success: false,
-      message: "Portfolio-Analyse fehlgeschlagen",
       error: error.message,
     });
   }
