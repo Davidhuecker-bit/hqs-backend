@@ -18,8 +18,7 @@ const logger = require("../utils/logger");
 const { listVirtualPositions } = require("./portfolioTwin.service");
 const { calculatePortfolioHQS } = require("./portfolioHqs.service");
 const { buildPortfolioContextForSymbols } = require("./portfolioContext.service");
-const { getStructuredMarketNewsBySymbols } = require("./marketNews.service");
-const { getMarketData } = require("./marketService");
+const { getOrBuildSymbolSummary } = require("./symbolSummary.builder");
 
 /* ──────────────────────────────────────────────────────────
    Helpers
@@ -105,26 +104,14 @@ function deriveEstimatedShares(allocatedEur, entryPrice) {
   return null;
 }
 
-function deriveCustomerStatus({ hasPrice, hasScore, hasNews }) {
-  if (!hasPrice && !hasScore) return "building";
-  if (hasPrice && hasScore && hasNews) return "ready";
-  if (hasPrice || hasScore) return "partial";
-  return "failed";
-}
-
 function translateMissingComponent(component) {
-  if (component === "price") return "Kurs";
-  if (component === "score") return "Bewertung";
+  if (component === "snapshot") return "Kurs";
+  if (component === "hqsScore") return "Bewertung";
   if (component === "news") return "Nachrichten";
+  if (component === "advancedMetrics") return "Marktdaten";
+  if (component === "outcomeTracking") return "Analyse";
+  if (component === "maturityProfile") return "Reifeprofil";
   return "Daten";
-}
-
-function buildMissingComponents({ hasPrice, hasScore, hasNews }) {
-  const missing = [];
-  if (!hasPrice) missing.push("price");
-  if (!hasScore) missing.push("score");
-  if (!hasNews) missing.push("news");
-  return missing;
 }
 
 function buildCustomerMessage(status, missingComponents = []) {
@@ -306,33 +293,38 @@ function translateWhyInteresting(reasons = []) {
     });
 }
 
-function formatNewsBucket(bucket) {
-  const summary = bucket?.summary && typeof bucket.summary === "object" ? bucket.summary : {};
-  const items = Array.isArray(bucket?.items) ? bucket.items : [];
+function formatSummaryNews(newsSummary = []) {
+  const items = Array.isArray(newsSummary) ? newsSummary : [];
 
+  const bullishCount = items.filter((n) => String(n?.sentiment || "").toLowerCase() === "bullish").length;
+  const bearishCount = items.filter((n) => String(n?.sentiment || "").toLowerCase() === "bearish").length;
+  const neutralCount = items.length - bullishCount - bearishCount;
+
+  // avgRelevance, avgConfidence, topRelevanceScore and eventType are not stored in symbol_summary;
+  // using 0 / null keeps the shape compatible with consumers that expect numeric fallbacks.
   return {
     summary: {
-      count: safeNum(summary.count, 0),
-      avgRelevance: safeNum(summary.avgRelevance, 0),
-      avgConfidence: safeNum(summary.avgConfidence, 0),
-      bullishCount: safeNum(summary.bullishCount, 0),
-      bearishCount: safeNum(summary.bearishCount, 0),
-      neutralCount: safeNum(summary.neutralCount, 0),
-      dominantEventType: translateEventType(summary.dominantEventType || null),
-      topHeadline: summary.topHeadline || null,
-      topRelevanceScore: safeNum(summary.topRelevanceScore, 0),
+      count: items.length,
+      avgRelevance: 0,
+      avgConfidence: 0,
+      bullishCount,
+      bearishCount,
+      neutralCount: neutralCount > 0 ? neutralCount : 0,
+      dominantEventType: null,
+      topHeadline: items[0]?.title || null,
+      topRelevanceScore: 0,
     },
     items: items.slice(0, 3).map((item) => ({
       title: item?.title || null,
       source: item?.source || null,
       publishedAt: item?.publishedAt || null,
-      url: item?.url || null,
-      summary: item?.summary || null,
+      url: null,
+      summary: null,
       intelligence: {
-        direction: translateDirection(item?.intelligence?.direction || null),
-        eventType: translateEventType(item?.intelligence?.eventType || null),
-        relevanceScore: safeNullableNum(item?.intelligence?.relevanceScore),
-        confidence: safeNullableNum(item?.intelligence?.confidence),
+        direction: translateDirection(item?.sentiment || null),
+        eventType: null,
+        relevanceScore: null,
+        confidence: null,
       },
     })),
   };
@@ -369,15 +361,14 @@ function normalizeContext(context) {
   };
 }
 
-async function buildMarketMap(symbols = []) {
+async function buildSymbolSummaryMap(symbols = []) {
   const entries = await Promise.all(
     symbols.map(async (symbol) => {
       try {
-        const data = await getMarketData(symbol);
-        const item = Array.isArray(data) && data.length ? data[0] : null;
-        return [symbol, item];
+        const summary = await getOrBuildSymbolSummary(symbol);
+        return [symbol, summary];
       } catch (error) {
-        logger.warn("[portfolioView] getMarketData failed", {
+        logger.warn("[portfolioView] getOrBuildSymbolSummary failed", {
           symbol,
           message: error.message,
         });
@@ -389,7 +380,7 @@ async function buildMarketMap(symbols = []) {
   return new Map(entries);
 }
 
-function buildPortfolioInputForHqs(positions = [], marketMap = new Map()) {
+function buildPortfolioInputForHqs(positions = [], summaryMap = new Map()) {
   const totalAllocated =
     positions.reduce((sum, position) => sum + safeNum(position?.allocatedEur, 0), 0) || 1;
 
@@ -397,12 +388,12 @@ function buildPortfolioInputForHqs(positions = [], marketMap = new Map()) {
     const symbol = normalizeSymbol(position?.symbol);
     const allocatedEur = safeNum(position?.allocatedEur, 0);
     const weight = allocatedEur > 0 ? allocatedEur / totalAllocated : 0;
-    const marketData = marketMap.get(symbol) || null;
+    const symbolSummary = summaryMap.get(symbol) || null;
 
     return {
       symbol,
       weight,
-      marketData,
+      marketData: symbolSummary,
     };
   });
 }
@@ -464,15 +455,12 @@ async function getPortfolioPositionsView({
 
     const symbols = uniqueSymbols(positions);
 
-    const [marketMap, contextMap, newsBySymbol] = await Promise.all([
-      buildMarketMap(symbols),
+    const [summaryMap, contextMap] = await Promise.all([
+      buildSymbolSummaryMap(symbols),
       buildPortfolioContextForSymbols(symbols),
-      getStructuredMarketNewsBySymbols(symbols, 3, {
-        minRelevance: 0,
-      }),
     ]);
 
-    const portfolioInput = buildPortfolioInputForHqs(positions, marketMap);
+    const portfolioInput = buildPortfolioInputForHqs(positions, summaryMap);
     const portfolioHqsResult = await calculatePortfolioHQS(portfolioInput);
     const hqsBreakdownMap = buildHqsBreakdownMap(portfolioHqsResult);
 
@@ -483,17 +471,48 @@ async function getPortfolioPositionsView({
 
     const viewPositions = positions.map((position) => {
       const symbol = normalizeSymbol(position?.symbol);
-      const marketItem = marketMap.get(symbol) || null;
+      const symbolSummary = summaryMap.get(symbol) || null;
       const hqsItem = hqsBreakdownMap.get(symbol) || null;
       const context = normalizeContext(contextMap.get(symbol) || null);
-      const news = formatNewsBucket(newsBySymbol?.[symbol] || { items: [], summary: {} });
 
+      // ── position-specific fields ──────────────────────────────────────────
       const allocatedEur = safeNum(position?.allocatedEur, 0);
       const entryPrice = safeNullableNum(position?.entryPrice);
+
+      // ── general symbol fields from symbol_summary ─────────────────────────
       const currentPrice =
-        safeNullableNum(marketItem?.price) ??
+        safeNullableNum(symbolSummary?.price) ??
         safeNullableNum(position?.currentPrice);
 
+      const hqsScore =
+        safeNullableNum(symbolSummary?.hqsScore) ??
+        safeNullableNum(hqsItem?.hqsScore);
+
+      const rating =
+        firstNonEmptyString(symbolSummary?.rating, hqsItem?.rating) ||
+        null;
+
+      const decision =
+        firstNonEmptyString(symbolSummary?.decision, hqsItem?.decision) ||
+        null;
+
+      const finalConfidence = safeNullableNum(symbolSummary?.finalConfidence);
+
+      const regime = symbolSummary?.regime ?? null;
+      const trend = symbolSummary?.trend ?? null;
+      const volatility = safeNullableNum(symbolSummary?.volatility);
+
+      const whyInteresting = translateWhyInteresting(
+        Array.isArray(symbolSummary?.whyInteresting) ? symbolSummary.whyInteresting : []
+      );
+
+      const maturityProfile = symbolSummary?.maturityProfile ?? null;
+      const maturityLevel = symbolSummary?.maturityLevel ?? null;
+      const maturityScore = safeNullableNum(symbolSummary?.maturityScore);
+
+      const news = formatSummaryNews(symbolSummary?.newsSummary);
+
+      // ── PnL (position-specific) ───────────────────────────────────────────
       const pnlAbs =
         safeNullableNum(position?.pnlEur) ??
         (allocatedEur > 0 && entryPrice && currentPrice
@@ -507,12 +526,11 @@ async function getPortfolioPositionsView({
             ? round(((currentPrice - entryPrice) / entryPrice) * 100, 2)
             : null;
 
-      const hasPrice = currentPrice !== null;
-      const hasScore = Boolean(hqsItem?.available === true && hqsItem?.hqsScore !== null);
-      const hasNews = safeNum(news?.summary?.count, 0) > 0;
-
-      const customerStatus = deriveCustomerStatus({ hasPrice, hasScore, hasNews });
-      const missingComponents = buildMissingComponents({ hasPrice, hasScore, hasNews });
+      // ── status from symbol_summary (building / partial / ready) ──────────
+      const customerStatus = symbolSummary?.status || "building";
+      const missingComponents = Array.isArray(symbolSummary?.missingComponents)
+        ? symbolSummary.missingComponents
+        : [];
       const message = buildCustomerMessage(customerStatus, missingComponents);
 
       if (customerStatus === "ready") readyCount += 1;
@@ -520,19 +538,12 @@ async function getPortfolioPositionsView({
       else if (customerStatus === "building") buildingCount += 1;
       else failedCount += 1;
 
-      const translatedRating = translateConvictionLabel(
-        hqsItem?.rating || marketItem?.finalRating,
-        hqsItem?.hqsScore
-      );
-
-      const translatedDecision = translateDecision(
-        hqsItem?.decision || marketItem?.finalDecision,
-        hqsItem?.hqsScore
-      );
+      const translatedRating = translateConvictionLabel(rating, hqsScore);
+      const translatedDecision = translateDecision(decision, hqsScore);
 
       return {
         symbol,
-        name: resolveCompanyName(symbol, marketItem),
+        name: firstNonEmptyString(symbolSummary?.name) || resolveCompanyName(symbol, null),
 
         position: {
           source: "virtual_positions",
@@ -554,30 +565,33 @@ async function getPortfolioPositionsView({
         message,
         missingComponents,
 
-        score: hasScore
+        score: hqsScore !== null
           ? {
-              hqsScore: safeNullableNum(hqsItem?.hqsScore),
+              hqsScore,
               rating: translatedRating,
               decision: translatedDecision,
-              source: hqsItem?.source || "database",
+              source: symbolSummary?.source || hqsItem?.source || "symbol_summary",
             }
           : null,
 
         market: {
-          regime: translateRegime(marketItem?.regime || null),
-          trend: translateTrend(marketItem?.trend || null),
-          volatility: safeNullableNum(marketItem?.volatility),
+          regime: translateRegime(regime),
+          trend: translateTrend(trend),
+          volatility,
           finalDecision: translatedDecision,
-          finalRating: translateRating(
-            hqsItem?.rating || marketItem?.finalRating,
-            hqsItem?.hqsScore
-          ),
-          finalConfidence: safeNullableNum(marketItem?.finalConfidence),
-          whyInteresting: translateWhyInteresting(
-            Array.isArray(marketItem?.whyInteresting) ? marketItem.whyInteresting : []
-          ),
-          directionLabel: translateDirection(marketItem?.regime || null),
+          finalRating: translateRating(rating, hqsScore),
+          finalConfidence,
+          whyInteresting,
+          directionLabel: translateDirection(regime),
         },
+
+        maturity: {
+          maturityLevel,
+          maturityScore,
+          maturityProfile,
+        },
+
+        symbolSummaryUpdatedAt: symbolSummary?.updatedAt || null,
 
         context,
         news,
