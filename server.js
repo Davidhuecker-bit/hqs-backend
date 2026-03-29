@@ -51,6 +51,7 @@ const {
   readSummary,
   SUPPORTED_TYPES: _summarySupportedTypes,
 } = require("./services/uiSummaryRefresh.service");
+const { getOrBuildSymbolSummary } = require("./services/symbolSummary.builder");
 
 /* =========================================================
 ROUTES
@@ -516,29 +517,86 @@ app.get("/api/guardian/analyze/:ticker", async (req, res) => {
     }
 
     const ticker = tickerResult.value;
-    const marketData = await getMarketData(ticker);
 
-    if (!marketData.length) {
-      return res.status(404).json({
-        success: false,
-        message: "Für dieses Symbol sind noch keine gespeicherten Daten vorhanden.",
-      });
+    // ── Primary path: symbol_summary layer ──────────────────────────────────
+    // getOrBuildSymbolSummary uses SWR: fresh→serve, stale→serve+async, missing→build.
+    // It always returns a valid object (never throws). Status may be
+    // "ready", "partial", or "building" (when no snapshot exists yet).
+    const summary = await getOrBuildSymbolSummary(ticker);
+
+    // ── Guardian AI analysis (natural-language) ──────────────────────────────
+    // Only attempt when we have at minimum an HQS score or price so the
+    // guardian prompt is not completely empty.  Failures are soft-caught so
+    // they never block the structured response.
+    let guardianAnalysis = null;
+    if (summary.status !== "building" && (summary.hqsScore != null || summary.price != null)) {
+      try {
+        guardianAnalysis = await analyzeStockWithGuardian({
+          symbol: ticker,
+          segment: null,
+          provider: null,
+          fallbackUsed: false,
+          marketData: {
+            hqsScore:        summary.hqsScore,
+            regime:          summary.regime,
+            finalConfidence: summary.finalConfidence,
+            finalRating:     summary.rating,
+            finalDecision:   summary.decision,
+            whyInteresting:  summary.whyInteresting,
+            // finalConviction / components are not in the summary layer;
+            // guardianService degrades gracefully when they are absent.
+            source: "symbol_summary",
+          },
+        });
+      } catch (guardianErr) {
+        logger.warn("[guardian/analyze] Guardian AI failed, continuing without", {
+          symbol: ticker,
+          message: guardianErr.message,
+        });
+      }
     }
 
-    const storedMarketData = formatMarketItem(marketData[0]);
+    // ── Assemble response ────────────────────────────────────────────────────
+    // Structured fields from symbol_summary (primary output layer).
+    // `analysis` is kept for backward-compat clients that read the GPT string.
+    return res.json({
+      success: true,
 
-    const guardianResult = await analyzeStockWithGuardian({
-      symbol: ticker,
-      segment: null,
-      provider: null,
-      fallbackUsed: false,
-      marketData: {
-        ...storedMarketData,
-        source: "database",
+      // Structured summary fields
+      symbol:            summary.symbol,
+      name:              summary.name,
+      price:             summary.price,
+      change:            summary.change,
+      changesPercentage: summary.changesPercentage,
+      currency:          summary.currency,
+      hqsScore:          summary.hqsScore,
+      rating:            summary.rating,
+      decision:          summary.decision,
+      finalConfidence:   summary.finalConfidence,
+      whyInteresting:    summary.whyInteresting,
+      regime:            summary.regime,
+      trend:             summary.trend,
+      volatility:        summary.volatility,
+      maturityProfile:   summary.maturityProfile,
+      maturityLevel:     summary.maturityLevel,
+      maturityScore:     summary.maturityScore,
+      newsSummary:       summary.newsSummary,
+      status:            summary.status,
+      missingComponents: summary.missingComponents,
+      updatedAt:         summary.updatedAt,
+
+      // Natural-language Guardian analysis (backward-compat; null when building)
+      analysis: guardianAnalysis,
+
+      // Summary layer meta
+      summaryMeta: {
+        source:    "symbol_summary",
+        builtAt:   summary.builtAt ?? null,
+        freshness: summary.freshness ?? null,
+        dataAge:   summary.ageMs != null ? Math.round(summary.ageMs / 1000) : null,
+        isPartial: summary.isPartial ?? null,
       },
     });
-
-    return res.json({ success: true, analysis: guardianResult });
   } catch (error) {
     logger.error("Guardian route error", { message: error.message });
 
