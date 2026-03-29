@@ -64,6 +64,7 @@ const notificationsRoutes = require("./routes/notifications.routes");
 const adminRoutes = require("./routes/admin.routes");
 const marketNewsRoutes = require("./routes/marketNews.routes");
 const secEdgarRoutes = require("./routes/secEdgar.routes");
+const portfolioRoutes = require("./routes/portfolio.routes");
 
 const { adminAuth } = require("./middleware/adminAuth");
 const { apiLimiter, adminLimiter } = require("./middleware/rateLimiter");
@@ -170,6 +171,7 @@ app.use("/api/discovery", apiLimiter, discoveryRoutes);
 app.use("/api/admin", adminLimiter, adminAuth, adminRoutes);
 app.use("/api/market-news", apiLimiter, marketNewsRoutes);
 app.use("/api/sec-edgar", apiLimiter, secEdgarRoutes);
+app.use("/api/portfolio", apiLimiter, portfolioRoutes);
 
 /* Alias: flat path used by some clients – read-only from DB (DB-first architecture) */
 app.get("/api/admin-demo-portfolio", async (_req, res) => {
