@@ -46,6 +46,8 @@
     "job:ui-guardian-status:check": "node --check jobs/uiGuardianStatus.job.js",
     "job:historical-flatfile-backfill": "node jobs/historicalFlatfileBackfill.job.js",
     "job:historical-flatfile-backfill:check": "node --check jobs/historicalFlatfileBackfill.job.js",
+    "job:demo-portfolio-backfill": "node jobs/historicalDemoPortfolioBackfill.job.js",
+    "job:demo-portfolio-backfill:check": "node --check jobs/historicalDemoPortfolioBackfill.job.js",
     "smoke-check": "node scripts/smoke-check.js",
     "smoke-check:check": "node --check scripts/smoke-check.js",
     "db:health": "node scripts/database-health-check.js",
