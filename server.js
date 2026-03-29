@@ -109,6 +109,7 @@ APP INIT
 ========================================================= */
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 8080;
 const DEFAULT_CORS_ORIGINS = [
   "https://dhsystemhqs.de",
