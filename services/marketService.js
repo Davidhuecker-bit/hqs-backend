@@ -88,6 +88,7 @@ const {
 } = require("./opportunityScanner.service");
 const { collectSocialSignals } = require("./socialScanner.service");
 const { getWorldState, classifyWorldStateAge } = require("./worldState.service");
+const { buildMaturityProfile } = require("./maturityProfile.service");
 
 const logger = require("../utils/logger");
 const { getSharedPool } = require("../config/database");
@@ -1073,6 +1074,7 @@ async function buildMarketSnapshot() {
       let trendData = buildTrendScore([]); // safe zero-value default
       let trendSource = "zeroed_fetch_error";
       let scenarios = null;
+      let _priceCount = 0; // tracks usable price-day count for maturity profile
 
       let regime = "neutral";
       let adaptiveWeights = null;
@@ -1083,6 +1085,7 @@ async function buildMarketSnapshot() {
         const prices = (historical || [])
           .map((d) => Number(d?.close))
           .filter((n) => Number.isFinite(n) && n > 0);
+        _priceCount = prices.length;
 
         // Always compute trendData – buildTrendScore handles any length and
         // returns zero-value fields for insufficient series (< 2 prices).
@@ -1226,6 +1229,19 @@ async function buildMarketSnapshot() {
         scoringActiveNewsBySymbol?.[symbol] || [],
         symbolSocialPosts
       );
+
+      // ── Maturity Profile (V1) ──────────────────────────────────────────
+      const maturityProfile = buildMaturityProfile({
+        historyDays:              _priceCount,
+        missingDays:              0, // TODO: refine gap estimation in future iteration
+        hasNews:                  (newsContext?.activeCount || 0) > 0,
+        hasPriceFields:           normalized?.price != null,
+        snapshotAgeHours:         0, // current run = fresh
+        advancedMetricsAgeHours:  undefined,
+        trend:                    trendData?.trend,
+        volatilityAnnual:         trendData?.volatilityAnnual,
+        volatilityDaily:          trendData?.volatilityDaily,
+      });
 
       if (hqs) {
         summary.hqsBuilt++;
@@ -1514,6 +1530,7 @@ async function buildMarketSnapshot() {
         memoryScore: marketMemory?.memoryStats?.memoryScore || 0,
         entryPrice: normalized?.price,
         capturedAt: new Date().toISOString(),
+        maturityProfile,
       };
 
       const robustnessScore = calculateRobustnessScore(rawInputSnapshotData);
@@ -1567,6 +1584,7 @@ async function buildMarketSnapshot() {
           orchestrator,
           finalView,
           historicalContext: { robustness: robustnessScore },
+          maturityProfile,
         },
         rawInputSnapshot: rawInputSnapshotData,
         analysisRationale: buildAnalysisRationale({
