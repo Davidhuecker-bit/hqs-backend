@@ -397,6 +397,16 @@ const MATURITY_TRUST_MAP = {
   mature:     "fully_reliable",
 };
 
+// Weights used when blending maturity-adjusted historical coverage into system health.
+// Developing symbols count at 60%, early at 25%, seed at 0% (same as raw ≥30-day gate).
+const MATURITY_COVERAGE_WEIGHT_DEVELOPING = 0.6;
+const MATURITY_COVERAGE_WEIGHT_EARLY      = 0.25;
+// Blend ratio: 60% maturity-adjusted, 40% raw coverage
+const MATURITY_BLEND_ADJUSTED = 0.6;
+const MATURITY_BLEND_RAW      = 0.4;
+// Threshold for considering the batch as having genuine data problems
+const HARD_DATA_PROBLEM_RATIO = 0.5;
+
 function mapMaturityToTrust(maturityLevel) {
   return MATURITY_TRUST_MAP[maturityLevel] || "early_visibility";
 }
@@ -430,6 +440,7 @@ function createEmptyMaturitySummary() {
       usable_with_caution: 0,
       fully_reliable: 0,
     },
+    _scoreSum: 0,
     avgMaturityScore: 0,
     hardDataProblems: 0,
   };
@@ -444,9 +455,9 @@ function updateMaturitySummary(matSummary, maturityProfile) {
   if (matSummary[level] !== undefined) matSummary[level]++;
   if (matSummary.trustDistribution[trust] !== undefined) matSummary.trustDistribution[trust]++;
 
-  // Running average
-  matSummary.avgMaturityScore =
-    Math.round(((matSummary.avgMaturityScore * (matSummary.total - 1)) + safeNum(maturityProfile.maturityScore)) / matSummary.total);
+  // Accumulate sum for averaging at the end (avoids precision drift)
+  matSummary._scoreSum += safeNum(maturityProfile.maturityScore);
+  matSummary.avgMaturityScore = Math.round(matSummary._scoreSum / matSummary.total);
 
   if (isHardDataProblem(maturityProfile)) matSummary.hardDataProblems++;
 }
@@ -571,7 +582,7 @@ function buildAdvancedMetricsStageMessage(summary) {
 
   // No symbols had ≥30 days, but we have quotes loaded
   if (historicalOk === 0 && quotesLoaded > 0) {
-    if (matSummary && matSummary.total > 0 && matSummary.hardDataProblems < matSummary.total * 0.5) {
+    if (matSummary && matSummary.total > 0 && matSummary.hardDataProblems < matSummary.total * HARD_DATA_PROBLEM_RATIO) {
       // Most symbols are just early-stage, not hard failures
       return `0/${quotesLoaded} Symbole erreichen ≥30 Tage Historie – Datenbasis im Aufbau (${matSummary.early + matSummary.developing} Symbole bauen Vertrauen auf). Keine kritischen Fehler.`;
     }
@@ -617,18 +628,15 @@ function buildSystemHealth(summary) {
   const matSummary = summary?.maturitySummary;
   let historicalCoverage = rawHistoricalCoverage;
   if (matSummary && matSummary.total > 0) {
-    // developing symbols are partially usable (count at 60% weight),
-    // early symbols count at 25% weight, seed at 0% (same as before)
     const maturityAdjustedOk =
       historicalOk +
-      safeNum(matSummary.developing, 0) * 0.6 +
-      safeNum(matSummary.early, 0) * 0.25;
+      safeNum(matSummary.developing, 0) * MATURITY_COVERAGE_WEIGHT_DEVELOPING +
+      safeNum(matSummary.early, 0) * MATURITY_COVERAGE_WEIGHT_EARLY;
     const maturityAdjustedCoverage = pct(
       Math.min(maturityAdjustedOk, normalizedOk || symbolsTotal),
       normalizedOk || symbolsTotal
     );
-    // Blend: 60% maturity-adjusted, 40% raw — preserves existing signal
-    historicalCoverage = rawHistoricalCoverage * 0.4 + maturityAdjustedCoverage * 0.6;
+    historicalCoverage = rawHistoricalCoverage * MATURITY_BLEND_RAW + maturityAdjustedCoverage * MATURITY_BLEND_ADJUSTED;
   }
 
   const score = clamp(
@@ -691,7 +699,7 @@ function buildRunRecommendations(summary, health) {
         recommendations.push(
           `Historische Abdeckung wächst: ${developingPct}% der Symbole erreichen bereits nutzbare Datenlage.`
         );
-      } else if (matSummary.hardDataProblems > matSummary.total * 0.3) {
+      } else if (matSummary.hardDataProblems > matSummary.total * HARD_DATA_PROBLEM_RATIO * 0.6) {
         recommendations.push("Historische Datenabdeckung ist zu niedrig – echte Datenlücken oder Fetch-Fehler prüfen.");
       } else {
         recommendations.push("Historische Datenabdeckung ist noch begrenzt, erste Einschätzungen vorhanden.");
@@ -725,7 +733,7 @@ function buildRunRecommendations(summary, health) {
       recommendations.push(`Stabile Abdeckung nimmt zu: ${developingPct + maturePct}% der Symbole liefern bereits verwertbare Daten.`);
     }
 
-    if (seedPct > 30 && matSummary.hardDataProblems < matSummary.seed * 0.5) {
+    if (seedPct > 30 && matSummary.hardDataProblems < matSummary.seed * HARD_DATA_PROBLEM_RATIO) {
       recommendations.push(`${seedPct}% der Symbole sind noch sehr früh – Datenbasis wächst, keine echten Fehler.`);
     }
   }
