@@ -2,7 +2,7 @@
 
 const { Pool } = require("pg");
 const pLimit = require("p-limit").default;
-const pRetry = require("p-retry");
+const pRetry = require("p-retry").default;
 const logger = require("../utils/logger");
 const { MassiveFlatfileService } = require("../services/massiveFlatfile.service");
 const { fetchMassiveGroupedDailyCandles } = require("../services/providerService");
