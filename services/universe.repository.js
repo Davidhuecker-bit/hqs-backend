@@ -71,6 +71,14 @@ function cleanSymbol(v) {
 }
 
 /**
+ * Regex for a provider-compatible ticker symbol.
+ * Matches 1–6 uppercase alphanumeric characters with an optional
+ * dot/hyphen-separated suffix (e.g. "AAPL", "BRK.B", "0700.HK").
+ * Exported so universe.service.js can reuse the same pattern.
+ */
+const BASE_TICKER_PATTERN = /^[A-Z0-9]{1,6}([.\-][A-Z0-9]{1,5})?$/;
+
+/**
  * Upsert many symbols in chunks.
  * Each item can have: symbol,name,exchange,type,country,currency,is_active,priority
  */
@@ -166,6 +174,19 @@ async function setCursor(cursor, key = CURSOR_KEY_SNAPSHOT) {
 async function ensureTrackedSymbol(symbol, options = {}) {
   const normalized = cleanSymbol(symbol);
   if (!normalized) return { tracked: false, symbol: normalized || "", enrolled: false };
+
+  // Guard: reject symbols that look like company display-names rather than
+  // exchange tickers.  Valid provider tickers are 1–6 uppercase
+  // alphanumerics with an optional dot-separated suffix (e.g. "BRK.B",
+  // "0700.HK").  Strings longer than 6 non-suffix characters are almost
+  // certainly not real tickers and would produce failing provider calls.
+  if (!BASE_TICKER_PATTERN.test(normalized)) {
+    logger.warn("ensureTrackedSymbol: rejected – does not look like a valid ticker", {
+      symbol: normalized,
+      source: String(options.source || "unknown").trim(),
+    });
+    return { tracked: false, symbol: normalized, enrolled: false };
+  }
 
   const priority = Number.isFinite(Number(options.priority)) ? Number(options.priority) : 50;
   const source = String(options.source || "customer_request").trim();
@@ -303,6 +324,7 @@ async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT, options 
 
 module.exports = {
   CURSOR_KEY_SNAPSHOT,
+  BASE_TICKER_PATTERN,
   initUniverseTables,
   upsertUniverseSymbols,
   ensureTrackedSymbol,

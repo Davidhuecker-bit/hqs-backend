@@ -12,6 +12,7 @@ const {
   initUniverseTables,
   upsertUniverseSymbols,
   countActiveUniverse,
+  BASE_TICKER_PATTERN,
 } = require("./universe.repository");
 
 const { getSharedPool } = require("../config/database");
@@ -114,6 +115,10 @@ function shouldKeepSymbol(symbol) {
   if (!symbol) return false;
   if (symbol.length > 15) return false;
   if (/\s/.test(symbol)) return false;
+  // Reject strings that don't match a provider-compatible ticker format.
+  // Uses the shared BASE_TICKER_PATTERN from universe.repository.js so the
+  // validation rule stays in one place.
+  if (!BASE_TICKER_PATTERN.test(symbol)) return false;
   return true;
 }
 
