@@ -651,6 +651,66 @@ class MassiveFlatfileService {
     return rows;
   }
 
+  /**
+   * Given a dataset and a reference ISO date, returns the ISO date string of
+   * the most-recent available day-aggregate file that is on or before the
+   * reference date.
+   *
+   * Strategy:
+   *  1. List the year/month prefix for the reference date (uses cache).
+   *  2. Extract dates from matching keys (e.g. "…/2026-03-28.csv.gz").
+   *  3. Return the latest date that is ≤ referenceDate.
+   *  4. If the current month yields nothing, try the previous month once
+   *     (handles month-boundary cases: first day of a new month where no
+   *     files have been published yet).
+   *
+   * Returns null when no available date can be determined (e.g. listing
+   * failed for both months or no matching keys were found).
+   */
+  async findLastAvailableDayAggDate(dataset, referenceDate) {
+    const iso = toIsoDate(referenceDate);
+    if (!iso) return null;
+
+    const extractDatesFromKeys = (keys, maxIso) => {
+      const dates = [];
+      for (const key of keys) {
+        const match = key.match(/(\d{4}-\d{2}-\d{2})\.csv\.gz$/);
+        if (match && match[1] <= maxIso) {
+          dates.push(match[1]);
+        }
+      }
+      dates.sort();
+      return dates;
+    };
+
+    const [year, month] = iso.split("-");
+
+    // 1. Try the current month
+    const currentKeys = await this.listAvailableKeysForMonth(dataset, year, month);
+    if (currentKeys !== null) {
+      const dates = extractDatesFromKeys(currentKeys, iso);
+      if (dates.length > 0) {
+        return dates[dates.length - 1];
+      }
+    }
+
+    // 2. Fall back to the previous month (covers month-boundary situations)
+    const prevDate = new Date(`${iso}T12:00:00Z`);
+    prevDate.setUTCMonth(prevDate.getUTCMonth() - 1);
+    const prevYear = String(prevDate.getUTCFullYear());
+    const prevMonth = String(prevDate.getUTCMonth() + 1).padStart(2, "0");
+
+    const prevKeys = await this.listAvailableKeysForMonth(dataset, prevYear, prevMonth);
+    if (prevKeys !== null && prevKeys.size > 0) {
+      const dates = extractDatesFromKeys(prevKeys, iso);
+      if (dates.length > 0) {
+        return dates[dates.length - 1];
+      }
+    }
+
+    return null;
+  }
+
   async loadDailyAggregatesForSymbols({ date, symbols, useCache = true, dataset } = {}) {
     const symbolSet = new Set(
       (symbols || [])
