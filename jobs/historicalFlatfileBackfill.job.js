@@ -374,10 +374,16 @@ async function triggerFeatureUpdate(pool) {
 async function processDay({ date, missingPairs, massiveService, pool, chunkSize, useCache, dataset }) {
   const start = Date.now();
   const symbolsForDay = [...new Set(missingPairs.map((p) => p.symbol))];
+  const isDayAggs = dataset && dataset.includes("day_aggs_v1");
+
+  const [refYear, refMonth] = date.split("-");
+  const monthPrefix = isDayAggs ? `${dataset}/${refYear}/${refMonth}/` : null;
 
   logger.info("[historicalFlatfileBackfill] processing date", {
     date,
     symbolsRequested: symbolsForDay.length,
+    dataset,
+    ...(monthPrefix ? { monthPrefix } : {}),
   });
 
   const loadedRows = await massiveService.loadDailyAggregatesForSymbolChunks({
@@ -390,6 +396,67 @@ async function processDay({ date, missingPairs, massiveService, pool, chunkSize,
 
   const missingSet = new Set(missingPairs.map((p) => `${p.symbol}|${p.date}`));
   let filteredRows = loadedRows.filter((row) => missingSet.has(`${row.symbol}|${row.date}`));
+
+  // --- day_aggs_v1 last-available-date fallback ----------------------------
+  // When the flatfile for the requested date is not published yet (holiday,
+  // weekend, early in the day), look up the most-recent available key under
+  // the month prefix and load from that date instead.  This avoids the
+  // "rowsLoaded: 0 but success" outcome caused by querying a not-yet-released
+  // file.  The loaded rows carry the actual date from the CSV, so they are
+  // stored under that date (upsert is idempotent for already-present rows).
+  if (!filteredRows.length && isDayAggs) {
+    try {
+      const lastAvailableDate = await massiveService.findLastAvailableDayAggDate(dataset, date);
+
+      if (lastAvailableDate && lastAvailableDate !== date) {
+        const lastAvailableKey = massiveService.buildDailyAggKey(lastAvailableDate, { dataset });
+        logger.info(
+          "[historicalFlatfileBackfill] day_aggs_v1 fallback: requested date not available – using last available",
+          {
+            requestedDate: date,
+            lastAvailableDate,
+            lastAvailableKey,
+            monthPrefix,
+          }
+        );
+
+        const fallbackRows = await massiveService.loadDailyAggregatesForSymbolChunks({
+          date: lastAvailableDate,
+          symbols: symbolsForDay,
+          chunkSize,
+          useCache,
+          dataset,
+        });
+
+        const symbolSet = new Set(symbolsForDay);
+        filteredRows = fallbackRows.filter((row) => symbolSet.has(row.symbol));
+
+        if (filteredRows.length) {
+          logger.info("[historicalFlatfileBackfill] day_aggs_v1 fallback loaded rows", {
+            requestedDate: date,
+            lastAvailableDate,
+            rows: filteredRows.length,
+          });
+        }
+      } else if (lastAvailableDate === date) {
+        logger.info(
+          "[historicalFlatfileBackfill] day_aggs_v1: requested date listed as available but returned 0 rows",
+          { date }
+        );
+      } else {
+        logger.warn(
+          "[historicalFlatfileBackfill] day_aggs_v1 fallback: no available date found in month listing",
+          { requestedDate: date, monthPrefix }
+        );
+      }
+    } catch (err) {
+      logger.warn("[historicalFlatfileBackfill] day_aggs_v1 fallback failed – skipping", {
+        date,
+        message: err.message,
+      });
+    }
+  }
+  // -------------------------------------------------------------------------
 
   // When the flatfile for this date is unavailable (NoSuchKey / holiday / not yet
   // published), fall back to the Massive grouped-daily REST endpoint so that very
