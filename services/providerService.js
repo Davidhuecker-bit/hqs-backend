@@ -56,8 +56,13 @@ function calcChangesPercentage(price, previousClose) {
    AXIOS INSTANCE
 ========================================================= */
 
+// Allow overriding via env so the pipeline can be tightened without a deploy.
+// Default keeps the previous 15 s to avoid breaking callers that rely on the
+// existing behaviour.
+const MASSIVE_REST_TIMEOUT_MS = Number(process.env.MASSIVE_REST_TIMEOUT_MS || 15000);
+
 const http = axios.create({
-  timeout: 15000,
+  timeout: MASSIVE_REST_TIMEOUT_MS,
   headers: {
     "User-Agent": "HQS-Backend/1.0",
     Accept: "application/json",
@@ -168,8 +173,19 @@ async function fetchFromMassive(symbol) {
       const data = response?.data;
       const status = String(data?.status || "").toUpperCase();
 
-      if (!data || status !== "OK") {
+      // Massive returns "DELAYED" when real-time quota is exhausted but
+      // delayed data (≤15 min) is still available in the results array.
+      // Treat it as OK – using slightly-delayed data is far better than
+      // retrying until timeout and getting nothing.
+      const isDelayed = status === "DELAYED";
+      if (!data || (status !== "OK" && !isDelayed)) {
         throw new Error(`Massive response not OK (${data?.status || "no status"})`);
+      }
+      if (isDelayed && logger?.warn) {
+        logger.warn("[providerService] Massive quote DELAYED – using delayed data", {
+          symbol: sym,
+          attempt,
+        });
       }
 
       if (!Array.isArray(data.results) || data.results.length === 0) {
@@ -294,10 +310,13 @@ async function fetchMassiveGroupedDailyCandles(date) {
       const data = response?.data;
       const status = String(data?.status || "").toUpperCase();
 
-      if (!data || (status !== "OK" && status !== "")) {
+      if (!data || (status !== "OK" && status !== "" && status !== "DELAYED")) {
         throw new Error(
           `Massive grouped daily response not OK (${data?.status || "no status"}) for ${iso}`
         );
+      }
+      if (status === "DELAYED" && logger?.warn) {
+        logger.warn("[providerService] Massive grouped daily DELAYED – using delayed data", { date: iso, attempt });
       }
 
       if (!Array.isArray(data.results) || data.results.length === 0) {
@@ -397,8 +416,11 @@ async function fetchMassiveHistoricalCandles(symbol, fromDate, toDate) {
       const data = response?.data;
       const status = String(data?.status || "").toUpperCase();
 
-      if (!data || (status !== "OK" && status !== "")) {
+      if (!data || (status !== "OK" && status !== "" && status !== "DELAYED")) {
         throw new Error(`Massive historical response not OK (${data?.status || "no status"})`);
+      }
+      if (status === "DELAYED" && logger?.warn) {
+        logger.warn("[providerService] Massive historical DELAYED – using delayed data", { symbol: sym, fromDate, toDate, attempt });
       }
 
       if (!Array.isArray(data.results) || data.results.length === 0) {
@@ -491,8 +513,12 @@ async function fetchGroupedDailyCandles(date) {
       // "OK"      → data returned successfully
       // ""        → Massive omits status field on some successful responses
       // "NO_DATA" → Massive returns this for holidays / market-closed days
-      if (!data || (status !== "OK" && status !== "" && status !== "NO_DATA")) {
+      // "DELAYED" → real-time quota exhausted; delayed data is still present
+      if (!data || (status !== "OK" && status !== "" && status !== "NO_DATA" && status !== "DELAYED")) {
         throw new Error(`Massive grouped daily response not OK (${data?.status || "no status"})`);
+      }
+      if (status === "DELAYED" && logger?.warn) {
+        logger.warn("[providerService] Massive grouped daily DELAYED – using delayed data", { date: isoDate, attempt });
       }
 
       if (!Array.isArray(data.results) || data.results.length === 0) {

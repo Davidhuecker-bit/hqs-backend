@@ -27,6 +27,14 @@ const ENABLE_FLATFILE_BACKFILL =
 const FLATFILE_MAX_DAYS = parseInt(process.env.HISTORICAL_FLATFILE_MAX_DAYS || "120", 10);
 const TRIGGER_FEATURE_UPDATE =
   String(process.env.HISTORICAL_TRIGGER_FEATURE_UPDATE || "false").toLowerCase() === "true";
+// Set HISTORICAL_SKIP_REST=true to disable the REST per-symbol fallback entirely.
+// Useful when Massive REST is heavily delayed and flatfile/grouped-daily are sufficient.
+const SKIP_REST_BACKFILL =
+  String(process.env.HISTORICAL_SKIP_REST || "false").toLowerCase() === "true";
+// Per-call timeout (ms) for the REST historical candle fetch.
+// Prevents a single slow REST response from blocking the entire pipeline.
+const REST_BACKFILL_TIMEOUT_MS =
+  parseInt(process.env.HISTORICAL_REST_TIMEOUT_MS || "20000", 10);
 const DATABASE_URL = process.env.DATABASE_URL;
 
 let pool = null;
@@ -207,6 +215,7 @@ async function tryFlatfileBackfillBulk(symbol, days) {
     logger.info("[historicalService] flatfile backfill complete", {
       symbol: sym,
       rowsUpserted: totalUpserted,
+      source: "massive_flatfiles",
     });
   }
 
@@ -282,6 +291,7 @@ async function tryGroupedDailyBackfill(symbol, days) {
     logger.info("[historicalService] grouped daily backfill complete", {
       symbol: sym,
       rowsUpserted: totalUpserted,
+      source: "massive_grouped",
     });
   }
 
@@ -292,7 +302,33 @@ async function tryGroupedDailyBackfill(symbol, days) {
    REST BACKFILL FALLBACK
 ============================================================ */
 
+/**
+ * Wraps a promise with a hard timeout so a slow REST response cannot block
+ * the pipeline indefinitely.
+ */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`[historicalService] timeout: ${label} exceeded ${ms}ms`)),
+      ms
+    );
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err)   => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 async function tryRestBackfill(symbol) {
+  if (SKIP_REST_BACKFILL) {
+    if (logger?.info) {
+      logger.info("[historicalService] REST backfill skipped (HISTORICAL_SKIP_REST=true)", {
+        symbol,
+      });
+    }
+    return 0;
+  }
+
   const sym = String(symbol || "").toUpperCase();
   const today = new Date();
   const toDate = toIsoDate(today);
@@ -300,8 +336,21 @@ async function tryRestBackfill(symbol) {
     new Date(today.getTime() - BACKFILL_FETCH_DAYS * 86400000)
   );
 
+  if (logger?.info) {
+    logger.info("[historicalService] REST backfill attempt (last resort – DB + flatfile insufficient)", {
+      symbol: sym,
+      fromDate,
+      toDate,
+      timeoutMs: REST_BACKFILL_TIMEOUT_MS,
+    });
+  }
+
   try {
-    const candles = await fetchMassiveHistoricalCandles(sym, fromDate, toDate);
+    const candles = await withTimeout(
+      fetchMassiveHistoricalCandles(sym, fromDate, toDate),
+      REST_BACKFILL_TIMEOUT_MS,
+      `REST backfill for ${sym}`
+    );
 
     if (!candles || !candles.length) {
       return 0;
@@ -313,16 +362,24 @@ async function tryRestBackfill(symbol) {
       logger.info("[historicalService] REST backfill complete", {
         symbol: sym,
         candlesFetched: candles.length,
+        source: "massive_rest",
       });
     }
 
     return candles.length;
   } catch (err) {
+    const isTimeout = err.message && err.message.includes("timeout:");
     if (logger?.warn) {
-      logger.warn("[historicalService] REST backfill failed", {
-        symbol: sym,
-        message: err.message,
-      });
+      logger.warn(
+        isTimeout
+          ? "[historicalService] REST backfill timed out – degrading gracefully, pipeline continues"
+          : "[historicalService] REST backfill failed – degrading gracefully",
+        {
+          symbol: sym,
+          message: err.message,
+          degraded: true,
+        }
+      );
     }
     return 0;
   }
@@ -404,13 +461,20 @@ async function getHistoricalPrices(symbol, period) {
     let rows = await getPricesDaily(sym, days);
 
     if (rows.length >= MIN_POINTS) {
+      if (logger?.info) {
+        logger.info("[historicalService] prices served from DB", {
+          symbol: sym,
+          rows: rows.length,
+          source: "prices_daily",
+        });
+      }
       return rows.map((r) => ({ close: r.close }));
     }
 
     if (logger?.info) {
-      logger.info("[historicalService] insufficient DB history, starting backfill", {
+      logger.info("[historicalService] DB insufficient – starting backfill", {
         symbol: sym,
-        existingRows: rows.length,
+        dbRows: rows.length,
         minRequired: MIN_POINTS,
         requestedDays: days,
       });
@@ -426,6 +490,13 @@ async function getHistoricalPrices(symbol, period) {
 
       rows = await getPricesDaily(sym, days);
       if (rows.length >= MIN_POINTS) {
+        if (logger?.info) {
+          logger.info("[historicalService] prices sufficient after flatfile backfill", {
+            symbol: sym,
+            rows: rows.length,
+            source: "flatfile",
+          });
+        }
         return total;
       }
 
@@ -434,10 +505,17 @@ async function getHistoricalPrices(symbol, period) {
 
       rows = await getPricesDaily(sym, days);
       if (rows.length >= MIN_POINTS) {
+        if (logger?.info) {
+          logger.info("[historicalService] prices sufficient after grouped-daily backfill", {
+            symbol: sym,
+            rows: rows.length,
+            source: "grouped_daily",
+          });
+        }
         return total;
       }
 
-      // Step 3: REST per-symbol fallback
+      // Step 3: REST per-symbol fallback (last resort)
       total += await tryRestBackfill(sym);
 
       rows = await getPricesDaily(sym, days);
@@ -446,6 +524,14 @@ async function getHistoricalPrices(symbol, period) {
 
     if (backfilledCount > 0) {
       await triggerFeatureUpdate(sym);
+    }
+
+    if (rows.length < MIN_POINTS && logger?.warn) {
+      logger.warn("[historicalService] all backfill sources exhausted – returning partial data", {
+        symbol: sym,
+        rows: rows.length,
+        minRequired: MIN_POINTS,
+      });
     }
 
     return rows.map((r) => ({ close: r.close }));
