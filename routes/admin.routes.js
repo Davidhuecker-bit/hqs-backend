@@ -44,6 +44,9 @@ const {
   getTechRadarEntries,
   getEvolutionBoard,
   markEntriesSeen,
+  getAdminTechRadarEntries,
+  updateTechRadarEntryStatus,
+  VALID_ADMIN_STATUSES,
 } = require("../services/techRadar.service");
 const { getWorldState, buildWorldState } = require("../services/worldState.service");
 const {
@@ -1034,6 +1037,76 @@ router.get("/evolution-board", async (req, res) => {
     return res.json({ success: true, ...board });
   } catch (error) {
     logger.error("Admin evolution-board route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/admin/tech-radar-admin
+ * Extended Tech-Radar admin endpoint with HQS relevance assessment and
+ * advanced filters.
+ * Query params:
+ *   limit          (number, 1-200, default 50)
+ *   category       (string)
+ *   status         (string: 'neu' | 'beobachten' | 'prüfen' | 'testen' | 'übernehmen' | 'verworfen')
+ *   fitForHQS      (string: 'yes' | 'maybe' | 'no')
+ *   hasLink        (boolean string: 'true' | 'false')
+ *   isNew          (boolean string: 'true')
+ *   unreviewed     (boolean string: 'true')
+ *   adoptionTiming (string: 'sofort' | 'kurzfristig' | 'mittelfristig' | 'langfristig' | 'beobachten')
+ *   relevance      (string: 'high' | 'medium' | 'low')
+ */
+router.get("/tech-radar-admin", async (req, res) => {
+  try {
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const category = req.query.category || null;
+    const status = req.query.status || null;
+    const fitForHQS = req.query.fitForHQS || null;
+    const hasLink = req.query.hasLink === "true" ? true : req.query.hasLink === "false" ? false : null;
+    const isNew = req.query.isNew === "true" ? true : null;
+    const unreviewed = req.query.unreviewed === "true" ? true : null;
+    const adoptionTiming = req.query.adoptionTiming || null;
+    const relevance = req.query.relevance || null;
+
+    const result = await getAdminTechRadarEntries({
+      limit, category, status, fitForHQS, hasLink, isNew, unreviewed, adoptionTiming, relevance,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    logger.error("Admin tech-radar-admin route error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * PATCH /api/admin/tech-radar-admin/:id/status
+ * Update the status of a Tech-Radar entry.
+ * Body: { status: string, rejectionReason?: string }
+ */
+router.patch("/tech-radar-admin/:id/status", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ success: false, error: "id must be a positive integer" });
+    }
+
+    const VALID_STATUSES = VALID_ADMIN_STATUSES;
+    const status = req.body?.status;
+    if (!status || !VALID_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: `status must be one of: ${VALID_STATUSES.join(", ")}`,
+      });
+    }
+
+    const rejectionReason = status === "verworfen" ? (req.body?.rejectionReason || null) : null;
+    const updated = await updateTechRadarEntryStatus(id, status, rejectionReason);
+    return res.json({ success: true, entry: updated });
+  } catch (error) {
+    if (error.message?.includes("not found")) {
+      return res.status(404).json({ success: false, error: error.message });
+    }
+    logger.error("Admin tech-radar-admin status update error", { message: error.message });
     return res.status(500).json({ success: false, error: error.message });
   }
 });
