@@ -4,11 +4,11 @@
  * SEC EDGAR Refresh Job
  *
  * Periodically refreshes SEC EDGAR data (submissions + facts) for all active
- * symbols in the universe.  Runs through the universe in rolling batches so
+ * symbols in the universe. Runs through the universe in rolling batches so
  * each run does not overload the SEC EDGAR API.
  *
  * SEC EDGAR rate limit: ≤ 10 requests/second per their fair-use policy.
- * This job uses a 200 ms inter-symbol delay to stay comfortably below that.
+ * This job uses an inter-symbol delay to stay comfortably below that.
  *
  * Writer:  this job (via refreshSecEdgarSnapshot → upsertSecEdgarCompanySubmission,
  *           replaceSecEdgarFilingSignals, replaceSecEdgarCompanyFacts)
@@ -17,11 +17,12 @@
  * Schedule: daily (configure in Railway cron, e.g. 0 3 * * *)
  *
  * Configuration:
- *   SEC_EDGAR_USER_AGENT     – required: "YourApp contact@example.com"
- *   SEC_EDGAR_BATCH_SIZE     – symbols per run (default: 50)
- *   SEC_EDGAR_DELAY_MS       – ms between symbols (default: 200)
- *   SEC_EDGAR_FILING_LIMIT   – filings per symbol (default: 12)
- *   SEC_EDGAR_FACT_LIMIT     – facts per symbol (default: 30)
+ *   SEC_EDGAR_USER_AGENT    – required: "YourApp contact@example.com"
+ *   SEC_EDGAR_BATCH_SIZE    – symbols per run (default: 50)
+ *   SEC_EDGAR_DELAY_MS      – ms between symbols (default: 200)
+ *   SEC_EDGAR_FILING_LIMIT  – filings per symbol (default: 12)
+ *   SEC_EDGAR_FACT_LIMIT    – facts per symbol (default: 30)
+ *   SEC_EDGAR_LOCK_TTL_SECS – lock TTL in seconds (default: 14400 = 4h)
  */
 
 require("dotenv").config();
@@ -44,11 +45,29 @@ const { getSharedPool, closeAllPools } = require("../config/database");
 
 const pool = getSharedPool();
 
-const BATCH_SIZE   = Math.max(1, Math.min(Number(process.env.SEC_EDGAR_BATCH_SIZE  || 50),  200));
-const DELAY_MS     = Math.max(100, Number(process.env.SEC_EDGAR_DELAY_MS           || 200));
-const FILING_LIMIT = Math.max(1,   Number(process.env.SEC_EDGAR_FILING_LIMIT       || 12));
-const FACT_LIMIT   = Math.max(1,   Number(process.env.SEC_EDGAR_FACT_LIMIT         || 30));
-const LOCK_TTL_SECS = 4 * 60 * 60; // 4 hours – generous, job may run long on large universe
+// ── Configuration ────────────────────────────────────────────────────────────
+const BATCH_SIZE = Math.max(
+  1,
+  Math.min(Number(process.env.SEC_EDGAR_BATCH_SIZE || 50), 200)
+);
+
+const DELAY_MS = Math.max(
+  100,
+  Number(process.env.SEC_EDGAR_DELAY_MS || 200)
+);
+
+const FILING_LIMIT = Math.max(
+  1,
+  Number(process.env.SEC_EDGAR_FILING_LIMIT || 12)
+);
+
+const FACT_LIMIT = Math.max(
+  1,
+  Number(process.env.SEC_EDGAR_FACT_LIMIT || 30)
+);
+
+const LOCK_TTL_SECS =
+  Number.parseInt(process.env.SEC_EDGAR_LOCK_TTL_SECS || "14400", 10) || 14400;
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,24 +83,34 @@ async function run() {
 
       const won = await acquireLock("sec_edgar_refresh_job", LOCK_TTL_SECS);
       if (!won) {
-        logger.warn("[job:secEdgarRefresh] skipped – lock held");
+        logger.warn("[job:secEdgarRefresh] skipped – lock held", {
+          lockTtlSeconds: LOCK_TTL_SECS,
+          skipReason: "lock_held",
+        });
         return { skipped: true, skipReason: "lock_held", processedCount: 0 };
       }
 
+      const startMs = Date.now();
+
       try {
         const symbols = await listActiveUniverseSymbols(BATCH_SIZE);
+
         logger.info("[job:secEdgarRefresh] starting", {
           symbolCount: symbols.length,
           batchSize: BATCH_SIZE,
           delayMs: DELAY_MS,
+          filingLimit: FILING_LIMIT,
+          factLimit: FACT_LIMIT,
         });
 
-        let processed = 0;
         let succeeded = 0;
-        let failed    = 0;
-        const errors  = [];
+        let failed = 0;
+        let warnings = 0;
+        const errorDetails = [];
 
-        for (const symbol of symbols) {
+        for (let i = 0; i < symbols.length; i++) {
+          const symbol = symbols[i];
+
           try {
             await refreshSecEdgarSnapshot(symbol, {
               filingLimit: FILING_LIMIT,
@@ -89,44 +118,95 @@ async function run() {
             });
             succeeded += 1;
           } catch (err) {
-            failed += 1;
             const statusCode = err?.statusCode;
-            // 404 = SEC doesn't have data for this symbol – expected for non-US stocks
-            if (statusCode !== 404) {
-              errors.push({ symbol, message: err.message });
+
+            // 404 = SEC has no data for this symbol – expected for some symbols
+            if (statusCode === 404) {
+              warnings += 1;
+              logger.debug("[job:secEdgarRefresh] symbol not found in SEC", {
+                symbol,
+              });
+            } else {
+              failed += 1;
+              errorDetails.push({
+                symbol,
+                message: err?.message || String(err),
+              });
+
               logger.warn("[job:secEdgarRefresh] symbol failed", {
                 symbol,
                 statusCode,
-                message: err.message,
+                message: err?.message || String(err),
               });
             }
           }
 
-          processed += 1;
-
-          if (processed < symbols.length) {
+          if (i < symbols.length - 1) {
             await delay(DELAY_MS);
           }
         }
 
-        await savePipelineStage("sec_edgar_refresh", {
-          inputCount: symbols.length,
-          successCount: succeeded,
-          failedCount: failed,
-        });
+        const durationMs = Date.now() - startMs;
+        const processedCount = succeeded + failed + warnings;
+
+        try {
+          await savePipelineStage("sec_edgar_refresh", {
+            inputCount: symbols.length,
+            successCount: succeeded,
+            failedCount: failed,
+            skippedCount: warnings,
+            status: "success",
+          });
+        } catch (stageErr) {
+          logger.warn("[job:secEdgarRefresh] savePipelineStage failed", {
+            message: stageErr?.message,
+          });
+        }
 
         logger.info("[job:secEdgarRefresh] done", {
-          processed,
+          processed: processedCount,
           succeeded,
           failed,
-          errorSample: errors.slice(0, 3),
+          warnings,
+          durationMs,
+          errorSample: errorDetails.slice(0, 3),
         });
 
-        return { processedCount: succeeded, succeeded, failed };
+        return {
+          processedCount,
+          succeeded,
+          failed,
+          warnings,
+          durationMs,
+        };
+      } catch (err) {
+        const durationMs = Date.now() - startMs;
+
+        try {
+          await savePipelineStage("sec_edgar_refresh", {
+            inputCount: 0,
+            successCount: 0,
+            failedCount: 1,
+            skippedCount: 0,
+            status: "failed",
+          });
+        } catch (stageErr) {
+          logger.warn("[job:secEdgarRefresh] savePipelineStage failed after job error", {
+            message: stageErr?.message,
+          });
+        }
+
+        logger.error("[job:secEdgarRefresh] failed", {
+          message: err?.message || String(err),
+          durationMs,
+          stack: err?.stack,
+        });
+
+        throw err;
       } finally {
-        await releaseLock("sec_edgar_refresh_job").catch((err) => {
+        await releaseLock("sec_edgar_refresh_job").catch((lockErr) => {
           logger.warn("[job:secEdgarRefresh] lock release failed", {
-            message: err?.message,
+            message: lockErr?.message,
           });
         });
       }
@@ -135,20 +215,22 @@ async function run() {
   );
 }
 
+module.exports = { run };
+
+// ── Standalone entry point ──────────────────────────────────────────────────
 if (require.main === module) {
+  let exitCode = 0;
+
   run()
-    .then(() => {
-      closeAllPools().catch(() => {});
-      process.exit(0);
-    })
     .catch((err) => {
-      logger.error("secEdgarRefresh job failed", {
+      exitCode = 1;
+      logger.error("[job:secEdgarRefresh] fatal", {
         message: err?.message || String(err),
         stack: err?.stack,
       });
-      closeAllPools().catch(() => {});
-      process.exit(1);
+    })
+    .finally(async () => {
+      await closeAllPools().catch(() => {});
+      process.exit(exitCode);
     });
 }
-
-module.exports = { run };
