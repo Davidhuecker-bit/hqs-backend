@@ -98,9 +98,22 @@ const HIST_PERIOD = String(process.env.HIST_PERIOD || "1y").toLowerCase();
 const MC_SIMS = Number(process.env.MC_SIMS || 800);
 const OUTCOME_HORIZON_DAYS = Number(process.env.OUTCOME_HORIZON_DAYS || 30);
 
-const SNAPSHOT_SYMBOL_LIMIT = Number(process.env.SNAPSHOT_SYMBOL_LIMIT || 250);
-const SNAPSHOT_BATCH_SIZE = Number(process.env.SNAPSHOT_BATCH_SIZE || 80);
+const SNAPSHOT_SYMBOL_LIMIT = Number(process.env.SNAPSHOT_SYMBOL_LIMIT || 400);
+const SNAPSHOT_BATCH_SIZE = Number(process.env.SNAPSHOT_BATCH_SIZE || 350);
 const SNAPSHOT_REGION = String(process.env.SNAPSHOT_REGION || "us").toLowerCase().trim();
+
+// Log the source of the effective batch size so operators can see whether the
+// value came from an env override, the default, or a hard constant.
+{
+  const batchSizeSource = process.env.SNAPSHOT_BATCH_SIZE ? "env:SNAPSHOT_BATCH_SIZE" : "default";
+  const limitSource     = process.env.SNAPSHOT_SYMBOL_LIMIT ? "env:SNAPSHOT_SYMBOL_LIMIT" : "default";
+  const regionSource    = process.env.SNAPSHOT_REGION ? "env:SNAPSHOT_REGION" : "default";
+  logger.info("Snapshot config resolved", {
+    SNAPSHOT_BATCH_SIZE,  batchSizeSource,
+    SNAPSHOT_SYMBOL_LIMIT, limitSource,
+    SNAPSHOT_REGION,      regionSource,
+  });
+}
 const SNAPSHOT_FAIL_FAST_THRESHOLD = Number(process.env.SNAPSHOT_FAIL_FAST_THRESHOLD || 35);
 
 const PRICE_DEVIATION_WARN_PCT = Number(
@@ -754,6 +767,24 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
     country: SNAPSHOT_REGION,
   });
 
+  // Log universe size before and after the region filter so the full data
+  // chain is visible in every run — even when no bottleneck is detected.
+  const totalUnfiltered = safeNum(universeBatch?.totalActiveUnfiltered, 0);
+  const totalFiltered   = safeNum(universeBatch?.totalActive, 0);
+  const filteredOut     = totalUnfiltered - totalFiltered;
+  logger.info("Universe snapshot: size diagnostics", {
+    totalActiveUnfiltered: totalUnfiltered,
+    totalActiveAfterRegionFilter: totalFiltered,
+    filteredOutByRegion: filteredOut,
+    region: SNAPSHOT_REGION,
+    requestedBatchSize: batchSize,
+    batchSizeSource: process.env.SNAPSHOT_BATCH_SIZE ? "env:SNAPSHOT_BATCH_SIZE" : "default",
+    symbolLimitSource: process.env.SNAPSHOT_SYMBOL_LIMIT ? "env:SNAPSHOT_SYMBOL_LIMIT" : "default",
+    cursorOffset: safeNum(universeBatch?.cursor, 0),
+    wrapped: Boolean(universeBatch?.wrapped),
+    coversFullUniverse: totalFiltered > 0 && batchSize >= totalFiltered,
+  });
+
   const universeItems = Array.isArray(universeBatch?.items)
     ? universeBatch.items
     : [];
@@ -780,6 +811,7 @@ async function getSnapshotCandidates(limit = SNAPSHOT_BATCH_SIZE) {
       count: candidates.length,
       batchSize,
       totalActive: safeNum(universeBatch?.totalActive, 0),
+      totalActiveUnfiltered: safeNum(universeBatch?.totalActiveUnfiltered, 0),
       offsetUsed: safeNum(universeBatch?.cursor, 0),
       nextOffset: safeNum(universeBatch?.nextCursor, 0),
       wrapped: Boolean(universeBatch?.wrapped),

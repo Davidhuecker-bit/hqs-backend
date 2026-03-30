@@ -259,11 +259,16 @@ async function listActiveUniverseSymbols(limit = 150, options = {}) {
 
 /**
  * Get next batch of active symbols, using OFFSET cursor.
- * If end reached, cursor resets to 0 and batch starts from beginning.
+ * When the cursor is near the end of the list (partial tail batch), the
+ * remaining slots are filled by wrapping around to the beginning so that
+ * every run processes exactly `limit` symbols (or the full universe when
+ * the universe is smaller than `limit`).
+ *
+ * Hard cap: 1000 symbols per call.
  */
 async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT, options = {}) {
   const lim = Number(limit);
-  const safeLimit = Number.isFinite(lim) && lim > 0 ? Math.min(lim, 500) : 150;
+  const safeLimit = Number.isFinite(lim) && lim > 0 ? Math.min(lim, 1000) : 150;
   const country = String(options?.country || "").trim().toUpperCase();
 
   let wrapped = false;
@@ -296,20 +301,30 @@ async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT, options 
     }));
   }
 
+  // Count total without country filter (for upstream diagnostics)
+  const totalActiveUnfiltered = await countActiveUniverse(null);
   const totalActive = await countActiveUniverse(country || null);
   let symbols = await fetchBatch(cursor);
 
-  // If we hit the end, wrap around
-  if (!symbols.length && cursor > 0) {
+  // Partial tail batch: cursor was near the end of the list so fewer symbols
+  // than requested were returned. Fill the remaining slots from position 0
+  // (wrapping around), capped at `cursor` items to avoid duplicates.
+  let nextCursor;
+  if (symbols.length < safeLimit && cursor > 0) {
     wrapped = true;
-    cursor = 0;
-    symbols = await fetchBatch(cursor);
+    const remaining = safeLimit - symbols.length;
+    const wrappedSymbols = await fetchBatch(0);
+    // Only take up to `cursor` symbols from the start to avoid re-processing
+    // symbols already included in the tail portion.
+    // Proof: tail covers positions [cursor, totalActive-1]; head covers
+    // positions [0, fillCount-1] = [0, cursor-1] — they are disjoint.
+    const fillCount = Math.min(remaining, cursor, wrappedSymbols.length);
+    symbols = [...symbols, ...wrappedSymbols.slice(0, fillCount)];
+    nextCursor = fillCount;
+  } else {
+    nextCursor = totalActive > 0 ? (cursor + symbols.length) % totalActive : 0;
   }
 
-  const nextCursor =
-    totalActive > 0
-      ? (cursor + symbols.length) % totalActive
-      : 0;
   await setCursor(nextCursor, key);
 
   return {
@@ -318,6 +333,7 @@ async function getUniverseBatch(limit = 150, key = CURSOR_KEY_SNAPSHOT, options 
     cursor,
     nextCursor,
     totalActive,
+    totalActiveUnfiltered,
     wrapped,
   };
 }
