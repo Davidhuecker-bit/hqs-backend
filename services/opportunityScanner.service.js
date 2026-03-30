@@ -1704,6 +1704,10 @@ function calculateConfidence(row, opportunityScore) {
 const STRESS_SCENARIO_COUNT = 10;
 const STRESS_PERCENT_MIN = 0.05;
 const STRESS_PERCENT_MAX = 0.15;
+
+function randomStressFactor() {
+  return STRESS_PERCENT_MIN + Math.random() * (STRESS_PERCENT_MAX - STRESS_PERCENT_MIN);
+}
 const STRESS_ANTIFRAGILE_THRESHOLD = 0.8;
 const STRESS_MIN_HQS_SCORE = 35;
 const STRESS_MIN_OPPORTUNITY_SCORE = 30;
