@@ -86,6 +86,72 @@ function safeUrlWithoutKey(url) {
 }
 
 /* =========================================================
+   CANONICAL TICKER RESOLVER
+   Maps known company display-names / long-form names to the
+   real exchange ticker required by all provider APIs.
+   If a caller accidentally passes a display name (e.g. "APPLE"
+   instead of "AAPL"), resolveCanonicalTicker() converts it
+   before any network call is made.
+========================================================= */
+
+const DISPLAY_NAME_TO_TICKER = {
+  // Consumer Tech
+  APPLE: "AAPL",
+  // Cloud / AI
+  MICROSOFT: "MSFT",
+  AMAZON: "AMZN",
+  ALPHABET: "GOOGL",
+  GOOGLE: "GOOGL",
+  // AI Semiconductors
+  NVIDIA: "NVDA",
+  // Social / Ad platforms
+  FACEBOOK: "META",
+  // EV
+  TESLA: "TSLA",
+  // Semiconductors
+  BROADCOM: "AVGO",
+  QUALCOMM: "QCOM",
+  // Financials
+  JPMORGAN: "JPM",
+  BANKOFAMERICA: "BAC",
+  WELLSFARGO: "WFC",
+  GOLDMANSACHS: "GS",
+  MORGANSTANLEY: "MS",
+  BERKSHIRE: "BRK.B",
+  // Healthcare
+  ELILILLY: "LLY",
+  JOHNSONANDJOHNSON: "JNJ",
+  UNITEDHEALTH: "UNH",
+  MERCK: "MRK",
+  PFIZER: "PFE",
+  ABBVIE: "ABBV",
+  // Consumer
+  NETFLIX: "NFLX",
+  WALMART: "WMT",
+  COSTCO: "COST",
+  // Energy
+  EXXON: "XOM",
+  CHEVRON: "CVX",
+};
+
+/**
+ * Resolves a symbol that may be a company display-name to its canonical
+ * provider-compatible ticker.  If no mapping exists the input is returned
+ * as-is (already upper-cased).
+ *
+ * @param {string} inputSymbol – raw symbol value from the caller
+ * @returns {{ ticker: string, wasResolved: boolean, inputSymbol: string }}
+ */
+function resolveCanonicalTicker(inputSymbol) {
+  const sym = String(inputSymbol || "").trim().toUpperCase();
+  const canonical = DISPLAY_NAME_TO_TICKER[sym];
+  if (canonical) {
+    return { ticker: canonical, wasResolved: true, inputSymbol: sym };
+  }
+  return { ticker: sym, wasResolved: false, inputSymbol: sym };
+}
+
+/* =========================================================
    NORMALIZERS
 ========================================================= */
 
@@ -577,10 +643,28 @@ async function fetchGroupedDailyCandles(date) {
 ========================================================= */
 
 async function fetchQuote(symbol) {
-  const sym = String(symbol || "").trim().toUpperCase();
+  const { ticker: sym, wasResolved, inputSymbol } = resolveCanonicalTicker(symbol);
 
   if (!sym) {
     throw new Error("fetchQuote called without symbol");
+  }
+
+  // Log every call so it is visible which field arrived and which ticker is
+  // actually sent to the provider.  If wasResolved=true the caller passed a
+  // display-name / company-name instead of the real ticker.
+  if (logger?.info) {
+    logger.info("[providerService] fetchQuote: ticker resolved", {
+      inputSymbol,
+      canonicalTicker: sym,
+      wasResolved,
+    });
+  }
+  if (wasResolved && logger?.warn) {
+    logger.warn(
+      "[providerService] fetchQuote: display name resolved to canonical ticker – " +
+      "check caller to prevent repeated API failures",
+      { inputSymbol, canonicalTicker: sym }
+    );
   }
 
   const providers = [];
@@ -678,4 +762,5 @@ module.exports = {
   fetchMassiveHistoricalCandles,
   fetchMassiveGroupedDailyCandles,
   fetchGroupedDailyCandles,
+  resolveCanonicalTicker,
 };

@@ -1212,6 +1212,11 @@ async function buildMarketSnapshot() {
     ensureTierBucket(summary, tier).total++;
 
     try {
+      logger.info("snapshot: sending provider request", {
+        inputSymbol: symbol,
+        tier,
+        priority: candidate.priority,
+      });
       const raw = await fetchQuote(symbol);
       if (!raw || !raw.length) {
         summary.skipped++;
