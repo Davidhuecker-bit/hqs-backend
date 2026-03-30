@@ -65,79 +65,118 @@ async function initEntityMapTable() {
   if (logger?.info) logger.info("entity_map table ready");
 }
 
+/**
+ * Normalize a single entry into the column shape expected by entity_map.
+ * Returns null if the entry has no valid symbol.
+ */
+function normalizeEntry(entry) {
+  const symbol = normalizeSymbol(entry?.symbol);
+  if (!symbol) return null;
+
+  return {
+    symbol,
+    companyName: normalizeText(entry?.company_name || entry?.companyName, 255),
+    sector: normalizeText(entry?.sector, 120),
+    industry: normalizeText(entry?.industry, 120),
+    themes: JSON.stringify(normalizeStringArray(entry?.themes, 50, 120)),
+    commodities: JSON.stringify(normalizeStringArray(entry?.commodities, 50, 120)),
+    countries: JSON.stringify(normalizeStringArray(entry?.countries, 50, 120)),
+    aliases: JSON.stringify(normalizeStringArray(entry?.aliases, 100, 120)),
+    isActive:
+      typeof entry?.is_active === "boolean"
+        ? entry.is_active
+        : typeof entry?.isActive === "boolean"
+          ? entry.isActive
+          : true,
+  };
+}
+
+const BULK_UPSERT_BATCH_SIZE = 500;
+
 async function upsertEntityMapEntries(entries = []) {
   if (!Array.isArray(entries) || !entries.length) {
     return { insertedOrUpdated: 0 };
   }
 
+  // Normalize and filter out entries without valid symbols
+  const normalized = [];
+  for (const entry of entries) {
+    const norm = normalizeEntry(entry);
+    if (norm) normalized.push(norm);
+  }
+
+  if (!normalized.length) {
+    return { insertedOrUpdated: 0 };
+  }
+
   let insertedOrUpdated = 0;
 
-  for (const entry of entries) {
-    const symbol = normalizeSymbol(entry?.symbol);
-    if (!symbol) continue;
+  // Process in batches to avoid oversized parameter arrays
+  for (let offset = 0; offset < normalized.length; offset += BULK_UPSERT_BATCH_SIZE) {
+    const batch = normalized.slice(offset, offset + BULK_UPSERT_BATCH_SIZE);
 
-    const companyName = normalizeText(entry?.company_name || entry?.companyName, 255);
-    const sector = normalizeText(entry?.sector, 120);
-    const industry = normalizeText(entry?.industry, 120);
-    const themes = normalizeStringArray(entry?.themes, 50, 120);
-    const commodities = normalizeStringArray(entry?.commodities, 50, 120);
-    const countries = normalizeStringArray(entry?.countries, 50, 120);
-    const aliases = normalizeStringArray(entry?.aliases, 100, 120);
-    const isActive =
-      typeof entry?.is_active === "boolean"
-        ? entry.is_active
-        : typeof entry?.isActive === "boolean"
-          ? entry.isActive
-          : true;
+    const symbols = [];
+    const companyNames = [];
+    const sectors = [];
+    const industries = [];
+    const themes = [];
+    const commodities = [];
+    const countries = [];
+    const aliases = [];
+    const isActives = [];
 
-    await pool.query(
+    for (const row of batch) {
+      symbols.push(row.symbol);
+      companyNames.push(row.companyName);
+      sectors.push(row.sector);
+      industries.push(row.industry);
+      themes.push(row.themes);
+      commodities.push(row.commodities);
+      countries.push(row.countries);
+      aliases.push(row.aliases);
+      isActives.push(row.isActive);
+    }
+
+    const result = await pool.query(
       `
       INSERT INTO entity_map (
-        symbol,
-        company_name,
-        sector,
-        industry,
-        themes,
-        commodities,
-        countries,
-        aliases,
-        is_active,
-        created_at,
-        updated_at
+        symbol, company_name, sector, industry,
+        themes, commodities, countries, aliases,
+        is_active, created_at, updated_at
       )
-      VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9,NOW(),NOW())
+      SELECT
+        t.symbol, t.company_name, t.sector, t.industry,
+        t.themes, t.commodities, t.countries, t.aliases,
+        t.is_active, NOW(), NOW()
+      FROM UNNEST(
+        $1::text[], $2::text[], $3::text[], $4::text[],
+        $5::jsonb[], $6::jsonb[], $7::jsonb[], $8::jsonb[],
+        $9::boolean[]
+      ) AS t(
+        symbol, company_name, sector, industry,
+        themes, commodities, countries, aliases,
+        is_active
+      )
       ON CONFLICT (symbol)
       DO UPDATE SET
         company_name = EXCLUDED.company_name,
-        sector = EXCLUDED.sector,
-        industry = EXCLUDED.industry,
-        themes = EXCLUDED.themes,
-        commodities = EXCLUDED.commodities,
-        countries = EXCLUDED.countries,
-        aliases = EXCLUDED.aliases,
-        is_active = EXCLUDED.is_active,
-        updated_at = NOW()
+        sector       = EXCLUDED.sector,
+        industry     = EXCLUDED.industry,
+        themes       = EXCLUDED.themes,
+        commodities  = EXCLUDED.commodities,
+        countries    = EXCLUDED.countries,
+        aliases      = EXCLUDED.aliases,
+        is_active    = EXCLUDED.is_active,
+        updated_at   = NOW()
       `,
-      [
-        symbol,
-        companyName,
-        sector,
-        industry,
-        JSON.stringify(themes),
-        JSON.stringify(commodities),
-        JSON.stringify(countries),
-        JSON.stringify(aliases),
-        isActive,
-      ]
+      [symbols, companyNames, sectors, industries, themes, commodities, countries, aliases, isActives]
     );
 
-    insertedOrUpdated += 1;
+    insertedOrUpdated += result.rowCount || 0;
   }
 
   if (logger?.info) {
-    logger.info("entity_map upsert completed", {
-      insertedOrUpdated,
-    });
+    logger.info("entity_map bulk upsert completed", { insertedOrUpdated });
   }
 
   return { insertedOrUpdated };
