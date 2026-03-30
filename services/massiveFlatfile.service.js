@@ -133,6 +133,14 @@ class MassiveFlatfileService {
         ? options.cacheTTLms
         : safeInt(env("MASSIVE_FLATFILES_CACHE_TTL", "300000"), 300000);
 
+    // TTL for the per-month key listing cache (default: 10 minutes).
+    // A shorter TTL keeps the set fresh for recently published dates while
+    // still avoiding redundant ListObjectsV2 calls within a single run.
+    this.monthKeyCacheTTLms =
+      options.monthKeyCacheTTLms !== undefined
+        ? options.monthKeyCacheTTLms
+        : safeInt(env("MASSIVE_FLATFILES_MONTH_KEY_CACHE_TTL", "600000"), 600000);
+
     this.maxRetries =
       options.maxRetries !== undefined
         ? options.maxRetries
@@ -181,6 +189,16 @@ class MassiveFlatfileService {
      * key -> { rows, expiresAt, lastAccessedAt }
      */
     this.cache = new Map();
+
+    /**
+     * Month-key listing cache for day_aggs_v1.
+     * Prefix (e.g. "us_stocks_sip/day_aggs_v1/2026/03/") ->
+     *   { keys: Set<string>, expiresAt: number }
+     *
+     * Populated by listAvailableKeysForMonth(); used by loadDailyAggFileRows()
+     * to avoid blind GetObject calls for dates that are not published yet.
+     */
+    this._monthKeyCache = new Map();
   }
 
   _pruneExpiredCache() {
@@ -295,6 +313,68 @@ class MassiveFlatfileService {
         ? res.Contents.map((x) => x.Key).filter(Boolean)
         : [];
     }, `listPrefix(${prefix})`);
+  }
+
+  /**
+   * Returns a Set of all S3 keys that exist under the year/month prefix for
+   * a given dataset, e.g. "us_stocks_sip/day_aggs_v1/2026/03/".
+   *
+   * The result is cached for `monthKeyCacheTTLms` milliseconds so that
+   * repeated calls within the same batch do not trigger multiple
+   * ListObjectsV2 requests for the same prefix.
+   *
+   * Returns `null` when the listing itself fails (network error, permissions,
+   * etc.); callers should fall back to the normal GetObject path in that case
+   * so that a transient ListObjects failure does not silently drop all rows.
+   */
+  async listAvailableKeysForMonth(dataset, year, month) {
+    const prefix = `${dataset}/${year}/${month}/`;
+    const cacheKey = `monthkeys:${prefix}`;
+
+    const cached = this._monthKeyCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.keys;
+    }
+
+    // Prune expired entries to keep the cache bounded.  In normal usage at
+    // most a handful of distinct year/month combinations are queried per run,
+    // so this is a cheap safety net rather than a hot path.
+    if (this._monthKeyCache.size >= 24) {
+      const now = Date.now();
+      for (const [k, entry] of this._monthKeyCache.entries()) {
+        if (!entry || entry.expiresAt <= now) {
+          this._monthKeyCache.delete(k);
+        }
+      }
+    }
+
+    logger.info("[MassiveFlatfileService] listing available keys for month", { prefix });
+
+    let keys;
+    try {
+      const rawKeys = await this.listPrefix(prefix);
+      keys = new Set(rawKeys);
+      logger.info("[MassiveFlatfileService] month listing complete", {
+        prefix,
+        availableFiles: rawKeys.length,
+      });
+    } catch (err) {
+      // Listing failed (e.g. network error, permission denied for the prefix).
+      // Return null so that the caller can fall back to the regular GetObject
+      // path rather than silently skipping all dates in this month.
+      logger.warn("[MassiveFlatfileService] listAvailableKeysForMonth failed – will fall back to direct GetObject", {
+        prefix,
+        error: extractErrorContext(err),
+      });
+      return null;
+    }
+
+    this._monthKeyCache.set(cacheKey, {
+      keys,
+      expiresAt: Date.now() + this.monthKeyCacheTTLms,
+    });
+
+    return keys;
   }
 
   async getObjectStream(key) {
@@ -513,6 +593,30 @@ class MassiveFlatfileService {
     if (cached) {
       logger.info("[MassiveFlatfileService] flatfile cache hit", { key, rows: cached.length });
       return cached;
+    }
+
+    // For day_aggs_v1: list the month prefix first so we can skip dates that
+    // are not published without issuing a blind GetObject that triggers
+    // NoSuchKey.  The listing result is cached per year/month so repeated
+    // single-date calls within the same batch are cheap.
+    const dataset = options.dataset || env("MASSIVE_FLATFILES_DAILY_DATASET", "us_stocks_sip/day_aggs_v1");
+    if (dataset.includes("day_aggs_v1")) {
+      const [year, month, _day] = iso.split("-");
+      const availableKeys = await this.listAvailableKeysForMonth(dataset, year, month);
+
+      if (availableKeys !== null) {
+        if (!availableKeys.has(key)) {
+          logger.info(
+            "[MassiveFlatfileService] day file not listed under month prefix – skipping (holiday / not yet published)",
+            { key, date: iso, availableInMonth: availableKeys.size }
+          );
+          return [];
+        }
+        // Key is confirmed to exist – proceed directly to GetObject.
+      }
+      // availableKeys === null means the listing call itself failed; fall
+      // through to the regular GetObject path so the date is not silently
+      // dropped.
     }
 
     logger.info("[MassiveFlatfileService] loading flatfile", { key });
