@@ -263,10 +263,25 @@ class MassiveFlatfileService {
   }
 
   /**
-   * Beispiel:
-   * us_stocks_sip/day_aggs_v1/2026/03/2026-03-25.csv.gz
+   * Resolves the dataset name from options or environment variable.
+   */
+  _resolveDataset(options = {}) {
+    return options.dataset || env("MASSIVE_FLATFILES_DAILY_DATASET", "us_stocks_sip/day_aggs_v1");
+  }
+
+  /**
+   * Builds the S3 key for a daily-aggregates flatfile.
    *
-   * Den Dataset-Pfad ggf. an die echte Massive-Subscription anpassen.
+   * Massive Day Aggregates use a year-only folder structure – there is no
+   * month sub-folder:
+   *   us_stocks_sip/day_aggs_v1/YYYY/YYYY-MM-DD.csv.gz
+   *
+   * Example:
+   *   us_stocks_sip/day_aggs_v1/2026/2026-03-25.csv.gz
+   *
+   * NOTE: other Massive datasets (e.g. trades, minute-aggs) may have a
+   * different folder structure. This function is intentionally specific to
+   * day_aggs_v1 – do not use it for other datasets.
    */
   buildDailyAggKey(date, options = {}) {
     const iso = toIsoDate(date);
@@ -274,11 +289,11 @@ class MassiveFlatfileService {
       throw new Error(`Invalid date: ${date}`);
     }
 
-    const [year, month] = iso.split("-");
-    const dataset =
-      options.dataset || env("MASSIVE_FLATFILES_DAILY_DATASET", "us_stocks_sip/day_aggs_v1");
+    const [year] = iso.split("-");
+    const dataset = this._resolveDataset(options);
 
-    return `${dataset}/${year}/${month}/${iso}.csv.gz`;
+    // Day-aggregates path: dataset/YYYY/YYYY-MM-DD.csv.gz  (no month folder)
+    return `${dataset}/${year}/${iso}.csv.gz`;
   }
 
   async listPrefix(prefix) {
@@ -508,6 +523,7 @@ class MassiveFlatfileService {
     }
 
     const key = this.buildDailyAggKey(date, options);
+    const dataset = this._resolveDataset(options);
 
     const cached = options.useCache === false ? null : this._cacheGet(key);
     if (cached) {
@@ -515,7 +531,7 @@ class MassiveFlatfileService {
       return cached;
     }
 
-    logger.info("[MassiveFlatfileService] loading flatfile", { key });
+    logger.info("[MassiveFlatfileService] fetching flatfile", { dataset, date: iso, key });
 
     const rows = [];
 
@@ -533,7 +549,7 @@ class MassiveFlatfileService {
       if (isNoSuchKeyError(err) || isGzipParseError(err)) {
         logger.warn(
           "[MassiveFlatfileService] flatfile not available – date is likely a holiday, not yet published, or returned an error payload",
-          { key, date: iso }
+          { dataset, key, date: iso }
         );
         return [];
       }
