@@ -5,6 +5,11 @@ const {
   createDeepSeekChatCompletion,
 } = require("./deepseek.service");
 
+const {
+  getDependencyHintsForFiles,
+  getDependencyHintsForArea,
+} = require("./dependencyMapping.service");
+
 const logger = require("../utils/logger");
 
 /* ─────────────────────────────────────────────
@@ -206,6 +211,47 @@ async function analyzeChangeImpact(payload = {}) {
     sections.push(`Notes:\n${notes}`);
   }
 
+  // ── dependency mapping hints (Light V1) ──────
+  let dependencyHints = null;
+  try {
+    const fileHints  = getDependencyHintsForFiles(changedFiles);
+    const areaHints  = affectedArea ? getDependencyHintsForArea(affectedArea) : null;
+
+    // Merge file-based and area-based hints
+    if (fileHints.relatedFiles.length || (areaHints && areaHints.relatedFiles.length)) {
+      dependencyHints = {
+        relatedFiles:   [...fileHints.relatedFiles],
+        relatedAreas:   [...fileHints.relatedAreas],
+        followupChecks: [...fileHints.followupChecks],
+      };
+      if (areaHints) {
+        for (const f of areaHints.relatedFiles)   { if (!dependencyHints.relatedFiles.includes(f))   dependencyHints.relatedFiles.push(f); }
+        for (const a of areaHints.relatedAreas)    { if (!dependencyHints.relatedAreas.includes(a))   dependencyHints.relatedAreas.push(a); }
+        for (const c of areaHints.followupChecks)  { if (!dependencyHints.followupChecks.includes(c)) dependencyHints.followupChecks.push(c); }
+      }
+    }
+
+    // Inject dependency context into the prompt so DeepSeek can use it
+    if (dependencyHints && (dependencyHints.relatedFiles.length || dependencyHints.relatedAreas.length)) {
+      const depParts = [];
+      if (dependencyHints.relatedFiles.length) {
+        depParts.push(`Known related files:\n${dependencyHints.relatedFiles.map((f) => `- ${f}`).join("\n")}`);
+      }
+      if (dependencyHints.relatedAreas.length) {
+        depParts.push(`Known related areas:\n${dependencyHints.relatedAreas.map((a) => `- ${a}`).join("\n")}`);
+      }
+      if (dependencyHints.followupChecks.length) {
+        depParts.push(`Suggested follow-up checks:\n${dependencyHints.followupChecks.map((c) => `- ${c}`).join("\n")}`);
+      }
+      sections.push(`HQS Dependency Mapping hints (auto-enriched):\n${depParts.join("\n")}`);
+    }
+  } catch (depErr) {
+    // dependency mapping must never break the analysis
+    logger.warn("[changeIntelligence] dependency mapping enrichment failed (non-blocking)", {
+      message: depErr.message,
+    });
+  }
+
   // At least *some* input is needed for a meaningful analysis
   if (sections.length === 0) {
     return fallbackResult(null, "no input data provided");
@@ -244,7 +290,14 @@ async function analyzeChangeImpact(payload = {}) {
     return fallbackResult(parsed.raw || rawContent, "model returned parse error descriptor");
   }
 
-  return normaliseResult(parsed);
+  const result = normaliseResult(parsed);
+
+  // ── attach dependency hints if available ─────
+  if (dependencyHints) {
+    result.dependencyHints = dependencyHints;
+  }
+
+  return result;
 }
 
 /* ─────────────────────────────────────────────

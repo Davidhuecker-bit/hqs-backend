@@ -4044,6 +4044,31 @@ router.patch("/deepseek/change-memory/:id", async (req, res) => {
 });
 
 /* =========================================================
+   GET /api/admin/deepseek/dependency-mapping
+   Debug endpoint – returns the full Dependency Mapping Light
+   configuration for admin inspection.
+========================================================= */
+
+const { getAllDependencyMappings } = require("../services/dependencyMapping.service");
+
+router.get("/deepseek/dependency-mapping", async (_req, res) => {
+  try {
+    const mappings = getAllDependencyMappings();
+    return res.json({
+      success: true,
+      version: "light-v1",
+      count: mappings.length,
+      mappings,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/dependency-mapping error", {
+      message: error.message,
+    });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
    POST /api/admin/deepseek/chat
    Admin DeepSeek Console V1 – free-form admin chat with
    optional mode (chat | diagnose | change_review), context,
