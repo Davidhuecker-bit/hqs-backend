@@ -304,21 +304,385 @@ const HQS_AREAS = [
 
 const NEGATIVE_KEYWORDS = ["blockchain", "cryptocurrency", "nft", "gaming", "social media", "web3", "metaverse"];
 
+/* =========================================================
+   STRATEGIC ASSESSMENT – HQS-Strategiebewertung (v2)
+   ---------------------------------------------------------
+   Rule-based strategic scoring aligned to real HQS system
+   areas, Node.js/Railway stack, and current project roadmap.
+========================================================= */
+
+/**
+ * Extended system areas for strategic HQS assessment.
+ * Each area maps to a short ID used in the `systemArea` output array.
+ */
+const HQS_STRATEGIC_AREAS = [
+  {
+    id: "data",
+    name: "Datenquellen / Datenerfassung",
+    keywords: ["market data", "price feed", "alternative data", "tick data", "order book",
+               "data source", "data feed", "data pipeline", "data ingestion", "api integration",
+               "websocket", "real-time data"],
+    whyNow: "Datenqualität ist Grundlage aller HQS-Entscheidungen",
+    deps: [],
+  },
+  {
+    id: "historical",
+    name: "Historische Daten / Backfills",
+    keywords: ["historical data", "backfill", "flatfile", "csv", "time series database",
+               "data warehouse", "archival", "batch processing", "historical analysis",
+               "data history", "long-term data"],
+    whyNow: "Historische Tiefe stärkt Backtest- und Maturity-Qualität",
+    deps: ["Stabile Datenquellen-Anbindung"],
+  },
+  {
+    id: "news",
+    name: "News / Entity-Verarbeitung",
+    keywords: ["sentiment", "news", "nlp", "text mining", "event detection",
+               "named entity", "entity recognition", "information extraction",
+               "news analysis", "text classification"],
+    whyNow: "News-Signale liefern Echtzeit-Kontext für Investmententscheidungen",
+    deps: [],
+  },
+  {
+    id: "signals",
+    name: "Signalverarbeitung / Zeitreihen",
+    keywords: ["signal processing", "time series", "forecast", "prediction",
+               "volatility", "regime", "momentum", "indicator", "anomaly detection",
+               "pattern recognition", "trend detection"],
+    whyNow: "Signalqualität bestimmt direkt die Scoring-Güte",
+    deps: ["Stabile Datenquellen"],
+  },
+  {
+    id: "discovery",
+    name: "Discovery / Radar / Frühsignale",
+    keywords: ["opportunity", "screening", "stock selection", "universe", "filter",
+               "scan", "discovery", "early signal", "market scan", "stock screener"],
+    whyNow: "Discovery-Engine ist aktiver HQS-Wachstumspfad",
+    deps: ["Funktionierendes Scoring"],
+  },
+  {
+    id: "learning",
+    name: "Learning / Outcome / Feedback",
+    keywords: ["causal", "memory", "reinforcement", "adaptive", "online learning",
+               "causal inference", "outcome", "feedback", "regime detection",
+               "meta-learning", "transfer learning", "continual learning"],
+    whyNow: "Outcome-Tracking & Feedback-Loops sind nächste HQS-Reifestufe",
+    deps: ["Stabile Outcome-Tracking-Basis", "Ausreichend historische Daten"],
+  },
+  {
+    id: "portfolio",
+    name: "Portfolio-Intelligenz",
+    keywords: ["portfolio optimization", "allocation", "position sizing",
+               "diversification", "portfolio", "rebalancing", "capital allocation",
+               "portfolio construction", "asset allocation"],
+    whyNow: "Portfolio-Logik ist Kernstück der HQS-Wertschöpfung",
+    deps: ["Stabiles Scoring", "Guardian-Grundschutz"],
+  },
+  {
+    id: "guardian",
+    name: "Guardian / Risk / Explainability",
+    keywords: ["risk", "var", "cvar", "drawdown", "tail risk", "stress test",
+               "hedging", "black swan", "explainability", "interpretability",
+               "risk management", "risk monitoring", "risk assessment"],
+    whyNow: "Kapitalschutz hat höchste operative Priorität",
+    deps: [],
+  },
+  {
+    id: "frontend",
+    name: "Frontend / Companion / Meaning-First",
+    keywords: ["visualization", "dashboard", "ui", "ux", "user interface",
+               "frontend", "companion", "human-in-the-loop", "user experience",
+               "interactive", "chart", "visual analytics"],
+    whyNow: "Frontend-Verständlichkeit bestimmt Nutzbarkeit des Systems",
+    deps: ["Backend-Datenqualität"],
+  },
+  {
+    id: "infra",
+    name: "Infra / Railway / Performance",
+    keywords: ["scalability", "distributed", "streaming", "real-time", "latency",
+               "pipeline", "performance", "infrastructure", "deployment",
+               "containerization", "database", "postgres", "caching", "redis",
+               "monitoring", "logging", "observability"],
+    whyNow: "Systemstabilität ist Voraussetzung für alle Erweiterungen",
+    deps: [],
+  },
+  {
+    id: "governance",
+    name: "Governance / Policy / Audit",
+    keywords: ["governance", "policy", "compliance", "audit", "autonomy",
+               "regulation", "oversight", "transparency", "accountability",
+               "data privacy", "gdpr", "access control"],
+    whyNow: "Governance wird mit steigender Autonomie zunehmend kritisch",
+    deps: ["Stabile Grundinfrastruktur", "Klare Autonomie-Stufen"],
+  },
+  {
+    id: "automation",
+    name: "Automation / Agenten",
+    keywords: ["agent", "multi-agent", "automation", "orchestration", "workflow",
+               "autonomous", "bot", "task automation", "scheduled job"],
+    whyNow: "Automatisierung reduziert operative Last und erhöht Konsistenz",
+    deps: ["Stabiles Guardian-Protocol", "Governance-Rahmen"],
+  },
+  {
+    id: "research",
+    name: "Research / Future Lab",
+    keywords: ["transformer", "llm", "large language model", "ensemble",
+               "neural", "deep learning", "novel", "emerging", "cutting-edge",
+               "state-of-the-art", "breakthrough"],
+    whyNow: "Research-Monitoring sichert langfristige Wettbewerbsfähigkeit",
+    deps: ["Stabile operative Basis"],
+  },
+];
+
+// Stack-Fit detection keywords
+const STACK_FIT_POSITIVE = [
+  "javascript", "node", "nodejs", "typescript", "npm", "express",
+  "postgres", "postgresql", "sql", "rest", "json", "websocket",
+  "http", "lightweight", "microservice", "docker", "railway",
+];
+const STACK_FIT_MIXED = [
+  "python", "tensorflow", "pytorch", "scikit", "pandas", "numpy",
+  "jupyter", "r language", "flask", "fastapi", "django",
+];
+const STACK_FIT_NEGATIVE = [
+  "java", "spring", "c++", "rust lang", "golang", "go lang",
+  "kubernetes cluster", "spark", "hadoop", "scala", "jvm",
+  ".net", "c#", "gpu cluster", "fpga", "hpc",
+  "high performance computing", "cuda",
+];
+
+// Hype / Moonshot detection
+const HYPE_KEYWORDS = [
+  "blockchain", "cryptocurrency", "nft", "gaming", "social media",
+  "web3", "metaverse", "crypto", "defi", "dao", "token",
+  "play-to-earn", "meme",
+];
+const MOONSHOT_KEYWORDS = [
+  "quantum computing", "quantum machine learning", "agi",
+  "artificial general intelligence", "brain-computer",
+  "neuromorphic", "dna computing", "quantum supremacy",
+];
+
+// Areas where HQS already has strong coverage → higher duplication risk
+const ESTABLISHED_AREAS = ["data", "signals", "portfolio", "guardian", "frontend"];
+// Areas that are growth/expansion targets → lower duplication risk
+const GROWTH_AREAS = ["governance", "automation", "research", "learning", "historical"];
+
+/**
+ * Computes a strategic HQS assessment for a Tech-Radar entry.
+ * Rule-based, deterministic, no LLM dependency.
+ *
+ * @param {{ title: string, summary: string, category: string, source_name?: string }} entry
+ * @returns {{
+ *   strategicFit: 'high' | 'medium' | 'low',
+ *   systemArea: string[],
+ *   impactScore: number,
+ *   effortScore: number,
+ *   riskScore: number,
+ *   priorityScore: number,
+ *   timeHorizon: 'now' | 'mid' | 'later',
+ *   decisionHint: 'watch' | 'evaluate' | 'test' | 'adopt' | 'reject',
+ *   whyNow: string,
+ *   dependencies: string[],
+ *   stackFit: 'good' | 'mixed' | 'weak',
+ *   duplicationRisk: 'low' | 'medium' | 'high',
+ * }}
+ */
+function computeStrategicTechAssessment(entry) {
+  const haystack = `${entry.title || ""} ${entry.summary || ""}`.toLowerCase();
+
+  /* ── 1. Matched system areas ─────────────────────────── */
+  const matchedAreas = [];
+  let totalAreaKeywordHits = 0;
+
+  for (const area of HQS_STRATEGIC_AREAS) {
+    let hits = 0;
+    for (const kw of area.keywords) {
+      if (haystack.includes(kw)) hits++;
+    }
+    if (hits > 0) {
+      matchedAreas.push(area);
+      totalAreaKeywordHits += hits;
+    }
+  }
+  const systemArea = matchedAreas.map((a) => a.id);
+
+  /* ── 2. Stack-Fit ────────────────────────────────────── */
+  let stackPositiveHits = 0;
+  let stackMixedHits = 0;
+  let stackNegativeHits = 0;
+
+  for (const kw of STACK_FIT_POSITIVE)  { if (haystack.includes(kw)) stackPositiveHits++; }
+  for (const kw of STACK_FIT_MIXED)     { if (haystack.includes(kw)) stackMixedHits++; }
+  for (const kw of STACK_FIT_NEGATIVE)  { if (haystack.includes(kw)) stackNegativeHits++; }
+
+  let stackFit;
+  if (stackNegativeHits >= 2 || (stackNegativeHits >= 1 && stackPositiveHits === 0)) {
+    stackFit = "weak";
+  } else if (stackPositiveHits > 0) {
+    stackFit = "good";
+  } else if (stackMixedHits > 0) {
+    stackFit = "mixed";
+  } else {
+    // No stack mentioned – default by category (research papers are usually stack-agnostic)
+    stackFit = entry.category === "ai_ml" ? "mixed" : "good";
+  }
+
+  /* ── 3. Hype / Moonshot detection ────────────────────── */
+  let hypeHits = 0;
+  let moonshotHits = 0;
+  for (const kw of HYPE_KEYWORDS)     { if (haystack.includes(kw)) hypeHits++; }
+  for (const kw of MOONSHOT_KEYWORDS) { if (haystack.includes(kw)) moonshotHits++; }
+
+  const isHype     = hypeHits >= 2 || (hypeHits >= 1 && matchedAreas.length === 0);
+  const isMoonshot = moonshotHits >= 1;
+
+  /* ── 4. strategicFit ─────────────────────────────────── */
+  let strategicFit;
+  if (isHype) {
+    strategicFit = "low";
+  } else if (matchedAreas.length >= 2 && totalAreaKeywordHits >= 3) {
+    strategicFit = "high";
+  } else if (matchedAreas.length >= 1) {
+    strategicFit = "medium";
+  } else {
+    strategicFit = "low";
+  }
+
+  /* ── 5. impactScore (0-100) ──────────────────────────── */
+  let impactScore = 0;
+  impactScore += matchedAreas.length * 15;    // up to ~60 for 4 areas
+  impactScore += totalAreaKeywordHits * 3;    // depth bonus
+  if (entry.category === "quant_finance") impactScore += 10;
+  else if (entry.category === "risk_models") impactScore += 8;
+  else if (entry.category === "ai_ml") impactScore += 5;
+  if (isHype) impactScore = Math.max(5, impactScore - 40);
+  if (isMoonshot) impactScore = Math.max(10, impactScore - 20);
+  impactScore = Math.min(100, Math.max(0, impactScore));
+
+  /* ── 6. effortScore (0-100) – higher = more effort ───── */
+  let effortScore = 30;
+  if (entry.category === "ai_ml") effortScore += 25;
+  else if (entry.category === "risk_models") effortScore += 20;
+  else if (entry.category === "quant_finance") effortScore += 10;
+  if (stackFit === "weak") effortScore += 25;
+  else if (stackFit === "mixed") effortScore += 10;
+  if (isMoonshot) effortScore += 20;
+  if (matchedAreas.some((a) => a.id === "research")) effortScore += 10;
+  if (matchedAreas.some((a) => a.id === "learning")) effortScore += 10;
+  effortScore = Math.min(100, Math.max(0, effortScore));
+
+  /* ── 7. riskScore (0-100) – higher = more risk ──────── */
+  let riskScore = 20;
+  if (entry.category === "risk_models") riskScore += 15;
+  else if (entry.category === "ai_ml") riskScore += 10;
+  if (stackFit === "weak") riskScore += 25;
+  else if (stackFit === "mixed") riskScore += 10;
+  if (isHype) riskScore += 20;
+  if (isMoonshot) riskScore += 15;
+  if (matchedAreas.some((a) => a.id === "infra")) riskScore += 10;
+  riskScore = Math.min(100, Math.max(0, riskScore));
+
+  /* ── 8. priorityScore (0-100) – composite ───────────── */
+  let priorityScore = Math.round(
+    impactScore * 0.45 - effortScore * 0.25 - riskScore * 0.15 + 30
+  );
+  if (strategicFit === "high") priorityScore += 15;
+  else if (strategicFit === "medium") priorityScore += 5;
+  if (stackFit === "good") priorityScore += 5;
+  else if (stackFit === "weak") priorityScore -= 10;
+  priorityScore = Math.min(100, Math.max(0, priorityScore));
+
+  /* ── 9. duplicationRisk ──────────────────────────────── */
+  const establishedHits = matchedAreas.filter((a) => ESTABLISHED_AREAS.includes(a.id)).length;
+  const growthHits = matchedAreas.filter((a) => GROWTH_AREAS.includes(a.id)).length;
+  let duplicationRisk;
+  if (establishedHits >= 2) duplicationRisk = "high";
+  else if (establishedHits >= 1 && growthHits === 0) duplicationRisk = "medium";
+  else duplicationRisk = "low";
+
+  /* ── 10. timeHorizon ─────────────────────────────────── */
+  let timeHorizon;
+  if (isMoonshot) {
+    timeHorizon = "later";
+  } else if (strategicFit === "high" && effortScore <= 50 && stackFit !== "weak") {
+    timeHorizon = "now";
+  } else if (strategicFit === "high" && effortScore <= 70) {
+    timeHorizon = "mid";
+  } else if (strategicFit === "medium" && effortScore <= 60) {
+    timeHorizon = "mid";
+  } else {
+    timeHorizon = "later";
+  }
+
+  /* ── 11. decisionHint ────────────────────────────────── */
+  let decisionHint;
+  if (isHype && strategicFit === "low") {
+    decisionHint = "reject";
+  } else if (stackFit === "weak" && impactScore < 40) {
+    decisionHint = "reject";
+  } else if (impactScore >= 60 && effortScore <= 45 && stackFit === "good" && !isMoonshot) {
+    decisionHint = "adopt";
+  } else if (impactScore >= 50 && effortScore <= 55 && stackFit !== "weak" && !isMoonshot) {
+    decisionHint = "test";
+  } else if (impactScore >= 35 && strategicFit !== "low") {
+    decisionHint = "evaluate";
+  } else if (matchedAreas.length > 0 || impactScore >= 15) {
+    decisionHint = "watch";
+  } else {
+    decisionHint = "reject";
+  }
+
+  /* ── 12. whyNow ──────────────────────────────────────── */
+  let whyNow;
+  if (isHype) {
+    whyNow = "Tech-Hype ohne konkreten HQS-Nutzen – aktuell nicht relevant.";
+  } else if (isMoonshot) {
+    whyNow = "Moonshot-Thema – interessant für langfristige Beobachtung, operativ noch nicht einsetzbar.";
+  } else if (matchedAreas.length > 0) {
+    const topArea = matchedAreas[0];
+    if (timeHorizon === "now") {
+      whyNow = `Passt direkt in den aktiven HQS-Bereich „${topArea.name}" – ${topArea.whyNow}.`;
+    } else if (timeHorizon === "mid") {
+      whyNow = `Relevant für „${topArea.name}" – mittelfristig einsetzbar, wenn Voraussetzungen erfüllt.`;
+    } else {
+      whyNow = `Betrifft „${topArea.name}" – derzeit eher Zukunftsthema, Grundlagen fehlen noch.`;
+    }
+  } else {
+    whyNow = "Kein klarer HQS-Bezug identifiziert – eher generische Forschung.";
+  }
+
+  /* ── 13. dependencies ────────────────────────────────── */
+  const depSet = new Set();
+  for (const area of matchedAreas) {
+    for (const dep of area.deps) depSet.add(dep);
+  }
+  if (stackFit === "mixed") depSet.add("Saubere Python-Job-Separation");
+  if (stackFit === "weak") depSet.add("Grundlegender Stack-Umbau erforderlich");
+  const dependencies = Array.from(depSet);
+
+  return {
+    strategicFit,
+    systemArea,
+    impactScore,
+    effortScore,
+    riskScore,
+    priorityScore,
+    timeHorizon,
+    decisionHint,
+    whyNow,
+    dependencies,
+    stackFit,
+    duplicationRisk,
+  };
+}
+
 /**
  * Computes a rule-based HQS relevance assessment for a Tech-Radar entry.
+ * Now includes the extended strategic assessment fields.
  *
  * @param {{ title: string, summary: string, category: string, source_name: string }} entry
- * @returns {{
- *   fitForHQS: 'yes' | 'maybe' | 'no',
- *   relevanceScore: number,
- *   relevanceLabel: string,
- *   whyItMatters: string,
- *   potentialUseCase: string,
- *   implementationEffort: 'low' | 'medium' | 'high',
- *   riskLevel: 'low' | 'medium' | 'high',
- *   adoptionTiming: 'sofort' | 'kurzfristig' | 'mittelfristig' | 'langfristig' | 'beobachten',
- *   recommendation: string,
- * }}
+ * @returns {object} Full HQS assessment including strategic fields.
  */
 function computeHqsRelevanceEntry(entry) {
   const haystack = `${entry.title || ""} ${entry.summary || ""}`.toLowerCase();
@@ -416,6 +780,9 @@ function computeHqsRelevanceEntry(entry) {
     recommendation = "Kein klarer HQS-Fit – vorerst nicht weiter verfolgen.";
   }
 
+  // Compute strategic assessment and merge
+  const strategic = computeStrategicTechAssessment(entry);
+
   return {
     fitForHQS,
     relevanceScore: score,
@@ -426,6 +793,7 @@ function computeHqsRelevanceEntry(entry) {
     riskLevel,
     adoptionTiming,
     recommendation,
+    ...strategic,
   };
 }
 
@@ -673,6 +1041,10 @@ async function markEntriesSeen() {
  *   unreviewed?: boolean,
  *   adoptionTiming?: string,
  *   relevance?: string,
+ *   strategicFit?: string,
+ *   timeHorizon?: string,
+ *   decisionHint?: string,
+ *   stackFit?: string,
  * }} filter
  * @returns {Promise<{ entries: Array, stats: object, generatedAt: string }>}
  */
@@ -700,6 +1072,22 @@ async function getAdminTechRadarEntries(filter = {}) {
   if (filter.adoptionTiming) {
     conditions.push(`hqs_assessment->>'adoptionTiming' = $${params.length + 1}`);
     params.push(filter.adoptionTiming);
+  }
+  if (filter.strategicFit && ["high", "medium", "low"].includes(filter.strategicFit)) {
+    conditions.push(`hqs_assessment->>'strategicFit' = $${params.length + 1}`);
+    params.push(filter.strategicFit);
+  }
+  if (filter.timeHorizon && ["now", "mid", "later"].includes(filter.timeHorizon)) {
+    conditions.push(`hqs_assessment->>'timeHorizon' = $${params.length + 1}`);
+    params.push(filter.timeHorizon);
+  }
+  if (filter.decisionHint && ["watch", "evaluate", "test", "adopt", "reject"].includes(filter.decisionHint)) {
+    conditions.push(`hqs_assessment->>'decisionHint' = $${params.length + 1}`);
+    params.push(filter.decisionHint);
+  }
+  if (filter.stackFit && ["good", "mixed", "weak"].includes(filter.stackFit)) {
+    conditions.push(`hqs_assessment->>'stackFit' = $${params.length + 1}`);
+    params.push(filter.stackFit);
   }
   if (filter.hasLink === true) {
     conditions.push(`source_url IS NOT NULL AND source_url != ''`);
@@ -737,25 +1125,33 @@ async function getAdminTechRadarEntries(filter = {}) {
           COUNT(*) FILTER (WHERE status = 'neu' OR status IS NULL)          AS unreviewed,
           COUNT(*) FILTER (WHERE status = 'beobachten')                     AS watching,
           COUNT(*) FILTER (WHERE status = 'verworfen')                      AS rejected,
-          COUNT(*) FILTER (WHERE scanned_at >= NOW() - INTERVAL '24 hours') AS new_today
+          COUNT(*) FILTER (WHERE scanned_at >= NOW() - INTERVAL '24 hours') AS new_today,
+          COUNT(*) FILTER (WHERE hqs_assessment->>'strategicFit' = 'high') AS strategic_high,
+          COUNT(*) FILTER (WHERE hqs_assessment->>'decisionHint' IN ('test', 'adopt')) AS actionable
         FROM tech_radar_entries
       `),
     ]);
 
     const s = statsRes.rows[0] || {};
     const stats = {
-      total:       Number(s.total        || 0),
-      hqsRelevant: Number(s.hqs_relevant || 0),
-      unreviewed:  Number(s.unreviewed   || 0),
-      watching:    Number(s.watching     || 0),
-      rejected:    Number(s.rejected     || 0),
-      newToday:    Number(s.new_today    || 0),
+      total:         Number(s.total          || 0),
+      hqsRelevant:   Number(s.hqs_relevant   || 0),
+      unreviewed:    Number(s.unreviewed     || 0),
+      watching:      Number(s.watching       || 0),
+      rejected:      Number(s.rejected       || 0),
+      newToday:      Number(s.new_today      || 0),
+      strategicHigh: Number(s.strategic_high || 0),
+      actionable:    Number(s.actionable     || 0),
     };
 
     const entries = entriesRes.rows.map((row) => {
-      // Enrich with computed HQS assessment if not persisted
+      // Enrich with computed HQS assessment if not persisted or missing strategic fields
       let hqsAssessment = row.hqs_assessment;
-      if (!hqsAssessment || typeof hqsAssessment !== "object") {
+      if (
+        !hqsAssessment ||
+        typeof hqsAssessment !== "object" ||
+        !hqsAssessment.strategicFit
+      ) {
         hqsAssessment = computeHqsRelevanceEntry({
           title: row.title,
           summary: row.summary || "",
@@ -773,7 +1169,11 @@ async function getAdminTechRadarEntries(filter = {}) {
     return { entries, stats, generatedAt: new Date().toISOString() };
   } catch (err) {
     logger.warn("techRadar.getAdminTechRadarEntries: DB error", { message: err.message });
-    return { entries: [], stats: { total: 0, hqsRelevant: 0, unreviewed: 0, watching: 0, rejected: 0, newToday: 0 }, generatedAt: new Date().toISOString() };
+    return {
+      entries: [],
+      stats: { total: 0, hqsRelevant: 0, unreviewed: 0, watching: 0, rejected: 0, newToday: 0, strategicHigh: 0, actionable: 0 },
+      generatedAt: new Date().toISOString(),
+    };
   }
 }
 
@@ -823,6 +1223,7 @@ module.exports = {
   getEvolutionBoard,
   markEntriesSeen,
   computeHqsRelevanceEntry,
+  computeStrategicTechAssessment,
   getAdminTechRadarEntries,
   updateTechRadarEntryStatus,
   VALID_ADMIN_STATUSES,
