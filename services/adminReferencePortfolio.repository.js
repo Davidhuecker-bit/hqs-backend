@@ -7,11 +7,15 @@
  * No dependency on briefing/watchlist/demo tables.
  *
  * Provides:
- *  - initAdminReferencePortfolioTable()  – CREATE TABLE + seed if empty
+ *  - initAdminReferencePortfolioTable()  – CREATE TABLE + seed if empty,
+ *                                          enrolls all symbols into universe_symbols
+ *                                          so the snapshot pipeline covers them
  *  - getActiveReferenceSymbols()         – ordered list of active symbols+names
- *  - upsertReferencePortfolioEntry()     – add/update a single entry
+ *  - upsertReferencePortfolioEntry()     – add/update a single entry (also
+ *                                          enrolls in universe pipeline if active)
  *  - enrichReferencePortfolio()          – batch-load snapshots, HQS scores,
- *                                          advanced metrics, news count, outcome
+ *                                          advanced metrics, news count, outcome;
+ *                                          includes per-symbol pipeline diagnostics
  */
 
 const { getSharedPool } = require("../config/database");
@@ -23,7 +27,24 @@ try {
   logger = null;
 }
 
+// Lazy-load universe helpers to avoid potential circular-require issues at
+// module load time.  Both functions are stable exports of universe.repository.
+let _ensureTrackedSymbol = null;
+let _initUniverseTables = null;
+function _getUniverseHelpers() {
+  if (!_ensureTrackedSymbol || !_initUniverseTables) {
+    const ur = require("./universe.repository");
+    _ensureTrackedSymbol = ur.ensureTrackedSymbol;
+    _initUniverseTables = ur.initUniverseTables;
+  }
+  return { ensureTrackedSymbol: _ensureTrackedSymbol, initUniverseTables: _initUniverseTables };
+}
+
 const pool = getSharedPool();
+
+// Priority used when enrolling reference portfolio symbols in universe_symbols.
+// Lower value = scanned earlier in each batch cycle.
+const REFERENCE_UNIVERSE_PRIORITY = 10;
 
 // ── initial seed (24 liquid US equities) ─────────────────────────────────────
 const INITIAL_SEED = [
@@ -91,7 +112,49 @@ async function initAdminReferencePortfolioTable() {
     if (logger?.info) logger.info(`admin_reference_portfolio: seeded initial ${INITIAL_SEED.length} entries`);
   }
 
+  // Enroll all active reference symbols into universe_symbols so the snapshot
+  // pipeline covers them.  This is the critical bridge: without it the symbols
+  // exist only in the admin table and never receive market_snapshots / HQS
+  // scores / advanced metrics from the writer pipeline.
+  await _enrollActiveSymbolsInUniverse();
+
   if (logger?.info) logger.info("admin_reference_portfolio ready");
+}
+
+/**
+ * Fetch all active reference symbols and register each one in universe_symbols
+ * with high priority (REFERENCE_UNIVERSE_PRIORITY).  Idempotent – safe to call
+ * on every startup.
+ */
+async function _enrollActiveSymbolsInUniverse() {
+  try {
+    const { initUniverseTables, ensureTrackedSymbol } = _getUniverseHelpers();
+    await initUniverseTables();
+
+    const { rows } = await pool.query(
+      `SELECT symbol FROM admin_reference_portfolio WHERE is_active = TRUE ORDER BY position_order ASC`
+    );
+
+    let enrolled = 0;
+    for (const row of rows) {
+      const result = await ensureTrackedSymbol(row.symbol, {
+        priority: REFERENCE_UNIVERSE_PRIORITY,
+        source: "admin_reference_portfolio",
+      });
+      if (result?.enrolled) enrolled += 1;
+    }
+
+    if (logger?.info) {
+      logger.info("admin_reference_portfolio: universe enrollment complete", {
+        total: rows.length,
+        newlyEnrolled: enrolled,
+        priority: REFERENCE_UNIVERSE_PRIORITY,
+      });
+    }
+  } catch (err) {
+    // Non-fatal: log but don't crash the init chain
+    if (logger?.warn) logger.warn("admin_reference_portfolio: universe enrollment failed", { message: err.message });
+  }
 }
 
 // ── read ──────────────────────────────────────────────────────────────────────
@@ -119,6 +182,8 @@ async function getActiveReferenceSymbols() {
 
 /**
  * Insert or update a reference portfolio entry.
+ * When the entry is active (or defaulting to active), the symbol is also
+ * enrolled in universe_symbols so the snapshot pipeline will cover it.
  * @param {{symbol:string, name?:string, position_order?:number, is_active?:boolean, note?:string}} entry
  */
 async function upsertReferencePortfolioEntry({ symbol, name, position_order, is_active, note }) {
@@ -144,9 +209,48 @@ async function upsertReferencePortfolioEntry({ symbol, name, position_order, is_
       note != null ? String(note) : null,
     ]
   );
+
+  // Enroll in universe pipeline when the entry is active (or when is_active is
+  // not explicitly set to false, i.e. inheriting active=TRUE default).
+  if (is_active !== false) {
+    try {
+      const { ensureTrackedSymbol } = _getUniverseHelpers();
+      await ensureTrackedSymbol(sym, {
+        priority: REFERENCE_UNIVERSE_PRIORITY,
+        source: "admin_reference_portfolio_upsert",
+      });
+    } catch (err) {
+      if (logger?.warn) logger.warn("admin_reference_portfolio: universe enroll on upsert failed", { symbol: sym, message: err.message });
+    }
+  }
 }
 
 // ── enrichment batch helpers ──────────────────────────────────────────────────
+
+/**
+ * Batch-check which symbols are present in universe_symbols and whether they
+ * are active.  Returns Map<SYMBOL, { inUniverse: boolean, isActive: boolean }>.
+ *
+ * This is the key diagnostic: if a symbol is NOT in universe_symbols it will
+ * never be scanned by the snapshot pipeline, which explains absent snapshots,
+ * HQS scores, advanced metrics and derived outcomes.
+ */
+async function _batchUniverseStatus(symbols) {
+  const map = new Map();
+  if (!symbols.length) return map;
+  try {
+    const { rows } = await pool.query(
+      `SELECT symbol, is_active FROM universe_symbols WHERE symbol = ANY($1::text[])`,
+      [symbols]
+    );
+    for (const r of rows) {
+      map.set(r.symbol, { inUniverse: true, isActive: Boolean(r.is_active) });
+    }
+  } catch (err) {
+    if (logger?.warn) logger.warn("adminReferencePortfolio: universe status batch error", { message: err.message });
+  }
+  return map;
+}
 
 /**
  * Batch-load latest market snapshots.
@@ -435,10 +539,40 @@ function _convictionToRecommendation(conviction) {
 // ── main enrichment function ──────────────────────────────────────────────────
 
 /**
+ * Derive a machine-readable pipeline status per symbol.
+ * This makes the root cause of missing data explicit so the admin view can
+ * distinguish between "never in pipeline", "pipeline ran but no data yet",
+ * "data stale", and "fully operational".
+ *
+ * Values:
+ *  "not_in_universe"   – symbol is absent from universe_symbols; the snapshot
+ *                        scanner will never pick it up → root cause of all
+ *                        downstream missing data
+ *  "universe_inactive" – symbol is in universe_symbols but is_active=FALSE;
+ *                        scanner skips inactive symbols
+ *  "no_data_yet"       – symbol is in the active pipeline but no snapshot
+ *                        has been written yet (pipeline hasn't run yet, or
+ *                        initial scan hasn't reached this symbol)
+ *  "data_stale"        – snapshot exists but is older than the freshness
+ *                        threshold; downstream data (score, metrics) may
+ *                        also be stale
+ *  "ok"                – snapshot present and fresh
+ */
+function _derivePipelineStatus(universeEntry, hasSnapshot, snapshotFresh) {
+  if (!universeEntry || !universeEntry.inUniverse) return "not_in_universe";
+  if (!universeEntry.isActive) return "universe_inactive";
+  if (!hasSnapshot) return "no_data_yet";
+  if (!snapshotFresh) return "data_stale";
+  return "ok";
+}
+
+/**
  * Enrich a list of reference entries with live backend data.
  *
  * Delivers both the "Endprodukt-Sicht" (final product view) and the
  * "Integritäts-/Kontrollsicht" (integrity/control view) per symbol.
+ * The control view now includes a per-symbol `pipelineStatus` field that
+ * clearly names the root cause when data is missing.
  *
  * @param {Array<{symbol:string, name:string, position_order:number, note:string|null}>} entries
  * @returns {Promise<{items: Array, summary: object}>}
@@ -446,7 +580,7 @@ function _convictionToRecommendation(conviction) {
 async function enrichReferencePortfolio(entries) {
   const symbols = entries.map((e) => e.symbol);
 
-  const [snapshots, hqsScores, advancedMetrics, newsCounts, latestNews, outcomes] =
+  const [snapshots, hqsScores, advancedMetrics, newsCounts, latestNews, outcomes, universeStatus] =
     await Promise.all([
       _batchSnapshots(symbols),
       _batchHqsScores(symbols),
@@ -454,6 +588,7 @@ async function enrichReferencePortfolio(entries) {
       _batchNewsCount(symbols),
       _batchLatestNews(symbols),
       _batchOutcomes(symbols),
+      _batchUniverseStatus(symbols),
     ]);
 
   let fullyServed = 0;
@@ -465,6 +600,7 @@ async function enrichReferencePortfolio(entries) {
   let greenCount = 0;
   let yellowCount = 0;
   let redCount = 0;
+  const pipelineStatusCounts = {};
 
   const items = entries.map((entry) => {
     const sym = entry.symbol;
@@ -474,6 +610,7 @@ async function enrichReferencePortfolio(entries) {
     const newsCount = newsCounts.get(sym) ?? 0;
     const newsItems = latestNews.get(sym) ?? [];
     const outcome = outcomes.get(sym) ?? null;
+    const universeEntry = universeStatus.get(sym) ?? null;
 
     const hasSnapshot = snap !== null;
     const hasScore = hqs !== null;
@@ -517,6 +654,10 @@ async function enrichReferencePortfolio(entries) {
     if (dataStatus === "green") greenCount += 1;
     else if (dataStatus === "yellow") yellowCount += 1;
     else redCount += 1;
+
+    // Pipeline status – root cause of missing data
+    const pipelineStatus = _derivePipelineStatus(universeEntry, hasSnapshot, freshness.snapshotFresh);
+    pipelineStatusCounts[pipelineStatus] = (pipelineStatusCounts[pipelineStatus] ?? 0) + 1;
 
     // HQS score aggregation
     if (hqs?.hqsScore !== null && hqs?.hqsScore !== undefined) {
@@ -579,6 +720,11 @@ async function enrichReferencePortfolio(entries) {
       freshness,
       dataAgeHours,
 
+      // pipeline diagnostics: root cause of missing data
+      inUniversePipeline: Boolean(universeEntry?.inUniverse),
+      universeActive: Boolean(universeEntry?.isActive),
+      pipelineStatus,
+
       // outcome timestamps
       lastOutcomeConviction: outcome?.finalConviction ?? null,
       lastOutcomeConfidence: outcome?.finalConfidence ?? null,
@@ -613,6 +759,7 @@ async function enrichReferencePortfolio(entries) {
     statusBreakdown: { green: greenCount, yellow: yellowCount, red: redCount },
     missingComponents: missingComponentCounts,
     mostMissingComponent,
+    pipelineStatusBreakdown: pipelineStatusCounts,
     lastUpdate: new Date().toISOString(),
   };
 
