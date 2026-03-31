@@ -63,6 +63,20 @@ const DEFAULT_DEMO_SYMBOLS = [
 ];
 
 let DEMO_ADMIN_SYMBOLS = DEFAULT_DEMO_SYMBOLS;
+// Track the active source mode for runtime logging (set once at module load time).
+let _demoSymbolSourceMode = "default";
+
+// Valid stock ticker: 1–10 uppercase letters/digits, optional dot-suffix (e.g. BRK.B, BF.B).
+// Anything containing spaces, German words, or UI label text will fail this check.
+const SYMBOL_PATTERN = /^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$/;
+
+/**
+ * Validate a single candidate ticker string.
+ * Returns true only for machine-readable ticker symbols, never for label text.
+ */
+function _isValidTicker(s) {
+  return typeof s === "string" && SYMBOL_PATTERN.test(s);
+}
 
 // Check if overridden by environment
 const envSymbols = process.env.DEMO_ADMIN_SYMBOLS;
@@ -71,19 +85,55 @@ if (envSymbols && envSymbols.trim()) {
   if (trimmed.toLowerCase() === "use_universe") {
     // Will be loaded dynamically from universe_symbols in getAdminDemoPortfolio
     DEMO_ADMIN_SYMBOLS = "use_universe";
-    logger.info("adminDemoPortfolio: using universe symbols", {
-      mode: "dynamic",
+    _demoSymbolSourceMode = "use_universe";
+    logger.info("adminDemoPortfolio: source=universe_symbols (dynamic)", {
+      sourceMode: "use_universe",
     });
   } else {
-    // Parse comma-separated list
-    DEMO_ADMIN_SYMBOLS = trimmed
+    // Parse comma-separated list and validate each entry as a real ticker symbol.
+    // This prevents UI label text (e.g. "FEST CODIERTE LISTE") from being used as symbols.
+    // Single-pass partition into valid/invalid to avoid iterating twice.
+    const parsed = trimmed
       .split(",")
       .map(s => s.trim().toUpperCase())
       .filter(s => s.length > 0);
-    logger.info("adminDemoPortfolio: using custom symbols", {
-      count: DEMO_ADMIN_SYMBOLS.length,
-      symbols: DEMO_ADMIN_SYMBOLS,
-    });
+
+    const validSymbols   = [];
+    const invalidEntries = [];
+    for (const s of parsed) {
+      if (_isValidTicker(s)) {
+        validSymbols.push(s);
+      } else {
+        invalidEntries.push(s);
+      }
+    }
+
+    if (invalidEntries.length > 0) {
+      logger.warn("adminDemoPortfolio: DEMO_ADMIN_SYMBOLS contains invalid ticker(s) – ignored", {
+        invalidEntries,
+        hint: "DEMO_ADMIN_SYMBOLS must be comma-separated ticker symbols, not UI label text",
+      });
+    }
+
+    if (validSymbols.length === 0) {
+      // All entries were invalid (e.g. env var set to a label like "FEST CODIERTE LISTE").
+      // Fall back to the hardcoded default set so the job works correctly.
+      logger.warn("adminDemoPortfolio: no valid tickers in DEMO_ADMIN_SYMBOLS – falling back to defaults", {
+        rawEnvValue: trimmed,
+        sourceMode: "default_fallback",
+        fallbackCount: DEFAULT_DEMO_SYMBOLS.length,
+      });
+      DEMO_ADMIN_SYMBOLS = DEFAULT_DEMO_SYMBOLS;
+      _demoSymbolSourceMode = "default_fallback";
+    } else {
+      DEMO_ADMIN_SYMBOLS = validSymbols;
+      _demoSymbolSourceMode = "env_custom";
+      logger.info("adminDemoPortfolio: source=env_custom (DEMO_ADMIN_SYMBOLS)", {
+        sourceMode: "env_custom",
+        symbolCount: validSymbols.length,
+        symbols: validSymbols,
+      });
+    }
   }
 }
 
@@ -751,21 +801,33 @@ async function _getAdminDemoPortfolioRaw() {
       `);
       symbols = res.rows.map(r => r.symbol);
       if (!symbols.length) {
-        logger.warn("adminDemoPortfolio: universe_symbols empty, using defaults");
+        logger.warn("adminDemoPortfolio: universe_symbols empty, using defaults", {
+          sourceMode: "default_fallback",
+          fallbackCount: DEFAULT_DEMO_SYMBOLS.length,
+        });
         symbols = [...DEFAULT_DEMO_SYMBOLS];
       } else {
-        logger.info("adminDemoPortfolio: loaded from universe", {
-          count: symbols.length,
+        logger.info("adminDemoPortfolio: symbols loaded from universe_symbols", {
+          sourceMode: "use_universe",
+          symbolCount: symbols.length,
         });
       }
     } catch (err) {
       logger.warn("adminDemoPortfolio: failed to load universe, using defaults", {
+        sourceMode: "default_fallback",
+        fallbackCount: DEFAULT_DEMO_SYMBOLS.length,
         message: err.message,
       });
       symbols = [...DEFAULT_DEMO_SYMBOLS];
     }
   } else {
+    // DEMO_ADMIN_SYMBOLS is a validated string[] (either env_custom or DEFAULT_DEMO_SYMBOLS).
+    // All entries have passed ticker validation at module load time – no label text can reach here.
     symbols = [...DEMO_ADMIN_SYMBOLS];
+    logger.info("adminDemoPortfolio: using symbol list", {
+      sourceMode: _demoSymbolSourceMode,
+      symbolCount: symbols.length,
+    });
   }
   
   const partialErrors = [];
