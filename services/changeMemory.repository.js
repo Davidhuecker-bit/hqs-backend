@@ -18,10 +18,10 @@
  *     suspected_files JSONB DEFAULT '[]',
  *     notes           TEXT,
  *     analysis_result JSONB,
- *     risk_level      TEXT,
+ *     risk_level      TEXT DEFAULT 'medium',
  *     was_helpful     BOOLEAN,
  *     final_fix       TEXT,
- *     status          TEXT DEFAULT 'new',
+ *     status          TEXT NOT NULL DEFAULT 'new',
  *     tags            JSONB DEFAULT '[]'
  *   )
  */
@@ -209,6 +209,7 @@ async function listChangeMemoryEntries(filters = {}) {
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 200);
+  params.push(limit);
 
   const res = await pool.query(
     `SELECT id, created_at, risk_level, affected_area, error_message,
@@ -216,7 +217,7 @@ async function listChangeMemoryEntries(filters = {}) {
      FROM change_memory
      ${where}
      ORDER BY created_at DESC
-     LIMIT ${limit}`,
+     LIMIT $${idx}`,
     params
   );
 
