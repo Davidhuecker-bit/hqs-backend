@@ -1055,6 +1055,10 @@ router.get("/evolution-board", async (req, res) => {
  *   unreviewed     (boolean string: 'true')
  *   adoptionTiming (string: 'sofort' | 'kurzfristig' | 'mittelfristig' | 'langfristig' | 'beobachten')
  *   relevance      (string: 'high' | 'medium' | 'low')
+ *   strategicFit   (string: 'high' | 'medium' | 'low')
+ *   timeHorizon    (string: 'now' | 'mid' | 'later')
+ *   decisionHint   (string: 'watch' | 'evaluate' | 'test' | 'adopt' | 'reject')
+ *   stackFit       (string: 'good' | 'mixed' | 'weak')
  */
 router.get("/tech-radar-admin", async (req, res) => {
   try {
@@ -1067,9 +1071,14 @@ router.get("/tech-radar-admin", async (req, res) => {
     const unreviewed = req.query.unreviewed === "true" ? true : null;
     const adoptionTiming = req.query.adoptionTiming || null;
     const relevance = req.query.relevance || null;
+    const strategicFit = req.query.strategicFit || null;
+    const timeHorizon = req.query.timeHorizon || null;
+    const decisionHint = req.query.decisionHint || null;
+    const stackFit = req.query.stackFit || null;
 
     const result = await getAdminTechRadarEntries({
-      limit, category, status, fitForHQS, hasLink, isNew, unreviewed, adoptionTiming, relevance,
+      limit, category, status, fitForHQS, hasLink, isNew, unreviewed,
+      adoptionTiming, relevance, strategicFit, timeHorizon, decisionHint, stackFit,
     });
     return res.json({ success: true, ...result });
   } catch (error) {
