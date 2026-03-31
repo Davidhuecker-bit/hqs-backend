@@ -4098,6 +4098,63 @@ router.get("/deepseek/dependency-mapping", async (_req, res) => {
 ========================================================= */
 
 const { runAdminDeepseekChat } = require("../services/adminDeepseekConsole.service");
+const { runMathLogicReview } = require("../services/mathLogicReview.service");
+
+/* =========================================================
+   POST /api/admin/deepseek/math-logic-review
+   Math & Logic Review Light V1 – plausibility / consistency
+   review of HQS scoring and assessment logic via DeepSeek.
+
+   Request body (all fields optional):
+   {
+     "message":      "...",               // free-form review request
+     "changedFiles": ["...", "..."],      // relevant files
+     "logs":         ["...", "..."],      // logs or metric samples
+     "context":      "...",              // additional context
+     "notes":        "...",              // extra notes
+     "focusAreas":   ["score_consistency", "null_nan_risk", ...]
+                     // valid values: score_consistency, missing_metrics,
+                     //              weighting, fallback_logic,
+                     //              range_clamp, null_nan_risk
+   }
+
+   Response:
+   {
+     "success": true,
+     "version": "light-v1",
+     "result": {
+       "reviewLevel":       "low|medium|high",
+       "detectedRisks":     [],
+       "consistencyChecks": [],
+       "missingSignals":    [],
+       "recommendedChecks": [],
+       "notes":             []
+     }
+   }
+========================================================= */
+
+router.post("/deepseek/math-logic-review", async (req, res) => {
+  if (!isDeepSeekConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: "DEEPSEEK_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const result = await runMathLogicReview(req.body);
+    return res.json({ success: true, version: "light-v1", result });
+  } catch (error) {
+    logger.error("[admin] deepseek/math-logic-review error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error during Math & Logic Review",
+    });
+  }
+});
 
 router.post("/deepseek/chat", async (req, res) => {
   if (!isDeepSeekConfigured()) {
