@@ -68,4 +68,37 @@ WAS BEDEUTET DAS FÜR DICH?
   return text;
 }
 
-module.exports = { generateBriefingText };
+async function testOpenAIConnection() {
+  const openai = getClient();
+  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+  const completion = await openai.chat.completions.create({
+    model,
+    temperature: 0,
+    max_tokens: 100,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a concise JSON diagnostics assistant. Always reply with valid JSON.",
+      },
+      {
+        role: "user",
+        content:
+          'Return a JSON object with exactly these keys: "status" (string "ok"), "message" (a short greeting), "timestamp" (current ISO-8601 UTC).',
+      },
+    ],
+  });
+
+  const raw = completion?.choices?.[0]?.message?.content?.trim() || "";
+  let result;
+  try {
+    result = JSON.parse(raw);
+  } catch (_) {
+    result = raw;
+  }
+
+  return { model: completion?.model || model, result };
+}
+
+module.exports = { generateBriefingText, testOpenAIConnection };
