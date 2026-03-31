@@ -13,7 +13,7 @@ const logger = require("../utils/logger");
    typical change-impact patterns.
    ───────────────────────────────────────────── */
 const HQS_CONTEXT_RULES = `
-HQS system architecture context – keep in mind when analysing changes:
+HQS system architecture context – keep in mind when analyzing changes:
 
 - Stack: Node.js backend, PostgreSQL, Express routes, service layer, repository layer, engine layer, mapper/view layer.
 - Key paths: routes/ → services/ → repositories/ → engines/ → mappers/ → views.
