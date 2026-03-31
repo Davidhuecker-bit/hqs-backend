@@ -3845,7 +3845,7 @@ const {
 
 router.post("/deepseek/test", async (req, res) => {
   if (!isDeepSeekConfigured()) {
-    return res.status(500).json({
+    return res.status(503).json({
       success: false,
       error: "DEEPSEEK_API_KEY is not configured",
     });
