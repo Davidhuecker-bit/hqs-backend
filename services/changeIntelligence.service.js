@@ -5,6 +5,11 @@ const {
   createDeepSeekChatCompletion,
 } = require("./deepseek.service");
 
+const {
+  getDependencyHintsForFiles,
+  getDependencyHintsForArea,
+} = require("./dependencyMapping.service");
+
 const logger = require("../utils/logger");
 
 /* ─────────────────────────────────────────────
@@ -206,6 +211,57 @@ async function analyzeChangeImpact(payload = {}) {
     sections.push(`Notes:\n${notes}`);
   }
 
+  // ── dependency mapping hints (Light V1) ──────
+  let dependencyHints = null;
+  try {
+    const fileHints  = getDependencyHintsForFiles(changedFiles);
+    const areaHints  = affectedArea ? getDependencyHintsForArea(affectedArea) : null;
+
+    /** Merge items from source into target, skipping duplicates. */
+    const mergeUnique = (target, source) => {
+      for (const item of source) {
+        if (!target.includes(item)) target.push(item);
+      }
+    };
+
+    // Merge file-based and area-based hints
+    const hasFileHints = fileHints.relatedFiles.length || fileHints.relatedAreas.length || fileHints.followupChecks.length;
+    const hasAreaHints = areaHints && (areaHints.relatedFiles.length || areaHints.relatedAreas.length || areaHints.followupChecks.length);
+
+    if (hasFileHints || hasAreaHints) {
+      dependencyHints = {
+        relatedFiles:   [...fileHints.relatedFiles],
+        relatedAreas:   [...fileHints.relatedAreas],
+        followupChecks: [...fileHints.followupChecks],
+      };
+      if (areaHints) {
+        mergeUnique(dependencyHints.relatedFiles,   areaHints.relatedFiles);
+        mergeUnique(dependencyHints.relatedAreas,    areaHints.relatedAreas);
+        mergeUnique(dependencyHints.followupChecks,  areaHints.followupChecks);
+      }
+    }
+
+    // Inject dependency context into the prompt so DeepSeek can use it
+    if (dependencyHints && (dependencyHints.relatedFiles.length || dependencyHints.relatedAreas.length)) {
+      const depParts = [];
+      if (dependencyHints.relatedFiles.length) {
+        depParts.push(`Known related files:\n${dependencyHints.relatedFiles.map((f) => `- ${f}`).join("\n")}`);
+      }
+      if (dependencyHints.relatedAreas.length) {
+        depParts.push(`Known related areas:\n${dependencyHints.relatedAreas.map((a) => `- ${a}`).join("\n")}`);
+      }
+      if (dependencyHints.followupChecks.length) {
+        depParts.push(`Suggested follow-up checks:\n${dependencyHints.followupChecks.map((c) => `- ${c}`).join("\n")}`);
+      }
+      sections.push(`HQS Dependency Mapping hints (auto-enriched):\n${depParts.join("\n")}`);
+    }
+  } catch (depErr) {
+    // dependency mapping must never break the analysis
+    logger.warn("[changeIntelligence] dependency mapping enrichment failed (non-blocking)", {
+      message: depErr.message,
+    });
+  }
+
   // At least *some* input is needed for a meaningful analysis
   if (sections.length === 0) {
     return fallbackResult(null, "no input data provided");
@@ -244,7 +300,14 @@ async function analyzeChangeImpact(payload = {}) {
     return fallbackResult(parsed.raw || rawContent, "model returned parse error descriptor");
   }
 
-  return normaliseResult(parsed);
+  const result = normaliseResult(parsed);
+
+  // ── attach dependency hints if available ─────
+  if (dependencyHints) {
+    result.dependencyHints = dependencyHints;
+  }
+
+  return result;
 }
 
 /* ─────────────────────────────────────────────
