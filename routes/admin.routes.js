@@ -3919,4 +3919,34 @@ router.post("/deepseek/test", async (req, res) => {
   }
 });
 
+/* =========================================================
+   POST /api/admin/deepseek/change-intelligence
+   Change Intelligence V1 – structured change-impact analysis
+   powered by the existing DeepSeek integration.
+========================================================= */
+
+const { analyzeChangeImpact } = require("../services/changeIntelligence.service");
+
+router.post("/deepseek/change-intelligence", async (req, res) => {
+  if (!isDeepSeekConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: "DEEPSEEK_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const result = await analyzeChangeImpact(req.body);
+    return res.json({ success: true, result });
+  } catch (error) {
+    logger.error("[admin] deepseek/change-intelligence error", {
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 module.exports = router;
