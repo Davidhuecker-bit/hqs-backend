@@ -84,6 +84,7 @@ const { ensureSisHistoryTable } = require("./services/sisHistory.service");
 const { ensurePipelineStatusTable } = require("./services/pipelineStatus.repository");
 const { initEntityMapTable } = require("./services/entityMap.repository");
 const { initAdminReferencePortfolioTable } = require("./services/adminReferencePortfolio.repository");
+const { initChangeMemoryTable } = require("./services/changeMemory.repository");
 /* =========================================================
 DB HEALTH  (Task 1 – centralised DB error classification)
 ========================================================= */
@@ -679,6 +680,7 @@ async function runStartupInit() {
   await safeInit("ensureSisHistoryTable",                 ensureSisHistoryTable);
   await safeInit("ensurePipelineStatusTable",             ensurePipelineStatusTable);
   await safeInit("ensureUiSummariesTable",                ensureUiSummariesTable);
+  await safeInit("initChangeMemoryTable",                 initChangeMemoryTable);
   await safeInit("hydrateMarketRuntimeState",             hydrateMarketRuntimeState);
   await safeInit("hydrateOpportunityRuntimeState",        hydrateOpportunityRuntimeState);
 

@@ -3926,6 +3926,12 @@ router.post("/deepseek/test", async (req, res) => {
 ========================================================= */
 
 const { analyzeChangeImpact } = require("../services/changeIntelligence.service");
+const {
+  saveChangeMemoryEntry,
+  listChangeMemoryEntries,
+  getChangeMemoryEntryById,
+  updateChangeMemoryFeedback,
+} = require("../services/changeMemory.repository");
 
 router.post("/deepseek/change-intelligence", async (req, res) => {
   if (!isDeepSeekConfigured()) {
@@ -3937,6 +3943,27 @@ router.post("/deepseek/change-intelligence", async (req, res) => {
 
   try {
     const result = await analyzeChangeImpact(req.body);
+
+    // ── persist to Change Memory (fire-and-forget, never blocks response) ──
+    try {
+      await saveChangeMemoryEntry({
+        changedFiles: req.body.changedFiles || [],
+        logs: req.body.logs || [],
+        errorMessage: req.body.errorMessage || null,
+        affectedArea: req.body.affectedArea || null,
+        suspectedFiles: req.body.suspectedFiles || [],
+        notes: req.body.notes || null,
+        analysisResult: result,
+        riskLevel: result?.riskLevel || "medium",
+        status: "new",
+        tags: req.body.tags || [],
+      });
+    } catch (memErr) {
+      logger.warn("[admin] change-memory save failed (non-blocking)", {
+        message: memErr.message,
+      });
+    }
+
     return res.json({ success: true, result });
   } catch (error) {
     logger.error("[admin] deepseek/change-intelligence error", {
@@ -3946,6 +3973,73 @@ router.post("/deepseek/change-intelligence", async (req, res) => {
       success: false,
       error: error.message,
     });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/change-memory
+   List stored Change Memory entries with optional filters.
+========================================================= */
+
+router.get("/deepseek/change-memory", async (req, res) => {
+  try {
+    const entries = await listChangeMemoryEntries({
+      status: req.query.status,
+      riskLevel: req.query.riskLevel,
+      wasHelpful: req.query.wasHelpful,
+      limit: req.query.limit,
+    });
+    return res.json({ success: true, count: entries.length, entries });
+  } catch (error) {
+    logger.error("[admin] deepseek/change-memory list error", {
+      message: error.message,
+    });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/change-memory/:id
+   Retrieve a single Change Memory entry by ID.
+========================================================= */
+
+router.get("/deepseek/change-memory/:id", async (req, res) => {
+  try {
+    const entry = await getChangeMemoryEntryById(req.params.id);
+    if (!entry) {
+      return res.status(404).json({ success: false, error: "Entry not found" });
+    }
+    return res.json({ success: true, entry });
+  } catch (error) {
+    logger.error("[admin] deepseek/change-memory detail error", {
+      message: error.message,
+    });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* =========================================================
+   PATCH /api/admin/deepseek/change-memory/:id
+   Update feedback fields on a Change Memory entry.
+========================================================= */
+
+router.patch("/deepseek/change-memory/:id", async (req, res) => {
+  try {
+    const updated = await updateChangeMemoryFeedback(req.params.id, {
+      wasHelpful: req.body.wasHelpful,
+      finalFix: req.body.finalFix,
+      status: req.body.status,
+      notes: req.body.notes,
+    });
+    if (!updated) {
+      return res.status(404).json({ success: false, error: "Entry not found" });
+    }
+    return res.json({ success: true, entry: updated });
+  } catch (error) {
+    logger.error("[admin] deepseek/change-memory patch error", {
+      message: error.message,
+    });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
