@@ -3832,4 +3832,63 @@ router.put("/reference-portfolio/:symbol", async (req, res) => {
   }
 });
 
+/* =========================================================
+   POST /api/admin/deepseek/test
+   Sends a simple test prompt to the DeepSeek API and returns
+   the result.  Used for connectivity / key validation only.
+========================================================= */
+
+const {
+  isDeepSeekConfigured,
+  createDeepSeekChatCompletion,
+} = require("../services/deepseek.service");
+
+router.post("/deepseek/test", async (req, res) => {
+  if (!isDeepSeekConfigured()) {
+    return res.status(500).json({
+      success: false,
+      error: "DEEPSEEK_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const completion = await createDeepSeekChatCompletion({
+      tier: "fast",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a concise JSON diagnostics assistant. Always reply with valid JSON.",
+        },
+        {
+          role: "user",
+          content:
+            'Return a JSON object with exactly these keys: "status" (string "ok"), "message" (a short greeting), "timestamp" (current ISO-8601 UTC).',
+        },
+      ],
+      temperature: 0,
+    });
+
+    const raw = completion?.choices?.[0]?.message?.content || "";
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (_) {
+      /* keep parsed null – raw is returned below */
+    }
+
+    return res.json({
+      success: true,
+      model: completion?.model || null,
+      result: parsed || raw,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/test error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 module.exports = router;
