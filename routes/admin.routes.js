@@ -3833,6 +3833,34 @@ router.put("/reference-portfolio/:symbol", async (req, res) => {
 });
 
 /* =========================================================
+   POST /api/admin/openai/test
+   Sends a simple test prompt to the OpenAI API and returns
+   the result.  Used for connectivity / key validation only.
+========================================================= */
+
+const { testOpenAIConnection } = require("../services/openai.service");
+
+router.post("/openai/test", async (req, res) => {
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(503).json({
+      success: false,
+      error: "OPENAI_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const { model, result } = await testOpenAIConnection();
+    return res.json({ success: true, model, result });
+  } catch (error) {
+    logger.error("[admin] openai/test error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/* =========================================================
    POST /api/admin/deepseek/test
    Sends a simple test prompt to the DeepSeek API and returns
    the result.  Used for connectivity / key validation only.
