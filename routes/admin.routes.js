@@ -4043,4 +4043,64 @@ router.patch("/deepseek/change-memory/:id", async (req, res) => {
   }
 });
 
+/* =========================================================
+   POST /api/admin/deepseek/chat
+   Admin DeepSeek Console V1 – free-form admin chat with
+   optional mode (chat | diagnose | change_review), context,
+   logs, changedFiles, notes.
+
+   Request body:
+   {
+     "message":      "...",            // required
+     "mode":         "chat",           // optional – default "chat"
+     "context":      "...",            // optional
+     "logs":         ["...", "..."],   // optional string or array
+     "changedFiles": ["...", "..."],   // optional array
+     "notes":        "..."            // optional
+   }
+
+   Response:
+   {
+     "success": true,
+     "mode":    "chat",
+     "model":   "deepseek-chat",
+     "result": {
+       "answer":             "...",
+       "warnings":           [],
+       "suggestedNextSteps": []
+     }
+   }
+========================================================= */
+
+const { runAdminDeepseekChat } = require("../services/adminDeepseekConsole.service");
+
+router.post("/deepseek/chat", async (req, res) => {
+  if (!isDeepSeekConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: "DEEPSEEK_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const result = await runAdminDeepseekChat(req.body);
+
+    // Service returns { success: false, error } when message is missing
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/chat error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error during admin DeepSeek chat",
+    });
+  }
+});
+
 module.exports = router;
