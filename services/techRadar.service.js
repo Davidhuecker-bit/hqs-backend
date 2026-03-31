@@ -524,7 +524,9 @@ function computeStrategicTechAssessment(entry) {
   } else if (stackMixedHits > 0) {
     stackFit = "mixed";
   } else {
-    // No stack mentioned – default by category (research papers are usually stack-agnostic)
+    // No stack keywords mentioned → default by category.
+    // arXiv AI/ML papers typically assume Python; other quant/finance papers are usually
+    // stack-agnostic and compatible with any backend, so default to "good".
     stackFit = entry.category === "ai_ml" ? "mixed" : "good";
   }
 
@@ -584,6 +586,9 @@ function computeStrategicTechAssessment(entry) {
   riskScore = Math.min(100, Math.max(0, riskScore));
 
   /* ── 8. priorityScore (0-100) – composite ───────────── */
+  // Weights: impact (45%) dominates, effort (25%) and risk (15%) penalise.
+  // +30 baseline ensures entries with moderate scores still get a non-zero
+  // priority so that "watch" candidates remain visible rather than collapsed to 0.
   let priorityScore = Math.round(
     impactScore * 0.45 - effortScore * 0.25 - riskScore * 0.15 + 30
   );
