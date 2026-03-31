@@ -217,17 +217,27 @@ async function analyzeChangeImpact(payload = {}) {
     const fileHints  = getDependencyHintsForFiles(changedFiles);
     const areaHints  = affectedArea ? getDependencyHintsForArea(affectedArea) : null;
 
+    /** Merge items from source into target, skipping duplicates. */
+    const mergeUnique = (target, source) => {
+      for (const item of source) {
+        if (!target.includes(item)) target.push(item);
+      }
+    };
+
     // Merge file-based and area-based hints
-    if (fileHints.relatedFiles.length || (areaHints && areaHints.relatedFiles.length)) {
+    const hasFileHints = fileHints.relatedFiles.length || fileHints.relatedAreas.length || fileHints.followupChecks.length;
+    const hasAreaHints = areaHints && (areaHints.relatedFiles.length || areaHints.relatedAreas.length || areaHints.followupChecks.length);
+
+    if (hasFileHints || hasAreaHints) {
       dependencyHints = {
         relatedFiles:   [...fileHints.relatedFiles],
         relatedAreas:   [...fileHints.relatedAreas],
         followupChecks: [...fileHints.followupChecks],
       };
       if (areaHints) {
-        for (const f of areaHints.relatedFiles)   { if (!dependencyHints.relatedFiles.includes(f))   dependencyHints.relatedFiles.push(f); }
-        for (const a of areaHints.relatedAreas)    { if (!dependencyHints.relatedAreas.includes(a))   dependencyHints.relatedAreas.push(a); }
-        for (const c of areaHints.followupChecks)  { if (!dependencyHints.followupChecks.includes(c)) dependencyHints.followupChecks.push(c); }
+        mergeUnique(dependencyHints.relatedFiles,   areaHints.relatedFiles);
+        mergeUnique(dependencyHints.relatedAreas,    areaHints.relatedAreas);
+        mergeUnique(dependencyHints.followupChecks,  areaHints.followupChecks);
       }
     }
 
