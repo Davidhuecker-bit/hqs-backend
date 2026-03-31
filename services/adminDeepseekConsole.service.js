@@ -108,12 +108,16 @@ function normaliseMode(mode) {
    Response parsing helpers
    ───────────────────────────────────────────── */
 
-/** Strip markdown code fences that DeepSeek sometimes adds. */
+/** Strip markdown code fences that DeepSeek sometimes adds (handles nested fences). */
 function stripCodeFences(raw) {
   if (typeof raw !== "string") return String(raw || "");
   let text = raw.trim();
-  text = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
-  return text.trim();
+  let prev;
+  do {
+    prev = text;
+    text = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+  } while (text !== prev);
+  return text;
 }
 
 /**
