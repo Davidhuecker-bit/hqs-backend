@@ -40,9 +40,9 @@ function isDeepSeekConfigured() {
  * Resolve the model identifier.
  * explicit > env > fallback default
  *
- * Important:
- * - Default is now deepseek-chat for speed and reliability in UI/admin flows.
- * - deepseek-reasoner should only be used deliberately, not as global default.
+ * Tier semantics:
+ * - "fast"    → DEEPSEEK_FAST_MODEL   (default: deepseek-chat)     – quick UI/console flows
+ * - "default" → DEEPSEEK_MODEL        (default: deepseek-reasoner) – deep review/logic/guard flows
  *
  * @param {"default"|"fast"} [tier]
  * @param {string} [explicit]
@@ -55,8 +55,18 @@ function resolveModel(tier, explicit) {
     return process.env.DEEPSEEK_FAST_MODEL || "deepseek-chat";
   }
 
-  return process.env.DEEPSEEK_MODEL || "deepseek-chat";
+  return process.env.DEEPSEEK_MODEL || "deepseek-reasoner";
 }
+
+/**
+ * Pre-resolved model names for use across services.
+ * Evaluated once at module load from environment variables.
+ *
+ * DEEPSEEK_FAST_MODEL  – quick UI/console paths   (default: deepseek-chat)
+ * DEEPSEEK_DEEP_MODEL  – deep review/logic/guard  (default: deepseek-reasoner)
+ */
+const DEEPSEEK_FAST_MODEL = process.env.DEEPSEEK_FAST_MODEL || "deepseek-chat";
+const DEEPSEEK_DEEP_MODEL = process.env.DEEPSEEK_MODEL || "deepseek-reasoner";
 
 /**
  * Parse timeout from env or fallback.
@@ -220,6 +230,8 @@ module.exports = {
   getDeepSeekClient,
   isDeepSeekConfigured,
   resolveModel,
+  DEEPSEEK_FAST_MODEL,
+  DEEPSEEK_DEEP_MODEL,
   createDeepSeekChatCompletion,
   runDeepSeekJsonAnalysis,
 };

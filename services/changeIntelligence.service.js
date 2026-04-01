@@ -3,6 +3,7 @@
 const {
   isDeepSeekConfigured,
   createDeepSeekChatCompletion,
+  DEEPSEEK_DEEP_MODEL,
 } = require("./deepseek.service");
 
 const {
@@ -272,8 +273,10 @@ async function analyzeChangeImpact(payload = {}) {
   const userPrompt = sections.join("\n\n");
 
   // ── call DeepSeek ────────────────────────────
+  // Deep change-impact analysis uses deepseek-reasoner for thorough reasoning.
   const completion = await createDeepSeekChatCompletion({
-    tier: "fast",
+    model: DEEPSEEK_DEEP_MODEL,
+    timeoutMs: 45000,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
@@ -282,6 +285,11 @@ async function analyzeChangeImpact(payload = {}) {
   });
 
   const rawContent = completion?.choices?.[0]?.message?.content || "";
+
+  logger.info("[changeIntelligence] DeepSeek response received", {
+    model: DEEPSEEK_DEEP_MODEL,
+    rawLength: rawContent.length,
+  });
 
   // ── parse & normalise ────────────────────────
   const cleaned = stripCodeFences(rawContent);
