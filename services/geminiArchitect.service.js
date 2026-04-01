@@ -98,6 +98,29 @@ Regeln:
    - "medium" → merkliche Darstellungs- oder Strukturprobleme, die untersucht werden sollten
    - "high"   → ernste UI-Risiken, die sofortige Aufmerksamkeit erfordern
 8. Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+
+Beispiel für eine korrekte Antwort (nur als Format-Referenz):
+{
+  "summaryTitle": "Fehlende visuelle Hierarchie im Portfolio-Depot",
+  "summaryText": "Die Depot-Ansicht zeigt Daten ohne klare Priorisierung. Kritische Status-Indikatoren sind nicht prominent genug dargestellt.",
+  "severity": "medium",
+  "uiFindings": [
+    "PnL-Werte und Konviktionsstufen befinden sich auf gleicher Hierarchieebene.",
+    "Fehlende Leerstandssignale bei nicht belegten Portfolio-Slots."
+  ],
+  "layoutRecommendations": [
+    "Kritische Warnungen und Aktionen in einem hervorgehobenen Bereich oben platzieren.",
+    "Sekundäre Metriken einklappbar gestalten."
+  ],
+  "priorityRecommendations": [
+    "Risikowarnungen immer vor allgemeinen Marktdaten anzeigen."
+  ],
+  "frontendGuardNotes": [
+    "PositionCard bindet an 'riskScore' – Feld muss im Symbol-Summary-Response vorhanden sein."
+  ],
+  "recommendedAction": "Depot-Layout in zwei Zonen aufteilen: oben Aktionen/Warnungen, unten Marktdaten.",
+  "confidenceNote": "Einschätzung basiert auf beschriebener Struktur ohne direkten View-Zugriff."
+}
 `.trim();
 
 /* ─────────────────────────────────────────────
@@ -284,7 +307,7 @@ function extractJsonObject(text) {
   return null;
 }
 
-function fallbackResult(rawContent, reason) {
+function fallbackResult(reason) {
   return {
     summaryTitle: "Analyse konnte nicht verarbeitet werden",
     summaryText: `Die Antwort konnte nicht sauber verarbeitet werden – ${reason || "unbekannte Ursache"}.`,
@@ -295,7 +318,6 @@ function fallbackResult(rawContent, reason) {
     frontendGuardNotes: [],
     recommendedAction: "Bitte die Analyse erneut ausführen oder die Eingabe prüfen.",
     confidenceNote: "Keine Einschätzung möglich – Verarbeitungsfehler.",
-    _rawResponse: rawContent || null,
   };
 }
 
@@ -310,7 +332,7 @@ const VALID_SEVERITIES = ["low", "medium", "high"];
 
 function normaliseResult(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-    return fallbackResult(null, "response was not an object");
+    return fallbackResult("response was not an object");
   }
 
   const result = {
@@ -456,7 +478,11 @@ function getResponseText(response) {
 
 async function runGeminiArchitectReview(payload = {}) {
   if (!isGeminiConfigured()) {
-    throw new Error("GEMINI_API_KEY is not configured – cannot run Gemini Architect Review");
+    logger.warn("[geminiArchitect] GEMINI_API_KEY not configured – returning fallback");
+    return {
+      mode: normaliseMode(payload.mode),
+      result: fallbackResult("GEMINI_API_KEY nicht konfiguriert"),
+    };
   }
 
   const normalised = {
@@ -478,7 +504,7 @@ async function runGeminiArchitectReview(payload = {}) {
   if (!userPrompt.trim()) {
     return {
       mode: normalised.mode,
-      result: fallbackResult(null, "no input data provided"),
+      result: fallbackResult("no input data provided"),
     };
   }
 
@@ -501,7 +527,21 @@ async function runGeminiArchitectReview(payload = {}) {
     model: modelName,
   });
 
-  const response = await model.generateContent(userPrompt);
+  let response;
+  try {
+    response = await model.generateContent(userPrompt);
+  } catch (apiErr) {
+    logger.warn("[geminiArchitect] Gemini API call failed – using fallback", {
+      reason: apiErr.message,
+      mode: normalised.mode,
+    });
+    const safeMsg = String(apiErr.message || "").slice(0, 80);
+    return {
+      mode: normalised.mode,
+      result: fallbackResult(`API-Fehler: ${safeMsg}`),
+    };
+  }
+
   const rawContent = getResponseText(response);
 
   const cleaned = stripCodeFences(rawContent);
@@ -524,7 +564,7 @@ async function runGeminiArchitectReview(payload = {}) {
 
         return {
           mode: normalised.mode,
-          result: fallbackResult(rawContent, "JSON parse error"),
+          result: fallbackResult("JSON parse error"),
         };
       }
     } else {
@@ -534,7 +574,7 @@ async function runGeminiArchitectReview(payload = {}) {
 
       return {
         mode: normalised.mode,
-        result: fallbackResult(rawContent, "JSON parse error"),
+        result: fallbackResult("kein JSON-Objekt in Antwort gefunden"),
       };
     }
   }
