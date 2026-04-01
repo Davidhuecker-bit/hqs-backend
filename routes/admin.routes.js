@@ -4099,6 +4099,7 @@ router.get("/deepseek/dependency-mapping", async (_req, res) => {
 
 const { runAdminDeepseekChat } = require("../services/adminDeepseekConsole.service");
 const { runMathLogicReview } = require("../services/mathLogicReview.service");
+const { buildHumanReviewSummary } = require("../services/reviewToHuman.service");
 
 /* =========================================================
    POST /api/admin/deepseek/math-logic-review
@@ -4181,6 +4182,54 @@ router.post("/deepseek/chat", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error during admin DeepSeek chat",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/review-to-human
+   Review-to-Human Layer V1 – translate a structured DeepSeek
+   analysis / review result into a short, plain-language summary.
+
+   Request body:
+   {
+     "mode":             "diagnose|change_review|math_logic_review|chat",
+     "message":          "...",           // original query (optional)
+     "result":           { ... },         // structured DeepSeek result object
+     "dependencyHints":  ["...", "..."],  // optional dependency hints
+     "version":          "...",           // optional version label
+     "notes":            "..."           // optional extra notes
+   }
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "humanSummary": {
+       "summaryTitle":      "...",
+       "summaryText":       "...",
+       "severity":          "low|medium|high",
+       "whatMattersNow":    [],
+       "recommendedAction": "...",
+       "confidenceNote":    "..."
+     }
+   }
+========================================================= */
+
+router.post("/deepseek/review-to-human", async (req, res) => {
+  // No early 503 guard here – buildHumanReviewSummary has a static fallback
+  // that works even when DeepSeek is not configured.
+  try {
+    const humanSummary = await buildHumanReviewSummary(req.body);
+    return res.json({ success: true, version: "v1", humanSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/review-to-human error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error during Review-to-Human translation",
     });
   }
 });
