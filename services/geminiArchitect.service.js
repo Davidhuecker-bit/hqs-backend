@@ -187,6 +187,32 @@ function stripCodeFences(raw) {
   return text;
 }
 
+/**
+ * Try to extract the first balanced JSON object `{...}` from arbitrary text.
+ * Returns the extracted substring or null if none found.
+ */
+function extractJsonObject(text) {
+  if (typeof text !== "string") return null;
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === "\\" && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function fallbackResult(rawContent, reason) {
   return {
     summaryTitle: "Analyse konnte nicht verarbeitet werden",
@@ -384,17 +410,36 @@ async function runGeminiArchitectReview(payload = {}) {
   const cleaned = stripCodeFences(rawContent);
 
   let parsed;
+
+  // 1st attempt: parse the fence-stripped text directly
   try {
     parsed = JSON.parse(cleaned);
-  } catch (err) {
-    logger.warn("[geminiArchitect] JSON parse failed – using fallback", {
-      reason: err.message,
-      rawContent,
-    });
-    return {
-      mode: normalised.mode,
-      result: fallbackResult(rawContent, "JSON parse error"),
-    };
+  } catch (_firstErr) {
+    // 2nd attempt: extract the first balanced {...} object from the raw text
+    // (handles prose before/after JSON, or code fences not at string boundaries)
+    const extracted = extractJsonObject(cleaned) || extractJsonObject(rawContent);
+    if (extracted) {
+      try {
+        parsed = JSON.parse(extracted);
+      } catch (err) {
+        logger.warn("[geminiArchitect] JSON parse failed after extraction – using fallback", {
+          reason: err.message,
+          rawContent,
+        });
+        return {
+          mode: normalised.mode,
+          result: fallbackResult(rawContent, "JSON parse error"),
+        };
+      }
+    } else {
+      logger.warn("[geminiArchitect] No JSON object found in response – using fallback", {
+        rawContent,
+      });
+      return {
+        mode: normalised.mode,
+        result: fallbackResult(rawContent, "JSON parse error"),
+      };
+    }
   }
 
   const result = normaliseResult(parsed);
