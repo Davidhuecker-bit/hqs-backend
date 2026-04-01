@@ -295,6 +295,25 @@ function deriveReviewIntent(hints) {
 }
 
 /**
+ * Classify a category from hint types alone (shared by
+ * deriveInspectionFocus and classifyFeedbackCategory).
+ */
+function classifyCategoryByHintTypes(hints) {
+  const typeCounts = {};
+  for (const h of hints) {
+    typeCounts[h.type] = (typeCounts[h.type] || 0) + 1;
+  }
+  if ((typeCounts.schema_risk || 0) + (typeCounts.binding_risk || 0) +
+      (typeCounts.field_risk || 0) + (typeCounts.contract_warning || 0) > 0) {
+    return "guard";
+  }
+  if ((typeCounts.ui_impact || 0) > 0) return "presentation";
+  if ((typeCounts.change_guard || 0) + (typeCounts.staleness || 0) > 0) return "layout";
+  if ((typeCounts.review || 0) > 0) return "priority";
+  return "general";
+}
+
+/**
  * Derive a structured inspection focus object from the hint set.
  * Summarises which areas/views/components are affected and what
  * kind of inspection the Gemini side should prioritise.
@@ -324,22 +343,7 @@ function deriveInspectionFocus(hints) {
     if (h.severity === "high")                  needsFollowup = true;
   }
 
-  // Determine primary category from dominant hint types
-  const typeCounts = {};
-  for (const h of hints) {
-    typeCounts[h.type] = (typeCounts[h.type] || 0) + 1;
-  }
-  let category = "general";
-  if ((typeCounts.schema_risk || 0) + (typeCounts.binding_risk || 0) +
-      (typeCounts.field_risk || 0) + (typeCounts.contract_warning || 0) > 0) {
-    category = "guard";
-  } else if ((typeCounts.ui_impact || 0) > 0) {
-    category = "presentation";
-  } else if ((typeCounts.change_guard || 0) + (typeCounts.staleness || 0) > 0) {
-    category = "layout";
-  } else if ((typeCounts.review || 0) > 0) {
-    category = "priority";
-  }
+  const category = classifyCategoryByHintTypes(hints);
 
   return {
     category,
@@ -357,7 +361,6 @@ function deriveInspectionFocus(hints) {
  */
 function classifyFeedbackCategory(hints, notes) {
   if (!hints || !hints.length) {
-    if (notes && notes.length >= 10) return "general";
     return "general";
   }
 
@@ -384,16 +387,7 @@ function classifyFeedbackCategory(hints, notes) {
   }
 
   // Fall back to hint-type-based classification
-  const typeCounts = {};
-  for (const h of hints) {
-    typeCounts[h.type] = (typeCounts[h.type] || 0) + 1;
-  }
-  if ((typeCounts.schema_risk || 0) + (typeCounts.binding_risk || 0) + (typeCounts.field_risk || 0) > 0) return "guard";
-  if ((typeCounts.ui_impact || 0) > 0) return "presentation";
-  if ((typeCounts.change_guard || 0) + (typeCounts.staleness || 0) > 0) return "layout";
-  if ((typeCounts.review || 0) > 0) return "priority";
-
-  return "general";
+  return classifyCategoryByHintTypes(hints);
 }
 
 /* ─────────────────────────────────────────────
