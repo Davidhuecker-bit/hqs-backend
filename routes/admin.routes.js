@@ -4381,7 +4381,7 @@ router.post("/gemini/architect-review", async (req, res) => {
 });
 
 /* =========================================================
-   DeepSeek ↔ Gemini Agent Bridge V1
+   DeepSeek ↔ Gemini Agent Bridge V1 (Workflow Step 1)
    =========================================================
 
    Three endpoints form the structured communication layer
@@ -4417,20 +4417,21 @@ router.post("/gemini/architect-review", async (req, res) => {
               "lastKnownArea": "...",
               "lastKnownMode": "..."
             },
-            "bridgeHints": [
-              {
-                "type":               "change_guard|review|ui_impact|staleness|contract_warning",
-                "source":             "deepseek_backend",
-                "title":              "...",
-                "summary":            "...",
-                "severity":           "low|medium|high",
-                "affectedAreas":      [],
-                "affectedFiles":      [],
-                "frontendImpact":     [],
-                "backendFollowups":   [],
-                "recommendedActions": []
-              }
-            ]
+            "bridgeHints": [ ... ],
+            "workflow": {
+              "sourceAgent":          "deepseek_backend",
+              "sourceMode":           "...",
+              "reviewIntent":         "binding_guard|structure_check|display_check|priority_check|general_review",
+              "recommendedGeminiMode":"layout_review|presentation_review|frontend_guard|priority_review",
+              "inspectionFocus": {
+                "category":            "guard|layout|priority|presentation|general",
+                "affectedViews":       [],
+                "affectedComponents":  [],
+                "affectedFields":      [],
+                "needsFollowup":       false
+              },
+              "workflowStage":        "bridge_ready"
+            }
           }
         }
 
@@ -4448,11 +4449,16 @@ router.post("/gemini/architect-review", async (req, res) => {
 
         Response:
         {
-          "success":    true,
-          "version":    "v1",
-          "accepted":   true,
-          "hintsCount": 0,
-          "receivedAt": "..."
+          "success":          true,
+          "version":          "v1",
+          "accepted":         true,
+          "hintsReceived":    0,
+          "hintsKept":        0,
+          "hintsDropped":     0,
+          "stored":           true,
+          "receivedAt":       "...",
+          "feedbackCategory": "guard|layout|priority|presentation|general",
+          "needsFollowup":    false
         }
 ========================================================= */
 
