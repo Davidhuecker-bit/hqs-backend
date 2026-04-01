@@ -92,7 +92,7 @@ function toStr(value) {
 
 function toStringArray(value) {
   if (!value) return [];
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (Array.isArray(value)) return value.map(String).map((v) => v.trim()).filter(Boolean);
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return [];
@@ -101,7 +101,7 @@ function toStringArray(value) {
       .map((l) => l.trim())
       .filter(Boolean);
   }
-  return [String(value)];
+  return [String(value).trim()].filter(Boolean);
 }
 
 const VALID_MODES = ["chat", "diagnose", "change_review"];
@@ -115,37 +115,74 @@ function normaliseMode(mode) {
    Response parsing helpers
    ───────────────────────────────────────────── */
 
-/** Strip markdown code fences that DeepSeek sometimes adds (handles nested fences). */
 function stripCodeFences(raw) {
   if (typeof raw !== "string") return String(raw || "");
   let text = raw.trim();
   let prev;
   do {
     prev = text;
-    text = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+    text = text
+      .replace(/^```(?:json)?\s*\n?/i, "")
+      .replace(/\n?```\s*$/i, "")
+      .trim();
   } while (text !== prev);
   return text;
 }
 
-/**
- * Try to extract a JSON object from a raw string.
- * Handles cases where the model wraps JSON inside prose.
- */
+function extractJsonObject(text) {
+  if (typeof text !== "string") return null;
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
 function tryParseJson(raw) {
   const cleaned = stripCodeFences(raw);
 
-  // Direct parse
   try {
     return JSON.parse(cleaned);
   } catch (_) {
     // ignore
   }
 
-  // Try to find a JSON object in the string
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
+  const extracted = extractJsonObject(cleaned) || extractJsonObject(raw);
+  if (extracted) {
     try {
-      return JSON.parse(jsonMatch[0]);
+      return JSON.parse(extracted);
     } catch (_) {
       // ignore
     }
@@ -154,10 +191,6 @@ function tryParseJson(raw) {
   return null;
 }
 
-/**
- * Normalise model output into the expected response structure.
- * Always returns { answer, warnings, suggestedNextSteps }.
- */
 function normaliseResponse(rawContent, mode) {
   if (!rawContent || typeof rawContent !== "string" || !rawContent.trim()) {
     return {
@@ -167,17 +200,16 @@ function normaliseResponse(rawContent, mode) {
     };
   }
 
-  // For chat mode, the model may just return plain text
   if (mode === "chat") {
     const parsed = tryParseJson(rawContent);
-    if (parsed && typeof parsed === "object") {
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return {
-        answer: toStr(parsed.answer) || toStr(parsed.response) || rawContent.trim(),
+        answer: toStr(parsed.answer) || toStr(parsed.response) || stripCodeFences(rawContent),
         warnings: toStringArray(parsed.warnings),
         suggestedNextSteps: toStringArray(parsed.suggestedNextSteps || parsed.nextSteps),
       };
     }
-    // Plain text is fine for chat
+
     return {
       answer: stripCodeFences(rawContent),
       warnings: [],
@@ -185,19 +217,24 @@ function normaliseResponse(rawContent, mode) {
     };
   }
 
-  // For diagnose / change_review, try structured parse
   const parsed = tryParseJson(rawContent);
-  if (parsed && typeof parsed === "object") {
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
     return {
-      answer: toStr(parsed.answer) || toStr(parsed.response) || toStr(parsed.diagnosis) || rawContent.trim(),
+      answer:
+        toStr(parsed.answer) ||
+        toStr(parsed.response) ||
+        toStr(parsed.diagnosis) ||
+        stripCodeFences(rawContent),
       warnings: toStringArray(parsed.warnings || parsed.risks || parsed.caveats),
       suggestedNextSteps: toStringArray(
-        parsed.suggestedNextSteps || parsed.nextSteps || parsed.recommendedActions || parsed.fixSteps
+        parsed.suggestedNextSteps ||
+          parsed.nextSteps ||
+          parsed.recommendedActions ||
+          parsed.fixSteps
       ),
     };
   }
 
-  // Fallback: use raw text as answer
   return {
     answer: stripCodeFences(rawContent),
     warnings: ["Die Antwort konnte nicht strukturiert verarbeitet werden – Rohtext wird angezeigt."],
@@ -243,12 +280,12 @@ function buildUserPrompt({ message, context, logs, changedFiles, notes }) {
  * Run an admin chat with DeepSeek.
  *
  * @param {Object}          payload
- * @param {string}          payload.message       – admin message (required)
- * @param {string}          [payload.mode]        – chat | diagnose | change_review
- * @param {string}          [payload.context]     – optional context
- * @param {string|string[]} [payload.logs]        – optional logs
- * @param {string[]}        [payload.changedFiles]– optional changed files
- * @param {string}          [payload.notes]       – optional notes
+ * @param {string}          payload.message        – admin message (required)
+ * @param {string}          [payload.mode]         – chat | diagnose | change_review
+ * @param {string}          [payload.context]      – optional context
+ * @param {string|string[]} [payload.logs]         – optional logs
+ * @param {string[]}        [payload.changedFiles] – optional changed files
+ * @param {string}          [payload.notes]        – optional notes
  * @returns {Promise<Object>} { success, mode, model, result }
  */
 async function runAdminDeepseekChat(payload = {}) {
@@ -256,7 +293,6 @@ async function runAdminDeepseekChat(payload = {}) {
     throw new Error("DeepSeek is not configured – cannot run Admin Console chat");
   }
 
-  // ── normalise inputs ─────────────────────────
   const mode = normaliseMode(payload.mode);
   const message = toStr(payload.message);
   const context = toStr(payload.context);
@@ -273,16 +309,16 @@ async function runAdminDeepseekChat(payload = {}) {
     };
   }
 
-  // ── build prompts ────────────────────────────
   const modePrompt = MODE_PROMPTS[mode] || MODE_PROMPTS.chat;
   const systemPrompt = `${modePrompt}\n\n${HQS_SYSTEM_CONTEXT}`;
   const userPrompt = buildUserPrompt({ message, context, logs, changedFiles, notes });
 
-  // ── call DeepSeek ────────────────────────────
   const modelName = resolveModel("fast");
 
   const completion = await createDeepSeekChatCompletion({
+    model: modelName,
     tier: "fast",
+    timeoutMs: 15000,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
@@ -295,10 +331,9 @@ async function runAdminDeepseekChat(payload = {}) {
   logger.info("[adminDeepseekConsole] DeepSeek response received", {
     mode,
     model: modelName,
-    rawLength: rawContent.length,
+    rawLength: String(rawContent || "").length,
   });
 
-  // ── parse & normalise ────────────────────────
   const result = normaliseResponse(rawContent, mode);
 
   return {
