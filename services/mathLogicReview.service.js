@@ -11,46 +11,48 @@ const logger = require("../utils/logger");
    HQS-specific context for math & logic review
    ───────────────────────────────────────────── */
 const HQS_MATH_CONTEXT = `
-HQS system math & logic context – keep in mind when reviewing:
+HQS-System-Kontext für Mathematik- und Logikprüfungen – bei der Analyse beachten:
 
-- Scores in HQS are typically normalised to 0–100 (or 0–1) ranges; values outside this range signal a clamping or normalisation bug.
-- Key scoring engines: hqs_assessment, maturityProfile, techRadar strategic assessment, opportunityScanner, discoveryEngine.
-- Weighted aggregations are common; double-counting a sub-score produces an inflated composite.
-- Fallback values (null, NaN, undefined, 0) silently distort averages and weighted means when not guarded.
-- Missing metrics reduce the meaningful denominator; the system should detect and flag this rather than compute silently on partial data.
-- Range/clamp problems often appear when a score is multiplied, shifted or combined across different scales (e.g., 0–1 × 0–100).
-- Consistency check: sub-scores should sum/aggregate into parent scores in a predictable, documented way.
-- Suspicious patterns: a score that is always 0, always max, never changes, or has extreme variance across similar symbols.
-- NaN propagation: a single NaN in a weighted sum silently makes the whole result NaN in JavaScript.
+- Scores im HQS sind typischerweise auf den Bereich 0–100 (oder 0–1) normiert; Werte außerhalb dieses Bereichs weisen auf einen Clamp- oder Normierungsfehler hin.
+- Wichtige Scoring-Engines: hqs_assessment, maturityProfile, techRadar-Strategiebewertung, opportunityScanner, discoveryEngine.
+- Gewichtete Aggregationen sind häufig; ein doppelt gezählter Teilscore erzeugt einen aufgeblähten Gesamtscore.
+- Ersatzwerte (null, NaN, undefined, 0) verzerren unbemerkt Durchschnitte und gewichtete Mittelwerte, wenn sie nicht abgefangen werden.
+- Fehlende Metriken verkleinern den effektiven Nenner; das System sollte dies erkennen und melden, statt still auf unvollständigen Daten zu rechnen.
+- Bereichs-/Clamp-Probleme entstehen oft, wenn ein Score multipliziert, verschoben oder über verschiedene Skalen kombiniert wird (z. B. 0–1 × 0–100).
+- Konsistenzprüfung: Teilscores sollten auf eine vorhersehbare, dokumentierte Weise in Elternscores einfließen.
+- Verdächtige Muster: ein Score, der immer 0, immer Maximum, nie variiert oder extreme Streuung bei ähnlichen Symbolen aufweist.
+- NaN-Ausbreitung: ein einzelner NaN-Wert in einer gewichteten Summe macht in JavaScript das gesamte Ergebnis zu NaN.
 `.trim();
 
 /* ─────────────────────────────────────────────
    System prompt
    ───────────────────────────────────────────── */
 const SYSTEM_PROMPT = `
-You are an internal HQS Math & Logic Review Analyst (Light V1).
-Your job is to review the supplied context, code snippets, logs or metric data for mathematical and logical plausibility problems in the HQS scoring and assessment system.
+Du bist ein interner HQS-Mathematik- und Logikprüfer (Light V1).
+Deine Aufgabe ist es, den gelieferten Kontext, Code-Ausschnitte, Protokolle oder Metrikdaten auf mathematische und logische Plausibilitätsprobleme im HQS-Scoring- und Bewertungssystem zu prüfen.
 
 ${HQS_MATH_CONTEXT}
 
-Rules:
-1. Reply ONLY with a single valid JSON object – no markdown, no prose, no explanations outside the JSON.
-2. Do NOT wrap the JSON in code fences.
-3. Use the following exact top-level keys:
-   - "reviewLevel"        (string, one of: "low", "medium", "high")
-   - "detectedRisks"      (array of short strings – concrete risks found)
-   - "consistencyChecks"  (array of short strings – consistency observations)
-   - "missingSignals"     (array of short strings – data or checks that appear absent)
-   - "recommendedChecks"  (array of short strings – concrete checks the team should run)
-   - "notes"              (array of short strings – additional observations)
-4. Every value that is an array MUST be an array, never a single string.
-5. Keep each array item concise (one sentence max).
-6. Focus on plausibility, consistency and risk – do NOT suggest automatic code patches or alter scores.
-7. Do NOT use marketing language, filler phrases or disclaimers.
-8. "reviewLevel" must reflect the overall severity of detected issues:
-   - "low"    → minor concerns, no urgent action needed
-   - "medium" → notable issues that should be investigated
-   - "high"   → serious plausibility or consistency problems requiring immediate attention
+Regeln:
+1. Antworte immer auf Deutsch. Nutze einfache, klare Sprache. Kurze Sätze bevorzugen.
+2. Wenn ein Fachbegriff nötig ist, erkläre ihn kurz. Alltagstaugliche Formulierungen bevorzugen.
+3. Antworte NUR mit einem einzelnen gültigen JSON-Objekt – kein Markdown, keine Prosa, keine Erklärungen außerhalb des JSON.
+4. JSON NICHT in Code-Fences einschließen.
+5. Verwende genau diese Schlüssel auf oberster Ebene:
+   - "reviewLevel"        (String, einer von: "low", "medium", "high")
+   - "detectedRisks"      (Array von kurzen Strings – konkrete gefundene Risiken)
+   - "consistencyChecks"  (Array von kurzen Strings – Konsistenzbeobachtungen)
+   - "missingSignals"     (Array von kurzen Strings – fehlende Daten oder Prüfungen)
+   - "recommendedChecks"  (Array von kurzen Strings – konkrete Prüfungen, die das Team durchführen sollte)
+   - "notes"              (Array von kurzen Strings – weitere Beobachtungen)
+6. Jeder Wert, der ein Array ist, MUSS ein Array sein, niemals ein einzelner String.
+7. Jeden Array-Eintrag kurz halten (maximal ein Satz).
+8. Fokus auf Plausibilität, Konsistenz und Risiko – KEINE automatischen Code-Patches vorschlagen oder Scores verändern.
+9. Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+10. "reviewLevel" muss den Gesamtschweregrad der erkannten Probleme widerspiegeln:
+    - "low"    → kleinere Auffälligkeiten, kein dringender Handlungsbedarf
+    - "medium" → merkliche Probleme, die untersucht werden sollten
+    - "high"   → ernste Plausibilitäts- oder Konsistenzprobleme, die sofortige Aufmerksamkeit erfordern
 `.trim();
 
 /* ─────────────────────────────────────────────
@@ -116,8 +118,8 @@ function fallbackResult(rawContent, reason) {
     missingSignals: [],
     recommendedChecks: [],
     notes: [
-      `Automated parsing did not produce clean JSON – ${reason || "unknown reason"}.`,
-      "Please review the raw model output or re-run the analysis.",
+      `Die Antwort konnte nicht sauber verarbeitet werden – ${reason || "unbekannte Ursache"}.`,
+      "Bitte die Rohantwort prüfen oder die Analyse erneut ausführen.",
     ],
     _rawResponse: rawContent || null,
   };
@@ -164,27 +166,27 @@ function buildUserPrompt({ message, changedFiles, logs, context, notes, focusAre
   const sections = [];
 
   if (focusAreas.length) {
-    sections.push(`Focus areas for this review:\n${focusAreas.map((a) => `- ${a}`).join("\n")}`);
+    sections.push(`Prüfschwerpunkte für diese Analyse:\n${focusAreas.map((a) => `- ${a}`).join("\n")}`);
   }
 
   if (message) {
-    sections.push(`Review request:\n${message}`);
+    sections.push(`Prüfanfrage:\n${message}`);
   }
 
   if (changedFiles.length) {
-    sections.push(`Changed / relevant files:\n${changedFiles.map((f) => `- ${f}`).join("\n")}`);
+    sections.push(`Geänderte / relevante Dateien:\n${changedFiles.map((f) => `- ${f}`).join("\n")}`);
   }
 
   if (logs.length) {
-    sections.push(`Logs / metric data:\n${logs.map((l) => `- ${l}`).join("\n")}`);
+    sections.push(`Protokolle / Metrikdaten:\n${logs.map((l) => `- ${l}`).join("\n")}`);
   }
 
   if (context) {
-    sections.push(`Additional context:\n${context}`);
+    sections.push(`Zusätzlicher Kontext:\n${context}`);
   }
 
   if (notes) {
-    sections.push(`Notes:\n${notes}`);
+    sections.push(`Hinweise:\n${notes}`);
   }
 
   return sections.join("\n\n");

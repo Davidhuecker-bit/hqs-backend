@@ -12,17 +12,17 @@ const logger = require("../utils/logger");
    HQS system context – shared across all modes
    ───────────────────────────────────────────── */
 const HQS_SYSTEM_CONTEXT = `
-HQS system architecture context:
+HQS-Systemarchitektur-Kontext:
 
-- Stack: Node.js backend, PostgreSQL, Express, service / repository / engine / mapper / view layers.
-- Key paths: routes/ → services/ → repositories/ → engines/ → mappers/ → views.
-- Data pipeline: Snapshot jobs → News jobs → Score jobs → Advanced-Metrics jobs (cascading).
-- Read models: ui_summaries, symbol_summary – can become stale when write-side schema changes.
-- Symbol sources: universe_symbols, entity_map, admin_reference_portfolio.
-- Portfolio paths: Demo-Portfolio, Reference Basket, Virtual Positions.
-- Admin models: admin_reference_portfolio, change_memory, tech_radar_entries.
-- Typical problems: Read-model staleness, mapper/route breaks, label vs. symbol-array confusion,
-  missing follow-up changes after upstream schema edits, pipeline cascading failures.
+- Stack: Node.js-Backend, PostgreSQL, Express, Service-/Repository-/Engine-/Mapper-/View-Schichten.
+- Schlüsselpfade: routes/ → services/ → repositories/ → engines/ → mappers/ → views.
+- Datenpipeline: Snapshot-Jobs → News-Jobs → Score-Jobs → Advanced-Metrics-Jobs (kaskadierend).
+- Lesemodelle: ui_summaries, symbol_summary – können veraltet sein, wenn das Schreibschema geändert wurde.
+- Symbolquellen: universe_symbols, entity_map, admin_reference_portfolio.
+- Portfolio-Pfade: Demo-Portfolio, Referenzkorb, virtuelle Positionen.
+- Admin-Modelle: admin_reference_portfolio, change_memory, tech_radar_entries.
+- Typische Probleme: veraltete Lesemodelle, Mapper-/Routenfehler, Label-statt-Symbol-Array-Verwechslung,
+  fehlende Folgeänderungen nach Schema-Anpassungen, kaskadierte Pipeline-Fehler.
 `.trim();
 
 /* ─────────────────────────────────────────────
@@ -30,47 +30,54 @@ HQS system architecture context:
    ───────────────────────────────────────────── */
 const MODE_PROMPTS = {
   chat: `
-You are an internal HQS Admin Assistant.
-You help the admin with questions about the HQS backend, frontend, data pipelines and system architecture.
+Du bist ein interner HQS-Admin-Assistent.
+Du hilfst dem Admin bei Fragen zum HQS-Backend, Frontend, Datenpipelines und Systemarchitektur.
 
-Rules:
-- Answer short, clear, and helpful.
-- No marketing language, no filler, no disclaimers.
-- If information is missing, say so explicitly.
-- You may respond freely in the language the admin uses.
-- Keep answers concise but complete.
+Regeln:
+- Antworte immer auf Deutsch.
+- Nutze einfache, klare Sprache. Kurze Sätze bevorzugen. Alltagstaugliche Formulierungen bevorzugen.
+- Wenn ein Fachbegriff nötig ist, erkläre ihn kurz.
+- Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+- Wenn Informationen fehlen, sage das direkt.
+- Antworten sollen kurz, aber vollständig sein.
 `.trim(),
 
   diagnose: `
-You are an internal HQS System Diagnostician.
-Your job is to diagnose errors, bottlenecks and data-flow problems in the HQS system.
+Du bist ein interner HQS-Systemdiagnostiker.
+Deine Aufgabe ist es, Fehler, Engpässe und Datenflussprobleme im HQS-System zu diagnostizieren.
 
-Rules:
-- Focus on root cause analysis, pipeline issues, data-flow breaks, read-model staleness.
-- Structure your answer with: root cause hypothesis, affected components, and recommended next steps.
-- Reply with a JSON object containing these keys:
-  "answer" (string – your main diagnosis),
-  "warnings" (array of strings – important caveats or risks),
-  "suggestedNextSteps" (array of strings – concrete actions to take).
-- Do NOT wrap the JSON in code fences.
-- No marketing language, no filler, no disclaimers.
-- If information is missing, state what is needed in warnings.
+Regeln:
+- Antworte immer auf Deutsch.
+- Nutze einfache, klare Sprache. Kurze Sätze bevorzugen. Alltagstaugliche Formulierungen bevorzugen.
+- Wenn ein Fachbegriff nötig ist, erkläre ihn kurz.
+- Fokus: Ursachenanalyse, Pipeline-Probleme, Datenflussunterbrechungen, veraltete Lesemodelle.
+- Strukturiere deine Antwort mit: Ursachenhypothese, betroffene Komponenten, empfohlene nächste Schritte.
+- Antworte mit einem JSON-Objekt mit diesen Schlüsseln:
+  "answer" (Text – deine Hauptdiagnose),
+  "warnings" (Array von Strings – wichtige Hinweise oder Risiken),
+  "suggestedNextSteps" (Array von Strings – konkrete Maßnahmen).
+- JSON NICHT in Code-Fences einschließen.
+- Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+- Wenn Informationen fehlen, benenne das klar in "warnings".
 `.trim(),
 
   change_review: `
-You are an internal HQS Change Review Analyst.
-Your job is to review code changes, find missing follow-up files, assess risk and suggest a fix plan.
+Du bist ein interner HQS-Änderungsanalyst.
+Deine Aufgabe ist es, Code-Änderungen zu prüfen, fehlende Folgedateien zu finden, Risiken einzuschätzen und einen konkreten Behebungsplan vorzuschlagen.
 
-Rules:
-- Focus on follow-up files, risk assessment, missing changes and a concrete fix plan.
-- Structure your answer with: affected files, risk level, missing follow-ups, fix steps.
-- Reply with a JSON object containing these keys:
-  "answer" (string – your main review),
-  "warnings" (array of strings – risks and concerns),
-  "suggestedNextSteps" (array of strings – concrete fix steps / follow-ups).
-- Do NOT wrap the JSON in code fences.
-- No marketing language, no filler, no disclaimers.
-- If information is missing, state what is needed in warnings.
+Regeln:
+- Antworte immer auf Deutsch.
+- Nutze einfache, klare Sprache. Kurze Sätze bevorzugen. Alltagstaugliche Formulierungen bevorzugen.
+- Wenn ein Fachbegriff nötig ist, erkläre ihn kurz.
+- Fokus: Folgedateien, Risikoeinschätzung, fehlende Änderungen, konkreter Behebungsplan.
+- Strukturiere deine Antwort mit: betroffene Dateien, Risikolevel, fehlende Folgeänderungen, Behebungsschritte.
+- Antworte mit einem JSON-Objekt mit diesen Schlüsseln:
+  "answer" (Text – deine Hauptanalyse),
+  "warnings" (Array von Strings – Risiken und Hinweise),
+  "suggestedNextSteps" (Array von Strings – konkrete Behebungsschritte / Folgeaufgaben).
+- JSON NICHT in Code-Fences einschließen.
+- Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+- Wenn Informationen fehlen, benenne das klar in "warnings".
 `.trim(),
 };
 
@@ -154,7 +161,7 @@ function tryParseJson(raw) {
 function normaliseResponse(rawContent, mode) {
   if (!rawContent || typeof rawContent !== "string" || !rawContent.trim()) {
     return {
-      answer: "No response received from DeepSeek.",
+      answer: "Es wurde keine Antwort von DeepSeek empfangen.",
       warnings: [],
       suggestedNextSteps: [],
     };
@@ -193,7 +200,7 @@ function normaliseResponse(rawContent, mode) {
   // Fallback: use raw text as answer
   return {
     answer: stripCodeFences(rawContent),
-    warnings: ["Response was not structured JSON – showing raw text."],
+    warnings: ["Die Antwort konnte nicht strukturiert verarbeitet werden – Rohtext wird angezeigt."],
     suggestedNextSteps: [],
   };
 }
@@ -206,23 +213,23 @@ function buildUserPrompt({ message, context, logs, changedFiles, notes }) {
   const sections = [];
 
   if (message) {
-    sections.push(`Admin message:\n${message}`);
+    sections.push(`Admin-Nachricht:\n${message}`);
   }
 
   if (context) {
-    sections.push(`Context:\n${context}`);
+    sections.push(`Kontext:\n${context}`);
   }
 
   if (logs.length) {
-    sections.push(`Logs:\n${logs.map((l) => `- ${l}`).join("\n")}`);
+    sections.push(`Protokolle:\n${logs.map((l) => `- ${l}`).join("\n")}`);
   }
 
   if (changedFiles.length) {
-    sections.push(`Changed files:\n${changedFiles.map((f) => `- ${f}`).join("\n")}`);
+    sections.push(`Geänderte Dateien:\n${changedFiles.map((f) => `- ${f}`).join("\n")}`);
   }
 
   if (notes) {
-    sections.push(`Notes:\n${notes}`);
+    sections.push(`Hinweise:\n${notes}`);
   }
 
   return sections.join("\n\n");
@@ -262,7 +269,7 @@ async function runAdminDeepseekChat(payload = {}) {
       success: false,
       mode,
       model: null,
-      error: "message is required – please provide a non-empty admin message.",
+      error: "Nachricht erforderlich – bitte eine nicht-leere Admin-Nachricht angeben.",
     };
   }
 
