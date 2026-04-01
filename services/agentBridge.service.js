@@ -22,6 +22,77 @@ const VALID_HINT_TYPES = [
 
 const VALID_SEVERITIES = ["low", "medium", "high"];
 
+/* ─────────────────────────────────────────────
+   Workflow orchestration constants
+   ─────────────────────────────────────────────
+   Maps DeepSeek hint types and patterns to
+   recommended Gemini review modes, review
+   intents and inspection focus categories.
+   ───────────────────────────────────────────── */
+
+const VALID_GEMINI_MODES = [
+  "layout_review",
+  "presentation_review",
+  "frontend_guard",
+  "priority_review",
+];
+
+const VALID_REVIEW_INTENTS = [
+  "structure_check",       // layout / structural issues
+  "display_check",         // presentation / readability
+  "binding_guard",         // schema / field / binding risks
+  "priority_check",        // priority / weighting issues
+  "general_review",        // no specific focus detected
+];
+
+const VALID_FEEDBACK_CATEGORIES = [
+  "guard",
+  "layout",
+  "priority",
+  "presentation",
+  "general",
+];
+
+/**
+ * Maps hint types → recommended Gemini mode.
+ * Used as primary signal; severity and keyword analysis refine the choice.
+ */
+const HINT_TYPE_TO_GEMINI_MODE = {
+  schema_risk:       "frontend_guard",
+  binding_risk:      "frontend_guard",
+  field_risk:        "frontend_guard",
+  contract_warning:  "frontend_guard",
+  ui_impact:         "presentation_review",
+  staleness:         "layout_review",
+  change_guard:      "layout_review",
+  review:            "priority_review",
+};
+
+/**
+ * Maps hint types → review intent label.
+ */
+const HINT_TYPE_TO_REVIEW_INTENT = {
+  schema_risk:       "binding_guard",
+  binding_risk:      "binding_guard",
+  field_risk:        "binding_guard",
+  contract_warning:  "binding_guard",
+  ui_impact:         "display_check",
+  staleness:         "structure_check",
+  change_guard:      "structure_check",
+  review:            "priority_check",
+};
+
+/**
+ * Keyword patterns that override the type-based mode selection.
+ * Checked against combined title+summary text (lowercase).
+ */
+const MODE_OVERRIDE_KEYWORDS = {
+  frontend_guard:      ["binding", "schema", "feld", "field", "veraltetes feld", "contract", "vertrag"],
+  presentation_review: ["darstellung", "anzeige", "lesbar", "farb", "status-signal", "inkonsistent"],
+  layout_review:       ["layout", "hierarchie", "struktur", "gruppierung", "abstand", "dichte"],
+  priority_review:     ["priorit", "gewicht", "reihenfolge", "dringlich", "prominenz", "rangfolge"],
+};
+
 /** Severity ordering for sorting (higher = more critical) */
 const SEVERITY_WEIGHT = { high: 3, medium: 2, low: 1 };
 
@@ -143,6 +214,180 @@ function applySeverityGuard(hint) {
     hint.severity = "medium";
   }
   return hint;
+}
+
+/* ─────────────────────────────────────────────
+   Workflow orchestration helpers
+   ─────────────────────────────────────────────
+   Derive reviewIntent, recommendedGeminiMode
+   and inspectionFocus from the hint set produced
+   by a bridge package build.  These keep the
+   DeepSeek→Bridge→Gemini chain coordinated
+   without introducing new persistence or a
+   heavyweight rule engine.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive the best-fitting Gemini review mode from the hint set.
+ *
+ * Strategy:
+ *  1. Count votes by hint type → mode mapping.
+ *  2. Apply keyword overrides from combined hint text.
+ *  3. High-severity binding/schema hints always win → frontend_guard.
+ *  4. Default: layout_review.
+ */
+function deriveRecommendedGeminiMode(hints) {
+  if (!hints || !hints.length) return "layout_review";
+
+  // Tally votes per mode from hint types
+  const votes = {};
+  for (const h of hints) {
+    const mode = HINT_TYPE_TO_GEMINI_MODE[h.type] || "layout_review";
+    votes[mode] = (votes[mode] || 0) + (SEVERITY_WEIGHT[h.severity] || 1);
+  }
+
+  // Keyword override pass – check combined text of all hints
+  const combinedText = hints
+    .map((h) => `${h.title} ${h.summary}`)
+    .join(" ")
+    .toLowerCase();
+
+  for (const [mode, keywords] of Object.entries(MODE_OVERRIDE_KEYWORDS)) {
+    if (keywords.some((kw) => combinedText.includes(kw))) {
+      votes[mode] = (votes[mode] || 0) + 2;
+    }
+  }
+
+  // High-severity binding/schema hints force frontend_guard
+  const hasHighBindingRisk = hints.some(
+    (h) =>
+      h.severity === "high" &&
+      ["schema_risk", "binding_risk", "field_risk", "contract_warning"].includes(h.type)
+  );
+  if (hasHighBindingRisk) {
+    return "frontend_guard";
+  }
+
+  // Pick mode with highest weighted vote
+  let best = "layout_review";
+  let bestScore = 0;
+  for (const [mode, score] of Object.entries(votes)) {
+    if (score > bestScore && VALID_GEMINI_MODES.includes(mode)) {
+      best = mode;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * Derive a concise review intent label from the hint set.
+ */
+function deriveReviewIntent(hints) {
+  if (!hints || !hints.length) return "general_review";
+
+  // Use highest-severity hint's type for intent
+  const sorted = [...hints].sort(
+    (a, b) => (SEVERITY_WEIGHT[b.severity] || 0) - (SEVERITY_WEIGHT[a.severity] || 0)
+  );
+  const topHint = sorted[0];
+  return HINT_TYPE_TO_REVIEW_INTENT[topHint.type] || "general_review";
+}
+
+/**
+ * Classify a category from hint types alone (shared by
+ * deriveInspectionFocus and classifyFeedbackCategory).
+ */
+function classifyCategoryByHintTypes(hints) {
+  const typeCounts = {};
+  for (const h of hints) {
+    typeCounts[h.type] = (typeCounts[h.type] || 0) + 1;
+  }
+  if ((typeCounts.schema_risk || 0) + (typeCounts.binding_risk || 0) +
+      (typeCounts.field_risk || 0) + (typeCounts.contract_warning || 0) > 0) {
+    return "guard";
+  }
+  if ((typeCounts.ui_impact || 0) > 0) return "presentation";
+  if ((typeCounts.change_guard || 0) + (typeCounts.staleness || 0) > 0) return "layout";
+  if ((typeCounts.review || 0) > 0) return "priority";
+  return "general";
+}
+
+/**
+ * Derive a structured inspection focus object from the hint set.
+ * Summarises which areas/views/components are affected and what
+ * kind of inspection the Gemini side should prioritise.
+ */
+function deriveInspectionFocus(hints) {
+  if (!hints || !hints.length) {
+    return {
+      category:            "general",
+      affectedViews:       [],
+      affectedComponents:  [],
+      affectedFields:      [],
+      needsFollowup:       false,
+    };
+  }
+
+  // Collect unique affected areas / files as proxy for views/components
+  const views      = new Set();
+  const components = new Set();
+  const fields     = new Set();
+  let needsFollowup = false;
+
+  for (const h of hints) {
+    for (const area of h.affectedAreas || [])  views.add(area);
+    for (const file of h.affectedFiles || [])  components.add(file);
+    for (const imp of h.frontendImpact || [])  fields.add(imp);
+    if ((h.backendFollowups || []).length > 0)  needsFollowup = true;
+    if (h.severity === "high")                  needsFollowup = true;
+  }
+
+  const category = classifyCategoryByHintTypes(hints);
+
+  return {
+    category,
+    affectedViews:      [...views].slice(0, MAX_ARRAY_ITEMS),
+    affectedComponents: [...components].slice(0, MAX_ARRAY_ITEMS),
+    affectedFields:     [...fields].slice(0, MAX_ARRAY_ITEMS),
+    needsFollowup,
+  };
+}
+
+/**
+ * Classify a frontend feedback payload into a category.
+ * Used so the backend can later understand what kind of
+ * Gemini response came back.
+ */
+function classifyFeedbackCategory(hints, notes) {
+  if (!hints || !hints.length) {
+    return "general";
+  }
+
+  const text = hints
+    .map((h) => `${h.title || ""} ${h.summary || ""}`)
+    .join(" ")
+    .toLowerCase();
+
+  // Guard signals
+  if (["binding", "schema", "feld", "field", "contract", "vertrag"].some((kw) => text.includes(kw))) {
+    return "guard";
+  }
+  // Layout signals
+  if (["layout", "hierarchie", "struktur", "gruppierung"].some((kw) => text.includes(kw))) {
+    return "layout";
+  }
+  // Priority signals
+  if (["priorit", "gewicht", "reihenfolge", "dringlich"].some((kw) => text.includes(kw))) {
+    return "priority";
+  }
+  // Presentation signals
+  if (["darstellung", "anzeige", "lesbar", "farb", "inkonsistent"].some((kw) => text.includes(kw))) {
+    return "presentation";
+  }
+
+  // Fall back to hint-type-based classification
+  return classifyCategoryByHintTypes(hints);
 }
 
 /* ─────────────────────────────────────────────
@@ -388,8 +633,10 @@ function normaliseBackendState(payload = {}) {
    and returns a normalised bridge package that
    Gemini / the frontend can read.
 
-   Step 2: Quality filtering, deduplication,
-   priority sorting, and better logging.
+   Workflow Step 1: Adds orchestration metadata
+   (reviewIntent, recommendedGeminiMode,
+   inspectionFocus, workflowStage) so the
+   DeepSeek→Bridge→Gemini chain is coordinated.
 
    @param {Object} payload
    @param {string}  [payload.lastKnownArea]    – e.g. "hqs_assessment"
@@ -417,11 +664,24 @@ function buildBridgePackage(payload = {}) {
   // Quality gate: deduplicate, filter weak, prioritise
   const { hints: bridgeHints, dropped } = filterAndPrioritiseHints(rawHints);
 
+  // ── Workflow orchestration metadata ──
+  const recommendedGeminiMode = deriveRecommendedGeminiMode(bridgeHints);
+  const reviewIntent          = deriveReviewIntent(bridgeHints);
+  const inspectionFocus       = deriveInspectionFocus(bridgeHints);
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
     backendState,
     bridgeHints,
+    workflow: {
+      sourceAgent:          ACTIVE_BACKEND_AGENT,
+      sourceMode:           sourceMode || null,
+      reviewIntent,
+      recommendedGeminiMode,
+      inspectionFocus,
+      workflowStage:        "bridge_ready",
+    },
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -432,10 +692,12 @@ function buildBridgePackage(payload = {}) {
 
   _currentBridgePackage = pkg;
 
-  // ── Operational logging ──
+  // ── Workflow-oriented logging ──
   const hintTypes = {};
+  const severityCounts = { high: 0, medium: 0, low: 0 };
   for (const h of bridgeHints) {
     hintTypes[h.type] = (hintTypes[h.type] || 0) + 1;
+    severityCounts[h.severity] = (severityCounts[h.severity] || 0) + 1;
   }
 
   logger.info("[agentBridge] bridge package built", {
@@ -444,10 +706,21 @@ function buildBridgePackage(payload = {}) {
     hintsDroppedWeak:      dropped.weak,
     hintsDroppedDuplicate: dropped.duplicate,
     hintTypes,
+    severityCounts,
     lastKnownArea:  backendState.lastKnownArea,
     lastKnownMode:  backendState.lastKnownMode,
     sourceMode,
     isEmpty:        bridgeHints.length === 0,
+  });
+
+  logger.info("[agentBridge] workflow orchestration", {
+    reviewIntent,
+    recommendedGeminiMode,
+    inspectionCategory:   inspectionFocus.category,
+    needsFollowup:        inspectionFocus.needsFollowup,
+    affectedViewsCount:   inspectionFocus.affectedViews.length,
+    affectedFieldsCount:  inspectionFocus.affectedFields.length,
+    workflowStage:        "bridge_ready",
   });
 
   if (bridgeHints.length === 0 && rawHints.length > 0) {
@@ -479,6 +752,20 @@ function getCurrentBridgePackage() {
       sourceMode:    null,
     },
     bridgeHints: [],
+    workflow: {
+      sourceAgent:          ACTIVE_BACKEND_AGENT,
+      sourceMode:           null,
+      reviewIntent:         "general_review",
+      recommendedGeminiMode: "layout_review",
+      inspectionFocus: {
+        category:            "general",
+        affectedViews:       [],
+        affectedComponents:  [],
+        affectedFields:      [],
+        needsFollowup:       false,
+      },
+      workflowStage:        "idle",
+    },
     meta: {
       hintsTotal:   0,
       hintsKept:    0,
@@ -536,12 +823,21 @@ function receiveFrontendFeedback(payload = {}) {
   const usable   = allBuilt.filter(isFeedbackHintUsable);
   const droppedCount = allBuilt.length - usable.length;
 
+  // ── Workflow: classify feedback and detect followup need ──
+  const feedbackCategory = classifyFeedbackCategory(usable, notes);
+  const hasHighSeverity  = usable.some((h) => h.severity === "high");
+  const needsFollowup    = hasHighSeverity ||
+    ["guard"].includes(feedbackCategory) ||
+    usable.some((h) => (h.backendFollowups || []).length > 0);
+
   const entry = {
     receivedAt: new Date().toISOString(),
     source,
     area:   area || null,
     notes:  notes || null,
     hints:  usable,
+    feedbackCategory,
+    needsFollowup,
   };
 
   // Only store entries that carry real information
@@ -555,7 +851,7 @@ function receiveFrontendFeedback(payload = {}) {
     }
   }
 
-  // ── Operational logging ──
+  // ── Workflow-oriented logging ──
   logger.info("[agentBridge] frontend feedback received", {
     source,
     area,
@@ -564,6 +860,9 @@ function receiveFrontendFeedback(payload = {}) {
     droppedHints:   droppedCount,
     hasNotes:       !!(notes && notes.length >= 10),
     stored:         hasValue,
+    feedbackCategory,
+    needsFollowup,
+    workflowStage:  "feedback_received",
   });
 
   if (droppedCount > 0) {
@@ -573,13 +872,23 @@ function receiveFrontendFeedback(payload = {}) {
     });
   }
 
+  if (needsFollowup) {
+    logger.info("[agentBridge] feedback signals followup needed", {
+      feedbackCategory,
+      highSeverityHints: usable.filter((h) => h.severity === "high").length,
+      source,
+    });
+  }
+
   return {
-    accepted:      true,
-    hintsReceived: rawHints.length,
-    hintsKept:     usable.length,
-    hintsDropped:  droppedCount,
-    stored:        hasValue,
-    receivedAt:    entry.receivedAt,
+    accepted:          true,
+    hintsReceived:     rawHints.length,
+    hintsKept:         usable.length,
+    hintsDropped:      droppedCount,
+    stored:            hasValue,
+    receivedAt:        entry.receivedAt,
+    feedbackCategory,
+    needsFollowup,
   };
 }
 
@@ -600,4 +909,7 @@ module.exports = {
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
+  VALID_GEMINI_MODES,
+  VALID_REVIEW_INTENTS,
+  VALID_FEEDBACK_CATEGORIES,
 };

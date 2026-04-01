@@ -513,6 +513,31 @@ function buildUserPrompt(normalised) {
     sections.push(modeInstruction);
   }
 
+  // ── Workflow context: inject orchestration metadata from bridge ──
+  if (bridgeContext && bridgeContext.workflow) {
+    const wf = bridgeContext.workflow;
+    const wfParts = [];
+    if (wf.reviewIntent) {
+      wfParts.push(`Prüfintent: ${wf.reviewIntent}`);
+    }
+    if (wf.inspectionFocus) {
+      const focus = wf.inspectionFocus;
+      if (focus.category) wfParts.push(`Schwerpunkt-Kategorie: ${focus.category}`);
+      if (focus.needsFollowup) wfParts.push("Folgeprüfung: ja");
+      if (focus.affectedViews && focus.affectedViews.length) {
+        wfParts.push(`Betroffene Bereiche: ${focus.affectedViews.join(", ")}`);
+      }
+      if (focus.affectedFields && focus.affectedFields.length) {
+        wfParts.push(`Betroffene Felder: ${focus.affectedFields.join(", ")}`);
+      }
+    }
+    if (wf.sourceAgent) wfParts.push(`Quelle: ${wf.sourceAgent}`);
+    if (wf.sourceMode) wfParts.push(`Quell-Modus: ${wf.sourceMode}`);
+    if (wfParts.length) {
+      sections.push(`Workflow-Kontext (automatisch abgeleitet):\n${wfParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
@@ -658,6 +683,9 @@ async function runGeminiArchitectReview(payload = {}) {
     hasMessage: Boolean(normalised.message),
     hasContext: Boolean(normalised.context),
     hasBridgeContext: Boolean(normalised.bridgeContext),
+    bridgeReviewIntent: normalised.bridgeContext?.workflow?.reviewIntent || null,
+    bridgeRecommendedMode: normalised.bridgeContext?.workflow?.recommendedGeminiMode || null,
+    bridgeInspectionCategory: normalised.bridgeContext?.workflow?.inspectionFocus?.category || null,
   });
 
   let response;
@@ -728,6 +756,8 @@ async function runGeminiArchitectReview(payload = {}) {
     uiFindingsCount: result.uiFindings.length,
     guardNotesCount: result.frontendGuardNotes.length,
     parseMethod,
+    bridgeReviewIntent: normalised.bridgeContext?.workflow?.reviewIntent || null,
+    workflowStage: "gemini_complete",
   });
 
   return {
