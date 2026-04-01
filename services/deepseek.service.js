@@ -6,11 +6,12 @@ let client = null;
 
 /**
  * Returns a lazily-initialised OpenAI-compatible client configured for the
- * DeepSeek API.  The client is cached for the lifetime of the process.
+ * DeepSeek API. The client is cached for the lifetime of the process.
  *
  * ENV:
- *   DEEPSEEK_API_KEY   – required
- *   DEEPSEEK_BASE_URL  – optional (default https://api.deepseek.com)
+ *   DEEPSEEK_API_KEY     – required
+ *   DEEPSEEK_BASE_URL    – optional (default https://api.deepseek.com)
+ *   DEEPSEEK_TIMEOUT_MS  – optional per-request timeout override
  */
 function getDeepSeekClient() {
   if (client) return client;
@@ -37,28 +38,97 @@ function isDeepSeekConfigured() {
 
 /**
  * Resolve the model identifier.
- *   explicit > env > fallback default
+ * explicit > env > fallback default
  *
- * @param {"default"|"fast"} [tier] – optional speed tier
- * @param {string}           [explicit] – caller-supplied model override
+ * Important:
+ * - Default is now deepseek-chat for speed and reliability in UI/admin flows.
+ * - deepseek-reasoner should only be used deliberately, not as global default.
+ *
+ * @param {"default"|"fast"} [tier]
+ * @param {string} [explicit]
+ * @returns {string}
  */
 function resolveModel(tier, explicit) {
   if (explicit) return explicit;
+
   if (tier === "fast") {
     return process.env.DEEPSEEK_FAST_MODEL || "deepseek-chat";
   }
-  return process.env.DEEPSEEK_MODEL || "deepseek-reasoner";
+
+  return process.env.DEEPSEEK_MODEL || "deepseek-chat";
+}
+
+/**
+ * Parse timeout from env or fallback.
+ *
+ * @param {number|undefined|null} timeoutMs
+ * @returns {number}
+ */
+function resolveTimeoutMs(timeoutMs) {
+  const raw = timeoutMs ?? process.env.DEEPSEEK_TIMEOUT_MS;
+  const num = Number(raw);
+  if (Number.isFinite(num) && num >= 1000) return Math.floor(num);
+  return 20000;
+}
+
+/**
+ * Returns a promise that rejects after timeoutMs.
+ *
+ * @param {number} timeoutMs
+ * @param {string} modelName
+ * @returns {Promise<never>}
+ */
+function createTimeoutPromise(timeoutMs, modelName) {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          `DeepSeek request timed out after ${timeoutMs}ms (model: ${modelName})`
+        )
+      );
+    }, timeoutMs);
+
+    // Do not keep the event loop alive just for the timeout
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+  });
+}
+
+/**
+ * Basic validation for message array.
+ *
+ * @param {Array} messages
+ */
+function validateMessages(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    throw new Error("DeepSeek messages must be a non-empty array");
+  }
+
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object") {
+      throw new Error("DeepSeek message entries must be objects");
+    }
+    if (!msg.role || typeof msg.role !== "string") {
+      throw new Error("DeepSeek message is missing a valid role");
+    }
+    if (msg.content == null || typeof msg.content !== "string") {
+      throw new Error("DeepSeek message is missing valid string content");
+    }
+  }
 }
 
 /**
  * Create a chat completion via the DeepSeek API.
  *
- * @param {Object}   opts
- * @param {Array}    opts.messages      – OpenAI-style message array
- * @param {string}   [opts.model]       – model override
- * @param {"default"|"fast"} [opts.tier] – speed tier (ignored when model is set)
- * @param {number}   [opts.temperature] – sampling temperature (default 0.2)
- * @param {Object}   [opts.responseFormat] – optional response_format object
+ * @param {Object} opts
+ * @param {Array} opts.messages
+ * @param {string} [opts.model]
+ * @param {"default"|"fast"} [opts.tier]
+ * @param {number} [opts.temperature]
+ * @param {Object|null} [opts.responseFormat]
+ * @param {number} [opts.timeoutMs]
+ * @returns {Promise<Object>}
  */
 async function createDeepSeekChatCompletion({
   messages,
@@ -66,11 +136,16 @@ async function createDeepSeekChatCompletion({
   tier,
   temperature = 0.2,
   responseFormat = null,
+  timeoutMs,
 }) {
   const openai = getDeepSeekClient();
+  validateMessages(messages);
+
+  const resolvedModel = resolveModel(tier, model);
+  const resolvedTimeoutMs = resolveTimeoutMs(timeoutMs);
 
   const payload = {
-    model: resolveModel(tier, model),
+    model: resolvedModel,
     messages,
     temperature,
   };
@@ -79,22 +154,50 @@ async function createDeepSeekChatCompletion({
     payload.response_format = responseFormat;
   }
 
-  const completion = await openai.chat.completions.create(payload);
-  return completion;
+  try {
+    const completion = await Promise.race([
+      openai.chat.completions.create(payload),
+      createTimeoutPromise(resolvedTimeoutMs, resolvedModel),
+    ]);
+
+    return completion;
+  } catch (error) {
+    const wrapped = new Error(
+      `DeepSeek completion failed (${resolvedModel}): ${error.message}`
+    );
+    wrapped.cause = error;
+    throw wrapped;
+  }
 }
 
 /**
  * Convenience wrapper: send a system + user prompt and parse the response as
- * JSON.  Returns the parsed object on success, or an error descriptor when
- * parsing fails (never throws for parse errors).
+ * JSON. Returns the parsed object on success, or an error descriptor when
+ * parsing fails. API/timeout errors still throw so callers can distinguish
+ * transport failures from parse failures.
+ *
+ * @param {Object} params
+ * @param {string} params.systemPrompt
+ * @param {string} params.userPrompt
+ * @param {string} [params.model]
+ * @param {"default"|"fast"} [params.tier]
+ * @param {number} [params.timeoutMs]
+ * @returns {Promise<Object>}
  */
-async function runDeepSeekJsonAnalysis({ systemPrompt, userPrompt, model, tier }) {
+async function runDeepSeekJsonAnalysis({
+  systemPrompt,
+  userPrompt,
+  model,
+  tier = "fast",
+  timeoutMs,
+}) {
   const completion = await createDeepSeekChatCompletion({
     model,
     tier,
+    timeoutMs,
     messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
+      { role: "system", content: String(systemPrompt || "") },
+      { role: "user", content: String(userPrompt || "") },
     ],
     temperature: 0.1,
     responseFormat: { type: "json_object" },
