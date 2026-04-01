@@ -101,6 +101,51 @@ Regeln:
 `.trim();
 
 /* ─────────────────────────────────────────────
+   Structured output schema
+   ───────────────────────────────────────────── */
+
+const RESPONSE_SCHEMA = {
+  type: "object",
+  properties: {
+    summaryTitle: { type: "string" },
+    summaryText: { type: "string" },
+    severity: {
+      type: "string",
+      enum: ["low", "medium", "high"],
+    },
+    uiFindings: {
+      type: "array",
+      items: { type: "string" },
+    },
+    layoutRecommendations: {
+      type: "array",
+      items: { type: "string" },
+    },
+    priorityRecommendations: {
+      type: "array",
+      items: { type: "string" },
+    },
+    frontendGuardNotes: {
+      type: "array",
+      items: { type: "string" },
+    },
+    recommendedAction: { type: "string" },
+    confidenceNote: { type: "string" },
+  },
+  required: [
+    "summaryTitle",
+    "summaryText",
+    "severity",
+    "uiFindings",
+    "layoutRecommendations",
+    "priorityRecommendations",
+    "frontendGuardNotes",
+    "recommendedAction",
+    "confidenceNote",
+  ],
+};
+
+/* ─────────────────────────────────────────────
    Mode-specific prompt additions
    ───────────────────────────────────────────── */
 
@@ -141,13 +186,16 @@ function toStr(value) {
 
 function toStringArray(value) {
   if (!value) return [];
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (Array.isArray(value)) return value.map(String).map((v) => v.trim()).filter(Boolean);
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return [];
-    return trimmed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return trimmed
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
   }
-  return [String(value)];
+  return [String(value).trim()].filter(Boolean);
 }
 
 function normaliseMode(value) {
@@ -182,34 +230,57 @@ function stripCodeFences(raw) {
   let prev;
   do {
     prev = text;
-    text = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+    text = text
+      .replace(/^```(?:json)?\s*\n?/i, "")
+      .replace(/\n?```\s*$/i, "")
+      .trim();
   } while (text !== prev);
   return text;
 }
 
 /**
- * Try to extract the first balanced JSON object `{...}` from arbitrary text.
- * Returns the extracted substring or null if none found.
+ * Extract the first balanced JSON object {...} from arbitrary text.
+ * Handles quoted braces inside strings.
  */
 function extractJsonObject(text) {
   if (typeof text !== "string") return null;
   const start = text.indexOf("{");
   if (start === -1) return null;
+
   let depth = 0;
   let inString = false;
   let escape = false;
+
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
-    if (escape) { escape = false; continue; }
-    if (ch === "\\" && inString) { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
     if (inString) continue;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
+
+    if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
       depth--;
-      if (depth === 0) return text.slice(start, i + 1);
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
     }
   }
+
   return null;
 }
 
@@ -238,14 +309,21 @@ const EXPECTED_ARRAY_KEYS = [
 const VALID_SEVERITIES = ["low", "medium", "high"];
 
 function normaliseResult(obj) {
-  if (!obj || typeof obj !== "object") {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
     return fallbackResult(null, "response was not an object");
   }
 
-  const result = {};
-
-  result.summaryTitle = toStr(obj.summaryTitle) || "Gemini Architect Analyse";
-  result.summaryText  = toStr(obj.summaryText)  || "";
+  const result = {
+    summaryTitle: toStr(obj.summaryTitle) || "Gemini Architect Analyse",
+    summaryText: toStr(obj.summaryText) || "",
+    severity: "medium",
+    uiFindings: [],
+    layoutRecommendations: [],
+    priorityRecommendations: [],
+    frontendGuardNotes: [],
+    recommendedAction: toStr(obj.recommendedAction) || "",
+    confidenceNote: toStr(obj.confidenceNote) || "",
+  };
 
   const rawSeverity = toStr(obj.severity).toLowerCase();
   result.severity = VALID_SEVERITIES.includes(rawSeverity) ? rawSeverity : "medium";
@@ -253,9 +331,6 @@ function normaliseResult(obj) {
   for (const key of EXPECTED_ARRAY_KEYS) {
     result[key] = toStringArray(obj[key]);
   }
-
-  result.recommendedAction = toStr(obj.recommendedAction) || "";
-  result.confidenceNote    = toStr(obj.confidenceNote)    || "";
 
   return result;
 }
@@ -281,7 +356,6 @@ function buildUserPrompt(normalised) {
 
   const sections = [];
 
-  // Mode instruction
   const modeInstruction = MODE_INSTRUCTIONS[mode];
   if (modeInstruction) {
     sections.push(modeInstruction);
@@ -292,19 +366,27 @@ function buildUserPrompt(normalised) {
   }
 
   if (affectedAreas.length) {
-    sections.push(`Betroffene Systembereiche:\n${affectedAreas.map((a) => `- ${a}`).join("\n")}`);
+    sections.push(
+      `Betroffene Systembereiche:\n${affectedAreas.map((a) => `- ${a}`).join("\n")}`
+    );
   }
 
   if (affectedViews.length) {
-    sections.push(`Betroffene Views / Seiten:\n${affectedViews.map((v) => `- ${v}`).join("\n")}`);
+    sections.push(
+      `Betroffene Views / Seiten:\n${affectedViews.map((v) => `- ${v}`).join("\n")}`
+    );
   }
 
   if (affectedComponents.length) {
-    sections.push(`Betroffene Komponenten:\n${affectedComponents.map((c) => `- ${c}`).join("\n")}`);
+    sections.push(
+      `Betroffene Komponenten:\n${affectedComponents.map((c) => `- ${c}`).join("\n")}`
+    );
   }
 
   if (frontendObservations.length) {
-    sections.push(`Frontend-Beobachtungen:\n${frontendObservations.map((o) => `- ${o}`).join("\n")}`);
+    sections.push(
+      `Frontend-Beobachtungen:\n${frontendObservations.map((o) => `- ${o}`).join("\n")}`
+    );
   }
 
   if (layoutState) {
@@ -320,7 +402,7 @@ function buildUserPrompt(normalised) {
       const bridgeStr = JSON.stringify(bridgeContext, null, 2);
       sections.push(`Agent-Bridge-Kontext:\n${bridgeStr}`);
     } catch (_) {
-      // skip malformed bridge context
+      // ignore malformed bridge context
     }
   }
 
@@ -336,50 +418,63 @@ function buildUserPrompt(normalised) {
 }
 
 /* ─────────────────────────────────────────────
+   Raw response extraction
+   ───────────────────────────────────────────── */
+
+function getResponseText(response) {
+  try {
+    const geminiResponse = response?.response ?? response;
+    if (!geminiResponse) return "";
+
+    if (typeof geminiResponse.text === "function") {
+      const value = geminiResponse.text();
+      if (typeof value === "string") return value;
+    }
+
+    if (typeof geminiResponse.text === "string") {
+      return geminiResponse.text;
+    }
+
+    if (Array.isArray(geminiResponse.candidates)) {
+      const parts = geminiResponse.candidates
+        .flatMap((candidate) => candidate?.content?.parts || [])
+        .map((part) => part?.text || "")
+        .filter(Boolean);
+
+      if (parts.length) return parts.join("\n");
+    }
+  } catch (_) {
+    // swallow and fall through
+  }
+
+  return "";
+}
+
+/* ─────────────────────────────────────────────
    Core review function
    ───────────────────────────────────────────── */
 
-/**
- * Run a Gemini Architect frontend/layout/presentation review.
- *
- * @param {Object}          payload
- * @param {string}          [payload.mode]                – one of VALID_MODES
- * @param {string}          [payload.message]             – free-form review request
- * @param {string}          [payload.context]             – additional context
- * @param {string}          [payload.notes]               – extra notes
- * @param {string[]|string} [payload.affectedAreas]       – affected system areas
- * @param {string[]|string} [payload.affectedViews]       – affected views/pages
- * @param {string[]|string} [payload.affectedComponents]  – affected UI components
- * @param {Object}          [payload.bridgeContext]       – agent bridge context object
- * @param {string[]|string} [payload.frontendObservations]– frontend observations
- * @param {string}          [payload.priorityContext]     – UI priority context
- * @param {string|Object}   [payload.layoutState]         – current layout state description
- * @returns {Promise<Object>} structured review result
- */
 async function runGeminiArchitectReview(payload = {}) {
   if (!isGeminiConfigured()) {
     throw new Error("GEMINI_API_KEY is not configured – cannot run Gemini Architect Review");
   }
 
-  // ── normalise inputs ─────────────────────────
   const normalised = {
-    mode:                 normaliseMode(payload.mode),
-    message:              toStr(payload.message),
-    context:              toStr(payload.context),
-    notes:                toStr(payload.notes),
-    affectedAreas:        toStringArray(payload.affectedAreas),
-    affectedViews:        toStringArray(payload.affectedViews),
-    affectedComponents:   toStringArray(payload.affectedComponents),
-    bridgeContext:        normaliseBridgeContext(payload.bridgeContext),
+    mode: normaliseMode(payload.mode),
+    message: toStr(payload.message),
+    context: toStr(payload.context),
+    notes: toStr(payload.notes),
+    affectedAreas: toStringArray(payload.affectedAreas),
+    affectedViews: toStringArray(payload.affectedViews),
+    affectedComponents: toStringArray(payload.affectedComponents),
+    bridgeContext: normaliseBridgeContext(payload.bridgeContext),
     frontendObservations: toStringArray(payload.frontendObservations),
-    priorityContext:      toStr(payload.priorityContext),
-    layoutState:          normaliseLayoutState(payload.layoutState),
+    priorityContext: toStr(payload.priorityContext),
+    layoutState: normaliseLayoutState(payload.layoutState),
   };
 
-  // ── build user prompt ────────────────────────
   const userPrompt = buildUserPrompt(normalised);
 
-  // Guard: need at least some input
   if (!userPrompt.trim()) {
     return {
       mode: normalised.mode,
@@ -387,8 +482,7 @@ async function runGeminiArchitectReview(payload = {}) {
     };
   }
 
-  // ── call Gemini ──────────────────────────────
-  const client    = getGeminiClient();
+  const client = getGeminiClient();
   const modelName = getModelName();
 
   const model = client.getGenerativeModel({
@@ -397,27 +491,28 @@ async function runGeminiArchitectReview(payload = {}) {
     generationConfig: {
       temperature: 0.15,
       maxOutputTokens: 1024,
+      responseMimeType: "application/json",
+      responseSchema: RESPONSE_SCHEMA,
     },
   });
 
-  logger.info("[geminiArchitect] sending request", { mode: normalised.mode, model: modelName });
+  logger.info("[geminiArchitect] sending request", {
+    mode: normalised.mode,
+    model: modelName,
+  });
 
   const response = await model.generateContent(userPrompt);
-  const geminiResponse = response?.response;
-  const rawContent = geminiResponse ? (geminiResponse.text() ?? "") : "";
+  const rawContent = getResponseText(response);
 
-  // ── parse & validate response ────────────────
   const cleaned = stripCodeFences(rawContent);
 
-  let parsed;
+  let parsed = null;
 
-  // 1st attempt: parse the fence-stripped text directly
   try {
     parsed = JSON.parse(cleaned);
   } catch (_firstErr) {
-    // 2nd attempt: extract the first balanced {...} object from the raw text
-    // (handles prose before/after JSON, or code fences not at string boundaries)
     const extracted = extractJsonObject(cleaned) || extractJsonObject(rawContent);
+
     if (extracted) {
       try {
         parsed = JSON.parse(extracted);
@@ -426,6 +521,7 @@ async function runGeminiArchitectReview(payload = {}) {
           reason: err.message,
           rawContent,
         });
+
         return {
           mode: normalised.mode,
           result: fallbackResult(rawContent, "JSON parse error"),
@@ -435,6 +531,7 @@ async function runGeminiArchitectReview(payload = {}) {
       logger.warn("[geminiArchitect] No JSON object found in response – using fallback", {
         rawContent,
       });
+
       return {
         mode: normalised.mode,
         result: fallbackResult(rawContent, "JSON parse error"),
