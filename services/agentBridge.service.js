@@ -37,6 +37,28 @@ const MIN_ENTRY_LENGTH = 4;
 /** Maximum hints per bridge package */
 const MAX_BRIDGE_HINTS = 15;
 
+/** Maximum pending frontend feedback entries kept in memory */
+const MAX_PENDING_FEEDBACK = 50;
+
+/** Max characters of title used for dedup key */
+const DEDUP_TITLE_MAX_LENGTH = 80;
+
+/** Max affected files compared for dedup */
+const DEDUP_MAX_FILES = 3;
+
+/** Keyword signals that should upgrade severity to 'high' */
+const HIGH_SEVERITY_KEYWORDS = [
+  "breaking", "bruch", "absturz", "crash", "critical",
+  "datenverlust", "data loss", "sicherheit", "security",
+  "vertragsbruch", "contract violation",
+];
+
+/** Keyword signals that should upgrade severity from 'low' to 'medium' */
+const MEDIUM_SEVERITY_KEYWORDS = [
+  "risiko", "risk", "warnung", "warning", "veraltet",
+  "stale", "inkonsistent", "inconsistent", "fehlend", "missing",
+];
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -114,19 +136,10 @@ function normaliseSeverity(raw) {
 /** Upgrade severity based on keyword signals in title/summary */
 function applySeverityGuard(hint) {
   const text = `${hint.title} ${hint.summary}`.toLowerCase();
-  const highSignals = [
-    "breaking", "bruch", "absturz", "crash", "critical",
-    "datenverlust", "data loss", "sicherheit", "security",
-    "vertragsbruch", "contract violation",
-  ];
-  const mediumSignals = [
-    "risiko", "risk", "warnung", "warning", "veraltet",
-    "stale", "inkonsistent", "inconsistent", "fehlend", "missing",
-  ];
 
-  if (hint.severity !== "high" && highSignals.some((kw) => text.includes(kw))) {
+  if (hint.severity !== "high" && HIGH_SEVERITY_KEYWORDS.some((kw) => text.includes(kw))) {
     hint.severity = "high";
-  } else if (hint.severity === "low" && mediumSignals.some((kw) => text.includes(kw))) {
+  } else if (hint.severity === "low" && MEDIUM_SEVERITY_KEYWORDS.some((kw) => text.includes(kw))) {
     hint.severity = "medium";
   }
   return hint;
@@ -170,9 +183,9 @@ function isHintMeaningful(hint) {
 
 /** Generate a stable dedup key for a hint to detect near-duplicates */
 function hintDedupKey(hint) {
-  const normTitle = hint.title.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+  const normTitle = hint.title.toLowerCase().replace(/\s+/g, " ").slice(0, DEDUP_TITLE_MAX_LENGTH);
   const normType  = hint.type;
-  const normFiles = hint.affectedFiles.slice(0, 3).sort().join(",").toLowerCase();
+  const normFiles = hint.affectedFiles.slice(0, DEDUP_MAX_FILES).sort().join(",").toLowerCase();
   return `${normType}::${normTitle}::${normFiles}`;
 }
 
@@ -315,7 +328,7 @@ function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
       source:             src,
       title:              `Schema-/Binding-Risiko (${src})`,
       summary:            schemaRisks.slice(0, 5).join("; "),
-      severity:           "high",
+      severity:           result.riskLevel || "high",
       affectedAreas:      toStringArray(result.affectedArea),
       affectedFiles:      toStringArray(result.likelyAffectedFiles),
       frontendImpact:     toStringArray(result.frontendImpact),
@@ -537,8 +550,8 @@ function receiveFrontendFeedback(payload = {}) {
     _pendingFrontendFeedback.push(entry);
 
     // Keep at most 50 pending entries (simple guard against unbounded growth)
-    if (_pendingFrontendFeedback.length > 50) {
-      _pendingFrontendFeedback = _pendingFrontendFeedback.slice(-50);
+    if (_pendingFrontendFeedback.length > MAX_PENDING_FEEDBACK) {
+      _pendingFrontendFeedback = _pendingFrontendFeedback.slice(-MAX_PENDING_FEEDBACK);
     }
   }
 
