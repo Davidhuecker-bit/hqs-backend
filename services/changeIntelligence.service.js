@@ -18,44 +18,46 @@ const logger = require("../utils/logger");
    typical change-impact patterns.
    ───────────────────────────────────────────── */
 const HQS_CONTEXT_RULES = `
-HQS system architecture context – keep in mind when analyzing changes:
+HQS-Systemarchitektur-Kontext – bei der Änderungsanalyse beachten:
 
-- Stack: Node.js backend, PostgreSQL, Express routes, service layer, repository layer, engine layer, mapper/view layer.
-- Key paths: routes/ → services/ → repositories/ → engines/ → mappers/ → views.
-- When a backend route is changed, api.js, associated mapper and view files are often affected.
-- When hqs_assessment is changed, mappers, filters, summary builders and UI cards are often affected.
-- When a symbol source (universe_symbols, entity_map, admin_reference_portfolio) is changed, demo-portfolio, reference basket, universe jobs and snapshot pipeline are often affected.
-- When read models (ui_summaries, symbol_summary) are stale, the UI shows contradictions even though raw data jobs are running fine.
-- When a label string is passed instead of a symbol array, typical errors like "custom symbols count: 1" appear.
-- Mapper/route/job/summary breaks are common follow-up failures when a single upstream service changes its return shape.
-- Admin models and read models can drift when the write-side schema changes but the read-side rebuild is not triggered.
-- Snapshot jobs, news jobs, score jobs and advanced-metrics jobs form a pipeline; a break early in the chain cascades.
+- Stack: Node.js-Backend, PostgreSQL, Express-Routen, Service-Schicht, Repository-Schicht, Engine-Schicht, Mapper-/View-Schicht.
+- Schlüsselpfade: routes/ → services/ → repositories/ → engines/ → mappers/ → views.
+- Wenn eine Backend-Route geändert wird, sind api.js, zugehörige Mapper- und View-Dateien oft betroffen.
+- Wenn hqs_assessment geändert wird, sind Mapper, Filter, Summary-Builder und UI-Karten oft betroffen.
+- Wenn eine Symbolquelle (universe_symbols, entity_map, admin_reference_portfolio) geändert wird, sind Demo-Portfolio, Referenzkorb, Universe-Jobs und Snapshot-Pipeline oft betroffen.
+- Wenn Lesemodelle (ui_summaries, symbol_summary) veraltet sind, zeigt die Oberfläche Widersprüche, obwohl die Rohdaten-Jobs korrekt laufen.
+- Wenn ein Label-String statt eines Symbol-Arrays übergeben wird, erscheinen typische Fehler wie „custom symbols count: 1".
+- Mapper-/Routen-/Job-/Summary-Fehler sind häufige Folgeausfälle, wenn ein vorgelagerter Service seine Rückgabestruktur ändert.
+- Admin-Modelle und Lesemodelle können auseinanderdriften, wenn das Schreibschema geändert, aber der Leseseiten-Rebuild nicht ausgelöst wird.
+- Snapshot-Jobs, News-Jobs, Score-Jobs und Advanced-Metrics-Jobs bilden eine Pipeline; ein früher Fehler kaskadiert nach unten.
 `.trim();
 
 /* ─────────────────────────────────────────────
    System prompt template
    ───────────────────────────────────────────── */
 const SYSTEM_PROMPT = `
-You are an internal HQS Change Intelligence Analyst.
-Your job is to analyse code changes, logs and error reports for the HQS backend system and return a structured JSON diagnosis.
+Du bist ein interner HQS-Änderungs-Intelligenz-Analyst.
+Deine Aufgabe ist es, Code-Änderungen, Protokolle und Fehlermeldungen im HQS-Backend-System zu analysieren und eine strukturierte JSON-Diagnose zurückzugeben.
 
 ${HQS_CONTEXT_RULES}
 
-Rules:
-1. Reply ONLY with a single valid JSON object – no markdown, no prose, no explanations outside the JSON.
-2. Do NOT wrap the JSON in code fences.
-3. Use the following exact top-level keys:
-   - "riskLevel" (string, one of: "low", "medium", "high")
-   - "rootCauseHypotheses" (array of short strings)
-   - "likelyAffectedFiles" (array of file paths or file names)
-   - "missingFollowupChanges" (array of short strings)
-   - "recommendedActions" (array of short strings)
-   - "patchPlan" (array of short strings describing concrete fix steps)
-   - "notes" (array of short strings with additional observations)
-4. Every value that is an array MUST be an array, never a single string.
-5. Keep each array item concise (one sentence max).
-6. Focus on root cause, follow-up files, missing changes, and a concrete fix plan.
-7. Do NOT use marketing language, filler phrases or disclaimers.
+Regeln:
+1. Antworte immer auf Deutsch. Nutze einfache, klare Sprache. Kurze Sätze bevorzugen.
+2. Wenn ein Fachbegriff nötig ist, erkläre ihn kurz.
+3. Antworte NUR mit einem einzelnen gültigen JSON-Objekt – kein Markdown, keine Prosa, keine Erklärungen außerhalb des JSON.
+4. JSON NICHT in Code-Fences einschließen.
+5. Verwende genau diese Schlüssel auf oberster Ebene:
+   - "riskLevel" (String, einer von: "low", "medium", "high")
+   - "rootCauseHypotheses" (Array von kurzen Strings)
+   - "likelyAffectedFiles" (Array von Dateipfaden oder Dateinamen)
+   - "missingFollowupChanges" (Array von kurzen Strings)
+   - "recommendedActions" (Array von kurzen Strings)
+   - "patchPlan" (Array von kurzen Strings mit konkreten Behebungsschritten)
+   - "notes" (Array von kurzen Strings mit weiteren Beobachtungen)
+6. Jeder Wert, der ein Array ist, MUSS ein Array sein, niemals ein einzelner String.
+7. Jeden Array-Eintrag kurz halten (maximal ein Satz).
+8. Fokus auf Ursache, Folgedateien, fehlende Änderungen und einen konkreten Behebungsplan.
+9. Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
 `.trim();
 
 /* ─────────────────────────────────────────────
@@ -109,8 +111,8 @@ function fallbackResult(rawContent, reason) {
     recommendedActions: [],
     patchPlan: [],
     notes: [
-      `Automated parsing did not produce clean JSON – ${reason || "unknown reason"}.`,
-      "Please review the raw model output or re-run the analysis.",
+      `Die Antwort konnte nicht sauber verarbeitet werden – ${reason || "unbekannte Ursache"}.`,
+      "Bitte die Rohantwort prüfen oder die Analyse erneut ausführen.",
     ],
     _rawResponse: rawContent || null,
   };
@@ -184,31 +186,31 @@ async function analyzeChangeImpact(payload = {}) {
   const sections = [];
 
   if (changedFiles.length) {
-    sections.push(`Changed files:\n${changedFiles.map((f) => `- ${f}`).join("\n")}`);
+    sections.push(`Geänderte Dateien:\n${changedFiles.map((f) => `- ${f}`).join("\n")}`);
   }
 
   if (logs.length) {
-    sections.push(`Logs:\n${logs.map((l) => `- ${l}`).join("\n")}`);
+    sections.push(`Protokolle:\n${logs.map((l) => `- ${l}`).join("\n")}`);
   }
 
   if (errorMessage) {
-    sections.push(`Error message:\n${errorMessage}`);
+    sections.push(`Fehlermeldung:\n${errorMessage}`);
   }
 
   if (affectedArea) {
-    sections.push(`Affected area: ${affectedArea}`);
+    sections.push(`Betroffener Bereich: ${affectedArea}`);
   }
 
   if (suspectedFiles.length) {
-    sections.push(`Suspected files:\n${suspectedFiles.map((f) => `- ${f}`).join("\n")}`);
+    sections.push(`Verdächtige Dateien:\n${suspectedFiles.map((f) => `- ${f}`).join("\n")}`);
   }
 
   if (context) {
-    sections.push(`Additional context:\n${context}`);
+    sections.push(`Zusätzlicher Kontext:\n${context}`);
   }
 
   if (notes) {
-    sections.push(`Notes:\n${notes}`);
+    sections.push(`Hinweise:\n${notes}`);
   }
 
   // ── dependency mapping hints (Light V1) ──────
@@ -245,15 +247,15 @@ async function analyzeChangeImpact(payload = {}) {
     if (dependencyHints && (dependencyHints.relatedFiles.length || dependencyHints.relatedAreas.length)) {
       const depParts = [];
       if (dependencyHints.relatedFiles.length) {
-        depParts.push(`Known related files:\n${dependencyHints.relatedFiles.map((f) => `- ${f}`).join("\n")}`);
+        depParts.push(`Bekannte verwandte Dateien:\n${dependencyHints.relatedFiles.map((f) => `- ${f}`).join("\n")}`);
       }
       if (dependencyHints.relatedAreas.length) {
-        depParts.push(`Known related areas:\n${dependencyHints.relatedAreas.map((a) => `- ${a}`).join("\n")}`);
+        depParts.push(`Bekannte verwandte Bereiche:\n${dependencyHints.relatedAreas.map((a) => `- ${a}`).join("\n")}`);
       }
       if (dependencyHints.followupChecks.length) {
-        depParts.push(`Suggested follow-up checks:\n${dependencyHints.followupChecks.map((c) => `- ${c}`).join("\n")}`);
+        depParts.push(`Empfohlene Folgeprüfungen:\n${dependencyHints.followupChecks.map((c) => `- ${c}`).join("\n")}`);
       }
-      sections.push(`HQS Dependency Mapping hints (auto-enriched):\n${depParts.join("\n")}`);
+      sections.push(`HQS-Abhängigkeitshinweise (automatisch angereichert):\n${depParts.join("\n")}`);
     }
   } catch (depErr) {
     // dependency mapping must never break the analysis
