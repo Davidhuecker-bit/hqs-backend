@@ -175,32 +175,44 @@ const RESPONSE_SCHEMA = {
 const MODE_INSTRUCTIONS = {
   layout_review: `
 Prüfschwerpunkt: LAYOUT-REVIEW
-Frage: Ist die Oberfläche sinnvoll aufgebaut?
-Prüfe: visuelle Hierarchie, Informationsdichte, Gruppierung zusammengehöriger Elemente, Abstand und Klarheit der Struktur.
+Frage: Ist die Oberfläche strukturell sinnvoll aufgebaut?
+Fokus: visuelle Hierarchie, räumliche Gruppierung zusammengehöriger Elemente, Informationsdichte, Abstände und Strukturklarheit.
+Nicht im Fokus: Binding-Risiken, Backend-Felder, Prioritätsreihenfolge von Warnungen.
+Ergebnisschwerpunkt: Layout-Probleme primär in "layoutRecommendations" und "uiFindings" eintragen.
 `.trim(),
 
   presentation_review: `
 Prüfschwerpunkt: DARSTELLUNGS-REVIEW
-Frage: Ist die Darstellung verständlich, ruhig und klar?
-Prüfe: Lesbarkeit, Farbsignale, Status-Klarheit, Konsistenz der Darstellungsmuster, Nutzerkommunikation.
+Frage: Ist die Darstellung verständlich, ruhig und konsistent kommuniziert?
+Fokus: Lesbarkeit von Texten und Zahlen, Farbsignale und Status-Klarheit, Konsistenz von Darstellungsmustern, Nutzerkommunikation und Tonalität der Oberfläche.
+Nicht im Fokus: strukturelle Layout-Fragen, Binding-Risiken, Backend-Felder.
+Ergebnisschwerpunkt: Darstellungsprobleme primär in "uiFindings" und "layoutRecommendations" eintragen.
 `.trim(),
 
   frontend_guard: `
 Prüfschwerpunkt: FRONTEND-GUARD
-Frage: Gibt es Binding-, View- oder Darstellungsrisiken?
-Prüfe: Komponenten-Bindings an Backend-Felder, veraltete Schema-Abhängigkeiten, fehlende Null-/Leer-Zustände, Fehler-Darstellung.
+Frage: Gibt es konkrete Binding-, View- oder Datenrisiken in der Frontend-Implementierung?
+Fokus: Komponenten-Bindings an Backend-Felder (existieren diese Felder tatsächlich?), veraltete oder falsche Schema-Abhängigkeiten, fehlende Null-/Leer-Zustände, fehlerhafte Darstellung von Risiken oder Status.
+Nicht im Fokus: allgemeine Layout-Fragen, Darstellungsästhetik, Prioritätsreihenfolge.
+Wenn konkrete Binding- oder Schema-Brüche erkannt werden, muss "severity" mindestens "high" sein.
+Ergebnisschwerpunkt: Binding- und Datenrisiken primär in "frontendGuardNotes" eintragen.
 `.trim(),
 
   priority_review: `
 Prüfschwerpunkt: PRIORITÄTS-REVIEW
-Frage: Zeigt das UI gerade die richtigen Dinge oben?
-Prüfe: ob kritische Warnungen und Handlungsempfehlungen prominent sind, ob sekundäre Informationen die Hauptaussage verdrängen.
+Frage: Zeigt das UI gerade die richtigen Informationen an der richtigen Stelle prominent an?
+Fokus: ob kritische Warnungen und Handlungsempfehlungen an oberster Stelle sichtbar sind, ob sekundäre oder historische Informationen die Hauptaussage verdrängen, ob die Informationshierarchie der Dringlichkeit entspricht.
+Nicht im Fokus: Binding-Risiken, visuelle Designfragen, Backend-Felder.
+Ergebnisschwerpunkt: Prioritätsprobleme primär in "priorityRecommendations" und "uiFindings" eintragen.
 `.trim(),
 };
 
 /* ─────────────────────────────────────────────
    Input normalisation helpers
    ───────────────────────────────────────────── */
+
+const MIN_ARRAY_ENTRY_LEN = 4;   // entries ≤ 3 chars are typically punctuation fragments or parsing artefacts
+const MAX_ARRAY_ENTRIES   = 10;  // cap per array to avoid model data-dumps
 
 function toStr(value) {
   if (value == null) return "";
@@ -330,28 +342,146 @@ const EXPECTED_ARRAY_KEYS = [
 
 const VALID_SEVERITIES = ["low", "medium", "high"];
 
+/* ─────────────────────────────────────────────
+   Severity guard – light, transparent rule base
+   ─────────────────────────────────────────────
+   Only raises severity, never lowers it.
+
+   Tier 1 – Binding / schema / field breaks → severity must be at least "high"
+   Tier 2 – Data-display / status-correctness risks → severity must be at least "medium"
+   ───────────────────────────────────────────── */
+
+const BINDING_BREAK_SIGNALS = [
+  "binding",
+  "schema-bruch",
+  "schema bruch",
+  "veraltetes feld",
+  "veraltete felder",
+  "falsches feld",
+  "falsche felder",
+  "fehlendes feld",
+  "fehlende felder",
+  "nicht vorhanden",
+  "nicht existiert",
+  "field missing",
+];
+
+const DATA_DISPLAY_RISK_SIGNALS = [
+  "widersprüchlich",
+  "irreführend",
+  "falscher status",
+  "falsches risiko",
+  "falsche darstellung",
+  "falsche anzeige",
+  "risiko falsch",
+  "inkonsistent",
+];
+
+function collectResultText(result) {
+  const parts = [];
+  if (result.summaryText) parts.push(result.summaryText);
+  if (result.recommendedAction) parts.push(result.recommendedAction);
+  for (const key of EXPECTED_ARRAY_KEYS) {
+    const arr = result[key];
+    if (Array.isArray(arr)) parts.push(...arr);
+  }
+  return parts.join(" ").toLowerCase();
+}
+
+const SEVERITY_ORDER = { low: 0, medium: 1, high: 2 };
+
+function raiseSeverity(current, target) {
+  // Guard: if either value is not a recognised severity, keep current
+  if (!(current in SEVERITY_ORDER) || !(target in SEVERITY_ORDER)) return current;
+  return SEVERITY_ORDER[target] > SEVERITY_ORDER[current] ? target : current;
+}
+
+function applySeverityGuard(result, mode) {
+  const text = collectResultText(result);
+  let targetSeverity = result.severity;
+
+  // Tier 1: binding / schema breaks → at least "high"
+  if (BINDING_BREAK_SIGNALS.some((sig) => text.includes(sig))) {
+    targetSeverity = raiseSeverity(targetSeverity, "high");
+  }
+
+  // Tier 2: data-display / status-correctness risks → at least "medium"
+  // Short-circuit: if Tier 1 already forced "high", Tier 2 is irrelevant.
+  if (targetSeverity !== "high" && DATA_DISPLAY_RISK_SIGNALS.some((sig) => text.includes(sig))) {
+    targetSeverity = raiseSeverity(targetSeverity, "medium");
+  }
+
+  if (targetSeverity !== result.severity) {
+    logger.info("[geminiArchitect] severity raised by guard", {
+      mode,
+      from: result.severity,
+      to: targetSeverity,
+    });
+    return { ...result, severity: targetSeverity };
+  }
+
+  return result;
+}
+
+/* ─────────────────────────────────────────────
+   Result normalisation helpers
+   ───────────────────────────────────────────── */
+
+function deduplicateEntries(arr) {
+  const seen = new Set();
+  return arr.filter((entry) => {
+    const key = entry.toLowerCase().trim();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normaliseArrayField(value) {
+  return deduplicateEntries(
+    toStringArray(value)
+      .filter((entry) => entry.length >= MIN_ARRAY_ENTRY_LEN)
+      .slice(0, MAX_ARRAY_ENTRIES)
+  );
+}
+
 function normaliseResult(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
     return fallbackResult("response was not an object");
   }
 
+  const summaryText = toStr(obj.summaryText);
+  const recommendedAction = toStr(obj.recommendedAction);
+  const confidenceNote = toStr(obj.confidenceNote);
+
   const result = {
     summaryTitle: toStr(obj.summaryTitle) || "Gemini Architect Analyse",
-    summaryText: toStr(obj.summaryText) || "",
+    // summaryText, recommendedAction, confidenceNote: fall back to a neutral German placeholder
+    // when the model returns an empty or near-empty value, so consumers never receive bare empty strings.
+    summaryText:
+      summaryText.length >= MIN_ARRAY_ENTRY_LEN
+        ? summaryText
+        : "Keine Zusammenfassung verfügbar.",
     severity: "medium",
     uiFindings: [],
     layoutRecommendations: [],
     priorityRecommendations: [],
     frontendGuardNotes: [],
-    recommendedAction: toStr(obj.recommendedAction) || "",
-    confidenceNote: toStr(obj.confidenceNote) || "",
+    recommendedAction:
+      recommendedAction.length >= MIN_ARRAY_ENTRY_LEN
+        ? recommendedAction
+        : "Analyse erneut mit spezifischerer Eingabe ausführen.",
+    confidenceNote:
+      confidenceNote.length >= MIN_ARRAY_ENTRY_LEN
+        ? confidenceNote
+        : "Einschätzungsgrundlage nicht vollständig angegeben.",
   };
 
   const rawSeverity = toStr(obj.severity).toLowerCase();
   result.severity = VALID_SEVERITIES.includes(rawSeverity) ? rawSeverity : "medium";
 
   for (const key of EXPECTED_ARRAY_KEYS) {
-    result[key] = toStringArray(obj[key]);
+    result[key] = normaliseArrayField(obj[key]);
   }
 
   return result;
@@ -525,6 +655,9 @@ async function runGeminiArchitectReview(payload = {}) {
   logger.info("[geminiArchitect] sending request", {
     mode: normalised.mode,
     model: modelName,
+    hasMessage: Boolean(normalised.message),
+    hasContext: Boolean(normalised.context),
+    hasBridgeContext: Boolean(normalised.bridgeContext),
   });
 
   let response;
@@ -532,8 +665,9 @@ async function runGeminiArchitectReview(payload = {}) {
     response = await model.generateContent(userPrompt);
   } catch (apiErr) {
     logger.warn("[geminiArchitect] Gemini API call failed – using fallback", {
-      reason: apiErr.message,
       mode: normalised.mode,
+      model: modelName,
+      reason: apiErr.message,
     });
     const safeMsg = String(apiErr.message || "").slice(0, 80);
     return {
@@ -547,10 +681,12 @@ async function runGeminiArchitectReview(payload = {}) {
   const cleaned = stripCodeFences(rawContent);
 
   let parsed = null;
+  let parseMethod = "direct";
 
   try {
     parsed = JSON.parse(cleaned);
   } catch (_firstErr) {
+    parseMethod = "extraction";
     const extracted = extractJsonObject(cleaned) || extractJsonObject(rawContent);
 
     if (extracted) {
@@ -558,8 +694,9 @@ async function runGeminiArchitectReview(payload = {}) {
         parsed = JSON.parse(extracted);
       } catch (err) {
         logger.warn("[geminiArchitect] JSON parse failed after extraction – using fallback", {
+          mode: normalised.mode,
           reason: err.message,
-          rawContent,
+          rawPreview: String(rawContent).slice(0, 120),
         });
 
         return {
@@ -569,7 +706,8 @@ async function runGeminiArchitectReview(payload = {}) {
       }
     } else {
       logger.warn("[geminiArchitect] No JSON object found in response – using fallback", {
-        rawContent,
+        mode: normalised.mode,
+        rawPreview: String(rawContent).slice(0, 120),
       });
 
       return {
@@ -579,7 +717,18 @@ async function runGeminiArchitectReview(payload = {}) {
     }
   }
 
-  const result = normaliseResult(parsed);
+  logger.info("[geminiArchitect] response parsed", { mode: normalised.mode, parseMethod });
+
+  const normalisedResult = normaliseResult(parsed);
+  const result = applySeverityGuard(normalisedResult, normalised.mode);
+
+  logger.info("[geminiArchitect] review complete", {
+    mode: normalised.mode,
+    severity: result.severity,
+    uiFindingsCount: result.uiFindings.length,
+    guardNotesCount: result.frontendGuardNotes.length,
+    parseMethod,
+  });
 
   return {
     mode: normalised.mode,
