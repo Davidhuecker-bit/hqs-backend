@@ -6,6 +6,7 @@
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
+    "test": "jest --forceExit",
     "check": "node --check server.js",
     "prestart": "npm run check",
     "start": "node server.js",
@@ -71,5 +72,8 @@
     "pg": "^8.11.5",
     "web-push": "^3.6.7",
     "winston": "^3.13.1"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   }
 }
