@@ -3,7 +3,8 @@
 const {
   isDeepSeekConfigured,
   createDeepSeekChatCompletion,
-  resolveModel,
+  DEEPSEEK_FAST_MODEL,
+  DEEPSEEK_DEEP_MODEL,
 } = require("./deepseek.service");
 
 const logger = require("../utils/logger");
@@ -105,6 +106,17 @@ function toStringArray(value) {
 }
 
 const VALID_MODES = ["chat", "diagnose", "change_review"];
+
+/**
+ * Explicit model assignment per console mode.
+ * - chat / diagnose  → fast UI path  → deepseek-chat
+ * - change_review    → deep analysis → deepseek-reasoner
+ */
+const MODE_MODELS = {
+  chat: DEEPSEEK_FAST_MODEL,
+  diagnose: DEEPSEEK_FAST_MODEL,
+  change_review: DEEPSEEK_DEEP_MODEL,
+};
 
 function normaliseMode(mode) {
   const m = toStr(mode).toLowerCase().replace(/-/g, "_");
@@ -313,12 +325,13 @@ async function runAdminDeepseekChat(payload = {}) {
   const systemPrompt = `${modePrompt}\n\n${HQS_SYSTEM_CONTEXT}`;
   const userPrompt = buildUserPrompt({ message, context, logs, changedFiles, notes });
 
-  const modelName = resolveModel("fast");
+  const modelName = MODE_MODELS[mode] || MODE_MODELS.chat;
+  // change_review uses the reasoner and may take longer
+  const timeoutMs = mode === "change_review" ? 45000 : 15000;
 
   const completion = await createDeepSeekChatCompletion({
     model: modelName,
-    tier: "fast",
-    timeoutMs: 15000,
+    timeoutMs,
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },

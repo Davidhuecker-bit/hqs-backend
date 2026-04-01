@@ -3,6 +3,7 @@
 const {
   isDeepSeekConfigured,
   createDeepSeekChatCompletion,
+  DEEPSEEK_DEEP_MODEL,
 } = require("./deepseek.service");
 
 const logger = require("../utils/logger");
@@ -296,8 +297,10 @@ async function runControllerGuard(payload = {}) {
   }
 
   // ── call DeepSeek ────────────────────────────
+  // Controller Guard uses deepseek-reasoner to catch contract breaks and cascade risks.
   const completion = await createDeepSeekChatCompletion({
-    tier: "fast",
+    model: DEEPSEEK_DEEP_MODEL,
+    timeoutMs: 45000,
     messages: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content: userPrompt },
@@ -308,6 +311,7 @@ async function runControllerGuard(payload = {}) {
   const rawContent = completion?.choices?.[0]?.message?.content || "";
 
   logger.info("[controllerGuard] DeepSeek response received", {
+    model: DEEPSEEK_DEEP_MODEL,
     rawLength: rawContent.length,
     focusAreas,
     affectedArea: affectedArea || null,
