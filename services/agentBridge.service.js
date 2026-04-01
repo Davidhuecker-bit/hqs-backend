@@ -15,9 +15,49 @@ const VALID_HINT_TYPES = [
   "ui_impact",
   "staleness",
   "contract_warning",
+  "schema_risk",
+  "binding_risk",
+  "field_risk",
 ];
 
 const VALID_SEVERITIES = ["low", "medium", "high"];
+
+/** Severity ordering for sorting (higher = more critical) */
+const SEVERITY_WEIGHT = { high: 3, medium: 2, low: 1 };
+
+/** Maximum string length for any single text field */
+const MAX_TEXT_LENGTH = 1500;
+
+/** Maximum items per array field */
+const MAX_ARRAY_ITEMS = 10;
+
+/** Minimum characters for an array entry to be considered meaningful */
+const MIN_ENTRY_LENGTH = 4;
+
+/** Maximum hints per bridge package */
+const MAX_BRIDGE_HINTS = 15;
+
+/** Maximum pending frontend feedback entries kept in memory */
+const MAX_PENDING_FEEDBACK = 50;
+
+/** Max characters of title used for dedup key */
+const DEDUP_TITLE_MAX_LENGTH = 80;
+
+/** Max affected files compared for dedup */
+const DEDUP_MAX_FILES = 3;
+
+/** Keyword signals that should upgrade severity to 'high' */
+const HIGH_SEVERITY_KEYWORDS = [
+  "breaking", "bruch", "absturz", "crash", "critical",
+  "datenverlust", "data loss", "sicherheit", "security",
+  "vertragsbruch", "contract violation",
+];
+
+/** Keyword signals that should upgrade severity from 'low' to 'medium' */
+const MEDIUM_SEVERITY_KEYWORDS = [
+  "risiko", "risk", "warnung", "warning", "veraltet",
+  "stale", "inkonsistent", "inconsistent", "fehlend", "missing",
+];
 
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
@@ -37,25 +77,72 @@ function toStr(value) {
   return String(value).trim();
 }
 
+/** Truncate a string to MAX_TEXT_LENGTH, appending … if truncated */
+function capText(value, maxLen = MAX_TEXT_LENGTH) {
+  const s = toStr(value);
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen - 1) + "…";
+}
+
 function toStringArray(value) {
   if (!value) return [];
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => (v == null ? "" : String(v).trim()))
+      .filter((s) => s.length >= MIN_ENTRY_LENGTH);
+  }
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed) return [];
-    return trimmed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    return trimmed
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((s) => s.length >= MIN_ENTRY_LENGTH);
   }
-  return [String(value)];
+  const s = String(value).trim();
+  return s.length >= MIN_ENTRY_LENGTH ? [s] : [];
+}
+
+/** Deduplicate + cap array length */
+function normaliseArrayField(value, max = MAX_ARRAY_ITEMS) {
+  const arr = toStringArray(value);
+  const seen = new Set();
+  const deduped = [];
+  for (const item of arr) {
+    const lower = item.toLowerCase();
+    if (!seen.has(lower)) {
+      seen.add(lower);
+      deduped.push(item);
+    }
+  }
+  return deduped.slice(0, max);
 }
 
 function normaliseHintType(raw) {
-  const s = toStr(raw).toLowerCase();
+  const s = toStr(raw).toLowerCase().replace(/[\s-]+/g, "_");
   return VALID_HINT_TYPES.includes(s) ? s : "review";
 }
 
 function normaliseSeverity(raw) {
   const s = toStr(raw).toLowerCase();
-  return VALID_SEVERITIES.includes(s) ? s : "medium";
+  if (VALID_SEVERITIES.includes(s)) return s;
+  // Map common aliases
+  if (s === "critical" || s === "severe" || s === "error") return "high";
+  if (s === "warning" || s === "moderate" || s === "warn") return "medium";
+  if (s === "info" || s === "minor" || s === "trivial" || s === "note") return "low";
+  return "medium";
+}
+
+/** Upgrade severity based on keyword signals in title/summary */
+function applySeverityGuard(hint) {
+  const text = `${hint.title} ${hint.summary}`.toLowerCase();
+
+  if (hint.severity !== "high" && HIGH_SEVERITY_KEYWORDS.some((kw) => text.includes(kw))) {
+    hint.severity = "high";
+  } else if (hint.severity === "low" && MEDIUM_SEVERITY_KEYWORDS.some((kw) => text.includes(kw))) {
+    hint.severity = "medium";
+  }
+  return hint;
 }
 
 /* ─────────────────────────────────────────────
@@ -66,38 +153,97 @@ function normaliseSeverity(raw) {
    ───────────────────────────────────────────── */
 
 function buildBridgeHint(raw = {}) {
-  return {
+  const hint = {
     type:               normaliseHintType(raw.type),
     source:             toStr(raw.source) || ACTIVE_BACKEND_AGENT,
-    title:              toStr(raw.title),
-    summary:            toStr(raw.summary),
+    title:              capText(raw.title, 200),
+    summary:            capText(raw.summary, 600),
     severity:           normaliseSeverity(raw.severity),
-    affectedAreas:      toStringArray(raw.affectedAreas),
-    affectedFiles:      toStringArray(raw.affectedFiles),
-    frontendImpact:     toStringArray(raw.frontendImpact),
-    backendFollowups:   toStringArray(raw.backendFollowups),
-    recommendedActions: toStringArray(raw.recommendedActions),
+    affectedAreas:      normaliseArrayField(raw.affectedAreas),
+    affectedFiles:      normaliseArrayField(raw.affectedFiles),
+    frontendImpact:     normaliseArrayField(raw.frontendImpact),
+    backendFollowups:   normaliseArrayField(raw.backendFollowups),
+    recommendedActions: normaliseArrayField(raw.recommendedActions),
   };
+  return applySeverityGuard(hint);
+}
+
+/* ─────────────────────────────────────────────
+   Hint quality checks
+   ───────────────────────────────────────────── */
+
+/** Returns true if a hint has enough substance to be useful */
+function isHintMeaningful(hint) {
+  // Must have at least a title or summary with real content
+  if (!hint.title && !hint.summary) return false;
+  // Very short title + no summary → too weak
+  if ((hint.title.length + hint.summary.length) < 10) return false;
+  return true;
+}
+
+/** Generate a stable dedup key for a hint to detect near-duplicates */
+function hintDedupKey(hint) {
+  const normTitle = hint.title.toLowerCase().replace(/\s+/g, " ").slice(0, DEDUP_TITLE_MAX_LENGTH);
+  const normType  = hint.type;
+  const normFiles = hint.affectedFiles.slice(0, DEDUP_MAX_FILES).sort().join(",").toLowerCase();
+  return `${normType}::${normTitle}::${normFiles}`;
+}
+
+/** Deduplicate hints, filter weak ones, sort by severity */
+function filterAndPrioritiseHints(hints) {
+  const seen = new Set();
+  const kept = [];
+  const dropped = { weak: 0, duplicate: 0 };
+
+  for (const hint of hints) {
+    if (!isHintMeaningful(hint)) {
+      dropped.weak++;
+      continue;
+    }
+    const key = hintDedupKey(hint);
+    if (seen.has(key)) {
+      dropped.duplicate++;
+      continue;
+    }
+    seen.add(key);
+    kept.push(hint);
+  }
+
+  // Sort: high → medium → low
+  kept.sort((a, b) => (SEVERITY_WEIGHT[b.severity] || 0) - (SEVERITY_WEIGHT[a.severity] || 0));
+
+  // Cap total hints
+  const capped = kept.slice(0, MAX_BRIDGE_HINTS);
+  if (kept.length > MAX_BRIDGE_HINTS) {
+    dropped.weak += kept.length - MAX_BRIDGE_HINTS;
+  }
+
+  return { hints: capped, dropped };
 }
 
 /* ─────────────────────────────────────────────
    Derive bridge hints from a structured
    DeepSeek analysis result (change-intelligence,
    controller-guard, math-logic-review, etc.)
+
+   Step 2: Clearer hint derivation with better
+   type mapping, richer context, and source mode
+   tracking for Gemini handoff clarity.
    ───────────────────────────────────────────── */
 
 function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
   const hints = [];
+  const src = sourceMode || ACTIVE_BACKEND_AGENT;
 
-  // ── change_guard / contract_warning signals ──
+  // ── contract_warning signals ──
   const contractWarnings = toStringArray(result.contractWarnings);
   if (contractWarnings.length) {
     hints.push(buildBridgeHint({
       type:               "contract_warning",
-      source:             ACTIVE_BACKEND_AGENT,
-      title:              "Vertragsbrüche erkannt",
-      summary:            contractWarnings.slice(0, 3).join("; "),
-      severity:           result.guardLevel || result.riskLevel || "medium",
+      source:             src,
+      title:              `Vertragsbrüche erkannt (${src})`,
+      summary:            contractWarnings.slice(0, 5).join("; "),
+      severity:           result.guardLevel || result.riskLevel || "high",
       affectedAreas:      toStringArray(result.affectedArea || result.lastKnownArea),
       affectedFiles:      toStringArray(result.likelyAffectedFiles),
       frontendImpact:     [],
@@ -111,15 +257,15 @@ function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
   if (stalenessRisks.length) {
     hints.push(buildBridgeHint({
       type:               "staleness",
-      source:             ACTIVE_BACKEND_AGENT,
-      title:              "Veraltete Read-Models erkannt",
-      summary:            stalenessRisks.slice(0, 3).join("; "),
+      source:             src,
+      title:              `Veraltete Read-Models / Stale-Risiko (${src})`,
+      summary:            stalenessRisks.slice(0, 5).join("; "),
       severity:           result.guardLevel || "medium",
       affectedAreas:      toStringArray(result.affectedArea),
       affectedFiles:      toStringArray(result.likelyAffectedFiles),
       frontendImpact:     [],
       backendFollowups:   toStringArray(result.followupVerifications),
-      recommendedActions: [],
+      recommendedActions: toStringArray(result.recommendedActions),
     }));
   }
 
@@ -128,9 +274,9 @@ function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
   if (rootCauses.length) {
     hints.push(buildBridgeHint({
       type:               "change_guard",
-      source:             ACTIVE_BACKEND_AGENT,
-      title:              "Änderungs-Impact erkannt",
-      summary:            rootCauses.slice(0, 3).join("; "),
+      source:             src,
+      title:              `Änderungs-Impact: Root-Cause-Analyse (${src})`,
+      summary:            rootCauses.slice(0, 5).join("; "),
       severity:           result.riskLevel || "medium",
       affectedAreas:      toStringArray(result.affectedArea),
       affectedFiles:      toStringArray(result.likelyAffectedFiles),
@@ -140,20 +286,71 @@ function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
     }));
   }
 
-  // ── review / math-logic signals ──
+  // ── review / math-logic / risk signals ──
   const detectedRisks = toStringArray(result.detectedRisks);
   if (detectedRisks.length) {
     hints.push(buildBridgeHint({
       type:               "review",
-      source:             ACTIVE_BACKEND_AGENT,
-      title:              "Analyse-Risiken erkannt",
-      summary:            detectedRisks.slice(0, 3).join("; "),
+      source:             src,
+      title:              `Analyse-Risiken: Prüfbedarf (${src})`,
+      summary:            detectedRisks.slice(0, 5).join("; "),
       severity:           result.reviewLevel || "medium",
-      affectedAreas:      [],
-      affectedFiles:      [],
+      affectedAreas:      toStringArray(result.affectedArea),
+      affectedFiles:      toStringArray(result.likelyAffectedFiles),
       frontendImpact:     [],
       backendFollowups:   toStringArray(result.recommendedChecks),
       recommendedActions: toStringArray(result.recommendedChecks),
+    }));
+  }
+
+  // ── UI impact signals (new in Step 2) ──
+  const uiImpact = toStringArray(result.frontendImpact || result.uiImpact);
+  if (uiImpact.length) {
+    hints.push(buildBridgeHint({
+      type:               "ui_impact",
+      source:             src,
+      title:              `Frontend-Auswirkung erkannt (${src})`,
+      summary:            uiImpact.slice(0, 5).join("; "),
+      severity:           result.riskLevel || "medium",
+      affectedAreas:      toStringArray(result.affectedArea),
+      affectedFiles:      toStringArray(result.likelyAffectedFiles),
+      frontendImpact:     uiImpact,
+      backendFollowups:   [],
+      recommendedActions: toStringArray(result.recommendedActions),
+    }));
+  }
+
+  // ── schema / field / binding risk signals (new in Step 2) ──
+  const schemaRisks = toStringArray(result.schemaRisks || result.bindingRisks || result.fieldRisks);
+  if (schemaRisks.length) {
+    hints.push(buildBridgeHint({
+      type:               "schema_risk",
+      source:             src,
+      title:              `Schema-/Binding-Risiko (${src})`,
+      summary:            schemaRisks.slice(0, 5).join("; "),
+      severity:           result.riskLevel || "high",
+      affectedAreas:      toStringArray(result.affectedArea),
+      affectedFiles:      toStringArray(result.likelyAffectedFiles),
+      frontendImpact:     toStringArray(result.frontendImpact),
+      backendFollowups:   toStringArray(result.followupVerifications),
+      recommendedActions: toStringArray(result.recommendedActions),
+    }));
+  }
+
+  // ── missing follow-up changes (standalone, if not covered above) ──
+  const missingFollowups = toStringArray(result.missingFollowupChanges);
+  if (missingFollowups.length && !rootCauses.length) {
+    hints.push(buildBridgeHint({
+      type:               "change_guard",
+      source:             src,
+      title:              `Fehlende Folgeänderungen (${src})`,
+      summary:            missingFollowups.slice(0, 5).join("; "),
+      severity:           result.riskLevel || "medium",
+      affectedAreas:      toStringArray(result.affectedArea),
+      affectedFiles:      toStringArray(result.likelyAffectedFiles),
+      frontendImpact:     missingFollowups,
+      backendFollowups:   [],
+      recommendedActions: toStringArray(result.recommendedActions),
     }));
   }
 
@@ -167,12 +364,32 @@ function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
 }
 
 /* ─────────────────────────────────────────────
+   Normalise backendState for consistent shape
+   ───────────────────────────────────────────── */
+
+function normaliseBackendState(payload = {}) {
+  const lastKnownArea = capText(payload.lastKnownArea, 100);
+  const lastKnownMode = capText(payload.lastKnownMode, 100);
+  const sourceMode    = capText(payload.sourceMode, 100);
+
+  return {
+    activeAgent:    ACTIVE_BACKEND_AGENT,
+    lastKnownArea:  lastKnownArea || null,
+    lastKnownMode:  lastKnownMode || sourceMode || null,
+    sourceMode:     sourceMode || null,
+  };
+}
+
+/* ─────────────────────────────────────────────
    buildBridgePackage
    ─────────────────────────────────────────────
    Main export for Backend→Frontend direction.
    Accepts a structured DeepSeek result payload
    and returns a normalised bridge package that
    Gemini / the frontend can read.
+
+   Step 2: Quality filtering, deduplication,
+   priority sorting, and better logging.
 
    @param {Object} payload
    @param {string}  [payload.lastKnownArea]    – e.g. "hqs_assessment"
@@ -183,39 +400,62 @@ function deriveHintsFromDeepSeekResult(result = {}, sourceMode = "") {
    @returns {Object} bridge package (also stored in memory)
    ───────────────────────────────────────────── */
 function buildBridgePackage(payload = {}) {
-  const lastKnownArea = toStr(payload.lastKnownArea);
-  const lastKnownMode = toStr(payload.lastKnownMode);
-  const sourceMode    = toStr(payload.sourceMode);
-  const rawResult     = payload.result && typeof payload.result === "object"
+  const backendState = normaliseBackendState(payload);
+  const sourceMode   = capText(payload.sourceMode, 100);
+  const rawResult    = payload.result && typeof payload.result === "object"
     ? payload.result
     : {};
 
   // Explicit hints override auto-derived hints when provided
-  let bridgeHints;
+  let rawHints;
   if (Array.isArray(payload.hints) && payload.hints.length) {
-    bridgeHints = payload.hints.map(buildBridgeHint);
+    rawHints = payload.hints.map(buildBridgeHint);
   } else {
-    bridgeHints = deriveHintsFromDeepSeekResult(rawResult, sourceMode);
+    rawHints = deriveHintsFromDeepSeekResult(rawResult, sourceMode);
   }
+
+  // Quality gate: deduplicate, filter weak, prioritise
+  const { hints: bridgeHints, dropped } = filterAndPrioritiseHints(rawHints);
 
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
-    backendState: {
-      activeAgent:    ACTIVE_BACKEND_AGENT,
-      lastKnownArea:  lastKnownArea || null,
-      lastKnownMode:  lastKnownMode || sourceMode || null,
-    },
+    backendState,
     bridgeHints,
+    meta: {
+      hintsTotal:     rawHints.length,
+      hintsKept:      bridgeHints.length,
+      hintsDropped:   dropped,
+      sourceMode:     sourceMode || null,
+    },
   };
 
   _currentBridgePackage = pkg;
 
+  // ── Operational logging ──
+  const hintTypes = {};
+  for (const h of bridgeHints) {
+    hintTypes[h.type] = (hintTypes[h.type] || 0) + 1;
+  }
+
   logger.info("[agentBridge] bridge package built", {
-    hintsCount:    bridgeHints.length,
-    lastKnownArea,
-    lastKnownMode,
+    hintsTotal:     rawHints.length,
+    hintsKept:      bridgeHints.length,
+    hintsDroppedWeak:      dropped.weak,
+    hintsDroppedDuplicate: dropped.duplicate,
+    hintTypes,
+    lastKnownArea:  backendState.lastKnownArea,
+    lastKnownMode:  backendState.lastKnownMode,
+    sourceMode,
+    isEmpty:        bridgeHints.length === 0,
   });
+
+  if (bridgeHints.length === 0 && rawHints.length > 0) {
+    logger.warn("[agentBridge] all hints were filtered – bridge package is empty", {
+      rawHintsCount: rawHints.length,
+      dropped,
+    });
+  }
 
   return pkg;
 }
@@ -236,17 +476,40 @@ function getCurrentBridgePackage() {
       activeAgent:   ACTIVE_BACKEND_AGENT,
       lastKnownArea: null,
       lastKnownMode: null,
+      sourceMode:    null,
     },
     bridgeHints: [],
+    meta: {
+      hintsTotal:   0,
+      hintsKept:    0,
+      hintsDropped: { weak: 0, duplicate: 0 },
+      sourceMode:   null,
+    },
   };
+}
+
+/* ─────────────────────────────────────────────
+   Frontend feedback normalisation helpers
+   (Step 2: quality-aware filtering)
+   ───────────────────────────────────────────── */
+
+/** Check whether a frontend hint carries enough value */
+function isFeedbackHintUsable(hint) {
+  if (!hint) return false;
+  const hasTitle   = hint.title && hint.title.length >= 5;
+  const hasSummary = hint.summary && hint.summary.length >= 10;
+  return hasTitle || hasSummary;
 }
 
 /* ─────────────────────────────────────────────
    receiveFrontendFeedback
    ─────────────────────────────────────────────
-   Frontend→Backend direction (V1 stub).
+   Frontend→Backend direction.
    Accepts structured Gemini/frontend hints and
    stores them in memory for later consumption.
+
+   Step 2: Defensive normalisation, quality
+   filtering, and better logging.
 
    @param {Object} payload
    @param {string}  [payload.source]      – e.g. "gemini_frontend"
@@ -256,36 +519,67 @@ function getCurrentBridgePackage() {
    @returns {Object} acknowledgement
    ───────────────────────────────────────────── */
 function receiveFrontendFeedback(payload = {}) {
-  const source = toStr(payload.source) || "gemini_frontend";
-  const area   = toStr(payload.area);
-  const notes  = toStr(payload.notes);
-  const hints  = Array.isArray(payload.hints) ? payload.hints : [];
+  const source = capText(payload.source, 100) || "gemini_frontend";
+  const area   = capText(payload.area, 100);
+  const notes  = capText(payload.notes, 500);
+
+  // Defensively handle non-array hints
+  let rawHints;
+  if (Array.isArray(payload.hints)) {
+    rawHints = payload.hints.filter((h) => h && typeof h === "object");
+  } else {
+    rawHints = [];
+  }
+
+  // Build and quality-filter hints
+  const allBuilt = rawHints.map((h) => buildBridgeHint({ ...h, source }));
+  const usable   = allBuilt.filter(isFeedbackHintUsable);
+  const droppedCount = allBuilt.length - usable.length;
 
   const entry = {
     receivedAt: new Date().toISOString(),
     source,
     area:   area || null,
     notes:  notes || null,
-    hints:  hints.map((h) => buildBridgeHint({ ...h, source })),
+    hints:  usable,
   };
 
-  _pendingFrontendFeedback.push(entry);
+  // Only store entries that carry real information
+  const hasValue = usable.length > 0 || (notes && notes.length >= 10);
+  if (hasValue) {
+    _pendingFrontendFeedback.push(entry);
 
-  // Keep at most 50 pending entries (simple guard against unbounded growth)
-  if (_pendingFrontendFeedback.length > 50) {
-    _pendingFrontendFeedback = _pendingFrontendFeedback.slice(-50);
+    // Keep at most 50 pending entries (simple guard against unbounded growth)
+    if (_pendingFrontendFeedback.length > MAX_PENDING_FEEDBACK) {
+      _pendingFrontendFeedback = _pendingFrontendFeedback.slice(-MAX_PENDING_FEEDBACK);
+    }
   }
 
+  // ── Operational logging ──
   logger.info("[agentBridge] frontend feedback received", {
     source,
     area,
-    hintsCount: entry.hints.length,
+    rawHintsCount:  rawHints.length,
+    usableHints:    usable.length,
+    droppedHints:   droppedCount,
+    hasNotes:       !!(notes && notes.length >= 10),
+    stored:         hasValue,
   });
 
+  if (droppedCount > 0) {
+    logger.info("[agentBridge] frontend hints filtered", {
+      dropped: droppedCount,
+      reason:  "weak or empty title/summary",
+    });
+  }
+
   return {
-    accepted:   true,
-    hintsCount: entry.hints.length,
-    receivedAt: entry.receivedAt,
+    accepted:      true,
+    hintsReceived: rawHints.length,
+    hintsKept:     usable.length,
+    hintsDropped:  droppedCount,
+    stored:        hasValue,
+    receivedAt:    entry.receivedAt,
   };
 }
 
