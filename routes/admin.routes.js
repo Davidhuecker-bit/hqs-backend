@@ -4107,6 +4107,11 @@ const {
   receiveFrontendFeedback,
   getPendingFrontendFeedback,
 } = require("../services/agentBridge.service");
+const {
+  isGeminiConfigured,
+  runGeminiArchitectReview,
+  VALID_MODES: GEMINI_ARCHITECT_MODES,
+} = require("../services/geminiArchitect.service");
 
 /* =========================================================
    POST /api/admin/deepseek/math-logic-review
@@ -4302,6 +4307,75 @@ router.post("/deepseek/review-to-human", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error during Review-to-Human translation",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/gemini/architect-review
+   Gemini Architect V1 – Frontend-Architekt / Präsentationsassistent.
+   Beantwortet UI-/Layout-/Darstellungsfragen strukturiert über Gemini.
+
+   Request body (all fields optional):
+   {
+     "mode":                  "layout_review|presentation_review|frontend_guard|priority_review",
+     "message":               "...",             // free-form review request
+     "context":               "...",             // additional context
+     "notes":                 "...",             // extra notes
+     "affectedAreas":         ["...", "..."],    // affected system areas
+     "affectedViews":         ["...", "..."],    // affected views / pages
+     "affectedComponents":    ["...", "..."],    // affected UI components
+     "bridgeContext":         { ... },           // agent-bridge context object
+     "frontendObservations":  ["...", "..."],    // frontend observations
+     "priorityContext":       "...",             // UI priority context description
+     "layoutState":           "...|{ ... }"     // current layout state
+   }
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "validModes": [...],
+     "mode": "layout_review",
+     "result": {
+       "summaryTitle":            "...",
+       "summaryText":             "...",
+       "severity":                "low|medium|high",
+       "uiFindings":              [],
+       "layoutRecommendations":   [],
+       "priorityRecommendations": [],
+       "frontendGuardNotes":      [],
+       "recommendedAction":       "...",
+       "confidenceNote":          "..."
+     }
+   }
+========================================================= */
+
+router.post("/gemini/architect-review", async (req, res) => {
+  if (!isGeminiConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: "GEMINI_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const review = await runGeminiArchitectReview(req.body);
+    return res.json({
+      success: true,
+      version: "v1",
+      validModes: GEMINI_ARCHITECT_MODES,
+      mode: review.mode,
+      result: review.result,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/architect-review error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error during Gemini Architect Review",
     });
   }
 });
