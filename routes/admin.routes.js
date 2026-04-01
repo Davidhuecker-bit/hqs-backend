@@ -4102,6 +4102,12 @@ const { runMathLogicReview } = require("../services/mathLogicReview.service");
 const { runControllerGuard } = require("../services/controllerGuard.service");
 const { buildHumanReviewSummary } = require("../services/reviewToHuman.service");
 const {
+  buildBridgePackage,
+  getCurrentBridgePackage,
+  receiveFrontendFeedback,
+  getPendingFrontendFeedback,
+} = require("../services/agentBridge.service");
+const {
   isGeminiConfigured,
   runGeminiArchitectReview,
   VALID_MODES: GEMINI_ARCHITECT_MODES,
@@ -4370,6 +4376,130 @@ router.post("/gemini/architect-review", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error during Gemini Architect Review",
+    });
+  }
+});
+
+/* =========================================================
+   DeepSeek ↔ Gemini Agent Bridge V1
+   =========================================================
+
+   Three endpoints form the structured communication layer
+   between the backend (DeepSeek) and frontend (Gemini):
+
+   GET  /api/admin/deepseek/agent-bridge
+        Returns the current in-memory bridge package.
+        Safe to call at any time; returns an empty shell
+        when no package has been generated yet.
+
+   POST /api/admin/deepseek/agent-bridge/hints
+        Accepts a structured DeepSeek analysis result and
+        builds (or rebuilds) the bridge package from it.
+
+        Request body:
+        {
+          "lastKnownArea": "...",          // e.g. "hqs_assessment"
+          "lastKnownMode": "...",          // e.g. "change_review"
+          "sourceMode":    "...",          // originating service label
+          "result":        { ... },        // raw DeepSeek result object
+          "hints":         [ ... ]         // optional explicit hint overrides
+        }
+
+        Response:
+        {
+          "success":  true,
+          "version":  "v1",
+          "bridge": {
+            "version":      "v1",
+            "generatedAt":  "...",
+            "backendState": {
+              "activeAgent":   "deepseek_backend",
+              "lastKnownArea": "...",
+              "lastKnownMode": "..."
+            },
+            "bridgeHints": [
+              {
+                "type":               "change_guard|review|ui_impact|staleness|contract_warning",
+                "source":             "deepseek_backend",
+                "title":              "...",
+                "summary":            "...",
+                "severity":           "low|medium|high",
+                "affectedAreas":      [],
+                "affectedFiles":      [],
+                "frontendImpact":     [],
+                "backendFollowups":   [],
+                "recommendedActions": []
+              }
+            ]
+          }
+        }
+
+   POST /api/admin/deepseek/agent-bridge/frontend-feedback
+        Accepts structured Gemini / frontend feedback and
+        stores it in memory for backend inspection.
+
+        Request body:
+        {
+          "source": "gemini_frontend",     // identifier of the sending agent
+          "area":   "...",                 // frontend area that generated this
+          "hints":  [ ... ],               // array of frontend hint objects
+          "notes":  "..."                  // optional plain-text note
+        }
+
+        Response:
+        {
+          "success":    true,
+          "version":    "v1",
+          "accepted":   true,
+          "hintsCount": 0,
+          "receivedAt": "..."
+        }
+========================================================= */
+
+router.get("/deepseek/agent-bridge", (req, res) => {
+  try {
+    const bridge = getCurrentBridgePackage();
+    return res.json({ success: true, version: "v1", bridge });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge GET error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading Agent Bridge state",
+    });
+  }
+});
+
+router.post("/deepseek/agent-bridge/hints", (req, res) => {
+  try {
+    const bridge = buildBridgePackage(req.body || {});
+    return res.json({ success: true, version: "v1", bridge });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/hints error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error building Agent Bridge package",
+    });
+  }
+});
+
+router.post("/deepseek/agent-bridge/frontend-feedback", (req, res) => {
+  try {
+    const ack = receiveFrontendFeedback(req.body || {});
+    return res.json({ success: true, version: "v1", ...ack });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/frontend-feedback error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error accepting frontend feedback",
     });
   }
 });
