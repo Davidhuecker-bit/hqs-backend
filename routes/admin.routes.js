@@ -4099,6 +4099,7 @@ router.get("/deepseek/dependency-mapping", async (_req, res) => {
 
 const { runAdminDeepseekChat } = require("../services/adminDeepseekConsole.service");
 const { runMathLogicReview } = require("../services/mathLogicReview.service");
+const { runControllerGuard } = require("../services/controllerGuard.service");
 const { buildHumanReviewSummary } = require("../services/reviewToHuman.service");
 
 /* =========================================================
@@ -4153,6 +4154,71 @@ router.post("/deepseek/math-logic-review", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error during Math & Logic Review",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/controller-guard
+   Controller-/Guard Layer V1 – structured detection of
+   system breaks, contract violations, and follow-up errors
+   in the HQS backend via DeepSeek.
+
+   Request body (all fields optional):
+   {
+     "mode":             "...",               // optional mode label
+     "message":          "...",               // free-form guard request
+     "changedFiles":     ["...", "..."],      // relevant files
+     "logs":             ["...", "..."],      // logs or error messages
+     "context":          "...",              // additional context
+     "notes":            "...",              // extra notes
+     "result":           { ... },            // existing analysis result
+     "dependencyHints":  ["...", "..."],     // dependency hints
+     "focusAreas":       ["missing_required_fields", "response_contract", ...]
+                         // valid values: missing_required_fields,
+                         //              response_contract, mapper_viewmodel,
+                         //              route_service_followup,
+                         //              read_model_staleness,
+                         //              symbol_label_id,
+                         //              schema_change_propagation
+     "affectedArea":     "..."              // affected system area
+   }
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "result": {
+       "guardLevel":            "low|medium|high",
+       "contractWarnings":      [],
+       "missingRequiredChecks": [],
+       "likelyBreakpoints":     [],
+       "followupVerifications": [],
+       "stalenessRisks":        [],
+       "notes":                 []
+     }
+   }
+========================================================= */
+
+router.post("/deepseek/controller-guard", async (req, res) => {
+  if (!isDeepSeekConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: "DEEPSEEK_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const result = await runControllerGuard(req.body);
+    return res.json({ success: true, version: "v1", result });
+  } catch (error) {
+    logger.error("[admin] deepseek/controller-guard error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error during Controller Guard",
     });
   }
 });
