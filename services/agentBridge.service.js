@@ -323,6 +323,69 @@ const VALID_IMPROVEMENT_SIGNALS = [
 const MAX_RECOMMENDATION_FEEDBACK_ENTRIES = 100;
 
 /* ─────────────────────────────────────────────
+   Step 8 – Recommendation Policy /
+   Governance Light
+   ─────────────────────────────────────────────
+   A lightweight governance layer that classifies
+   recommendations into visibility / policy
+   classes.  This does NOT auto-execute, auto-
+   promote or auto-publish anything.  It only
+   provides a transparent, deterministic policy
+   classification so the HQS system can later
+   steer which recommendations remain internal,
+   become admin-visible, are guardian-candidates,
+   or need more evidence.
+
+   IMPORTANT DESIGN PRINCIPLES:
+   - Readiness  = how action-ready something
+     currently appears (Step 6)
+   - Improvement = how well this kind of
+     recommendation worked in retrospect (Step 7)
+   - Governance / Policy = whether / where / how
+     this recommendation should be visible or
+     eligible for promotion
+
+   These three dimensions MUST remain separate.
+   A signal can have high readiness, good
+   improvement history, and still be classified
+   as admin_visible or needs_more_evidence from
+   a governance perspective.
+   ───────────────────────────────────────────── */
+
+/**
+ * Valid governance policy classes – determines the
+ * visibility and promotion eligibility of a
+ * recommendation.
+ *
+ * Ordered from most restricted to most eligible:
+ *   shadow_only         → only observed internally, not surfaced
+ *   internal_only       → visible in internal logs / analytics
+ *   needs_more_evidence → promising but insufficient backing
+ *   admin_visible       → ready to be shown to admin users
+ *   guardian_candidate  → strong enough to be considered
+ *                         for guardian-level promotion (NOT auto-promoted)
+ */
+const VALID_GOVERNANCE_POLICY_CLASSES = [
+  "shadow_only",
+  "internal_only",
+  "needs_more_evidence",
+  "admin_visible",
+  "guardian_candidate",
+];
+
+/**
+ * Governance classification thresholds.
+ * Kept deliberately conservative – the system
+ * should under-promote rather than over-promote.
+ */
+const GOV_MIN_PATTERN_COUNT_FOR_ADMIN     = 2;  // pattern must be seen ≥2x for admin visibility
+const GOV_MIN_PATTERN_COUNT_FOR_GUARDIAN   = 4;  // pattern must be seen ≥4x for guardian candidacy
+const GOV_MIN_FEEDBACK_FOR_GUARDIAN        = 2;  // at least 2 feedback entries required
+const GOV_POSITIVE_FEEDBACK_RATIO_GUARDIAN = 0.6; // ≥60% helpful/usable feedback for guardian
+const GOV_MIN_CONFIDENCE_FOR_ADMIN        = "medium"; // minimum confidence for admin visibility
+const GOV_READINESS_BANDS_FOR_GUARDIAN     = ["useful_next_step", "mature_recommendation"];
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -1096,6 +1159,265 @@ function _deriveImprovementContext(patternKey) {
 }
 
 /* ─────────────────────────────────────────────
+   Step 8: Governance / Policy classification
+   ─────────────────────────────────────────────
+   Classifies a recommendation into a governance
+   policy class based on readiness, confidence,
+   pattern stability, feedback history and
+   evidence sufficiency.
+
+   Rules are transparent and conservative:
+   - guardian_candidate  requires strong evidence,
+     confirmed pattern AND positive feedback
+   - admin_visible       requires moderate
+     confidence, recurring pattern
+   - needs_more_evidence covers promising signals
+     that lack sufficient backing
+   - internal_only       for signals with some
+     substance but no visibility justification
+   - shadow_only         for early / weak /
+     unstable signals
+
+   This NEVER auto-promotes or auto-publishes.
+   It only classifies for later human review.
+   ───────────────────────────────────────────── */
+
+/**
+ * Classify a recommendation / signal into a
+ * governance policy class.
+ *
+ * @param {Object} params
+ * @param {string}  params.readinessBand       – from Step 6
+ * @param {string}  params.confidenceBand      – from Step 4
+ * @param {string}  params.patternKey          – pattern key
+ * @param {Object}  params.improvementContext  – from Step 7
+ * @param {number}  params.hintCount           – number of hints
+ * @param {number}  params.highSeverityCount   – count of high-severity hints
+ * @returns {{ policyClass: string, guardianEligibility: boolean,
+ *             needsMoreEvidence: boolean, reason: string }}
+ */
+function classifyGovernancePolicy(params = {}) {
+  const {
+    readinessBand      = "observation",
+    confidenceBand     = "low",
+    patternKey         = null,
+    improvementContext = {},
+    hintCount          = 0,
+    highSeverityCount  = 0,
+  } = params;
+
+  const reasons = [];
+
+  // ── Look up pattern stability ──
+  const patternEntry = patternKey ? _patternMemory.get(patternKey) : null;
+  const patternCount = patternEntry ? patternEntry.count : 0;
+
+  // ── Assess evidence sufficiency ──
+  const evidenceSufficiency = _assessEvidenceSufficiency({
+    patternCount,
+    feedbackCount:    improvementContext.feedbackCount || 0,
+    confidenceBand,
+    hintCount,
+    highSeverityCount,
+  });
+
+  // ── Assess guardian eligibility ──
+  const guardianEligibility = _assessGuardianEligibility({
+    readinessBand,
+    confidenceBand,
+    patternCount,
+    improvementContext,
+    evidenceSufficiency,
+  });
+
+  // ── Classify policy class (conservative, bottom-up) ──
+  let policyClass = "shadow_only"; // most restricted default
+
+  if (hintCount === 0) {
+    policyClass = "shadow_only";
+    reasons.push("Keine Hinweise vorhanden");
+  } else if (guardianEligibility.eligible) {
+    policyClass = "guardian_candidate";
+    reasons.push(...guardianEligibility.reasons);
+  } else if (
+    !evidenceSufficiency.sufficient &&
+    (readinessBand === "useful_next_step" || readinessBand === "mature_recommendation")
+  ) {
+    policyClass = "needs_more_evidence";
+    reasons.push("Handlungsreife vorhanden, aber Evidenz noch unzureichend");
+    reasons.push(...evidenceSufficiency.missingReasons);
+  } else if (
+    confidenceBand !== "low" &&
+    patternCount >= GOV_MIN_PATTERN_COUNT_FOR_ADMIN &&
+    readinessBand !== "observation"
+  ) {
+    policyClass = "admin_visible";
+    reasons.push(`Muster ${patternCount}x bestätigt`);
+    reasons.push(`Konfidenz: ${confidenceBand}`);
+  } else if (
+    hintCount >= 2 ||
+    confidenceBand === "medium" ||
+    readinessBand === "further_check_recommended"
+  ) {
+    policyClass = "internal_only";
+    reasons.push("Signal vorhanden, aber noch nicht admin-sichtbar");
+  } else {
+    policyClass = "shadow_only";
+    reasons.push("Frühes Signal – nur interne Beobachtung");
+  }
+
+  // ── Override: negative feedback history demotes ──
+  if (
+    policyClass !== "shadow_only" &&
+    improvementContext.hasFeedback &&
+    improvementContext.needsAdjustment
+  ) {
+    // Don't promote beyond needs_more_evidence if feedback is negative
+    if (policyClass === "guardian_candidate" || policyClass === "admin_visible") {
+      policyClass = "needs_more_evidence";
+      reasons.push("Bisherige Rückmeldung deutet auf Verbesserungsbedarf");
+    }
+  }
+
+  return {
+    policyClass,
+    guardianEligibility: guardianEligibility.eligible,
+    needsMoreEvidence:   !evidenceSufficiency.sufficient,
+    reason:              reasons.join("; ") || "Standardklassifikation",
+  };
+}
+
+/**
+ * Assess whether a signal has enough evidence to
+ * be considered sufficiently backed.
+ *
+ * This is deliberately conservative – the system
+ * should require clear evidence before promoting.
+ *
+ * @param {Object} params
+ * @returns {{ sufficient: boolean, missingReasons: string[] }}
+ */
+function _assessEvidenceSufficiency(params) {
+  const {
+    patternCount      = 0,
+    feedbackCount     = 0,
+    confidenceBand    = "low",
+    hintCount         = 0,
+    highSeverityCount = 0,
+  } = params;
+
+  const missingReasons = [];
+  let score = 0;
+
+  // Pattern recurrence
+  if (patternCount >= GOV_MIN_PATTERN_COUNT_FOR_ADMIN) score += 2;
+  else missingReasons.push(`Muster erst ${patternCount}x beobachtet (min. ${GOV_MIN_PATTERN_COUNT_FOR_ADMIN})`);
+
+  // Confidence level
+  if (confidenceBand === "high") score += 2;
+  else if (confidenceBand === "medium") score += 1;
+  else missingReasons.push("Konfidenz noch niedrig");
+
+  // Hint richness
+  if (hintCount >= 3) score += 1;
+  if (highSeverityCount >= 1) score += 1;
+
+  // Feedback availability
+  if (feedbackCount >= 1) score += 1;
+
+  return {
+    sufficient:     score >= 3,
+    missingReasons,
+  };
+}
+
+/**
+ * Assess whether a recommendation is eligible
+ * to be marked as a guardian candidate.
+ *
+ * Guardian candidacy requires:
+ * - sufficient pattern stability (≥4 observations)
+ * - adequate readiness (useful_next_step or mature)
+ * - sufficient feedback with positive tendency
+ * - medium or high confidence
+ *
+ * This NEVER auto-promotes.  It only marks
+ * eligibility for later human review.
+ *
+ * @param {Object} params
+ * @returns {{ eligible: boolean, reasons: string[] }}
+ */
+function _assessGuardianEligibility(params) {
+  const {
+    readinessBand      = "observation",
+    confidenceBand     = "low",
+    patternCount       = 0,
+    improvementContext = {},
+    evidenceSufficiency = { sufficient: false },
+  } = params;
+
+  const reasons = [];
+  let eligible = true;
+
+  // Must have sufficient evidence base
+  if (!evidenceSufficiency.sufficient) {
+    eligible = false;
+  }
+
+  // Pattern must be well-confirmed
+  if (patternCount < GOV_MIN_PATTERN_COUNT_FOR_GUARDIAN) {
+    eligible = false;
+  } else {
+    reasons.push(`Muster ${patternCount}x bestätigt`);
+  }
+
+  // Readiness must be at least useful_next_step
+  if (!GOV_READINESS_BANDS_FOR_GUARDIAN.includes(readinessBand)) {
+    eligible = false;
+  } else {
+    reasons.push(`Handlungsreife: ${readinessBand}`);
+  }
+
+  // Confidence must be at least medium
+  if (confidenceBand === "low") {
+    eligible = false;
+  } else {
+    reasons.push(`Konfidenz: ${confidenceBand}`);
+  }
+
+  // Feedback must exist and be predominantly positive
+  if (improvementContext.hasFeedback) {
+    const feedbackCount = improvementContext.feedbackCount || 0;
+    if (feedbackCount < GOV_MIN_FEEDBACK_FOR_GUARDIAN) {
+      eligible = false;
+    } else {
+      const dominantFeedback = improvementContext.dominantFeedback;
+      const isPositive = ["helpful", "usable"].includes(dominantFeedback);
+      if (!isPositive) {
+        eligible = false;
+      } else {
+        reasons.push(`Rückmeldung überwiegend positiv (${dominantFeedback})`);
+      }
+    }
+  } else {
+    // No feedback yet → cannot be guardian candidate
+    eligible = false;
+  }
+
+  // Negative improvement signal blocks guardian candidacy
+  if (improvementContext.needsAdjustment) {
+    eligible = false;
+  }
+
+  if (!eligible) {
+    reasons.length = 0;
+    reasons.push("Guardian-Voraussetzungen noch nicht erfüllt");
+  }
+
+  return { eligible, reasons };
+}
+
+/* ─────────────────────────────────────────────
    buildBridgePackage
    ─────────────────────────────────────────────
    Main export for Backend→Frontend direction.
@@ -1161,6 +1483,22 @@ function buildBridgePackage(payload = {}) {
   // ── Step 7: Derive improvement context from pattern memory ──
   const improvementContext = _deriveImprovementContext(bridgePatternKey);
 
+  // ── Step 8: Governance / Policy classification ──
+  const highSeverityCount = bridgeHints.filter((h) => h.severity === "high").length;
+  const governancePolicy = classifyGovernancePolicy({
+    readinessBand:     packageReadiness.band,
+    confidenceBand:    assessSignalQuality(
+      { observedLayers: [], observedFollowups: [],
+        observedEffect: null, suspectedCause: null,
+        suggestedFollowup: null, layerReference: null },
+      bridgeHints
+    ),
+    patternKey:        bridgePatternKey,
+    improvementContext,
+    hintCount:         bridgeHints.length,
+    highSeverityCount,
+  });
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -1190,6 +1528,13 @@ function buildBridgePackage(payload = {}) {
     },
     // Step 7: recommendation improvement context (retrospective feedback)
     improvementContext,
+    // Step 8: governance / policy classification (visibility steering)
+    governanceContext: {
+      policyClass:         governancePolicy.policyClass,
+      guardianEligibility: governancePolicy.guardianEligibility,
+      needsMoreEvidence:   governancePolicy.needsMoreEvidence,
+      governanceReason:    governancePolicy.reason,
+    },
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -1267,6 +1612,31 @@ function buildBridgePackage(payload = {}) {
       feedbackCount:       improvementContext.feedbackCount,
       needsAdjustment:     improvementContext.needsAdjustment,
       readinessBand:       packageReadiness.band,
+    });
+  }
+
+  // Step 8: Governance / Policy classification log
+  logger.info("[agentBridge] governance policy classified (Step 8)", {
+    policyClass:         governancePolicy.policyClass,
+    guardianEligibility: governancePolicy.guardianEligibility,
+    needsMoreEvidence:   governancePolicy.needsMoreEvidence,
+    governanceReason:    governancePolicy.reason,
+    // Separation transparency: readiness vs improvement vs governance
+    readinessBand:       packageReadiness.band,
+    improvementFeedback: improvementContext.dominantFeedback || "keine",
+    patternKey:          bridgePatternKey,
+    hintCount:           bridgeHints.length,
+  });
+
+  // Step 8: Log divergence between readiness/improvement and governance
+  if (
+    (packageReadiness.band === "mature_recommendation" || packageReadiness.band === "useful_next_step") &&
+    (governancePolicy.policyClass === "needs_more_evidence" || governancePolicy.policyClass === "shadow_only")
+  ) {
+    logger.info("[agentBridge] readiness ↔ governance divergence (Step 8)", {
+      readinessBand:  packageReadiness.band,
+      policyClass:    governancePolicy.policyClass,
+      insight:        "Handlungsreife vorhanden, aber Governance-Klasse noch zurückhaltend – bewusste Trennung.",
     });
   }
 
@@ -1348,6 +1718,13 @@ function getCurrentBridgePackage() {
       dominantImprovement:  null,
       feedbackCount:        0,
       needsAdjustment:      false,
+    },
+    // Step 8: empty governance context (no policy classification yet)
+    governanceContext: {
+      policyClass:         "shadow_only",
+      guardianEligibility: false,
+      needsMoreEvidence:   true,
+      governanceReason:    "Keine Hinweise vorhanden – nur Shadow-Beobachtung.",
     },
     meta: {
       hintsTotal:   0,
@@ -1824,6 +2201,11 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     // ── Step 6 fields (action readiness / recommendation quality) ──
     actionReadinessBand:    null, // set below after readiness assessment
     recommendedActionType:  null, // set below after readiness assessment
+
+    // ── Step 8 fields (governance / policy classification) ──
+    governancePolicyClass:  null, // set below after governance classification
+    guardianEligibility:    false,
+    needsMoreEvidence:      true,
   };
 
   // Assess signal quality (must happen after signal is built)
@@ -1833,16 +2215,33 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
   signal.actionReadinessBand = assessActionReadiness(signal, hints, signal.confidenceBand);
   signal.recommendedActionType = deriveRecommendedActionType(signal, hints);
 
+  // ── Step 8: Governance / Policy classification (deliberately AFTER readiness + confidence) ──
+  const sigImprovementCtx = _deriveImprovementContext(patternKey);
+  const sigGovernance = classifyGovernancePolicy({
+    readinessBand:     signal.actionReadinessBand,
+    confidenceBand:    signal.confidenceBand,
+    patternKey,
+    improvementContext: sigImprovementCtx,
+    hintCount:         hints.length,
+    highSeverityCount: hints.filter((h) => h.severity === "high").length,
+  });
+  signal.governancePolicyClass = sigGovernance.policyClass;
+  signal.guardianEligibility   = sigGovernance.guardianEligibility;
+  signal.needsMoreEvidence     = sigGovernance.needsMoreEvidence;
+
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
 
-  // ── Step 4 + 6: Pattern / learning / readiness logging ──
-  logger.info("[agentBridge] learning signal built (Step 6 – readiness)", {
+  // ── Step 4 + 6 + 8: Pattern / learning / readiness / governance logging ──
+  logger.info("[agentBridge] learning signal built (Step 8 – governance)", {
     patternKey,
     signalType,
     confidenceBand:         signal.confidenceBand,
     actionReadinessBand:    signal.actionReadinessBand,
     recommendedActionType:  signal.recommendedActionType,
+    governancePolicyClass:  signal.governancePolicyClass,
+    guardianEligibility:    signal.guardianEligibility,
+    needsMoreEvidence:      signal.needsMoreEvidence,
     sourceCategory,
     layerCategory,
     impactCategory,
@@ -1934,6 +2333,8 @@ function recordPatternObservation(patternKey, signal) {
       // Step 6: action readiness tallies
       readinessTally:     {},
       actionTypeTally:    {},
+      // Step 8: governance policy tallies
+      governanceTally:    {},
     };
   }
 
@@ -1976,6 +2377,12 @@ function recordPatternObservation(patternKey, signal) {
     entry.actionTypeTally = entry.actionTypeTally || {};
     entry.actionTypeTally[signal.recommendedActionType] =
       (entry.actionTypeTally[signal.recommendedActionType] || 0) + 1;
+  }
+  // Step 8: Tally governance policy class
+  if (signal.governancePolicyClass) {
+    entry.governanceTally = entry.governanceTally || {};
+    entry.governanceTally[signal.governancePolicyClass] =
+      (entry.governanceTally[signal.governancePolicyClass] || 0) + 1;
   }
 
   _patternMemory.set(patternKey, entry);
@@ -2023,6 +2430,8 @@ function getPatternMemorySummary() {
       dominantFeedback:      _topKey(e.feedbackTally),
       dominantImprovement:   _topKey(e.improvementTally),
       hasFeedback:           !!(e.feedbackTally && Object.keys(e.feedbackTally).length > 0),
+      // Step 8: governance policy per pattern
+      dominantGovernance:    _topKey(e.governanceTally),
     }));
 
   return {
@@ -2092,6 +2501,92 @@ function getActionReadinessSummary() {
     patternsPerReadiness,
     confidenceVsReadiness,
     generatedAt:            new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 8: Governance Policy Summary
+   ─────────────────────────────────────────────
+   Returns a lightweight overview of how
+   recommendations are distributed across
+   governance / policy classes.
+
+   Helps the HQS system understand:
+   - how many signals are shadow-only
+   - how many are internal-only
+   - how many need more evidence
+   - how many are admin-visible
+   - how many are guardian candidates
+   - how governance relates to readiness
+
+   Purely observational – no auto-promotion.
+   ───────────────────────────────────────────── */
+
+/**
+ * Build an aggregated governance policy overview
+ * from all pattern memory entries.
+ *
+ * @returns {Object} governance policy summary
+ */
+function getGovernancePolicySummary() {
+  const governanceCounts = {};
+  const patternsPerGovernance = {};
+  const readinessVsGovernance = {};
+  const confidenceVsGovernance = {};
+  const guardianCandidates = [];
+
+  for (const entry of _patternMemory.values()) {
+    // Aggregate governance tallies
+    for (const [cls, count] of Object.entries(entry.governanceTally || {})) {
+      governanceCounts[cls] = (governanceCounts[cls] || 0) + count;
+    }
+
+    // Count patterns per dominant governance class
+    const domGov = _topKey(entry.governanceTally);
+    if (domGov) {
+      patternsPerGovernance[domGov] = (patternsPerGovernance[domGov] || 0) + 1;
+    }
+
+    // Cross-reference: readiness vs governance
+    const domRead = _topKey(entry.readinessTally);
+    if (domRead && domGov) {
+      const crossKey = `${domRead}→${domGov}`;
+      readinessVsGovernance[crossKey] =
+        (readinessVsGovernance[crossKey] || 0) + entry.count;
+    }
+
+    // Cross-reference: confidence vs governance
+    const domConf = _topKey(entry.confidenceTally);
+    if (domConf && domGov) {
+      const crossKey = `${domConf}→${domGov}`;
+      confidenceVsGovernance[crossKey] =
+        (confidenceVsGovernance[crossKey] || 0) + entry.count;
+    }
+
+    // Collect guardian candidates
+    if (domGov === "guardian_candidate") {
+      guardianCandidates.push({
+        patternKey:         entry.patternKey,
+        count:              entry.count,
+        dominantReadiness:  _topKey(entry.readinessTally),
+        dominantConfidence: _topKey(entry.confidenceTally),
+        dominantFeedback:   _topKey(entry.feedbackTally),
+        lastSeen:           entry.lastSeen,
+      });
+    }
+  }
+
+  // Sort guardian candidates by observation count (most observed first)
+  guardianCandidates.sort((a, b) => b.count - a.count);
+
+  return {
+    totalPatterns:           _patternMemory.size,
+    governanceDistribution:  governanceCounts,
+    patternsPerGovernance,
+    readinessVsGovernance,
+    confidenceVsGovernance,
+    guardianCandidates:      guardianCandidates.slice(0, 20),
+    generatedAt:             new Date().toISOString(),
   };
 }
 
@@ -2389,6 +2884,8 @@ module.exports = {
   // Step 7: Recommendation Feedback / Improvement Loop Light
   submitRecommendationFeedback,
   getRecommendationImprovementSummary,
+  // Step 8: Governance Policy / Visibility Light
+  getGovernancePolicySummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -2402,4 +2899,5 @@ module.exports = {
   VALID_RECOMMENDED_ACTION_TYPES,
   VALID_RECOMMENDATION_FEEDBACK_CATEGORIES,
   VALID_IMPROVEMENT_SIGNALS,
+  VALID_GOVERNANCE_POLICY_CLASSES,
 };
