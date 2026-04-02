@@ -3080,6 +3080,13 @@ const _REC_IMPROVEMENT_LABELS = {
   followup_preferred: 'Folgeprüfung war die bessere Wahl',
 };
 
+/* Display thresholds for recommendation review insights */
+const REC_MIN_FEEDBACK_FOR_REVIEW = 2;   // minimum entries before showing review
+const REC_MIN_PATTERN_SIGNAL      = 2;   // minimum occurrences to highlight a signal
+const REC_MIN_STABLE_PATTERN      = 3;   // minimum feedback count for "stable" label
+const REC_EARLY_WARNING_PCT       = 25;  // % threshold for too-early warning
+const REC_MAX_READINESS_ROWS      = 5;   // max rows in readiness-vs-improvement table
+
 function _recFeedbackLabel(key) {
   return (_REC_FEEDBACK_META[key] || {}).label || key || '–';
 }
@@ -3101,7 +3108,7 @@ async function loadRecommendationReview() {
     const total = ri.totalFeedbackEntries || 0;
 
     /* ── Thin / Empty state ── */
-    if (total < 2) {
+    if (total < REC_MIN_FEEDBACK_FOR_REVIEW) {
       panel.innerHTML = `
         <div class="rec-thin-state">
           <div class="rec-thin-icon">🔄</div>
@@ -3153,30 +3160,30 @@ async function loadRecommendationReview() {
     const tooEarlyCount = fd.too_early || 0;
     if (tooEarlyCount > 0 && total >= 3) {
       const tePct = Math.round((tooEarlyCount / total) * 100);
-      if (tePct >= 25) {
+      if (tePct >= REC_EARLY_WARNING_PCT) {
         insights.push({ icon: '⏳', text: `<strong>${tePct}%</strong> der Empfehlungen kamen zu früh. Folgeprüfung ist in diesen Fällen oft sinnvoller.` });
       }
     }
 
     // Followup-preferred signal
     const followupCount = fd.followup_was_better || 0;
-    if (followupCount >= 2) {
+    if (followupCount >= REC_MIN_PATTERN_SIGNAL) {
       insights.push({ icon: '🔁', text: `Bei <strong>${followupCount}</strong> Empfehlungen war eine Folgeprüfung die bessere Wahl. Das System berücksichtigt dies.` });
     }
 
     // Improvement needs
     const needsContextCount = id.needs_more_context || 0;
     const tooGenericCount = id.too_generic || 0;
-    if (needsContextCount >= 2 || tooGenericCount >= 2) {
+    if (needsContextCount >= REC_MIN_PATTERN_SIGNAL || tooGenericCount >= REC_MIN_PATTERN_SIGNAL) {
       const adjParts = [];
-      if (needsContextCount >= 2) adjParts.push(`${needsContextCount}× mehr Kontext`);
-      if (tooGenericCount >= 2) adjParts.push(`${tooGenericCount}× zu allgemein`);
+      if (needsContextCount >= REC_MIN_PATTERN_SIGNAL) adjParts.push(`${needsContextCount}× mehr Kontext`);
+      if (tooGenericCount >= REC_MIN_PATTERN_SIGNAL) adjParts.push(`${tooGenericCount}× zu allgemein`);
       insights.push({ icon: '🔧', text: `Verbesserungspotenzial: ${adjParts.join(', ')}. Das System lernt aus diesen Signalen.` });
     }
 
     // Pattern-level top insight
     const patternInsights = ri.patternImprovementInsights || [];
-    const topHelpful = patternInsights.filter(p => p.dominantFeedback === 'helpful' && p.feedbackCount >= 3);
+    const topHelpful = patternInsights.filter(p => p.dominantFeedback === 'helpful' && p.feedbackCount >= REC_MIN_STABLE_PATTERN);
     if (topHelpful.length > 0) {
       const count = Math.min(topHelpful.length, 3);
       insights.push({ icon: '🎯', text: `<strong>${count}</strong> Empfehlungsmuster sind stabil hilfreich. Diese Richtungen bewähren sich wiederholt.` });
@@ -3219,7 +3226,7 @@ async function loadRecommendationReview() {
 
     let readinessVsImprovementHtml = '';
     if (readinessInsights.length > 0) {
-      const top5 = readinessInsights.sort((a, b) => b.count - a.count).slice(0, 5);
+      const top5 = readinessInsights.sort((a, b) => b.count - a.count).slice(0, REC_MAX_READINESS_ROWS);
       readinessVsImprovementHtml = `
         <div class="rec-section-divider">
           <div class="rec-section-label">📋 Handlungsreife vs. Rückblick</div>
@@ -3245,13 +3252,13 @@ async function loadRecommendationReview() {
       return acc;
     }, {});
 
-    if (dominantFeedbacks.helpful >= 2) {
+    if (dominantFeedbacks.helpful >= REC_MIN_PATTERN_SIGNAL) {
       summaryParts.push(`${dominantFeedbacks.helpful} Muster stabil hilfreich`);
     }
-    if (dominantFeedbacks.too_early >= 2) {
+    if (dominantFeedbacks.too_early >= REC_MIN_PATTERN_SIGNAL) {
       summaryParts.push(`${dominantFeedbacks.too_early} Muster oft zu früh`);
     }
-    if (dominantFeedbacks.unclear >= 2) {
+    if (dominantFeedbacks.unclear >= REC_MIN_PATTERN_SIGNAL) {
       summaryParts.push(`${dominantFeedbacks.unclear} Muster noch unklar`);
     }
 
