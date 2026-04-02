@@ -4107,6 +4107,7 @@ const {
   receiveFrontendFeedback,
   getPendingFrontendFeedback,
   getPatternMemorySummary,
+  getActionReadinessSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4540,6 +4541,44 @@ router.get("/deepseek/agent-bridge/pattern-memory", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading pattern memory",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/action-readiness
+   Step 6: Action Readiness Summary – returns a lightweight
+   overview of how signals are distributed across readiness
+   bands and action types.  Helps the HQS system understand
+   how many signals are exploratory vs. actionable, without
+   triggering any auto-execution.
+
+   Response:
+     {
+       "success":            true,
+       "version":            "v1",
+       "actionReadiness": {
+         "totalPatterns":          5,
+         "readinessDistribution":  { "observation": 3, "useful_next_step": 2 },
+         "actionTypeDistribution": { "observe": 3, "check_binding": 2 },
+         "patternsPerReadiness":   { "observation": 2, "useful_next_step": 1 },
+         "confidenceVsReadiness":  { "medium→observation": 2, "high→useful_next_step": 1 },
+         "generatedAt":            "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/action-readiness", (_req, res) => {
+  try {
+    const summary = getActionReadinessSummary();
+    return res.json({ success: true, version: "v1", actionReadiness: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/action-readiness error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading action readiness summary",
     });
   }
 });

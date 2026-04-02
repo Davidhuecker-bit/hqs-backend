@@ -203,6 +203,69 @@ const MEDIUM_SEVERITY_KEYWORDS = [
 ];
 
 /* ─────────────────────────────────────────────
+   Step 6 – Action Readiness / Recommendation
+   Quality Light
+   ─────────────────────────────────────────────
+   A lightweight maturity layer that helps the
+   HQS system distinguish:
+   - early signals (observation only)
+   - useful follow-up checks
+   - actionable next-step recommendations
+   - more mature, higher-quality recommendations
+
+   This is NOT auto-execution or autonomous
+   decision logic.  It only provides a transparent,
+   deterministic readiness classification so the
+   system can later formulate better next steps.
+   ───────────────────────────────────────────── */
+
+/**
+ * Action readiness bands – how mature / actionable
+ * a recommendation appears based on available evidence.
+ *
+ * Deliberately kept separate from confidence / trust:
+ *   high trust ≠ high readiness
+ *   (a well-observed pattern may still only warrant monitoring)
+ */
+const VALID_ACTION_READINESS_BANDS = [
+  "observation",                // early signal – only watch
+  "further_check_recommended",  // warrants a follow-up inspection
+  "useful_next_step",           // actionable recommendation
+  "mature_recommendation",      // strong evidence, clear next step
+];
+
+/**
+ * Recommended action types – cooperative language for
+ * what kind of next step might be appropriate.
+ *
+ * The system never executes these automatically.
+ * They help later UI/admin surfaces show richer context.
+ */
+const VALID_RECOMMENDED_ACTION_TYPES = [
+  "observe",                // nur beobachten
+  "check_ui",               // UI prüfen
+  "check_binding",          // Binding prüfen
+  "check_layout",           // Layout prüfen
+  "re_evaluate_priority",   // Priorität neu bewerten
+  "run_followup",           // Folgeprüfung erneut ausführen
+  "prepare_change",         // Änderung vorbereiten
+];
+
+/**
+ * Maps follow-up types → most fitting recommended action type.
+ * Used as fallback when no explicit action type can be inferred.
+ */
+const FOLLOWUP_TO_ACTION_TYPE = {
+  review_followup:          "observe",
+  ui_adjustment_followup:   "check_ui",
+  binding_followup:         "check_binding",
+  schema_followup:          "check_binding",
+  priority_followup:        "re_evaluate_priority",
+  presentation_followup:    "check_layout",
+  none:                     "observe",
+};
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -825,6 +888,92 @@ function deriveImpactTranslation(hints) {
 }
 
 /* ─────────────────────────────────────────────
+   Step 6: Package-level action readiness
+   ─────────────────────────────────────────────
+   Assesses the overall action readiness of a
+   bridge package based on its hints.  This is
+   a lightweight, transparent check – NOT a
+   learning-signal assessment (that happens
+   in receiveFrontendFeedback).
+
+   Keeps trust and readiness deliberately
+   separate:  many hints ≠ mature recommendation.
+   ───────────────────────────────────────────── */
+
+/**
+ * Assess action readiness for a bridge package.
+ *
+ * @param {Array}  hints       – filtered bridge hints
+ * @param {string} patternKey  – the bridge-level pattern key
+ * @returns {{ band: string, actionType: string, reason: string }}
+ */
+function _assessPackageReadiness(hints, patternKey) {
+  if (!hints || hints.length === 0) {
+    return {
+      band:       "observation",
+      actionType: "observe",
+      reason:     "Keine Hinweise vorhanden – nur Beobachtung.",
+    };
+  }
+
+  let score = 0;
+  const reasons = [];
+
+  // Hint richness
+  if (hints.length >= 5) { score += 2; reasons.push(`${hints.length} Hinweise vorhanden`); }
+  else if (hints.length >= 2) { score += 1; reasons.push(`${hints.length} Hinweise vorhanden`); }
+
+  // Severity presence
+  const highCount = hints.filter((h) => h.severity === "high").length;
+  const medCount  = hints.filter((h) => h.severity === "medium").length;
+  if (highCount >= 2) { score += 3; reasons.push(`${highCount} dringliche Hinweise`); }
+  else if (highCount >= 1) { score += 2; reasons.push("1 dringlicher Hinweis"); }
+  if (medCount >= 2) { score += 1; reasons.push(`${medCount} mittlere Hinweise`); }
+
+  // Follow-up types present (indicates clearer next steps)
+  const followups = new Set();
+  for (const h of hints) {
+    if (h.suggestedFollowupType && h.suggestedFollowupType !== "none") {
+      followups.add(h.suggestedFollowupType);
+    }
+  }
+  if (followups.size >= 2) { score += 2; reasons.push("Mehrere Folgeprüfungstypen erkannt"); }
+  else if (followups.size >= 1) { score += 1; reasons.push("Folgeprüfungstyp erkannt"); }
+
+  // Pattern confirmation from memory
+  const patternEntry = patternKey ? _patternMemory.get(patternKey) : null;
+  if (patternEntry && patternEntry.count >= 3) {
+    score += 2;
+    reasons.push(`Muster ${patternEntry.count}x bestätigt`);
+  }
+
+  // Classify band
+  let band;
+  if (score >= 8) band = "mature_recommendation";
+  else if (score >= 5) band = "useful_next_step";
+  else if (score >= 2) band = "further_check_recommended";
+  else band = "observation";
+
+  // Derive action type from dominant follow-up
+  const dominantFollowup = followups.size > 0 ? [...followups][0] : "none";
+  let actionType = FOLLOWUP_TO_ACTION_TYPE[dominantFollowup] || "observe";
+
+  // Override: observation band always → observe
+  if (band === "observation") actionType = "observe";
+  // Override: high binding risk → check_binding
+  if (highCount > 0 && hints.some((h) =>
+    ["schema_risk", "binding_risk", "field_risk"].includes(h.type))) {
+    actionType = "check_binding";
+  }
+
+  return {
+    band,
+    actionType,
+    reason: reasons.join("; ") || "Nur wenig Evidenz vorhanden.",
+  };
+}
+
+/* ─────────────────────────────────────────────
    buildBridgePackage
    ─────────────────────────────────────────────
    Main export for Backend→Frontend direction.
@@ -884,6 +1033,9 @@ function buildBridgePackage(payload = {}) {
     recommendedGeminiMode
   );
 
+  // ── Step 6: Derive package-level action readiness ──
+  const packageReadiness = _assessPackageReadiness(bridgeHints, bridgePatternKey);
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -899,13 +1051,17 @@ function buildBridgePackage(payload = {}) {
     },
     // Step 3: impact translation (cooperative Backend→Frontend effect summary)
     impactTranslation,
-    // Step 4: pattern context (cooperative learning preparation)
+    // Step 4 + 6: pattern context with action readiness
     patternContext: {
       patternKey:       bridgePatternKey,
       dominantHintType,
       dominantLayer:    HINT_TYPE_TO_AFFECTED_LAYER[dominantHintType] || "cross_layer",
       dominantFollowup: inspectionFocus.suggestedFollowupTypes[0] || "none",
       impactKind:       impactTranslation.impactKind,
+      // Step 6: action readiness for this bridge package
+      actionReadinessBand:    packageReadiness.band,
+      recommendedActionType:  packageReadiness.actionType,
+      readinessReason:        packageReadiness.reason,
     },
     meta: {
       hintsTotal:     rawHints.length,
@@ -960,7 +1116,20 @@ function buildBridgePackage(payload = {}) {
     workflowStage:        "bridge_ready",
     // Step 4: pattern context
     patternKey:           bridgePatternKey,
+    // Step 6: action readiness
+    actionReadinessBand:    packageReadiness.band,
+    recommendedActionType:  packageReadiness.actionType,
   });
+
+  // Step 6: Explicit readiness log for bridge package
+  if (packageReadiness.band !== "observation") {
+    logger.info("[agentBridge] package action readiness (Step 6)", {
+      readinessBand:   packageReadiness.band,
+      actionType:      packageReadiness.actionType,
+      reason:          packageReadiness.reason,
+      patternKey:      bridgePatternKey,
+    });
+  }
 
   if (Object.keys(followupCounts).length > 0) {
     logger.info("[agentBridge] suggested follow-ups (next steps)", {
@@ -1021,6 +1190,17 @@ function getCurrentBridgePackage() {
       suggestedFollowupTypes:  [],
       affectedArtifactHints:   [],
       impactKind:              "none",
+    },
+    // Step 6: empty pattern context with readiness defaults
+    patternContext: {
+      patternKey:             null,
+      dominantHintType:       "none",
+      dominantLayer:          "cross_layer",
+      dominantFollowup:       "none",
+      impactKind:             "none",
+      actionReadinessBand:    "observation",
+      recommendedActionType:  "observe",
+      readinessReason:        "Keine Hinweise vorhanden – nur Beobachtung.",
     },
     meta: {
       hintsTotal:   0,
@@ -1130,7 +1310,7 @@ function receiveFrontendFeedback(payload = {}) {
     }
   }
 
-  // ── Step 3 + 4: Cause → Effect → Follow-up logging ──
+  // ── Step 3 + 4 + 6: Cause → Effect → Follow-up → Readiness logging ──
   logger.info("[agentBridge] frontend feedback received (observed effect)", {
     source,
     area,
@@ -1145,6 +1325,9 @@ function receiveFrontendFeedback(payload = {}) {
     // Step 4: pattern context
     patternKey:         learningSignal.patternKey,
     confidenceBand:     learningSignal.confidenceBand,
+    // Step 6: action readiness
+    actionReadinessBand:   learningSignal.actionReadinessBand,
+    recommendedActionType: learningSignal.recommendedActionType,
     workflowStage:      "feedback_received",
   });
 
@@ -1159,6 +1342,9 @@ function receiveFrontendFeedback(payload = {}) {
       signalType:          learningSignal.signalType,
       impactCategory:      learningSignal.impactCategory,
       confidenceBand:      learningSignal.confidenceBand,
+      // Step 6: readiness context
+      actionReadinessBand:   learningSignal.actionReadinessBand,
+      recommendedActionType: learningSignal.recommendedActionType,
     });
   }
 
@@ -1286,7 +1472,122 @@ function assessSignalQuality(signal, hints) {
 }
 
 /* ─────────────────────────────────────────────
-   Step 3 + 4: Learning signal builder
+   Step 6: Action readiness assessment
+   ─────────────────────────────────────────────
+   Determines how mature / actionable a signal
+   or recommendation appears.
+
+   IMPORTANT DESIGN PRINCIPLE:
+   Action readiness is deliberately kept separate
+   from trust / confidence.  A signal can have
+   high trust but low readiness (well-observed
+   but only warrants monitoring).  And a signal
+   can be moderately trusted but already point
+   to a clear next step.
+
+   Criteria (deterministic, transparent):
+   - "observation"               – sparse data, no clear follow-up
+   - "further_check_recommended" – some evidence, follow-up warranted
+   - "useful_next_step"          – clear cause→effect, follow-up present
+   - "mature_recommendation"     – strong evidence, confirmed pattern,
+                                   clear and specific next step
+   ───────────────────────────────────────────── */
+
+/**
+ * Assess how action-ready a signal is.
+ *
+ * The scoring is intentionally conservative:
+ * a high-trust signal still needs clear cause→effect
+ * AND a concrete follow-up to be considered "mature".
+ *
+ * @param {Object} signal   – the learning signal
+ * @param {Array}  hints    – the hints backing this signal
+ * @param {string} confidenceBand – "low"|"medium"|"high"
+ * @returns {string} one of VALID_ACTION_READINESS_BANDS
+ */
+function assessActionReadiness(signal, hints, confidenceBand) {
+  let score = 0;
+
+  // ── Evidence completeness (cause → effect → follow-up chain) ──
+  if (signal.observedEffect)    score += 2;
+  if (signal.suspectedCause)    score += 2;
+  if (signal.suggestedFollowup) score += 2;
+
+  // ── Clarity of cause → effect chain ──
+  if (signal.observedLayers && signal.observedLayers.length > 0)       score += 1;
+  if (signal.observedFollowups && signal.observedFollowups.length > 0) score += 1;
+
+  // ── Hint quality (but NOT blind trust transfer) ──
+  const highSevCount = hints.filter((h) => h.severity === "high").length;
+  const medSevCount  = hints.filter((h) => h.severity === "medium").length;
+
+  // Multiple high-severity hints increase readiness slightly
+  if (highSevCount >= 2) score += 2;
+  else if (highSevCount >= 1) score += 1;
+  if (medSevCount >= 2) score += 1;
+
+  // ── Pattern confirmation (recurring pattern = more mature) ──
+  const patternEntry = signal.patternKey
+    ? _patternMemory.get(signal.patternKey)
+    : null;
+  if (patternEntry) {
+    if (patternEntry.count >= 5) score += 2;       // confirmed pattern
+    else if (patternEntry.count >= 2) score += 1;  // recurring
+  }
+
+  // ── Confidence as minor modifier (NOT dominant factor) ──
+  // This ensures high trust alone does NOT auto-promote readiness
+  if (confidenceBand === "high" && score >= 4) score += 1;
+
+  // ── Classify ──
+  if (score >= 10) return "mature_recommendation";
+  if (score >= 6)  return "useful_next_step";
+  if (score >= 3)  return "further_check_recommended";
+  return "observation";
+}
+
+/**
+ * Derive which type of action would be most appropriate
+ * for a given signal, based on its follow-up category,
+ * hint types and severity.
+ *
+ * Returns a cooperative, non-prescriptive action type.
+ *
+ * @param {Object} signal – the learning signal
+ * @param {Array}  hints  – the hints backing this signal
+ * @returns {string} one of VALID_RECOMMENDED_ACTION_TYPES
+ */
+function deriveRecommendedActionType(signal, hints) {
+  // If the signal has an explicit follow-up category, map it
+  const fromFollowup = FOLLOWUP_TO_ACTION_TYPE[signal.followupCategory];
+
+  // If readiness is low, default to observe regardless
+  if (signal.actionReadinessBand === "observation") return "observe";
+
+  // High-severity binding/schema/field → check_binding
+  const hasBindingRisk = hints.some(
+    (h) => h.severity === "high" &&
+    ["schema_risk", "binding_risk", "field_risk"].includes(h.type)
+  );
+  if (hasBindingRisk) return "check_binding";
+
+  // Multiple confirmed followups → run_followup
+  if (signal.observedFollowups && signal.observedFollowups.length >= 2) {
+    return "run_followup";
+  }
+
+  // Mature recommendation with clear follow-up → prepare_change
+  if (signal.actionReadinessBand === "mature_recommendation" &&
+      signal.suggestedFollowup) {
+    return "prepare_change";
+  }
+
+  // Fall back to follow-up-type mapping or observe
+  return fromFollowup || "observe";
+}
+
+/* ─────────────────────────────────────────────
+   Step 3 + 4 + 6: Learning signal builder
    ─────────────────────────────────────────────
    Builds a cooperative learning signal from
    feedback classification and optional explicit
@@ -1304,8 +1605,12 @@ function assessSignalQuality(signal, hints) {
    - confidenceBand:    signal quality (low/medium/high)
    - workflowCategory:  feedback category (alias)
 
+   Step 6 additions (action readiness / recommendation quality):
+   - actionReadinessBand:     observation / further_check / useful_next_step / mature
+   - recommendedActionType:   observe / check_ui / check_binding / etc.
+
    The structure stays backwards-compatible –
-   all Step 3 fields remain in place.
+   all Step 3 + 4 fields remain in place.
    ───────────────────────────────────────────── */
 
 function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
@@ -1368,42 +1673,90 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     layerCategory,
     confidenceBand:       null, // set below after quality assessment
     workflowCategory:     feedbackCategory,
+
+    // ── Step 6 fields (action readiness / recommendation quality) ──
+    actionReadinessBand:    null, // set below after readiness assessment
+    recommendedActionType:  null, // set below after readiness assessment
   };
 
   // Assess signal quality (must happen after signal is built)
   signal.confidenceBand = assessSignalQuality(signal, hints);
 
+  // ── Step 6: Assess action readiness (deliberately AFTER confidence) ──
+  signal.actionReadinessBand = assessActionReadiness(signal, hints, signal.confidenceBand);
+  signal.recommendedActionType = deriveRecommendedActionType(signal, hints);
+
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
 
-  // ── Step 4: Pattern / learning logging ──
-  logger.info("[agentBridge] learning signal built (Step 4)", {
+  // ── Step 4 + 6: Pattern / learning / readiness logging ──
+  logger.info("[agentBridge] learning signal built (Step 6 – readiness)", {
     patternKey,
     signalType,
-    confidenceBand:   signal.confidenceBand,
+    confidenceBand:         signal.confidenceBand,
+    actionReadinessBand:    signal.actionReadinessBand,
+    recommendedActionType:  signal.recommendedActionType,
     sourceCategory,
     layerCategory,
     impactCategory,
     followupCategory,
     recommendedMode,
     followupNeed,
-    observedLayerCount:   signal.observedLayers.length,
-    observedFollowupCount: signal.observedFollowups.length,
-    hasExplicitCause:     !!explicit.suspectedCause,
-    hasExplicitEffect:    !!explicit.observedEffect,
-    hasExplicitFollowup:  !!explicit.suggestedFollowup,
+    observedLayerCount:     signal.observedLayers.length,
+    observedFollowupCount:  signal.observedFollowups.length,
+    hasExplicitCause:       !!explicit.suspectedCause,
+    hasExplicitEffect:      !!explicit.observedEffect,
+    hasExplicitFollowup:    !!explicit.suggestedFollowup,
   });
+
+  // ── Step 6: Explicit readiness reasoning log ──
+  if (signal.actionReadinessBand !== "observation") {
+    logger.info("[agentBridge] action readiness assessed (Step 6)", {
+      readinessBand:   signal.actionReadinessBand,
+      actionType:      signal.recommendedActionType,
+      confidenceBand:  signal.confidenceBand,
+      reason:          _describeReadinessReason(signal, hints),
+    });
+  }
 
   return signal;
 }
 
+/**
+ * Generate a short, human-readable reason string
+ * explaining why a given readiness band was assigned.
+ * Used for transparent logging – no black-box scoring.
+ */
+function _describeReadinessReason(signal, hints) {
+  const parts = [];
+  if (signal.observedEffect)    parts.push("Beobachteter Effekt vorhanden");
+  if (signal.suspectedCause)    parts.push("Vermutete Ursache angegeben");
+  if (signal.suggestedFollowup) parts.push("Folgeaktion vorgeschlagen");
+
+  const highCount = hints.filter((h) => h.severity === "high").length;
+  if (highCount > 0) parts.push(`${highCount} Hinweis(e) mit hoher Dringlichkeit`);
+
+  const patternEntry = signal.patternKey
+    ? _patternMemory.get(signal.patternKey)
+    : null;
+  if (patternEntry && patternEntry.count >= 2) {
+    parts.push(`Muster ${patternEntry.count}x beobachtet`);
+  }
+
+  if (parts.length === 0) parts.push("Nur wenig Evidenz vorhanden");
+  return parts.join("; ");
+}
+
 /* ─────────────────────────────────────────────
-   Step 4: In-memory pattern aggregation
+   Step 4 + 6: In-memory pattern aggregation
    ─────────────────────────────────────────────
    Tracks how often a pattern key occurs and
    which modes / layers / follow-ups are most
    common for that pattern.  Purely in-memory,
    bounded by MAX_PATTERN_MEMORY_ENTRIES.
+
+   Step 6: Also tallies action readiness bands
+   and recommended action types per pattern.
 
    This is *not* a database or analytics engine.
    It provides lightweight observability so the
@@ -1413,7 +1766,8 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
 /**
  * Record a new observation for a given pattern key.
  * Updates count, last seen timestamp, and frequency
- * tallies for mode / layer / follow-up / confidence.
+ * tallies for mode / layer / follow-up / confidence /
+ * readiness / action type.
  */
 function recordPatternObservation(patternKey, signal) {
   if (!patternKey) return;
@@ -1422,14 +1776,17 @@ function recordPatternObservation(patternKey, signal) {
   if (!entry) {
     entry = {
       patternKey,
-      count:            0,
-      firstSeen:        new Date().toISOString(),
-      lastSeen:         null,
-      modeTally:        {},
-      layerTally:       {},
-      followupTally:    {},
-      confidenceTally:  {},
-      signalTypeTally:  {},
+      count:              0,
+      firstSeen:          new Date().toISOString(),
+      lastSeen:           null,
+      modeTally:          {},
+      layerTally:         {},
+      followupTally:      {},
+      confidenceTally:    {},
+      signalTypeTally:    {},
+      // Step 6: action readiness tallies
+      readinessTally:     {},
+      actionTypeTally:    {},
     };
   }
 
@@ -1461,6 +1818,18 @@ function recordPatternObservation(patternKey, signal) {
     entry.signalTypeTally[signal.signalType] =
       (entry.signalTypeTally[signal.signalType] || 0) + 1;
   }
+  // Step 6: Tally action readiness band
+  if (signal.actionReadinessBand) {
+    entry.readinessTally = entry.readinessTally || {};
+    entry.readinessTally[signal.actionReadinessBand] =
+      (entry.readinessTally[signal.actionReadinessBand] || 0) + 1;
+  }
+  // Step 6: Tally recommended action type
+  if (signal.recommendedActionType) {
+    entry.actionTypeTally = entry.actionTypeTally || {};
+    entry.actionTypeTally[signal.recommendedActionType] =
+      (entry.actionTypeTally[signal.recommendedActionType] || 0) + 1;
+  }
 
   _patternMemory.set(patternKey, entry);
 
@@ -1482,27 +1851,96 @@ function recordPatternObservation(patternKey, signal) {
 /**
  * Returns a summary of the current in-memory pattern memory.
  * Sorted by count (most frequent first), capped at 50 entries.
+ *
+ * Step 6: Each pattern entry now includes dominant readiness
+ * band and recommended action type.
  */
 function getPatternMemorySummary() {
   const entries = [..._patternMemory.values()]
     .sort((a, b) => b.count - a.count)
     .slice(0, 50)
     .map((e) => ({
-      patternKey:       e.patternKey,
-      count:            e.count,
-      firstSeen:        e.firstSeen,
-      lastSeen:         e.lastSeen,
-      dominantMode:     _topKey(e.modeTally),
-      dominantLayer:    _topKey(e.layerTally),
-      dominantFollowup: _topKey(e.followupTally),
-      dominantConfidence: _topKey(e.confidenceTally),
-      dominantSignalType: _topKey(e.signalTypeTally),
+      patternKey:            e.patternKey,
+      count:                 e.count,
+      firstSeen:             e.firstSeen,
+      lastSeen:              e.lastSeen,
+      dominantMode:          _topKey(e.modeTally),
+      dominantLayer:         _topKey(e.layerTally),
+      dominantFollowup:      _topKey(e.followupTally),
+      dominantConfidence:    _topKey(e.confidenceTally),
+      dominantSignalType:    _topKey(e.signalTypeTally),
+      // Step 6: action readiness summary per pattern
+      dominantReadiness:     _topKey(e.readinessTally),
+      dominantActionType:    _topKey(e.actionTypeTally),
     }));
 
   return {
     totalPatterns:  _patternMemory.size,
     topPatterns:    entries,
     generatedAt:    new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 6: Action Readiness Summary
+   ─────────────────────────────────────────────
+   Returns a lightweight overview of how signals
+   are distributed across readiness bands and
+   action types.  Helps the HQS system understand
+   - how many signals are still exploratory
+   - how many are closer to actionable
+   - which action types appear most often
+   - how readiness relates to confidence
+
+   This is purely observational, not prescriptive.
+   ───────────────────────────────────────────── */
+
+/**
+ * Build an aggregated action-readiness overview
+ * from all pattern memory entries.
+ *
+ * @returns {Object} readiness summary
+ */
+function getActionReadinessSummary() {
+  const readinessCounts = {};
+  const actionTypeCounts = {};
+  const confidenceVsReadiness = {};
+
+  for (const entry of _patternMemory.values()) {
+    // Aggregate readiness tallies
+    for (const [band, count] of Object.entries(entry.readinessTally || {})) {
+      readinessCounts[band] = (readinessCounts[band] || 0) + count;
+    }
+    // Aggregate action type tallies
+    for (const [type, count] of Object.entries(entry.actionTypeTally || {})) {
+      actionTypeCounts[type] = (actionTypeCounts[type] || 0) + count;
+    }
+    // Cross-reference: confidence vs readiness
+    const domConf = _topKey(entry.confidenceTally);
+    const domRead = _topKey(entry.readinessTally);
+    if (domConf && domRead) {
+      const crossKey = `${domConf}→${domRead}`;
+      confidenceVsReadiness[crossKey] =
+        (confidenceVsReadiness[crossKey] || 0) + entry.count;
+    }
+  }
+
+  // Count how many patterns are in each readiness stage
+  const patternsPerReadiness = {};
+  for (const entry of _patternMemory.values()) {
+    const domRead = _topKey(entry.readinessTally);
+    if (domRead) {
+      patternsPerReadiness[domRead] = (patternsPerReadiness[domRead] || 0) + 1;
+    }
+  }
+
+  return {
+    totalPatterns:          _patternMemory.size,
+    readinessDistribution:  readinessCounts,
+    actionTypeDistribution: actionTypeCounts,
+    patternsPerReadiness,
+    confidenceVsReadiness,
+    generatedAt:            new Date().toISOString(),
   };
 }
 
@@ -1532,6 +1970,7 @@ module.exports = {
   receiveFrontendFeedback,
   getPendingFrontendFeedback,
   getPatternMemorySummary,
+  getActionReadinessSummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -1541,4 +1980,6 @@ module.exports = {
   VALID_FOLLOWUP_TYPES,
   VALID_IMPACT_LAYERS,
   VALID_CONFIDENCE_BANDS,
+  VALID_ACTION_READINESS_BANDS,
+  VALID_RECOMMENDED_ACTION_TYPES,
 };
