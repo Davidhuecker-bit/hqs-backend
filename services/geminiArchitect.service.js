@@ -566,6 +566,38 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 6: Inject action readiness context ──
+  if (bridgeContext && bridgeContext.patternContext) {
+    const pc = bridgeContext.patternContext;
+    const arParts = [];
+    if (pc.actionReadinessBand) {
+      const readinessLabels = {
+        observation:                "Beobachtung – noch kein konkreter Handlungsbedarf",
+        further_check_recommended:  "Weitere Prüfung sinnvoll",
+        useful_next_step:           "Brauchbarer nächster Schritt erkannt",
+        mature_recommendation:      "Reifere Empfehlung – stärkere Evidenz vorhanden",
+      };
+      arParts.push(`Handlungsreife: ${readinessLabels[pc.actionReadinessBand] || pc.actionReadinessBand}`);
+    }
+    if (pc.recommendedActionType && pc.recommendedActionType !== "observe") {
+      const actionLabels = {
+        check_ui:               "UI prüfen",
+        check_binding:          "Binding prüfen",
+        check_layout:           "Layout prüfen",
+        re_evaluate_priority:   "Priorität neu bewerten",
+        run_followup:           "Folgeprüfung erneut ausführen",
+        prepare_change:         "Änderung vorbereiten",
+      };
+      arParts.push(`Empfohlene nächste Prüfung: ${actionLabels[pc.recommendedActionType] || pc.recommendedActionType}`);
+    }
+    if (pc.readinessReason) {
+      arParts.push(`Begründung: ${pc.readinessReason}`);
+    }
+    if (arParts.length) {
+      sections.push(`Handlungsreife-Einschätzung (Entscheidungshilfe, keine Ausführung):\n${arParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
@@ -716,6 +748,9 @@ async function runGeminiArchitectReview(payload = {}) {
     bridgeInspectionCategory: normalised.bridgeContext?.workflow?.inspectionFocus?.category || null,
     bridgeImpactKind: normalised.bridgeContext?.impactTranslation?.impactKind || null,
     bridgeSuggestedFollowups: normalised.bridgeContext?.impactTranslation?.suggestedFollowupTypes || [],
+    // Step 6: action readiness context
+    bridgeActionReadiness: normalised.bridgeContext?.patternContext?.actionReadinessBand || null,
+    bridgeRecommendedAction: normalised.bridgeContext?.patternContext?.recommendedActionType || null,
   });
 
   let response;
