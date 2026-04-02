@@ -2211,9 +2211,9 @@ function submitRecommendationFeedback(payload = {}) {
     sourceCategory,
   };
 
-  // Store in log
+  // Store in log (trim at threshold to reduce allocations)
   _recommendationFeedbackLog.push(entry);
-  if (_recommendationFeedbackLog.length > MAX_RECOMMENDATION_FEEDBACK_ENTRIES) {
+  if (_recommendationFeedbackLog.length > MAX_RECOMMENDATION_FEEDBACK_ENTRIES + 20) {
     _recommendationFeedbackLog = _recommendationFeedbackLog.slice(
       -MAX_RECOMMENDATION_FEEDBACK_ENTRIES
     );
