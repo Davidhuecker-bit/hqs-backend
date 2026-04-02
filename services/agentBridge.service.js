@@ -180,6 +180,9 @@ const MAX_PENDING_FEEDBACK = 50;
 /** Maximum follow-up / layer items per focus object */
 const MAX_FOCUS_ITEMS = 6;
 
+/** Maximum entries tracked in the in-memory pattern memory */
+const MAX_PATTERN_MEMORY_ENTRIES = 200;
+
 /** Max characters of title used for dedup key */
 const DEDUP_TITLE_MAX_LENGTH = 80;
 
@@ -207,6 +210,19 @@ const MEDIUM_SEVERITY_KEYWORDS = [
 
 let _currentBridgePackage = null;
 let _pendingFrontendFeedback = [];
+
+/* ─────────────────────────────────────────────
+   Step 4: In-memory pattern memory (lightweight)
+   ─────────────────────────────────────────────
+   Tracks recurring pattern keys and their
+   associated metadata so the system can learn
+   which cause→effect→follow-up combinations
+   occur frequently.  No database – purely
+   in-memory, intentionally ephemeral.
+   ───────────────────────────────────────────── */
+
+/** @type {Map<string, PatternMemoryEntry>} */
+const _patternMemory = new Map();
 
 /* ─────────────────────────────────────────────
    Input normalisation helpers
@@ -859,6 +875,15 @@ function buildBridgePackage(payload = {}) {
   // ── Step 3: Cooperative impact translation ──
   const impactTranslation = deriveImpactTranslation(bridgeHints);
 
+  // ── Step 4: Bridge-level pattern key for the package ──
+  const dominantHintType = deriveDominantHintType(bridgeHints);
+  const bridgePatternKey = derivePatternKey(
+    inspectionFocus.category,
+    HINT_TYPE_TO_AFFECTED_LAYER[dominantHintType] || "cross_layer",
+    inspectionFocus.suggestedFollowupTypes[0] || "none",
+    recommendedGeminiMode
+  );
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -874,6 +899,14 @@ function buildBridgePackage(payload = {}) {
     },
     // Step 3: impact translation (cooperative Backend→Frontend effect summary)
     impactTranslation,
+    // Step 4: pattern context (cooperative learning preparation)
+    patternContext: {
+      patternKey:       bridgePatternKey,
+      dominantHintType,
+      dominantLayer:    HINT_TYPE_TO_AFFECTED_LAYER[dominantHintType] || "cross_layer",
+      dominantFollowup: inspectionFocus.suggestedFollowupTypes[0] || "none",
+      impactKind:       impactTranslation.impactKind,
+    },
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -884,7 +917,7 @@ function buildBridgePackage(payload = {}) {
 
   _currentBridgePackage = pkg;
 
-  // ── Step 3: Cause → Effect → Follow-up logging ──
+  // ── Step 3 + 4: Cause → Effect → Follow-up logging ──
   const hintTypes = {};
   const severityCounts = { high: 0, medium: 0, low: 0 };
   const layerCounts = {};
@@ -910,6 +943,9 @@ function buildBridgePackage(payload = {}) {
     lastKnownArea:  backendState.lastKnownArea,
     sourceMode,
     isEmpty:        bridgeHints.length === 0,
+    // Step 4: pattern context
+    patternKey:     bridgePatternKey,
+    dominantHintType,
   });
 
   logger.info("[agentBridge] workflow orchestration (effect)", {
@@ -922,6 +958,8 @@ function buildBridgePackage(payload = {}) {
     likelyAffectedLayers: layerCounts,
     impactKind:           impactTranslation.impactKind,
     workflowStage:        "bridge_ready",
+    // Step 4: pattern context
+    patternKey:           bridgePatternKey,
   });
 
   if (Object.keys(followupCounts).length > 0) {
@@ -1092,7 +1130,7 @@ function receiveFrontendFeedback(payload = {}) {
     }
   }
 
-  // ── Step 3: Cause → Effect → Follow-up logging ──
+  // ── Step 3 + 4: Cause → Effect → Follow-up logging ──
   logger.info("[agentBridge] frontend feedback received (observed effect)", {
     source,
     area,
@@ -1104,6 +1142,9 @@ function receiveFrontendFeedback(payload = {}) {
     feedbackCategory,
     needsFollowup,
     observedEffect:     learningSignal.observedEffect || null,
+    // Step 4: pattern context
+    patternKey:         learningSignal.patternKey,
+    confidenceBand:     learningSignal.confidenceBand,
     workflowStage:      "feedback_received",
   });
 
@@ -1113,6 +1154,11 @@ function receiveFrontendFeedback(payload = {}) {
       likelyCauseLayer:    learningSignal.likelyCauseLayer,
       suggestedFollowup:   learningSignal.suggestedFollowup || null,
       followupNeed:        learningSignal.followupNeed,
+      // Step 4: pattern enrichment
+      patternKey:          learningSignal.patternKey,
+      signalType:          learningSignal.signalType,
+      impactCategory:      learningSignal.impactCategory,
+      confidenceBand:      learningSignal.confidenceBand,
     });
   }
 
@@ -1146,16 +1192,120 @@ function receiveFrontendFeedback(payload = {}) {
 }
 
 /* ─────────────────────────────────────────────
-   Step 3: Learning signal builder
+   Step 4: Pattern key derivation
+   ─────────────────────────────────────────────
+   Builds a deterministic, human-readable pattern
+   key from cause / layer / mode / follow-up so
+   the system can group recurring situations
+   without complex ML.  The key is intentionally
+   short and stable – it captures *what kind* of
+   situation this is, not every detail.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive the dominant hint type from a hint set.
+ * Returns the type with the highest severity-weighted count.
+ */
+function deriveDominantHintType(hints) {
+  if (!hints || !hints.length) return "none";
+  const votes = {};
+  for (const h of hints) {
+    votes[h.type] = (votes[h.type] || 0) + (SEVERITY_WEIGHT[h.severity] || 1);
+  }
+  let best = "review";
+  let bestScore = 0;
+  for (const [type, score] of Object.entries(votes)) {
+    if (score > bestScore) { best = type; bestScore = score; }
+  }
+  return best;
+}
+
+/**
+ * Derive a deterministic pattern key from the learning signal context.
+ *
+ * Format: `<sourceCategory>:<layerCategory>:<followupCategory>:<recommendedMode>`
+ *
+ * Each segment is a short, stable token derived from the hint set
+ * and feedback classification.  The key lets the system cluster
+ * similar observations without opaque hashing.
+ */
+function derivePatternKey(sourceCategory, layerCategory, followupCategory, recommendedMode) {
+  const src  = sourceCategory  || "general";
+  const lyr  = layerCategory   || "cross_layer";
+  const fup  = followupCategory || "none";
+  const mode = recommendedMode || "layout_review";
+  return `${src}:${lyr}:${fup}:${mode}`;
+}
+
+/* ─────────────────────────────────────────────
+   Step 4: Signal quality / confidence band
+   ─────────────────────────────────────────────
+   Not every learning signal is equally valuable.
+   A simple, transparent quality assessment
+   ensures the system does not learn from noise.
+
+   Criteria (deterministic, no statistics):
+   - "high"   – cause, effect *and* follow-up are present,
+                 plus at least one high-severity hint
+   - "medium" – at least two of cause/effect/followup
+                 or hints with medium+ severity
+   - "low"    – sparse data, weak hints, or missing
+                 context fields
+   ───────────────────────────────────────────── */
+
+const VALID_CONFIDENCE_BANDS = ["low", "medium", "high"];
+
+/**
+ * Assess how trustworthy a learning signal is.
+ *
+ * @param {Object} signal – the learning signal object
+ * @param {Array}  hints  – the hint set used to build it
+ * @returns {string} "low" | "medium" | "high"
+ */
+function assessSignalQuality(signal, hints) {
+  let score = 0;
+
+  // Explicit context fields contribute strength
+  if (signal.observedEffect)    score += 1;
+  if (signal.suspectedCause)    score += 1;
+  if (signal.suggestedFollowup) score += 1;
+  if (signal.layerReference)    score += 1;
+
+  // Hint richness
+  if (hints.length >= 3)                              score += 1;
+  if (hints.some((h) => h.severity === "high"))       score += 2;
+  else if (hints.some((h) => h.severity === "medium")) score += 1;
+
+  // Derived fields present
+  if (signal.observedLayers && signal.observedLayers.length > 0)     score += 1;
+  if (signal.observedFollowups && signal.observedFollowups.length > 0) score += 1;
+
+  if (score >= 6) return "high";
+  if (score >= 3) return "medium";
+  return "low";
+}
+
+/* ─────────────────────────────────────────────
+   Step 3 + 4: Learning signal builder
    ─────────────────────────────────────────────
    Builds a cooperative learning signal from
    feedback classification and optional explicit
    cause/effect/follow-up hints provided by
    the caller.
 
-   This prepares the structure so the system
-   can later learn which backend findings
-   typically cause which frontend problems.
+   Step 4 additions:
+   - signalType:        dominant hint type
+   - patternKey:        deterministic cluster key
+   - sourceCategory:    feedback-derived source area
+   - impactCategory:    dominant impact kind
+   - followupCategory:  dominant follow-up type
+   - recommendedMode:   best-fitting Gemini mode
+   - layerCategory:     dominant layer
+   - confidenceBand:    signal quality (low/medium/high)
+   - workflowCategory:  feedback category (alias)
+
+   The structure stays backwards-compatible –
+   all Step 3 fields remain in place.
    ───────────────────────────────────────────── */
 
 function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
@@ -1182,17 +1332,189 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     followupNeed = "low";
   }
 
-  return {
+  // ── Step 4: enriched pattern / learning fields ──
+  const signalType       = deriveDominantHintType(hints);
+  const sourceCategory   = feedbackCategory || "general";
+  const layerCategory    = likelyCauseLayer;
+  const followupArr      = [...observedFollowups];
+  const followupCategory = followupArr[0] || "none";
+  const recommendedMode  = deriveRecommendedGeminiMode(hints);
+  const impactCategory   = signalType === "none" ? "none"
+    : (HINT_TYPE_TO_AFFECTED_LAYER[signalType] || "cross_layer");
+
+  const patternKey = derivePatternKey(
+    sourceCategory, layerCategory, followupCategory, recommendedMode
+  );
+
+  const signal = {
+    // ── Step 3 fields (backwards-compatible) ──
     observedEffect:       explicit.observedEffect || null,
     suspectedCause:       explicit.suspectedCause || null,
     suggestedFollowup:    explicit.suggestedFollowup || null,
     layerReference:       explicit.layerReference || null,
     likelyCauseLayer,
     observedLayers:       [...observedLayers].slice(0, MAX_FOCUS_ITEMS),
-    observedFollowups:    [...observedFollowups].slice(0, MAX_FOCUS_ITEMS),
+    observedFollowups:    followupArr.slice(0, MAX_FOCUS_ITEMS),
     followupNeed,
     feedbackCategory,
+
+    // ── Step 4 fields (pattern memory / learning) ──
+    signalType,
+    patternKey,
+    sourceCategory,
+    impactCategory,
+    followupCategory,
+    recommendedMode,
+    layerCategory,
+    confidenceBand:       null, // set below after quality assessment
+    workflowCategory:     feedbackCategory,
   };
+
+  // Assess signal quality (must happen after signal is built)
+  signal.confidenceBand = assessSignalQuality(signal, hints);
+
+  // ── Step 4: Record pattern in lightweight in-memory store ──
+  recordPatternObservation(patternKey, signal);
+
+  // ── Step 4: Pattern / learning logging ──
+  logger.info("[agentBridge] learning signal built (Step 4)", {
+    patternKey,
+    signalType,
+    confidenceBand:   signal.confidenceBand,
+    sourceCategory,
+    layerCategory,
+    impactCategory,
+    followupCategory,
+    recommendedMode,
+    followupNeed,
+    observedLayerCount:   signal.observedLayers.length,
+    observedFollowupCount: signal.observedFollowups.length,
+    hasExplicitCause:     !!explicit.suspectedCause,
+    hasExplicitEffect:    !!explicit.observedEffect,
+    hasExplicitFollowup:  !!explicit.suggestedFollowup,
+  });
+
+  return signal;
+}
+
+/* ─────────────────────────────────────────────
+   Step 4: In-memory pattern aggregation
+   ─────────────────────────────────────────────
+   Tracks how often a pattern key occurs and
+   which modes / layers / follow-ups are most
+   common for that pattern.  Purely in-memory,
+   bounded by MAX_PATTERN_MEMORY_ENTRIES.
+
+   This is *not* a database or analytics engine.
+   It provides lightweight observability so the
+   system can later spot recurring situations.
+   ───────────────────────────────────────────── */
+
+/**
+ * Record a new observation for a given pattern key.
+ * Updates count, last seen timestamp, and frequency
+ * tallies for mode / layer / follow-up / confidence.
+ */
+function recordPatternObservation(patternKey, signal) {
+  if (!patternKey) return;
+
+  let entry = _patternMemory.get(patternKey);
+  if (!entry) {
+    entry = {
+      patternKey,
+      count:            0,
+      firstSeen:        new Date().toISOString(),
+      lastSeen:         null,
+      modeTally:        {},
+      layerTally:       {},
+      followupTally:    {},
+      confidenceTally:  {},
+      signalTypeTally:  {},
+    };
+  }
+
+  entry.count += 1;
+  entry.lastSeen = new Date().toISOString();
+
+  // Tally: recommended mode
+  if (signal.recommendedMode) {
+    entry.modeTally[signal.recommendedMode] =
+      (entry.modeTally[signal.recommendedMode] || 0) + 1;
+  }
+  // Tally: layer category
+  if (signal.layerCategory) {
+    entry.layerTally[signal.layerCategory] =
+      (entry.layerTally[signal.layerCategory] || 0) + 1;
+  }
+  // Tally: follow-up category
+  if (signal.followupCategory && signal.followupCategory !== "none") {
+    entry.followupTally[signal.followupCategory] =
+      (entry.followupTally[signal.followupCategory] || 0) + 1;
+  }
+  // Tally: confidence band
+  if (signal.confidenceBand) {
+    entry.confidenceTally[signal.confidenceBand] =
+      (entry.confidenceTally[signal.confidenceBand] || 0) + 1;
+  }
+  // Tally: signal type (dominant hint type)
+  if (signal.signalType && signal.signalType !== "none") {
+    entry.signalTypeTally[signal.signalType] =
+      (entry.signalTypeTally[signal.signalType] || 0) + 1;
+  }
+
+  _patternMemory.set(patternKey, entry);
+
+  // Evict oldest entries if over limit
+  if (_patternMemory.size > MAX_PATTERN_MEMORY_ENTRIES) {
+    // Remove the entry with the oldest lastSeen timestamp
+    let oldestKey = null;
+    let oldestTime = null;
+    for (const [key, val] of _patternMemory) {
+      if (!oldestTime || val.lastSeen < oldestTime) {
+        oldestTime = val.lastSeen;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) _patternMemory.delete(oldestKey);
+  }
+}
+
+/**
+ * Returns a summary of the current in-memory pattern memory.
+ * Sorted by count (most frequent first), capped at 50 entries.
+ */
+function getPatternMemorySummary() {
+  const entries = [..._patternMemory.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 50)
+    .map((e) => ({
+      patternKey:       e.patternKey,
+      count:            e.count,
+      firstSeen:        e.firstSeen,
+      lastSeen:         e.lastSeen,
+      dominantMode:     _topKey(e.modeTally),
+      dominantLayer:    _topKey(e.layerTally),
+      dominantFollowup: _topKey(e.followupTally),
+      dominantConfidence: _topKey(e.confidenceTally),
+      dominantSignalType: _topKey(e.signalTypeTally),
+    }));
+
+  return {
+    totalPatterns:  _patternMemory.size,
+    topPatterns:    entries,
+    generatedAt:    new Date().toISOString(),
+  };
+}
+
+/** Pick the key with the highest count from a tally object */
+function _topKey(tally) {
+  if (!tally) return null;
+  let best = null;
+  let bestCount = 0;
+  for (const [key, count] of Object.entries(tally)) {
+    if (count > bestCount) { best = key; bestCount = count; }
+  }
+  return best;
 }
 
 /* ─────────────────────────────────────────────
@@ -1209,6 +1531,7 @@ module.exports = {
   getCurrentBridgePackage,
   receiveFrontendFeedback,
   getPendingFrontendFeedback,
+  getPatternMemorySummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -1217,4 +1540,5 @@ module.exports = {
   VALID_FEEDBACK_CATEGORIES,
   VALID_FOLLOWUP_TYPES,
   VALID_IMPACT_LAYERS,
+  VALID_CONFIDENCE_BANDS,
 };

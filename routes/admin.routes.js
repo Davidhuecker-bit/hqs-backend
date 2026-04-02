@@ -4106,6 +4106,7 @@ const {
   getCurrentBridgePackage,
   receiveFrontendFeedback,
   getPendingFrontendFeedback,
+  getPatternMemorySummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4506,6 +4507,39 @@ router.post("/deepseek/agent-bridge/frontend-feedback", (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error accepting frontend feedback",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/pattern-memory
+   Step 4: Pattern Memory Light – returns an aggregated
+   summary of recurring learning-signal patterns observed
+   by the agent bridge.  In-memory only, no persistence.
+
+   Response:
+     {
+       "success":       true,
+       "version":       "v1",
+       "patternMemory": {
+         "totalPatterns": 5,
+         "topPatterns":   [ ... ],
+         "generatedAt":   "2025-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/pattern-memory", (_req, res) => {
+  try {
+    const summary = getPatternMemorySummary();
+    return res.json({ success: true, version: "v1", patternMemory: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/pattern-memory error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading pattern memory",
     });
   }
 });
