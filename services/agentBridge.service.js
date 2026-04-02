@@ -385,6 +385,9 @@ const GOV_POSITIVE_FEEDBACK_RATIO_GUARDIAN = 0.6; // ≥60% helpful/usable feedb
 const GOV_MIN_CONFIDENCE_FOR_ADMIN        = "medium"; // minimum confidence for admin visibility
 const GOV_READINESS_BANDS_FOR_GUARDIAN     = ["useful_next_step", "mature_recommendation"];
 
+/** Maximum guardian candidates shown in governance summary */
+const GOV_MAX_GUARDIAN_CANDIDATES_IN_SUMMARY = 20;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -1484,15 +1487,17 @@ function buildBridgePackage(payload = {}) {
   const improvementContext = _deriveImprovementContext(bridgePatternKey);
 
   // ── Step 8: Governance / Policy classification ──
+  // Derive a lightweight confidence estimate from hint quality alone
+  // (no full signal object available at package level)
   const highSeverityCount = bridgeHints.filter((h) => h.severity === "high").length;
+  const medSeverityCount  = bridgeHints.filter((h) => h.severity === "medium").length;
+  let packageConfidenceBand = "low";
+  if (highSeverityCount >= 1 && bridgeHints.length >= 3) packageConfidenceBand = "high";
+  else if (medSeverityCount >= 1 || bridgeHints.length >= 2)  packageConfidenceBand = "medium";
+
   const governancePolicy = classifyGovernancePolicy({
     readinessBand:     packageReadiness.band,
-    confidenceBand:    assessSignalQuality(
-      { observedLayers: [], observedFollowups: [],
-        observedEffect: null, suspectedCause: null,
-        suggestedFollowup: null, layerReference: null },
-      bridgeHints
-    ),
+    confidenceBand:    packageConfidenceBand,
     patternKey:        bridgePatternKey,
     improvementContext,
     hintCount:         bridgeHints.length,
@@ -1630,7 +1635,7 @@ function buildBridgePackage(payload = {}) {
 
   // Step 8: Log divergence between readiness/improvement and governance
   if (
-    (packageReadiness.band === "mature_recommendation" || packageReadiness.band === "useful_next_step") &&
+    GOV_READINESS_BANDS_FOR_GUARDIAN.includes(packageReadiness.band) &&
     (governancePolicy.policyClass === "needs_more_evidence" || governancePolicy.policyClass === "shadow_only")
   ) {
     logger.info("[agentBridge] readiness ↔ governance divergence (Step 8)", {
@@ -2585,7 +2590,7 @@ function getGovernancePolicySummary() {
     patternsPerGovernance,
     readinessVsGovernance,
     confidenceVsGovernance,
-    guardianCandidates:      guardianCandidates.slice(0, 20),
+    guardianCandidates:      guardianCandidates.slice(0, GOV_MAX_GUARDIAN_CANDIDATES_IN_SUMMARY),
     generatedAt:             new Date().toISOString(),
   };
 }
