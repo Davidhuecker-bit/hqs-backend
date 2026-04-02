@@ -598,6 +598,39 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 7: Inject recommendation improvement context ──
+  if (bridgeContext && bridgeContext.improvementContext) {
+    const ic = bridgeContext.improvementContext;
+    const impParts = [];
+    if (ic.dominantFeedback) {
+      const feedbackLabels = {
+        helpful:               "Empfehlung war hilfreich",
+        usable:                "brauchbare Richtung",
+        too_early:             "zu frühes Signal",
+        unclear:               "unklare Empfehlung",
+        not_needed:            "nicht nötig",
+        followup_was_better:   "Folgeprüfung war sinnvoller",
+      };
+      impParts.push(`Bisherige Rückmeldung: ${feedbackLabels[ic.dominantFeedback] || ic.dominantFeedback}`);
+    }
+    if (ic.dominantImprovement && ic.dominantImprovement !== "none") {
+      const improvementLabels = {
+        needs_more_context:    "mehr Kontext wäre hilfreich",
+        too_generic:           "Empfehlung war zu allgemein",
+        timing_off:            "Zeitpunkt war unpassend",
+        wrong_layer:           "falsche Schicht adressiert",
+        followup_preferred:    "Folgeprüfung wäre sinnvoller gewesen",
+      };
+      impParts.push(`Verbesserungssignal: ${improvementLabels[ic.dominantImprovement] || ic.dominantImprovement}`);
+    }
+    if (ic.feedbackCount) {
+      impParts.push(`Rückmeldungen zu diesem Muster: ${ic.feedbackCount}`);
+    }
+    if (impParts.length) {
+      sections.push(`Rückkopplung aus bisherigen Empfehlungen (Verbesserungssignal, keine Bewertung):\n${impParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
@@ -751,6 +784,9 @@ async function runGeminiArchitectReview(payload = {}) {
     // Step 6: action readiness context
     bridgeActionReadiness: normalised.bridgeContext?.patternContext?.actionReadinessBand || null,
     bridgeRecommendedAction: normalised.bridgeContext?.patternContext?.recommendedActionType || null,
+    // Step 7: recommendation improvement context
+    bridgeDominantFeedback: normalised.bridgeContext?.improvementContext?.dominantFeedback || null,
+    bridgeDominantImprovement: normalised.bridgeContext?.improvementContext?.dominantImprovement || null,
   });
 
   let response;

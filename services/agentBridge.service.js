@@ -266,6 +266,63 @@ const FOLLOWUP_TO_ACTION_TYPE = {
 };
 
 /* ─────────────────────────────────────────────
+   Step 7 – Recommendation Feedback /
+   Improvement Loop Light
+   ─────────────────────────────────────────────
+   A lightweight feedback layer that lets the
+   HQS system learn which recommendations
+   proved helpful in practice, which were too
+   early, and which needed adjustment.
+
+   IMPORTANT DESIGN PRINCIPLE:
+   - Readiness = how action-ready something
+     CURRENTLY appears (Step 6)
+   - Improvement / Feedback = how well this
+     KIND of recommendation worked IN RETROSPECT
+
+   These two dimensions must not be mixed.
+   A signal can look action-ready but turn out
+   to be too early; a low-readiness signal can
+   still produce a helpful follow-up.
+
+   This is NOT an outcome engine or auto-
+   optimisation.  It is a light feedback
+   classification so the system can later
+   produce better recommendations.
+   ───────────────────────────────────────────── */
+
+/**
+ * Valid recommendation feedback categories –
+ * cooperative language describing how a recommendation
+ * turned out in retrospect.
+ */
+const VALID_RECOMMENDATION_FEEDBACK_CATEGORIES = [
+  "helpful",               // Empfehlung war hilfreich
+  "usable",                // brauchbare Richtung
+  "too_early",             // zu frühes Signal
+  "unclear",               // unklare Empfehlung
+  "not_needed",            // nicht nötig
+  "followup_was_better",   // Folgeprüfung war sinnvoller
+];
+
+/**
+ * Valid improvement signals – describes what kind of
+ * adjustment would make the recommendation better
+ * next time.
+ */
+const VALID_IMPROVEMENT_SIGNALS = [
+  "none",                  // kein Verbesserungsbedarf
+  "needs_more_context",    // mehr Kontext nötig
+  "too_generic",           // zu allgemein
+  "timing_off",            // Zeitpunkt unpassend
+  "wrong_layer",           // falsche Schicht adressiert
+  "followup_preferred",    // Folgeprüfung wäre besser gewesen
+];
+
+/** Maximum recommendation feedback entries kept in memory */
+const MAX_RECOMMENDATION_FEEDBACK_ENTRIES = 100;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -286,6 +343,20 @@ let _pendingFrontendFeedback = [];
 
 /** @type {Map<string, PatternMemoryEntry>} */
 const _patternMemory = new Map();
+
+/* ─────────────────────────────────────────────
+   Step 7: In-memory recommendation feedback
+   ─────────────────────────────────────────────
+   Stores lightweight retrospective feedback on
+   recommendations so the system can learn which
+   recommendation types and action types tend to
+   be helpful, too early, unclear, etc.
+
+   Deliberately separate from readiness (Step 6).
+   ───────────────────────────────────────────── */
+
+/** @type {Array<Object>} */
+let _recommendationFeedbackLog = [];
 
 /* ─────────────────────────────────────────────
    Input normalisation helpers
@@ -974,6 +1045,57 @@ function _assessPackageReadiness(hints, patternKey) {
 }
 
 /* ─────────────────────────────────────────────
+   Step 7: Improvement context derivation
+   ─────────────────────────────────────────────
+   Looks up whether we already have retrospective
+   feedback for a pattern and returns a compact
+   improvement context object.  This is injected
+   into the bridge package so Gemini can see
+   whether this type of recommendation has
+   historically been helpful or not.
+
+   Readiness (Step 6) stays separate – this
+   is purely about retrospective quality.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive improvement context for a given pattern key.
+ *
+ * @param {string} patternKey – the pattern key to look up
+ * @returns {Object} compact improvement context (may be empty)
+ */
+function _deriveImprovementContext(patternKey) {
+  const empty = {
+    hasFeedback:          false,
+    dominantFeedback:     null,
+    dominantImprovement:  null,
+    feedbackCount:        0,
+    needsAdjustment:      false,
+  };
+
+  if (!patternKey) return empty;
+  const entry = _patternMemory.get(patternKey);
+  if (!entry || !entry.feedbackTally || Object.keys(entry.feedbackTally).length === 0) {
+    return empty;
+  }
+
+  const dominantFeedback    = _topKey(entry.feedbackTally);
+  const dominantImprovement = _topKey(entry.improvementTally);
+  const feedbackCount       = Object.values(entry.feedbackTally).reduce((a, b) => a + b, 0);
+
+  // Determine if adjustment is likely needed
+  const needsAdjustment = ["too_early", "unclear", "not_needed"].includes(dominantFeedback);
+
+  return {
+    hasFeedback:         true,
+    dominantFeedback,
+    dominantImprovement: dominantImprovement || null,
+    feedbackCount,
+    needsAdjustment,
+  };
+}
+
+/* ─────────────────────────────────────────────
    buildBridgePackage
    ─────────────────────────────────────────────
    Main export for Backend→Frontend direction.
@@ -1036,6 +1158,9 @@ function buildBridgePackage(payload = {}) {
   // ── Step 6: Derive package-level action readiness ──
   const packageReadiness = _assessPackageReadiness(bridgeHints, bridgePatternKey);
 
+  // ── Step 7: Derive improvement context from pattern memory ──
+  const improvementContext = _deriveImprovementContext(bridgePatternKey);
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -1063,6 +1188,8 @@ function buildBridgePackage(payload = {}) {
       recommendedActionType:  packageReadiness.actionType,
       readinessReason:        packageReadiness.reason,
     },
+    // Step 7: recommendation improvement context (retrospective feedback)
+    improvementContext,
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -1128,6 +1255,18 @@ function buildBridgePackage(payload = {}) {
       actionType:      packageReadiness.actionType,
       reason:          packageReadiness.reason,
       patternKey:      bridgePatternKey,
+    });
+  }
+
+  // Step 7: Improvement context log
+  if (improvementContext.hasFeedback) {
+    logger.info("[agentBridge] improvement context available (Step 7)", {
+      patternKey:          bridgePatternKey,
+      dominantFeedback:    improvementContext.dominantFeedback,
+      dominantImprovement: improvementContext.dominantImprovement,
+      feedbackCount:       improvementContext.feedbackCount,
+      needsAdjustment:     improvementContext.needsAdjustment,
+      readinessBand:       packageReadiness.band,
     });
   }
 
@@ -1201,6 +1340,14 @@ function getCurrentBridgePackage() {
       actionReadinessBand:    "observation",
       recommendedActionType:  "observe",
       readinessReason:        "Keine Hinweise vorhanden – nur Beobachtung.",
+    },
+    // Step 7: empty improvement context (no retrospective feedback yet)
+    improvementContext: {
+      hasFeedback:          false,
+      dominantFeedback:     null,
+      dominantImprovement:  null,
+      feedbackCount:        0,
+      needsAdjustment:      false,
     },
     meta: {
       hintsTotal:   0,
@@ -1872,6 +2019,10 @@ function getPatternMemorySummary() {
       // Step 6: action readiness summary per pattern
       dominantReadiness:     _topKey(e.readinessTally),
       dominantActionType:    _topKey(e.actionTypeTally),
+      // Step 7: recommendation feedback / improvement per pattern
+      dominantFeedback:      _topKey(e.feedbackTally),
+      dominantImprovement:   _topKey(e.improvementTally),
+      hasFeedback:           !!(e.feedbackTally && Object.keys(e.feedbackTally).length > 0),
     }));
 
   return {
@@ -1964,6 +2115,270 @@ function getPendingFrontendFeedback() {
   return [..._pendingFrontendFeedback];
 }
 
+/* ─────────────────────────────────────────────
+   Step 7: Recommendation Feedback /
+   Improvement Loop Light
+   ─────────────────────────────────────────────
+   Accepts retrospective feedback on a previous
+   recommendation.  This is NOT about real-time
+   readiness (Step 6) – it is about learning
+   which kinds of recommendations worked well
+   and which did not.
+
+   The system never auto-adjusts.  It stores
+   the feedback so the HQS system can later
+   derive improvement signals and produce
+   better recommendations over time.
+   ───────────────────────────────────────────── */
+
+/**
+ * Normalise a recommendation feedback category.
+ * Falls back to "unclear" if the input is not recognised.
+ */
+function normaliseRecommendationFeedback(raw) {
+  const s = toStr(raw).toLowerCase().replace(/[\s-]+/g, "_");
+  return VALID_RECOMMENDATION_FEEDBACK_CATEGORIES.includes(s) ? s : "unclear";
+}
+
+/**
+ * Normalise an improvement signal.
+ * Falls back to "none" if the input is not recognised.
+ */
+function normaliseImprovementSignal(raw) {
+  const s = toStr(raw).toLowerCase().replace(/[\s-]+/g, "_");
+  return VALID_IMPROVEMENT_SIGNALS.includes(s) ? s : "none";
+}
+
+/**
+ * Derive an improvement signal from the feedback category
+ * when no explicit improvement signal is provided.
+ *
+ * Uses cooperative language – the system does not blame
+ * any specific model or layer.
+ */
+function deriveImprovementSignal(feedbackCategory) {
+  switch (feedbackCategory) {
+    case "too_early":           return "timing_off";
+    case "unclear":             return "too_generic";
+    case "followup_was_better": return "followup_preferred";
+    case "not_needed":          return "none";
+    case "helpful":             return "none";
+    case "usable":              return "none";
+    default:                    return "none";
+  }
+}
+
+/**
+ * Submit retrospective feedback on a recommendation.
+ *
+ * @param {Object} payload
+ * @param {string}  payload.patternKey                – pattern key of the original recommendation
+ * @param {string}  payload.recommendationFeedback    – helpful|usable|too_early|unclear|not_needed|followup_was_better
+ * @param {string}  [payload.improvementSignal]       – explicit improvement signal (optional)
+ * @param {string}  [payload.notes]                   – optional free-text note
+ * @param {string}  [payload.originalActionType]      – the recommended action type from the original signal
+ * @param {string}  [payload.originalReadinessBand]   – the readiness band from the original signal
+ * @param {string}  [payload.followupCategory]        – follow-up category if relevant
+ * @param {string}  [payload.sourceCategory]          – source category of the original signal
+ * @returns {Object} acknowledgement with derived improvement context
+ */
+function submitRecommendationFeedback(payload = {}) {
+  const patternKey = toStr(payload.patternKey);
+  const feedbackCategory = normaliseRecommendationFeedback(payload.recommendationFeedback);
+  const notes = capText(payload.notes, 500);
+
+  // Derive or normalise improvement signal
+  const explicitImprovement = payload.improvementSignal
+    ? normaliseImprovementSignal(payload.improvementSignal)
+    : null;
+  const improvementSignal = explicitImprovement || deriveImprovementSignal(feedbackCategory);
+
+  // Capture context from original recommendation (if provided)
+  const originalActionType    = toStr(payload.originalActionType) || null;
+  const originalReadinessBand = toStr(payload.originalReadinessBand) || null;
+  const followupCategory      = toStr(payload.followupCategory) || null;
+  const sourceCategory        = toStr(payload.sourceCategory) || null;
+
+  const entry = {
+    receivedAt:             new Date().toISOString(),
+    patternKey:             patternKey || null,
+    recommendationFeedback: feedbackCategory,
+    improvementSignal,
+    notes:                  notes || null,
+    originalActionType,
+    originalReadinessBand,
+    followupCategory,
+    sourceCategory,
+  };
+
+  // Store in log
+  _recommendationFeedbackLog.push(entry);
+  if (_recommendationFeedbackLog.length > MAX_RECOMMENDATION_FEEDBACK_ENTRIES) {
+    _recommendationFeedbackLog = _recommendationFeedbackLog.slice(
+      -MAX_RECOMMENDATION_FEEDBACK_ENTRIES
+    );
+  }
+
+  // ── Update pattern memory with improvement tallies ──
+  if (patternKey && _patternMemory.has(patternKey)) {
+    const patternEntry = _patternMemory.get(patternKey);
+    patternEntry.feedbackTally = patternEntry.feedbackTally || {};
+    patternEntry.feedbackTally[feedbackCategory] =
+      (patternEntry.feedbackTally[feedbackCategory] || 0) + 1;
+
+    patternEntry.improvementTally = patternEntry.improvementTally || {};
+    if (improvementSignal !== "none") {
+      patternEntry.improvementTally[improvementSignal] =
+        (patternEntry.improvementTally[improvementSignal] || 0) + 1;
+    }
+
+    _patternMemory.set(patternKey, patternEntry);
+  }
+
+  // ── Step 7: Recommendation feedback logging ──
+  logger.info("[agentBridge] recommendation feedback received (Step 7)", {
+    patternKey:             patternKey || "(kein Muster)",
+    recommendationFeedback: feedbackCategory,
+    improvementSignal,
+    originalActionType,
+    originalReadinessBand,
+    followupCategory,
+    sourceCategory,
+    hasNotes:               !!(notes && notes.length >= 5),
+  });
+
+  // Log readiness vs improvement separation for transparency
+  if (originalReadinessBand && feedbackCategory) {
+    const mismatch =
+      (originalReadinessBand === "mature_recommendation" && ["too_early", "unclear", "not_needed"].includes(feedbackCategory)) ||
+      (originalReadinessBand === "observation" && ["helpful", "usable"].includes(feedbackCategory));
+    if (mismatch) {
+      logger.info("[agentBridge] readiness ↔ improvement divergence (Step 7)", {
+        originalReadinessBand,
+        recommendationFeedback: feedbackCategory,
+        insight: originalReadinessBand === "observation"
+          ? "Beobachtungssignal war rückblickend hilfreich – Readiness war konservativ."
+          : "Reife Empfehlung war rückblickend zu früh oder unklar – Readiness war zu optimistisch.",
+      });
+    }
+  }
+
+  return {
+    accepted:               true,
+    receivedAt:             entry.receivedAt,
+    recommendationFeedback: feedbackCategory,
+    improvementSignal,
+    patternKey:             patternKey || null,
+    patternFound:           !!(patternKey && _patternMemory.has(patternKey)),
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 7: Recommendation Improvement Summary
+   ─────────────────────────────────────────────
+   Returns a lightweight overview of how
+   recommendations have performed in retrospect.
+
+   Dimensions:
+   - feedback distribution (helpful / usable / too_early / ...)
+   - improvement signal distribution
+   - recommendation types that tend to be helpful vs. too early
+   - readiness vs. improvement cross-reference
+   - follow-up categories that worked well
+
+   This is purely observational.  It does NOT
+   auto-adjust anything.
+   ───────────────────────────────────────────── */
+
+/**
+ * Build an aggregated recommendation improvement overview
+ * from the recommendation feedback log and pattern memory.
+ *
+ * @returns {Object} improvement summary
+ */
+function getRecommendationImprovementSummary() {
+  // ── Aggregate from feedback log ──
+  const feedbackDistribution = {};
+  const improvementDistribution = {};
+  const actionTypeVsFeedback = {};
+  const readinessVsFeedback = {};
+  const followupVsFeedback = {};
+  const sourceVsFeedback = {};
+
+  for (const entry of _recommendationFeedbackLog) {
+    // Feedback distribution
+    feedbackDistribution[entry.recommendationFeedback] =
+      (feedbackDistribution[entry.recommendationFeedback] || 0) + 1;
+
+    // Improvement signal distribution
+    if (entry.improvementSignal && entry.improvementSignal !== "none") {
+      improvementDistribution[entry.improvementSignal] =
+        (improvementDistribution[entry.improvementSignal] || 0) + 1;
+    }
+
+    // Action type vs. feedback cross-reference
+    if (entry.originalActionType) {
+      const atKey = `${entry.originalActionType}→${entry.recommendationFeedback}`;
+      actionTypeVsFeedback[atKey] = (actionTypeVsFeedback[atKey] || 0) + 1;
+    }
+
+    // Readiness vs. feedback cross-reference (key separation dimension)
+    if (entry.originalReadinessBand) {
+      const rvfKey = `${entry.originalReadinessBand}→${entry.recommendationFeedback}`;
+      readinessVsFeedback[rvfKey] = (readinessVsFeedback[rvfKey] || 0) + 1;
+    }
+
+    // Follow-up category vs. feedback
+    if (entry.followupCategory) {
+      const fcKey = `${entry.followupCategory}→${entry.recommendationFeedback}`;
+      followupVsFeedback[fcKey] = (followupVsFeedback[fcKey] || 0) + 1;
+    }
+
+    // Source category vs. feedback
+    if (entry.sourceCategory) {
+      const scKey = `${entry.sourceCategory}→${entry.recommendationFeedback}`;
+      sourceVsFeedback[scKey] = (sourceVsFeedback[scKey] || 0) + 1;
+    }
+  }
+
+  // ── Aggregate improvement tallies from pattern memory ──
+  const patternImprovementInsights = [];
+  for (const entry of _patternMemory.values()) {
+    if (!entry.feedbackTally || Object.keys(entry.feedbackTally).length === 0) continue;
+
+    const dominantFeedback = _topKey(entry.feedbackTally);
+    const dominantImprovement = _topKey(entry.improvementTally);
+    const totalFeedback = Object.values(entry.feedbackTally).reduce((a, b) => a + b, 0);
+
+    patternImprovementInsights.push({
+      patternKey:             entry.patternKey,
+      observationCount:       entry.count,
+      feedbackCount:          totalFeedback,
+      dominantFeedback,
+      dominantImprovement:    dominantImprovement || "none",
+      dominantReadiness:      _topKey(entry.readinessTally),
+      dominantActionType:     _topKey(entry.actionTypeTally),
+      feedbackTally:          entry.feedbackTally,
+      improvementTally:       entry.improvementTally || {},
+    });
+  }
+
+  // Sort by feedback count (most feedback first)
+  patternImprovementInsights.sort((a, b) => b.feedbackCount - a.feedbackCount);
+
+  return {
+    totalFeedbackEntries:       _recommendationFeedbackLog.length,
+    feedbackDistribution,
+    improvementDistribution,
+    actionTypeVsFeedback,
+    readinessVsFeedback,
+    followupVsFeedback,
+    sourceVsFeedback,
+    patternImprovementInsights: patternImprovementInsights.slice(0, 30),
+    generatedAt:                new Date().toISOString(),
+  };
+}
+
 module.exports = {
   buildBridgePackage,
   getCurrentBridgePackage,
@@ -1971,6 +2386,9 @@ module.exports = {
   getPendingFrontendFeedback,
   getPatternMemorySummary,
   getActionReadinessSummary,
+  // Step 7: Recommendation Feedback / Improvement Loop Light
+  submitRecommendationFeedback,
+  getRecommendationImprovementSummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -1982,4 +2400,6 @@ module.exports = {
   VALID_CONFIDENCE_BANDS,
   VALID_ACTION_READINESS_BANDS,
   VALID_RECOMMENDED_ACTION_TYPES,
+  VALID_RECOMMENDATION_FEEDBACK_CATEGORIES,
+  VALID_IMPROVEMENT_SIGNALS,
 };

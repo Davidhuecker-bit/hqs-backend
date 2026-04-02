@@ -4108,6 +4108,9 @@ const {
   getPendingFrontendFeedback,
   getPatternMemorySummary,
   getActionReadinessSummary,
+  // Step 7: Recommendation Feedback / Improvement Loop Light
+  submitRecommendationFeedback,
+  getRecommendationImprovementSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4579,6 +4582,107 @@ router.get("/deepseek/agent-bridge/action-readiness", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading action readiness summary",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/recommendation-feedback
+   Step 7: Recommendation Feedback / Improvement Loop Light –
+   accepts retrospective feedback on a recommendation so the
+   HQS system can learn which recommendation types proved
+   helpful, too early, unclear, etc.
+
+   Readiness (Step 6) and improvement feedback (Step 7) are
+   deliberately separate:
+   - Readiness = how action-ready something currently looks
+   - Feedback  = how well this kind of recommendation worked
+                  in retrospect
+
+   Body:
+     {
+       "patternKey":              "guard:backend_schema:schema_followup:frontend_guard",
+       "recommendationFeedback":  "helpful|usable|too_early|unclear|not_needed|followup_was_better",
+       "improvementSignal":       "none|needs_more_context|too_generic|timing_off|wrong_layer|followup_preferred",
+       "notes":                   "optional free-text",
+       "originalActionType":      "check_binding",
+       "originalReadinessBand":   "useful_next_step",
+       "followupCategory":        "schema_followup",
+       "sourceCategory":          "guard"
+     }
+
+   Response:
+     {
+       "success":                  true,
+       "version":                  "v1",
+       "accepted":                 true,
+       "recommendationFeedback":   "helpful",
+       "improvementSignal":        "none",
+       "patternKey":               "...",
+       "patternFound":             true
+     }
+========================================================= */
+router.post("/deepseek/agent-bridge/recommendation-feedback", (req, res) => {
+  try {
+    const ack = submitRecommendationFeedback(req.body || {});
+    return res.json({ success: true, version: "v1", ...ack });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/recommendation-feedback error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error processing recommendation feedback",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/recommendation-improvement
+   Step 7: Recommendation Improvement Summary – returns a
+   lightweight overview of how recommendations performed in
+   retrospect.  Shows feedback distribution, improvement
+   signals, and cross-references between readiness and
+   actual outcome.
+
+   Helps the HQS system understand:
+   - which recommendation types tend to be helpful
+   - which are often too early or unclear
+   - how readiness relates to actual outcome
+   - which follow-up types produce better results
+
+   Purely observational – no auto-adjustment.
+
+   Response:
+     {
+       "success":                      true,
+       "version":                      "v1",
+       "recommendationImprovement": {
+         "totalFeedbackEntries":        12,
+         "feedbackDistribution":        { "helpful": 5, "too_early": 3, ... },
+         "improvementDistribution":     { "timing_off": 3, ... },
+         "actionTypeVsFeedback":        { "check_binding→helpful": 2, ... },
+         "readinessVsFeedback":         { "useful_next_step→helpful": 3, ... },
+         "followupVsFeedback":          { "schema_followup→helpful": 2, ... },
+         "sourceVsFeedback":            { "guard→helpful": 2, ... },
+         "patternImprovementInsights":  [ ... ],
+         "generatedAt":                 "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/recommendation-improvement", (_req, res) => {
+  try {
+    const summary = getRecommendationImprovementSummary();
+    return res.json({ success: true, version: "v1", recommendationImprovement: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/recommendation-improvement error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading recommendation improvement summary",
     });
   }
 });
