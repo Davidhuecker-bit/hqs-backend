@@ -177,6 +177,9 @@ const MAX_BRIDGE_HINTS = 15;
 /** Maximum pending frontend feedback entries kept in memory */
 const MAX_PENDING_FEEDBACK = 50;
 
+/** Maximum follow-up / layer items per focus object */
+const MAX_FOCUS_ITEMS = 6;
+
 /** Max characters of title used for dedup key */
 const DEDUP_TITLE_MAX_LENGTH = 80;
 
@@ -432,8 +435,8 @@ function deriveInspectionFocus(hints) {
     affectedComponents:     [...components].slice(0, MAX_ARRAY_ITEMS),
     affectedFields:         [...fields].slice(0, MAX_ARRAY_ITEMS),
     needsFollowup,
-    suggestedFollowupTypes: [...followupTypes].slice(0, 6),
-    likelyAffectedLayers:   [...layers].slice(0, 6),
+    suggestedFollowupTypes: [...followupTypes].slice(0, MAX_FOCUS_ITEMS),
+    likelyAffectedLayers:   [...layers].slice(0, MAX_FOCUS_ITEMS),
   };
 }
 
@@ -497,7 +500,7 @@ function buildBridgeHint(raw = {}) {
     impactScope:              capText(raw.impactScope, 200) || null,
     likelyAffectedLayer:      normaliseLikelyLayer(raw.likelyAffectedLayer, type),
     suggestedFollowupType:    normaliseSuggestedFollowup(raw.suggestedFollowupType, type),
-    likelyAffectedArtifacts:  normaliseArrayField(raw.likelyAffectedArtifacts, 8),
+    likelyAffectedArtifacts:  normaliseArrayField(raw.likelyAffectedArtifacts),
     changeImpactSummary:      capText(raw.changeImpactSummary, 400) || null,
   };
   return applySeverityGuard(hint);
@@ -798,8 +801,8 @@ function deriveImpactTranslation(hints) {
 
   return {
     impactSummary:           summaryParts.join(" ") || "Mögliche Auswirkungen erkannt – Folgeprüfung empfohlen.",
-    likelyAffectedLayers:    layerList.slice(0, 6),
-    suggestedFollowupTypes:  followupList.slice(0, 6),
+    likelyAffectedLayers:    layerList.slice(0, MAX_FOCUS_ITEMS),
+    suggestedFollowupTypes:  followupList.slice(0, MAX_FOCUS_ITEMS),
     affectedArtifactHints:   [...artifacts].slice(0, MAX_ARRAY_ITEMS),
     impactKind:              bestKind,
   };
@@ -1185,8 +1188,8 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     suggestedFollowup:    explicit.suggestedFollowup || null,
     layerReference:       explicit.layerReference || null,
     likelyCauseLayer,
-    observedLayers:       [...observedLayers].slice(0, 6),
-    observedFollowups:    [...observedFollowups].slice(0, 6),
+    observedLayers:       [...observedLayers].slice(0, MAX_FOCUS_ITEMS),
+    observedFollowups:    [...observedFollowups].slice(0, MAX_FOCUS_ITEMS),
     followupNeed,
     feedbackCategory,
   };
