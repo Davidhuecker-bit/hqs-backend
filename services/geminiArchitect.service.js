@@ -530,11 +530,39 @@ function buildUserPrompt(normalised) {
       if (focus.affectedFields && focus.affectedFields.length) {
         wfParts.push(`Betroffene Felder: ${focus.affectedFields.join(", ")}`);
       }
+      // Step 3: include suggested follow-up types and affected layers
+      if (focus.suggestedFollowupTypes && focus.suggestedFollowupTypes.length) {
+        wfParts.push(`Empfohlene Folgeprüfungen: ${focus.suggestedFollowupTypes.map(f => f.replace(/_/g, " ")).join(", ")}`);
+      }
+      if (focus.likelyAffectedLayers && focus.likelyAffectedLayers.length) {
+        wfParts.push(`Wahrscheinlich betroffene Schichten: ${focus.likelyAffectedLayers.map(l => l.replace(/_/g, " ")).join(", ")}`);
+      }
     }
     if (wf.sourceAgent) wfParts.push(`Quelle: ${wf.sourceAgent}`);
     if (wf.sourceMode) wfParts.push(`Quell-Modus: ${wf.sourceMode}`);
     if (wfParts.length) {
       sections.push(`Workflow-Kontext (automatisch abgeleitet):\n${wfParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
+  // ── Step 3: Inject impact translation context ──
+  if (bridgeContext && bridgeContext.impactTranslation) {
+    const it = bridgeContext.impactTranslation;
+    const itParts = [];
+    if (it.impactSummary && it.impactKind !== "none") {
+      itParts.push(`Wirkungszusammenfassung: ${it.impactSummary}`);
+    }
+    if (it.impactKind && it.impactKind !== "none") {
+      itParts.push(`Art der Auswirkung: ${it.impactKind.replace(/_/g, " ")}`);
+    }
+    if (it.likelyAffectedLayers && it.likelyAffectedLayers.length) {
+      itParts.push(`Wahrscheinlich betroffene Schichten: ${it.likelyAffectedLayers.map(l => l.replace(/_/g, " ")).join(", ")}`);
+    }
+    if (it.affectedArtifactHints && it.affectedArtifactHints.length) {
+      itParts.push(`Möglicherweise betroffene Artefakte: ${it.affectedArtifactHints.join(", ")}`);
+    }
+    if (itParts.length) {
+      sections.push(`Kooperative Wirkungseinschätzung (Backend → Frontend):\n${itParts.map((p) => `- ${p}`).join("\n")}`);
     }
   }
 
@@ -686,6 +714,8 @@ async function runGeminiArchitectReview(payload = {}) {
     bridgeReviewIntent: normalised.bridgeContext?.workflow?.reviewIntent || null,
     bridgeRecommendedMode: normalised.bridgeContext?.workflow?.recommendedGeminiMode || null,
     bridgeInspectionCategory: normalised.bridgeContext?.workflow?.inspectionFocus?.category || null,
+    bridgeImpactKind: normalised.bridgeContext?.impactTranslation?.impactKind || null,
+    bridgeSuggestedFollowups: normalised.bridgeContext?.impactTranslation?.suggestedFollowupTypes || [],
   });
 
   let response;
@@ -750,13 +780,14 @@ async function runGeminiArchitectReview(payload = {}) {
   const normalisedResult = normaliseResult(parsed);
   const result = applySeverityGuard(normalisedResult, normalised.mode);
 
-  logger.info("[geminiArchitect] review complete", {
+  logger.info("[geminiArchitect] review complete (cause → effect → follow-up)", {
     mode: normalised.mode,
     severity: result.severity,
     uiFindingsCount: result.uiFindings.length,
     guardNotesCount: result.frontendGuardNotes.length,
     parseMethod,
     bridgeReviewIntent: normalised.bridgeContext?.workflow?.reviewIntent || null,
+    bridgeImpactKind: normalised.bridgeContext?.impactTranslation?.impactKind || null,
     workflowStage: "gemini_complete",
   });
 
