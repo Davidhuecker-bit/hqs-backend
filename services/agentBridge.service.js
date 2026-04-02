@@ -53,6 +53,72 @@ const VALID_FEEDBACK_CATEGORIES = [
   "general",
 ];
 
+/* ─────────────────────────────────────────────
+   Step 3 – Cooperative change / workflow /
+   learning layer constants
+   ─────────────────────────────────────────────
+   These extend the bridge with impact-context,
+   follow-up categories and learning-signal
+   structure so that DeepSeek and Gemini can
+   cooperate more effectively.
+   ───────────────────────────────────────────── */
+
+/** Suggested follow-up action types (cooperative, not prescriptive) */
+const VALID_FOLLOWUP_TYPES = [
+  "review_followup",
+  "ui_adjustment_followup",
+  "binding_followup",
+  "schema_followup",
+  "priority_followup",
+  "presentation_followup",
+  "none",
+];
+
+/** Layer labels for impact scope */
+const VALID_IMPACT_LAYERS = [
+  "backend_logic",
+  "backend_schema",
+  "api_contract",
+  "frontend_binding",
+  "frontend_layout",
+  "frontend_presentation",
+  "frontend_priority",
+  "cross_layer",
+];
+
+/** Maps hint types → most likely affected frontend layer */
+const HINT_TYPE_TO_AFFECTED_LAYER = {
+  schema_risk:       "frontend_binding",
+  binding_risk:      "frontend_binding",
+  field_risk:        "frontend_binding",
+  contract_warning:  "api_contract",
+  ui_impact:         "frontend_presentation",
+  staleness:         "frontend_layout",
+  change_guard:      "backend_logic",
+  review:            "cross_layer",
+};
+
+/** Maps hint types → suggested follow-up type */
+const HINT_TYPE_TO_FOLLOWUP = {
+  schema_risk:       "schema_followup",
+  binding_risk:      "binding_followup",
+  field_risk:        "binding_followup",
+  contract_warning:  "schema_followup",
+  ui_impact:         "presentation_followup",
+  staleness:         "ui_adjustment_followup",
+  change_guard:      "review_followup",
+  review:            "review_followup",
+};
+
+/** Maps feedback categories → likely backend cause area */
+const FEEDBACK_TO_LIKELY_CAUSE = {
+  guard:         "backend_schema",
+  layout:        "backend_logic",
+  priority:      "backend_logic",
+  presentation:  "frontend_presentation",
+  general:       "cross_layer",
+};
+
 /**
  * Maps hint types → recommended Gemini mode.
  * Used as primary signal; severity and keyword analysis refine the choice.
@@ -317,15 +383,21 @@ function classifyCategoryByHintTypes(hints) {
  * Derive a structured inspection focus object from the hint set.
  * Summarises which areas/views/components are affected and what
  * kind of inspection the Gemini side should prioritise.
+ *
+ * Step 3: Adds suggestedFollowupTypes and likelyAffectedLayers
+ * so Gemini gets cooperative guidance on what kind of follow-up
+ * and which layers are probably involved.
  */
 function deriveInspectionFocus(hints) {
   if (!hints || !hints.length) {
     return {
-      category:            "general",
-      affectedViews:       [],
-      affectedComponents:  [],
-      affectedFields:      [],
-      needsFollowup:       false,
+      category:                "general",
+      affectedViews:           [],
+      affectedComponents:      [],
+      affectedFields:          [],
+      needsFollowup:           false,
+      suggestedFollowupTypes:  [],
+      likelyAffectedLayers:    [],
     };
   }
 
@@ -333,6 +405,8 @@ function deriveInspectionFocus(hints) {
   const views      = new Set();
   const components = new Set();
   const fields     = new Set();
+  const followupTypes = new Set();
+  const layers        = new Set();
   let needsFollowup = false;
 
   for (const h of hints) {
@@ -341,16 +415,25 @@ function deriveInspectionFocus(hints) {
     for (const imp of h.frontendImpact || [])  fields.add(imp);
     if ((h.backendFollowups || []).length > 0)  needsFollowup = true;
     if (h.severity === "high")                  needsFollowup = true;
+    // Step 3: collect follow-up types and layers from hints
+    if (h.suggestedFollowupType && h.suggestedFollowupType !== "none") {
+      followupTypes.add(h.suggestedFollowupType);
+    }
+    if (h.likelyAffectedLayer) {
+      layers.add(h.likelyAffectedLayer);
+    }
   }
 
   const category = classifyCategoryByHintTypes(hints);
 
   return {
     category,
-    affectedViews:      [...views].slice(0, MAX_ARRAY_ITEMS),
-    affectedComponents: [...components].slice(0, MAX_ARRAY_ITEMS),
-    affectedFields:     [...fields].slice(0, MAX_ARRAY_ITEMS),
+    affectedViews:          [...views].slice(0, MAX_ARRAY_ITEMS),
+    affectedComponents:     [...components].slice(0, MAX_ARRAY_ITEMS),
+    affectedFields:         [...fields].slice(0, MAX_ARRAY_ITEMS),
     needsFollowup,
+    suggestedFollowupTypes: [...followupTypes].slice(0, 6),
+    likelyAffectedLayers:   [...layers].slice(0, 6),
   };
 }
 
@@ -398,8 +481,9 @@ function classifyFeedbackCategory(hints, notes) {
    ───────────────────────────────────────────── */
 
 function buildBridgeHint(raw = {}) {
+  const type = normaliseHintType(raw.type);
   const hint = {
-    type:               normaliseHintType(raw.type),
+    type,
     source:             toStr(raw.source) || ACTIVE_BACKEND_AGENT,
     title:              capText(raw.title, 200),
     summary:            capText(raw.summary, 600),
@@ -409,8 +493,28 @@ function buildBridgeHint(raw = {}) {
     frontendImpact:     normaliseArrayField(raw.frontendImpact),
     backendFollowups:   normaliseArrayField(raw.backendFollowups),
     recommendedActions: normaliseArrayField(raw.recommendedActions),
+    // ── Step 3: Impact context (cooperative, not prescriptive) ──
+    impactScope:              capText(raw.impactScope, 200) || null,
+    likelyAffectedLayer:      normaliseLikelyLayer(raw.likelyAffectedLayer, type),
+    suggestedFollowupType:    normaliseSuggestedFollowup(raw.suggestedFollowupType, type),
+    likelyAffectedArtifacts:  normaliseArrayField(raw.likelyAffectedArtifacts, 8),
+    changeImpactSummary:      capText(raw.changeImpactSummary, 400) || null,
   };
   return applySeverityGuard(hint);
+}
+
+/** Normalise likelyAffectedLayer – fall back to type-based mapping */
+function normaliseLikelyLayer(raw, hintType) {
+  const s = toStr(raw).toLowerCase().replace(/[\s-]+/g, "_");
+  if (VALID_IMPACT_LAYERS.includes(s)) return s;
+  return HINT_TYPE_TO_AFFECTED_LAYER[hintType] || "cross_layer";
+}
+
+/** Normalise suggestedFollowupType – fall back to type-based mapping */
+function normaliseSuggestedFollowup(raw, hintType) {
+  const s = toStr(raw).toLowerCase().replace(/[\s-]+/g, "_");
+  if (VALID_FOLLOWUP_TYPES.includes(s)) return s;
+  return HINT_TYPE_TO_FOLLOWUP[hintType] || "review_followup";
 }
 
 /* ─────────────────────────────────────────────
@@ -626,6 +730,82 @@ function normaliseBackendState(payload = {}) {
 }
 
 /* ─────────────────────────────────────────────
+   Step 3: Impact translation helper
+   ─────────────────────────────────────────────
+   Translates the hint set into a cooperative
+   Backend→Frontend impact summary so that
+   Gemini / the frontend understands not just
+   "there is a problem" but rather "this kind
+   of problem probably affects this frontend
+   layer and this kind of follow-up check".
+   ───────────────────────────────────────────── */
+
+function deriveImpactTranslation(hints) {
+  if (!hints || !hints.length) {
+    return {
+      impactSummary:           "Keine Auffälligkeiten erkannt.",
+      likelyAffectedLayers:    [],
+      suggestedFollowupTypes:  [],
+      affectedArtifactHints:   [],
+      impactKind:              "none",
+    };
+  }
+
+  const layers    = new Set();
+  const followups = new Set();
+  const artifacts = new Set();
+  const kindVotes = {};
+
+  for (const h of hints) {
+    if (h.likelyAffectedLayer) layers.add(h.likelyAffectedLayer);
+    if (h.suggestedFollowupType && h.suggestedFollowupType !== "none") {
+      followups.add(h.suggestedFollowupType);
+    }
+    for (const a of h.likelyAffectedArtifacts || []) artifacts.add(a);
+
+    // Determine what kind of impact this is
+    const kind = h.likelyAffectedLayer && h.likelyAffectedLayer.startsWith("frontend_")
+      ? h.likelyAffectedLayer.replace("frontend_", "")
+      : h.likelyAffectedLayer || "general";
+    kindVotes[kind] = (kindVotes[kind] || 0) + (SEVERITY_WEIGHT[h.severity] || 1);
+  }
+
+  // Pick the dominant impact kind
+  let bestKind = "general";
+  let bestKindScore = 0;
+  for (const [kind, score] of Object.entries(kindVotes)) {
+    if (score > bestKindScore) {
+      bestKind = kind;
+      bestKindScore = score;
+    }
+  }
+
+  // Build a cooperative summary sentence
+  const layerList = [...layers];
+  const followupList = [...followups];
+  const summaryParts = [];
+
+  if (layerList.length) {
+    summaryParts.push(
+      `Wahrscheinlich betroffene Schichten: ${layerList.join(", ")}.`
+    );
+  }
+  if (followupList.length) {
+    summaryParts.push(
+      `Empfohlene Folgeprüfungen: ${followupList.map(f => f.replace(/_/g, " ")).join(", ")}.`
+    );
+  }
+
+  return {
+    impactSummary:           summaryParts.join(" ") || "Mögliche Auswirkungen erkannt – Folgeprüfung empfohlen.",
+    likelyAffectedLayers:    layerList.slice(0, 6),
+    suggestedFollowupTypes:  followupList.slice(0, 6),
+    affectedArtifactHints:   [...artifacts].slice(0, MAX_ARRAY_ITEMS),
+    impactKind:              bestKind,
+  };
+}
+
+/* ─────────────────────────────────────────────
    buildBridgePackage
    ─────────────────────────────────────────────
    Main export for Backend→Frontend direction.
@@ -637,6 +817,10 @@ function normaliseBackendState(payload = {}) {
    (reviewIntent, recommendedGeminiMode,
    inspectionFocus, workflowStage) so the
    DeepSeek→Bridge→Gemini chain is coordinated.
+
+   Step 3: Adds impactTranslation for cooperative
+   Backend→Frontend effect translation so Gemini
+   understands probable effects and follow-ups.
 
    @param {Object} payload
    @param {string}  [payload.lastKnownArea]    – e.g. "hqs_assessment"
@@ -669,6 +853,9 @@ function buildBridgePackage(payload = {}) {
   const reviewIntent          = deriveReviewIntent(bridgeHints);
   const inspectionFocus       = deriveInspectionFocus(bridgeHints);
 
+  // ── Step 3: Cooperative impact translation ──
+  const impactTranslation = deriveImpactTranslation(bridgeHints);
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -682,6 +869,8 @@ function buildBridgePackage(payload = {}) {
       inspectionFocus,
       workflowStage:        "bridge_ready",
     },
+    // Step 3: impact translation (cooperative Backend→Frontend effect summary)
+    impactTranslation,
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -692,15 +881,23 @@ function buildBridgePackage(payload = {}) {
 
   _currentBridgePackage = pkg;
 
-  // ── Workflow-oriented logging ──
+  // ── Step 3: Cause → Effect → Follow-up logging ──
   const hintTypes = {};
   const severityCounts = { high: 0, medium: 0, low: 0 };
+  const layerCounts = {};
+  const followupCounts = {};
   for (const h of bridgeHints) {
     hintTypes[h.type] = (hintTypes[h.type] || 0) + 1;
     severityCounts[h.severity] = (severityCounts[h.severity] || 0) + 1;
+    if (h.likelyAffectedLayer) {
+      layerCounts[h.likelyAffectedLayer] = (layerCounts[h.likelyAffectedLayer] || 0) + 1;
+    }
+    if (h.suggestedFollowupType && h.suggestedFollowupType !== "none") {
+      followupCounts[h.suggestedFollowupType] = (followupCounts[h.suggestedFollowupType] || 0) + 1;
+    }
   }
 
-  logger.info("[agentBridge] bridge package built", {
+  logger.info("[agentBridge] bridge package built (cause)", {
     hintsTotal:     rawHints.length,
     hintsKept:      bridgeHints.length,
     hintsDroppedWeak:      dropped.weak,
@@ -708,20 +905,29 @@ function buildBridgePackage(payload = {}) {
     hintTypes,
     severityCounts,
     lastKnownArea:  backendState.lastKnownArea,
-    lastKnownMode:  backendState.lastKnownMode,
     sourceMode,
     isEmpty:        bridgeHints.length === 0,
   });
 
-  logger.info("[agentBridge] workflow orchestration", {
+  logger.info("[agentBridge] workflow orchestration (effect)", {
     reviewIntent,
     recommendedGeminiMode,
     inspectionCategory:   inspectionFocus.category,
     needsFollowup:        inspectionFocus.needsFollowup,
     affectedViewsCount:   inspectionFocus.affectedViews.length,
     affectedFieldsCount:  inspectionFocus.affectedFields.length,
+    likelyAffectedLayers: layerCounts,
+    impactKind:           impactTranslation.impactKind,
     workflowStage:        "bridge_ready",
   });
+
+  if (Object.keys(followupCounts).length > 0) {
+    logger.info("[agentBridge] suggested follow-ups (next steps)", {
+      followupTypes:          followupCounts,
+      suggestedFollowupTypes: impactTranslation.suggestedFollowupTypes,
+      impactSummary:          impactTranslation.impactSummary,
+    });
+  }
 
   if (bridgeHints.length === 0 && rawHints.length > 0) {
     logger.warn("[agentBridge] all hints were filtered – bridge package is empty", {
@@ -758,13 +964,22 @@ function getCurrentBridgePackage() {
       reviewIntent:         "general_review",
       recommendedGeminiMode: "layout_review",
       inspectionFocus: {
-        category:            "general",
-        affectedViews:       [],
-        affectedComponents:  [],
-        affectedFields:      [],
-        needsFollowup:       false,
+        category:                "general",
+        affectedViews:           [],
+        affectedComponents:      [],
+        affectedFields:          [],
+        needsFollowup:           false,
+        suggestedFollowupTypes:  [],
+        likelyAffectedLayers:    [],
       },
       workflowStage:        "idle",
+    },
+    impactTranslation: {
+      impactSummary:           "Keine Auffälligkeiten erkannt.",
+      likelyAffectedLayers:    [],
+      suggestedFollowupTypes:  [],
+      affectedArtifactHints:   [],
+      impactKind:              "none",
     },
     meta: {
       hintsTotal:   0,
@@ -798,11 +1013,21 @@ function isFeedbackHintUsable(hint) {
    Step 2: Defensive normalisation, quality
    filtering, and better logging.
 
+   Step 3: Adds learningSignal structure so that
+   incoming feedback is prepared as a cooperative
+   learning signal (suspected cause, observed
+   effect, suggested follow-up) rather than just
+   "feedback stored".
+
    @param {Object} payload
    @param {string}  [payload.source]      – e.g. "gemini_frontend"
    @param {string}  [payload.area]        – frontend area that generated this
    @param {Array}   [payload.hints]       – array of frontend hint objects
    @param {string}  [payload.notes]       – optional plain-text note
+   @param {string}  [payload.observedEffect]     – Step 3: what was observed
+   @param {string}  [payload.suspectedCause]     – Step 3: suspected backend cause
+   @param {string}  [payload.suggestedFollowup]  – Step 3: proposed next action
+   @param {string}  [payload.layerReference]     – Step 3: which layer (frontend/backend/cross)
    @returns {Object} acknowledgement
    ───────────────────────────────────────────── */
 function receiveFrontendFeedback(payload = {}) {
@@ -830,6 +1055,18 @@ function receiveFrontendFeedback(payload = {}) {
     ["guard"].includes(feedbackCategory) ||
     usable.some((h) => (h.backendFollowups || []).length > 0);
 
+  // ── Step 3: Learning signal (cooperative cause→effect→follow-up) ──
+  const learningSignal = buildLearningSignal(
+    feedbackCategory,
+    usable,
+    {
+      observedEffect:    capText(payload.observedEffect, 300),
+      suspectedCause:    capText(payload.suspectedCause, 300),
+      suggestedFollowup: capText(payload.suggestedFollowup, 300),
+      layerReference:    capText(payload.layerReference, 100),
+    }
+  );
+
   const entry = {
     receivedAt: new Date().toISOString(),
     source,
@@ -838,6 +1075,7 @@ function receiveFrontendFeedback(payload = {}) {
     hints:  usable,
     feedbackCategory,
     needsFollowup,
+    learningSignal,
   };
 
   // Only store entries that carry real information
@@ -851,19 +1089,29 @@ function receiveFrontendFeedback(payload = {}) {
     }
   }
 
-  // ── Workflow-oriented logging ──
-  logger.info("[agentBridge] frontend feedback received", {
+  // ── Step 3: Cause → Effect → Follow-up logging ──
+  logger.info("[agentBridge] frontend feedback received (observed effect)", {
     source,
     area,
-    rawHintsCount:  rawHints.length,
-    usableHints:    usable.length,
-    droppedHints:   droppedCount,
-    hasNotes:       !!(notes && notes.length >= 10),
-    stored:         hasValue,
+    rawHintsCount:      rawHints.length,
+    usableHints:        usable.length,
+    droppedHints:       droppedCount,
+    hasNotes:           !!(notes && notes.length >= 10),
+    stored:             hasValue,
     feedbackCategory,
     needsFollowup,
-    workflowStage:  "feedback_received",
+    observedEffect:     learningSignal.observedEffect || null,
+    workflowStage:      "feedback_received",
   });
+
+  if (learningSignal.suspectedCause || learningSignal.suggestedFollowup) {
+    logger.info("[agentBridge] learning signal prepared (cause → follow-up)", {
+      suspectedCause:      learningSignal.suspectedCause || null,
+      likelyCauseLayer:    learningSignal.likelyCauseLayer,
+      suggestedFollowup:   learningSignal.suggestedFollowup || null,
+      followupNeed:        learningSignal.followupNeed,
+    });
+  }
 
   if (droppedCount > 0) {
     logger.info("[agentBridge] frontend hints filtered", {
@@ -877,6 +1125,7 @@ function receiveFrontendFeedback(payload = {}) {
       feedbackCategory,
       highSeverityHints: usable.filter((h) => h.severity === "high").length,
       source,
+      followupNeed: learningSignal.followupNeed,
     });
   }
 
@@ -889,6 +1138,57 @@ function receiveFrontendFeedback(payload = {}) {
     receivedAt:        entry.receivedAt,
     feedbackCategory,
     needsFollowup,
+    learningSignal,
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 3: Learning signal builder
+   ─────────────────────────────────────────────
+   Builds a cooperative learning signal from
+   feedback classification and optional explicit
+   cause/effect/follow-up hints provided by
+   the caller.
+
+   This prepares the structure so the system
+   can later learn which backend findings
+   typically cause which frontend problems.
+   ───────────────────────────────────────────── */
+
+function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
+  // Determine likely cause layer from feedback category
+  const likelyCauseLayer = FEEDBACK_TO_LIKELY_CAUSE[feedbackCategory] || "cross_layer";
+
+  // Derive observed layers from hints
+  const observedLayers = new Set();
+  const observedFollowups = new Set();
+  for (const h of hints) {
+    if (h.likelyAffectedLayer) observedLayers.add(h.likelyAffectedLayer);
+    if (h.suggestedFollowupType && h.suggestedFollowupType !== "none") {
+      observedFollowups.add(h.suggestedFollowupType);
+    }
+  }
+
+  // Determine follow-up need level
+  let followupNeed = "none";
+  if (hints.some((h) => h.severity === "high")) {
+    followupNeed = "high";
+  } else if (hints.some((h) => h.severity === "medium")) {
+    followupNeed = "moderate";
+  } else if (hints.length > 0) {
+    followupNeed = "low";
+  }
+
+  return {
+    observedEffect:       explicit.observedEffect || null,
+    suspectedCause:       explicit.suspectedCause || null,
+    suggestedFollowup:    explicit.suggestedFollowup || null,
+    layerReference:       explicit.layerReference || null,
+    likelyCauseLayer,
+    observedLayers:       [...observedLayers].slice(0, 6),
+    observedFollowups:    [...observedFollowups].slice(0, 6),
+    followupNeed,
+    feedbackCategory,
   };
 }
 
@@ -912,4 +1212,6 @@ module.exports = {
   VALID_GEMINI_MODES,
   VALID_REVIEW_INTENTS,
   VALID_FEEDBACK_CATEGORIES,
+  VALID_FOLLOWUP_TYPES,
+  VALID_IMPACT_LAYERS,
 };
