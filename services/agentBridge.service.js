@@ -389,6 +389,175 @@ const GOV_READINESS_BANDS_FOR_GUARDIAN     = ["useful_next_step", "mature_recomm
 const GOV_MAX_GUARDIAN_CANDIDATES_IN_SUMMARY = 20;
 
 /* ─────────────────────────────────────────────
+   Step 10 – Issue Intelligence / Error Detection Light
+   ─────────────────────────────────────────────
+   Adds a lightweight issue-detection layer so the
+   HQS system can structure technical
+   Auffälligkeiten as Issues without changing the
+   existing governance / routing / readiness model.
+
+   IMPORTANT DESIGN PRINCIPLES:
+   - Issue Intelligence = what likely looks wrong
+     or inconsistent on a technical / structural /
+     operational level
+   - Governance        = visibility / release /
+     promotion classification
+   - Routing / Surface = where a recommendation
+     may later be shown or reviewed
+
+   These dimensions stay deliberately separate.
+   ───────────────────────────────────────────── */
+
+const VALID_ISSUE_TYPES = [
+  "consistency_issue",
+  "service_issue",
+  "freshness_issue",
+  "data_issue",
+  "configuration_issue",
+  "unknown_issue_type",
+];
+
+const VALID_ISSUE_CATEGORIES = [
+  "frontend_binding_issue",
+  "frontend_structure_issue",
+  "backend_service_issue",
+  "mapping_schema_issue",
+  "pipeline_staleness_issue",
+  "db_completeness_issue",
+  "config_threshold_issue",
+  "unknown_issue",
+];
+
+const VALID_ISSUE_LAYERS = [
+  "frontend",
+  "backend",
+  "binding",
+  "mapping",
+  "pipeline",
+  "database",
+  "ops",
+  "config",
+  "unknown",
+];
+
+const VALID_ISSUE_SEVERITY_LEVELS = ["low", "medium", "high"];
+
+const VALID_ISSUE_CAUSES = [
+  "frontend_binding_mismatch",
+  "frontend_structure_inconsistency",
+  "backend_service_dependency",
+  "schema_mapping_drift",
+  "pipeline_freshness_gap",
+  "database_completeness_gap",
+  "config_threshold_misalignment",
+  "unknown_cause",
+];
+
+const VALID_ISSUE_SUGGESTED_FIXES = [
+  "check_binding_fields",
+  "review_frontend_structure",
+  "check_service_route_dependency",
+  "review_schema_mapping",
+  "check_pipeline_freshness",
+  "check_table_completeness",
+  "check_config_thresholds",
+  "run_followup_review",
+];
+
+const ISSUE_LABELS = {
+  frontend_binding_issue: {
+    issueType: "consistency_issue",
+    affectedLayer: "binding",
+    suspectedCause: "frontend_binding_mismatch",
+    suggestedFix: "check_binding_fields",
+  },
+  frontend_structure_issue: {
+    issueType: "consistency_issue",
+    affectedLayer: "frontend",
+    suspectedCause: "frontend_structure_inconsistency",
+    suggestedFix: "review_frontend_structure",
+  },
+  backend_service_issue: {
+    issueType: "service_issue",
+    affectedLayer: "backend",
+    suspectedCause: "backend_service_dependency",
+    suggestedFix: "check_service_route_dependency",
+  },
+  mapping_schema_issue: {
+    issueType: "consistency_issue",
+    affectedLayer: "mapping",
+    suspectedCause: "schema_mapping_drift",
+    suggestedFix: "review_schema_mapping",
+  },
+  pipeline_staleness_issue: {
+    issueType: "freshness_issue",
+    affectedLayer: "pipeline",
+    suspectedCause: "pipeline_freshness_gap",
+    suggestedFix: "check_pipeline_freshness",
+  },
+  db_completeness_issue: {
+    issueType: "data_issue",
+    affectedLayer: "database",
+    suspectedCause: "database_completeness_gap",
+    suggestedFix: "check_table_completeness",
+  },
+  config_threshold_issue: {
+    issueType: "configuration_issue",
+    affectedLayer: "config",
+    suspectedCause: "config_threshold_misalignment",
+    suggestedFix: "check_config_thresholds",
+  },
+  unknown_issue: {
+    issueType: "unknown_issue_type",
+    affectedLayer: "unknown",
+    suspectedCause: "unknown_cause",
+    suggestedFix: "run_followup_review",
+  },
+};
+
+const ISSUE_KEYWORD_RULES = [
+  {
+    category: "config_threshold_issue",
+    keywords: ["config", "konfig", "threshold", "schwelle", "variable", "env", "limit"],
+  },
+  {
+    category: "db_completeness_issue",
+    keywords: ["db", "datenbank", "table", "tabelle", "vollständ", "fehlend", "missing row", "record"],
+  },
+  {
+    category: "pipeline_staleness_issue",
+    keywords: ["stale", "freshness", "veraltet", "pipeline", "lag", "delayed", "snapshot"],
+  },
+  {
+    category: "mapping_schema_issue",
+    keywords: ["schema", "mapping", "contract", "vertrag", "api", "payload"],
+  },
+  {
+    category: "frontend_binding_issue",
+    keywords: ["binding", "feld", "field", "prop", "placeholder"],
+  },
+  {
+    category: "frontend_structure_issue",
+    keywords: ["layout", "struktur", "hierarchie", "frontend", "ui", "darstellung"],
+  },
+  {
+    category: "backend_service_issue",
+    keywords: ["backend", "service", "route", "controller", "dependency", "server"],
+  },
+];
+
+const HINT_TYPE_TO_ISSUE_CATEGORY = {
+  binding_risk: "frontend_binding_issue",
+  field_risk: "frontend_binding_issue",
+  schema_risk: "mapping_schema_issue",
+  contract_warning: "mapping_schema_issue",
+  staleness: "pipeline_staleness_issue",
+  ui_impact: "frontend_structure_issue",
+  change_guard: "backend_service_issue",
+  review: "backend_service_issue",
+};
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -1421,6 +1590,116 @@ function _assessGuardianEligibility(params) {
 }
 
 /* ─────────────────────────────────────────────
+   Step 10: Issue Intelligence classification
+   ───────────────────────────────────────────── */
+
+function deriveIssueCategory(hints, fallbackText = "") {
+  const text = [
+    fallbackText,
+    ...hints.map((h) => `${h.title || ""} ${h.summary || ""}`),
+  ].join(" ").toLowerCase();
+
+  for (const rule of ISSUE_KEYWORD_RULES) {
+    if (rule.keywords.some((kw) => text.includes(kw))) {
+      return rule.category;
+    }
+  }
+
+  const issueVotes = {};
+  for (const h of hints) {
+    const category = HINT_TYPE_TO_ISSUE_CATEGORY[h.type] || "unknown_issue";
+    issueVotes[category] = (issueVotes[category] || 0) + (SEVERITY_WEIGHT[h.severity] || 1);
+  }
+
+  let bestCategory = "unknown_issue";
+  let bestScore = 0;
+  for (const [category, score] of Object.entries(issueVotes)) {
+    if (score > bestScore) {
+      bestCategory = category;
+      bestScore = score;
+    }
+  }
+
+  return bestCategory;
+}
+
+function assessIssueSeverity(hints, readinessBand, confidenceBand) {
+  const highCount = hints.filter((h) => h.severity === "high").length;
+  const medCount = hints.filter((h) => h.severity === "medium").length;
+
+  if (
+    highCount >= 2 ||
+    (highCount >= 1 &&
+      ["useful_next_step", "mature_recommendation"].includes(readinessBand) &&
+      confidenceBand !== "low")
+  ) {
+    return "high";
+  }
+
+  if (
+    highCount >= 1 ||
+    medCount >= 2 ||
+    ["further_check_recommended", "useful_next_step", "mature_recommendation"].includes(readinessBand)
+  ) {
+    return "medium";
+  }
+
+  return "low";
+}
+
+function buildIssueReason(issueCategory, issueSeverity, hints, patternKey) {
+  const reasons = [];
+  if (issueCategory && issueCategory !== "unknown_issue") {
+    reasons.push(`Problemtyp: ${issueCategory}`);
+  }
+  if (issueSeverity !== "low") {
+    reasons.push(`Einstufung: ${issueSeverity}`);
+  }
+  const highCount = hints.filter((h) => h.severity === "high").length;
+  if (highCount > 0) {
+    reasons.push(`${highCount} Hinweis(e) mit hoher Dringlichkeit`);
+  }
+  const patternEntry = patternKey ? _patternMemory.get(patternKey) : null;
+  if (patternEntry && patternEntry.count >= 2) {
+    reasons.push(`Muster ${patternEntry.count}x beobachtet`);
+  }
+  if (!reasons.length) {
+    reasons.push("Frühe Auffälligkeit – weitere Prüfung sinnvoll");
+  }
+  return reasons.join("; ");
+}
+
+function classifyIssueIntelligence(params = {}) {
+  const {
+    hints = [],
+    readinessBand = "observation",
+    confidenceBand = "low",
+    patternKey = null,
+    fallbackText = "",
+  } = params;
+
+  const issueCategory = deriveIssueCategory(hints, fallbackText);
+  const label = ISSUE_LABELS[issueCategory] || ISSUE_LABELS.unknown_issue;
+  const issueSeverity = assessIssueSeverity(hints, readinessBand, confidenceBand);
+  const needsFollowup =
+    issueSeverity !== "low" ||
+    ["further_check_recommended", "useful_next_step", "mature_recommendation"].includes(readinessBand) ||
+    issueCategory === "unknown_issue";
+
+  return {
+    issueType: label.issueType,
+    issueCategory,
+    issueSeverity,
+    affectedLayer: label.affectedLayer,
+    suspectedCause: label.suspectedCause,
+    suggestedFix: label.suggestedFix,
+    needsFollowup,
+    issueConfidence: confidenceBand,
+    issueReason: buildIssueReason(issueCategory, issueSeverity, hints, patternKey),
+  };
+}
+
+/* ─────────────────────────────────────────────
    buildBridgePackage
    ─────────────────────────────────────────────
    Main export for Backend→Frontend direction.
@@ -1504,6 +1783,18 @@ function buildBridgePackage(payload = {}) {
     highSeverityCount,
   });
 
+  const issueContext = classifyIssueIntelligence({
+    hints: bridgeHints,
+    readinessBand: packageReadiness.band,
+    confidenceBand: packageConfidenceBand,
+    patternKey: bridgePatternKey,
+    fallbackText: [
+      backendState.lastKnownArea,
+      reviewIntent,
+      impactTranslation.impactSummary,
+    ].filter(Boolean).join(" "),
+  });
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -1540,6 +1831,7 @@ function buildBridgePackage(payload = {}) {
       needsMoreEvidence:   governancePolicy.needsMoreEvidence,
       governanceReason:    governancePolicy.reason,
     },
+    issueContext,
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -1631,6 +1923,18 @@ function buildBridgePackage(payload = {}) {
     improvementFeedback: improvementContext.dominantFeedback || "keine",
     patternKey:          bridgePatternKey,
     hintCount:           bridgeHints.length,
+  });
+
+  logger.info("[agentBridge] issue intelligence classified (Step 10)", {
+    issueType:       issueContext.issueType,
+    issueCategory:   issueContext.issueCategory,
+    issueSeverity:   issueContext.issueSeverity,
+    affectedLayer:   issueContext.affectedLayer,
+    suspectedCause:  issueContext.suspectedCause,
+    suggestedFix:    issueContext.suggestedFix,
+    needsFollowup:   issueContext.needsFollowup,
+    issueConfidence: issueContext.issueConfidence,
+    patternKey:      bridgePatternKey,
   });
 
   // Step 8: Log divergence between readiness/improvement and governance
@@ -1857,6 +2161,10 @@ function receiveFrontendFeedback(payload = {}) {
     // Step 6: action readiness
     actionReadinessBand:   learningSignal.actionReadinessBand,
     recommendedActionType: learningSignal.recommendedActionType,
+    // Step 10: issue intelligence
+    issueCategory:      learningSignal.issueCategory,
+    issueSeverity:      learningSignal.issueSeverity,
+    affectedLayer:      learningSignal.affectedLayer,
     workflowStage:      "feedback_received",
   });
 
@@ -1874,6 +2182,10 @@ function receiveFrontendFeedback(payload = {}) {
       // Step 6: readiness context
       actionReadinessBand:   learningSignal.actionReadinessBand,
       recommendedActionType: learningSignal.recommendedActionType,
+      // Step 10: issue intelligence
+      issueCategory:         learningSignal.issueCategory,
+      affectedLayer:         learningSignal.affectedLayer,
+      suggestedFix:          learningSignal.suggestedFix,
     });
   }
 
@@ -1890,6 +2202,8 @@ function receiveFrontendFeedback(payload = {}) {
       highSeverityHints: usable.filter((h) => h.severity === "high").length,
       source,
       followupNeed: learningSignal.followupNeed,
+      issueCategory: learningSignal.issueCategory,
+      issueSeverity: learningSignal.issueSeverity,
     });
   }
 
@@ -2211,6 +2525,16 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     governancePolicyClass:  null, // set below after governance classification
     guardianEligibility:    false,
     needsMoreEvidence:      true,
+
+    // ── Step 10 fields (issue intelligence / error detection) ──
+    issueType:              null,
+    issueCategory:          null,
+    issueSeverity:          null,
+    affectedLayer:          null,
+    suspectedIssueCause:    null,
+    suggestedFix:           null,
+    issueNeedsFollowup:     false,
+    issueConfidence:        null,
   };
 
   // Assess signal quality (must happen after signal is built)
@@ -2234,6 +2558,29 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
   signal.guardianEligibility   = sigGovernance.guardianEligibility;
   signal.needsMoreEvidence     = sigGovernance.needsMoreEvidence;
 
+  // ── Step 10: Issue intelligence (separate from governance + routing) ──
+  const issueContext = classifyIssueIntelligence({
+    hints,
+    readinessBand: signal.actionReadinessBand,
+    confidenceBand: signal.confidenceBand,
+    patternKey,
+    fallbackText: [
+      signal.observedEffect,
+      signal.suspectedCause,
+      signal.suggestedFollowup,
+      signal.layerReference,
+    ].filter(Boolean).join(" "),
+  });
+  signal.issueType           = issueContext.issueType;
+  signal.issueCategory       = issueContext.issueCategory;
+  signal.issueSeverity       = issueContext.issueSeverity;
+  signal.affectedLayer       = issueContext.affectedLayer;
+  signal.suspectedIssueCause = issueContext.suspectedCause;
+  signal.suggestedFix        = issueContext.suggestedFix;
+  signal.issueNeedsFollowup  = issueContext.needsFollowup;
+  signal.issueConfidence     = issueContext.issueConfidence;
+  signal.issueReason         = issueContext.issueReason;
+
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
 
@@ -2247,6 +2594,11 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     governancePolicyClass:  signal.governancePolicyClass,
     guardianEligibility:    signal.guardianEligibility,
     needsMoreEvidence:      signal.needsMoreEvidence,
+    issueCategory:          signal.issueCategory,
+    issueSeverity:          signal.issueSeverity,
+    affectedLayer:          signal.affectedLayer,
+    suspectedIssueCause:    signal.suspectedIssueCause,
+    suggestedFix:           signal.suggestedFix,
     sourceCategory,
     layerCategory,
     impactCategory,
@@ -2269,6 +2621,18 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
       reason:          _describeReadinessReason(signal, hints),
     });
   }
+
+  logger.info("[agentBridge] issue intelligence classified (Step 10)", {
+    patternKey,
+    issueType:       signal.issueType,
+    issueCategory:   signal.issueCategory,
+    issueSeverity:   signal.issueSeverity,
+    affectedLayer:   signal.affectedLayer,
+    suspectedCause:  signal.suspectedIssueCause,
+    suggestedFix:    signal.suggestedFix,
+    needsFollowup:   signal.issueNeedsFollowup,
+    issueConfidence: signal.issueConfidence,
+  });
 
   return signal;
 }
@@ -2337,10 +2701,16 @@ function recordPatternObservation(patternKey, signal) {
       signalTypeTally:    {},
       // Step 6: action readiness tallies
       readinessTally:     {},
-      actionTypeTally:    {},
-      // Step 8: governance policy tallies
-      governanceTally:    {},
-    };
+       actionTypeTally:    {},
+       // Step 8: governance policy tallies
+       governanceTally:    {},
+       // Step 10: issue intelligence tallies
+       issueCategoryTally: {},
+       issueLayerTally:    {},
+       issueSeverityTally: {},
+       issueCauseTally:    {},
+       issueFixTally:      {},
+     };
   }
 
   entry.count += 1;
@@ -2388,6 +2758,32 @@ function recordPatternObservation(patternKey, signal) {
     entry.governanceTally = entry.governanceTally || {};
     entry.governanceTally[signal.governancePolicyClass] =
       (entry.governanceTally[signal.governancePolicyClass] || 0) + 1;
+  }
+  // Step 10: issue category / layer / severity / cause / fix tallies
+  if (signal.issueCategory) {
+    entry.issueCategoryTally = entry.issueCategoryTally || {};
+    entry.issueCategoryTally[signal.issueCategory] =
+      (entry.issueCategoryTally[signal.issueCategory] || 0) + 1;
+  }
+  if (signal.affectedLayer) {
+    entry.issueLayerTally = entry.issueLayerTally || {};
+    entry.issueLayerTally[signal.affectedLayer] =
+      (entry.issueLayerTally[signal.affectedLayer] || 0) + 1;
+  }
+  if (signal.issueSeverity) {
+    entry.issueSeverityTally = entry.issueSeverityTally || {};
+    entry.issueSeverityTally[signal.issueSeverity] =
+      (entry.issueSeverityTally[signal.issueSeverity] || 0) + 1;
+  }
+  if (signal.suspectedIssueCause) {
+    entry.issueCauseTally = entry.issueCauseTally || {};
+    entry.issueCauseTally[signal.suspectedIssueCause] =
+      (entry.issueCauseTally[signal.suspectedIssueCause] || 0) + 1;
+  }
+  if (signal.suggestedFix) {
+    entry.issueFixTally = entry.issueFixTally || {};
+    entry.issueFixTally[signal.suggestedFix] =
+      (entry.issueFixTally[signal.suggestedFix] || 0) + 1;
   }
 
   _patternMemory.set(patternKey, entry);
@@ -2437,6 +2833,12 @@ function getPatternMemorySummary() {
       hasFeedback:           !!(e.feedbackTally && Object.keys(e.feedbackTally).length > 0),
       // Step 8: governance policy per pattern
       dominantGovernance:    _topKey(e.governanceTally),
+      // Step 10: issue intelligence per pattern
+      dominantIssueCategory: _topKey(e.issueCategoryTally),
+      dominantIssueLayer:    _topKey(e.issueLayerTally),
+      dominantIssueSeverity: _topKey(e.issueSeverityTally),
+      dominantIssueCause:    _topKey(e.issueCauseTally),
+      dominantSuggestedFix:  _topKey(e.issueFixTally),
     }));
 
   return {
@@ -2592,6 +2994,70 @@ function getGovernancePolicySummary() {
     confidenceVsGovernance,
     guardianCandidates:      guardianCandidates.slice(0, GOV_MAX_GUARDIAN_CANDIDATES_IN_SUMMARY),
     generatedAt:             new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 10: Issue Intelligence Summary
+   ───────────────────────────────────────────── */
+
+function getIssueIntelligenceSummary() {
+  const issueCategoryDistribution = {};
+  const affectedLayerDistribution = {};
+  const issueSeverityDistribution = {};
+  const suspectedCauseDistribution = {};
+  const suggestedFixDistribution = {};
+  const patternsPerIssueCategory = {};
+  const patternsPerAffectedLayer = {};
+  let patternsNeedingFollowup = 0;
+
+  for (const entry of _patternMemory.values()) {
+    for (const [category, count] of Object.entries(entry.issueCategoryTally || {})) {
+      issueCategoryDistribution[category] = (issueCategoryDistribution[category] || 0) + count;
+    }
+    for (const [layer, count] of Object.entries(entry.issueLayerTally || {})) {
+      affectedLayerDistribution[layer] = (affectedLayerDistribution[layer] || 0) + count;
+    }
+    for (const [severity, count] of Object.entries(entry.issueSeverityTally || {})) {
+      issueSeverityDistribution[severity] = (issueSeverityDistribution[severity] || 0) + count;
+    }
+    for (const [cause, count] of Object.entries(entry.issueCauseTally || {})) {
+      suspectedCauseDistribution[cause] = (suspectedCauseDistribution[cause] || 0) + count;
+    }
+    for (const [fix, count] of Object.entries(entry.issueFixTally || {})) {
+      suggestedFixDistribution[fix] = (suggestedFixDistribution[fix] || 0) + count;
+    }
+
+    const dominantIssueCategory = _topKey(entry.issueCategoryTally);
+    if (dominantIssueCategory) {
+      patternsPerIssueCategory[dominantIssueCategory] =
+        (patternsPerIssueCategory[dominantIssueCategory] || 0) + 1;
+    }
+
+    const dominantIssueLayer = _topKey(entry.issueLayerTally);
+    if (dominantIssueLayer) {
+      patternsPerAffectedLayer[dominantIssueLayer] =
+        (patternsPerAffectedLayer[dominantIssueLayer] || 0) + 1;
+    }
+
+    const dominantSeverity = _topKey(entry.issueSeverityTally);
+    if (dominantSeverity && dominantSeverity !== "low") {
+      patternsNeedingFollowup += 1;
+    }
+  }
+
+  return {
+    totalPatterns: _patternMemory.size,
+    currentBridgeIssue: _currentBridgePackage?.issueContext || null,
+    issueCategoryDistribution,
+    affectedLayerDistribution,
+    issueSeverityDistribution,
+    suspectedCauseDistribution,
+    suggestedFixDistribution,
+    patternsPerIssueCategory,
+    patternsPerAffectedLayer,
+    patternsNeedingFollowup,
+    generatedAt: new Date().toISOString(),
   };
 }
 
@@ -2891,6 +3357,8 @@ module.exports = {
   getRecommendationImprovementSummary,
   // Step 8: Governance Policy / Visibility Light
   getGovernancePolicySummary,
+  // Step 10: Issue Intelligence / Error Detection Light
+  getIssueIntelligenceSummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -2905,4 +3373,10 @@ module.exports = {
   VALID_RECOMMENDATION_FEEDBACK_CATEGORIES,
   VALID_IMPROVEMENT_SIGNALS,
   VALID_GOVERNANCE_POLICY_CLASSES,
+  VALID_ISSUE_TYPES,
+  VALID_ISSUE_CATEGORIES,
+  VALID_ISSUE_LAYERS,
+  VALID_ISSUE_SEVERITY_LEVELS,
+  VALID_ISSUE_CAUSES,
+  VALID_ISSUE_SUGGESTED_FIXES,
 };
