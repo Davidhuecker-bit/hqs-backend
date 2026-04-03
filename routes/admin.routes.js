@@ -4115,6 +4115,9 @@ const {
   getGovernancePolicySummary,
   // Step 10: Issue Intelligence / Error Detection Light
   getIssueIntelligenceSummary,
+  // Step 11: Case / Resolution / Operator Loop Light
+  updateCaseStatus,
+  getCaseResolutionSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4786,6 +4789,106 @@ router.get("/deepseek/agent-bridge/issue-intelligence", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading issue intelligence summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/case-resolution
+   Step 11: Case / Resolution / Operator Loop Light –
+   returns a lightweight overview of the operative
+   Bearbeitungszustand of recognised hints, issues and
+   recommendations.  Shows how many cases are open,
+   watching, confirmed, resolved, dismissed or need
+   follow-up.
+
+   Important:
+   - purely observational, no auto-resolve
+   - deliberately separate from issue intelligence
+   - deliberately separate from readiness / governance
+   - no ticket-system, no heavy persistence
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "caseResolution": {
+         "totalCases": 5,
+         "totalPatternsTracked": 12,
+         "statusDistribution": { "open": 2, "watching": 1 },
+         "outcomeDistribution": { "pending": 3 },
+         "helpfulnessDistribution": { "too_early_to_tell": 3 },
+         "casesNeedingFollowup": 1,
+         "casesWithManualOverride": 0,
+         "casesHelpful": 0,
+         "casesNotHelpful": 0,
+         "patternCaseOverview": { "open": 8, "watching": 4 },
+         "recentCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/case-resolution", (_req, res) => {
+  try {
+    const summary = getCaseResolutionSummary();
+    return res.json({ success: true, version: "v1", caseResolution: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/case-resolution error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading case resolution summary",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/case-status-update
+   Step 11: Case / Resolution / Operator Loop Light –
+   allows the operator/admin to update the operative
+   Bearbeitungszustand of a case.
+
+   The system does NOT auto-resolve or auto-dismiss.
+   All status transitions are operator-driven.
+
+   Request body:
+     {
+       "patternKey": "guard:backend_schema:schema_followup:frontend_guard",
+       "caseStatus": "watching",
+       "caseOutcome": "needs_further_review",
+       "caseNote": "Wird weiter beobachtet",
+       "wasHelpful": true,
+       "followupNeeded": false
+     }
+
+   Response:
+     {
+       "success": true,
+       "patternKey": "...",
+       "caseStatus": "watching",
+       "caseOutcome": "needs_further_review",
+       "helpfulnessBand": "clearly_helpful",
+       "wasHelpful": true,
+       "followupNeeded": false,
+       "manualOverride": true,
+       "updatedAt": "2026-...",
+       "statusHistory": [ ... ]
+     }
+========================================================= */
+router.post("/deepseek/agent-bridge/case-status-update", (req, res) => {
+  try {
+    const result = updateCaseStatus(req.body || {});
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/case-status-update error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error updating case status",
     });
   }
 });

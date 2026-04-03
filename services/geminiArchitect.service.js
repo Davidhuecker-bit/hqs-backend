@@ -689,6 +689,27 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 11: Inject case / resolution context ──
+  if (bridgeContext && bridgeContext.caseContext) {
+    const cc = bridgeContext.caseContext;
+    const caseParts = [];
+    if (cc.caseStatus) {
+      caseParts.push(`Bearbeitungszustand: ${cc.caseStatus}`);
+    }
+    if (cc.caseOutcome && cc.caseOutcome !== "pending") {
+      caseParts.push(`Fallergebnis: ${cc.caseOutcome}`);
+    }
+    if (cc.helpfulnessBand && cc.helpfulnessBand !== "too_early_to_tell") {
+      caseParts.push(`Hilfseinschätzung: ${cc.helpfulnessBand}`);
+    }
+    if (cc.caseReason) {
+      caseParts.push(`Begründung: ${cc.caseReason}`);
+    }
+    if (caseParts.length) {
+      sections.push(`Fall-/Verlaufssicht (operativer Bearbeitungszustand, keine automatische Lösung):\n${caseParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
@@ -849,6 +870,10 @@ async function runGeminiArchitectReview(payload = {}) {
     bridgeIssueCategory: normalised.bridgeContext?.issueContext?.issueCategory || null,
     bridgeIssueLayer: normalised.bridgeContext?.issueContext?.affectedLayer || null,
     bridgeIssueSeverity: normalised.bridgeContext?.issueContext?.issueSeverity || null,
+    // Step 11: case / resolution context
+    bridgeCaseStatus: normalised.bridgeContext?.caseContext?.caseStatus || null,
+    bridgeCaseOutcome: normalised.bridgeContext?.caseContext?.caseOutcome || null,
+    bridgeHelpfulnessBand: normalised.bridgeContext?.caseContext?.helpfulnessBand || null,
   });
 
   let response;

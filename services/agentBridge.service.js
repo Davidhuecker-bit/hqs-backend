@@ -558,6 +558,70 @@ const HINT_TYPE_TO_ISSUE_CATEGORY = {
 };
 
 /* ─────────────────────────────────────────────
+   Step 11 – Case / Resolution / Operator Loop Light
+   ─────────────────────────────────────────────
+   Adds a lightweight operative case-/resolution
+   layer so the HQS system can track the
+   Bearbeitungszustand of recognised hints,
+   recommendations, and issues without building
+   a full ticket system or persistence platform.
+
+   IMPORTANT DESIGN PRINCIPLES:
+   - Case / Resolution  = how a specific hint /
+     issue / recommendation is operatively
+     tracked and resolved over time
+   - Issue Intelligence  = what likely looks wrong
+     (technical / structural)
+   - Improvement         = retrospective feedback
+     on recommendation quality
+   - Readiness           = how actionable something
+     is right now
+   - Governance          = visibility / promotion
+     classification
+
+   These dimensions stay deliberately separate.
+   A case can be issue-seitig "mapping_schema_issue",
+   readiness-seitig "observation", improvement-seitig
+   "helpful", and case-seitig "watching" – all at
+   the same time, each independently meaningful.
+   ───────────────────────────────────────────── */
+
+const VALID_CASE_STATUSES = [
+  "open",
+  "watching",
+  "confirmed",
+  "resolved",
+  "dismissed",
+  "needs_followup",
+];
+
+const VALID_CASE_OUTCOMES = [
+  "pending",
+  "confirmed_helpful",
+  "confirmed_not_helpful",
+  "resolved_fixed",
+  "resolved_no_action",
+  "dismissed_noise",
+  "dismissed_duplicate",
+  "needs_further_review",
+];
+
+const VALID_HELPFULNESS_BANDS = [
+  "clearly_helpful",
+  "somewhat_helpful",
+  "unclear",
+  "not_helpful",
+  "too_early_to_tell",
+];
+
+/** Conservative thresholds for case status derivation */
+const CASE_MIN_OBSERVATIONS_FOR_WATCHING   = 2;
+const CASE_MIN_OBSERVATIONS_FOR_CONFIRMED  = 4;
+const CASE_MIN_POSITIVE_RATIO_FOR_HELPFUL  = 0.6;
+const CASE_MAX_ENTRIES                     = 200;
+const CASE_MAX_SUMMARY_ENTRIES             = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -592,6 +656,25 @@ const _patternMemory = new Map();
 
 /** @type {Array<Object>} */
 let _recommendationFeedbackLog = [];
+
+/* ─────────────────────────────────────────────
+   Step 11: In-memory case registry (lightweight)
+   ─────────────────────────────────────────────
+   Tracks the operative Bearbeitungszustand of
+   hints / recommendations / issues as lightweight
+   cases.  No database – purely in-memory,
+   intentionally ephemeral.
+
+   Each entry is keyed by patternKey and tracks:
+   - caseStatus (open/watching/confirmed/resolved/
+     dismissed/needs_followup)
+   - caseOutcome (pending/confirmed_helpful/…)
+   - helpfulness assessment
+   - operator notes
+   ───────────────────────────────────────────── */
+
+/** @type {Map<string, CaseRegistryEntry>} */
+const _caseRegistry = new Map();
 
 /* ─────────────────────────────────────────────
    Input normalisation helpers
@@ -1795,6 +1878,19 @@ function buildBridgePackage(payload = {}) {
     ].filter(Boolean).join(" "),
   });
 
+  // ── Step 11: Case / Resolution classification ──
+  const caseClassification = classifyCaseStatus({
+    patternKey:    bridgePatternKey,
+    readinessBand: packageReadiness.band,
+    confidenceBand: packageConfidenceBand,
+    issueSeverity: issueContext.issueSeverity,
+    needsFollowup: issueContext.needsFollowup,
+    hintCount:     bridgeHints.length,
+  });
+
+  // Ensure case registry entry exists (does not overwrite manual decisions)
+  _ensureCaseRegistryEntry(bridgePatternKey, caseClassification);
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -1832,6 +1928,13 @@ function buildBridgePackage(payload = {}) {
       governanceReason:    governancePolicy.reason,
     },
     issueContext,
+    // Step 11: case / resolution / operator loop (operative Verlaufsform)
+    caseContext: {
+      caseStatus:       caseClassification.caseStatus,
+      caseOutcome:      caseClassification.caseOutcome,
+      helpfulnessBand:  caseClassification.helpfulnessBand,
+      caseReason:       caseClassification.caseReason,
+    },
     meta: {
       hintsTotal:     rawHints.length,
       hintsKept:      bridgeHints.length,
@@ -1936,6 +2039,31 @@ function buildBridgePackage(payload = {}) {
     issueConfidence: issueContext.issueConfidence,
     patternKey:      bridgePatternKey,
   });
+
+  // Step 11: Case / Resolution classification log
+  logger.info("[agentBridge] case / resolution classified (Step 11)", {
+    caseStatus:       caseClassification.caseStatus,
+    caseOutcome:      caseClassification.caseOutcome,
+    helpfulnessBand:  caseClassification.helpfulnessBand,
+    caseReason:       caseClassification.caseReason,
+    patternKey:       bridgePatternKey,
+    // Separation transparency: case vs issue vs readiness vs governance
+    issueSeverity:    issueContext.issueSeverity,
+    readinessBand:    packageReadiness.band,
+    policyClass:      governancePolicy.policyClass,
+  });
+
+  // Step 11: Log divergence between case status and issue severity
+  if (
+    caseClassification.caseStatus === "open" &&
+    issueContext.issueSeverity === "high"
+  ) {
+    logger.info("[agentBridge] case ↔ issue divergence (Step 11)", {
+      caseStatus:    caseClassification.caseStatus,
+      issueSeverity: issueContext.issueSeverity,
+      insight:       "Hohe technische Dringlichkeit, aber Fall operativ noch offen – weitere Beobachtung empfohlen.",
+    });
+  }
 
   // Step 8: Log divergence between readiness/improvement and governance
   if (
@@ -2581,6 +2709,19 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
   signal.issueConfidence     = issueContext.issueConfidence;
   signal.issueReason         = issueContext.issueReason;
 
+  // ── Step 11: Case / Resolution classification for learning signal ──
+  const sigCase = classifyCaseStatus({
+    patternKey,
+    readinessBand:  signal.actionReadinessBand,
+    confidenceBand: signal.confidenceBand,
+    issueSeverity:  signal.issueSeverity,
+    needsFollowup:  signal.issueNeedsFollowup,
+    hintCount:      hints.length,
+  });
+  signal.caseStatus       = sigCase.caseStatus;
+  signal.caseOutcome      = sigCase.caseOutcome;
+  signal.helpfulnessBand  = sigCase.helpfulnessBand;
+
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
 
@@ -2632,6 +2773,17 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     suggestedFix:    signal.suggestedFix,
     needsFollowup:   signal.issueNeedsFollowup,
     issueConfidence: signal.issueConfidence,
+  });
+
+  // Step 11: Case / resolution classification logging
+  logger.info("[agentBridge] case / resolution classified (Step 11 – learning signal)", {
+    patternKey,
+    caseStatus:       signal.caseStatus,
+    caseOutcome:      signal.caseOutcome,
+    helpfulnessBand:  signal.helpfulnessBand,
+    // Separation: case vs issue vs readiness
+    issueSeverity:    signal.issueSeverity,
+    readinessBand:    signal.actionReadinessBand,
   });
 
   return signal;
@@ -2710,6 +2862,10 @@ function recordPatternObservation(patternKey, signal) {
        issueSeverityTally: {},
        issueCauseTally:    {},
        issueFixTally:      {},
+       // Step 11: case / resolution tallies
+       caseStatusTally:    {},
+       caseOutcomeTally:   {},
+       helpfulnessTally:   {},
      };
   }
 
@@ -2785,6 +2941,22 @@ function recordPatternObservation(patternKey, signal) {
     entry.issueFixTally[signal.suggestedFix] =
       (entry.issueFixTally[signal.suggestedFix] || 0) + 1;
   }
+  // Step 11: case status / outcome / helpfulness tallies
+  if (signal.caseStatus) {
+    entry.caseStatusTally = entry.caseStatusTally || {};
+    entry.caseStatusTally[signal.caseStatus] =
+      (entry.caseStatusTally[signal.caseStatus] || 0) + 1;
+  }
+  if (signal.caseOutcome) {
+    entry.caseOutcomeTally = entry.caseOutcomeTally || {};
+    entry.caseOutcomeTally[signal.caseOutcome] =
+      (entry.caseOutcomeTally[signal.caseOutcome] || 0) + 1;
+  }
+  if (signal.helpfulnessBand) {
+    entry.helpfulnessTally = entry.helpfulnessTally || {};
+    entry.helpfulnessTally[signal.helpfulnessBand] =
+      (entry.helpfulnessTally[signal.helpfulnessBand] || 0) + 1;
+  }
 
   _patternMemory.set(patternKey, entry);
 
@@ -2839,6 +3011,10 @@ function getPatternMemorySummary() {
       dominantIssueSeverity: _topKey(e.issueSeverityTally),
       dominantIssueCause:    _topKey(e.issueCauseTally),
       dominantSuggestedFix:  _topKey(e.issueFixTally),
+      // Step 11: case / resolution per pattern
+      dominantCaseStatus:    _topKey(e.caseStatusTally),
+      dominantCaseOutcome:   _topKey(e.caseOutcomeTally),
+      dominantHelpfulness:   _topKey(e.helpfulnessTally),
     }));
 
   return {
@@ -3059,6 +3235,403 @@ function getIssueIntelligenceSummary() {
     patternsNeedingFollowup,
     generatedAt: new Date().toISOString(),
   };
+}
+
+/* ─────────────────────────────────────────────
+   Step 11: Case / Resolution / Operator Loop Light
+   ─────────────────────────────────────────────
+   Derives a lightweight operative case status for
+   a bridge package based on existing signals.
+   Does NOT auto-execute or auto-resolve.
+
+   Separation principle:
+   - caseStatus  = operative Bearbeitungszustand
+   - issueType   = what is technically wrong
+   - readiness   = how actionable it is
+   - improvement = how well it worked historically
+   - governance  = visibility classification
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive the initial case status for a bridge package
+ * based on existing pattern observations and signal quality.
+ *
+ * Conservative rule-based derivation – no model involvement.
+ *
+ * @param {Object} params
+ * @param {string}  params.patternKey
+ * @param {string}  params.readinessBand
+ * @param {string}  params.confidenceBand
+ * @param {string}  params.issueSeverity
+ * @param {boolean} params.needsFollowup
+ * @param {number}  params.hintCount
+ * @returns {Object} { caseStatus, caseOutcome, helpfulnessBand, caseReason }
+ */
+function classifyCaseStatus({
+  patternKey,
+  readinessBand,
+  confidenceBand,
+  issueSeverity,
+  needsFollowup,
+  hintCount,
+} = {}) {
+  const patternEntry = patternKey ? _patternMemory.get(patternKey) : null;
+  const observationCount = patternEntry ? patternEntry.count : 0;
+
+  // Check existing case registry for manual overrides
+  const existingCase = patternKey ? _caseRegistry.get(patternKey) : null;
+  if (existingCase && existingCase.manualOverride) {
+    return {
+      caseStatus:       existingCase.caseStatus,
+      caseOutcome:      existingCase.caseOutcome,
+      helpfulnessBand:  existingCase.helpfulnessBand,
+      caseReason:       "Manuell gesetzter Bearbeitungszustand – keine automatische Änderung.",
+    };
+  }
+
+  // ── Conservative status derivation ──
+  let caseStatus = "open";
+  let caseReason = "Neuer Fall – noch keine ausreichende Beobachtungshistorie.";
+
+  // Needs followup → explicit needs_followup
+  if (needsFollowup) {
+    caseStatus = "needs_followup";
+    caseReason = "Folgeprüfung wird empfohlen – Fall bleibt offen zur weiteren Beobachtung.";
+  }
+  // Enough observations → watching
+  else if (observationCount >= CASE_MIN_OBSERVATIONS_FOR_WATCHING) {
+    caseStatus = "watching";
+    caseReason = `Muster wurde ${observationCount}× beobachtet – wird aktiv beobachtet.`;
+  }
+  // Enough observations + decent confidence → confirmed
+  if (
+    observationCount >= CASE_MIN_OBSERVATIONS_FOR_CONFIRMED &&
+    (confidenceBand === "medium" || confidenceBand === "high")
+  ) {
+    caseStatus = "confirmed";
+    caseReason = `Muster wurde ${observationCount}× beobachtet mit ${confidenceBand} Konfidenz – Fall bestätigt.`;
+  }
+  // High severity issue with good confidence → confirmed immediately
+  if (issueSeverity === "high" && confidenceBand === "high" && hintCount >= 2) {
+    caseStatus = "confirmed";
+    caseReason = "Hohe Dringlichkeit mit hoher Konfidenz – sofortige Bestätigung.";
+  }
+
+  // ── Derive outcome and helpfulness ──
+  const caseOutcome = _deriveCaseOutcome(patternEntry, caseStatus);
+  const helpfulnessBand = _deriveHelpfulnessBand(patternEntry);
+
+  return { caseStatus, caseOutcome, helpfulnessBand, caseReason };
+}
+
+/**
+ * Derive a case outcome from pattern memory and current status.
+ * Conservative – defaults to "pending" when insufficient data.
+ */
+function _deriveCaseOutcome(patternEntry, caseStatus) {
+  if (!patternEntry) return "pending";
+  if (caseStatus === "dismissed") return "dismissed_noise";
+  if (caseStatus === "resolved") return "resolved_fixed";
+
+  const feedbackTally = patternEntry.feedbackTally || {};
+  const totalFeedback = Object.values(feedbackTally).reduce((a, b) => a + b, 0);
+  if (totalFeedback === 0) return "pending";
+
+  const positiveFeedback = (feedbackTally.helpful || 0) + (feedbackTally.usable || 0);
+  const negativeFeedback = (feedbackTally.not_needed || 0) + (feedbackTally.unclear || 0);
+
+  if (totalFeedback >= 2 && positiveFeedback / totalFeedback >= CASE_MIN_POSITIVE_RATIO_FOR_HELPFUL) {
+    return "confirmed_helpful";
+  }
+  if (totalFeedback >= 2 && negativeFeedback / totalFeedback >= CASE_MIN_POSITIVE_RATIO_FOR_HELPFUL) {
+    return "confirmed_not_helpful";
+  }
+  return "needs_further_review";
+}
+
+/**
+ * Derive a helpfulness band from pattern memory feedback.
+ * Conservative – defaults to "too_early_to_tell".
+ */
+function _deriveHelpfulnessBand(patternEntry) {
+  if (!patternEntry) return "too_early_to_tell";
+
+  const feedbackTally = patternEntry.feedbackTally || {};
+  const totalFeedback = Object.values(feedbackTally).reduce((a, b) => a + b, 0);
+  if (totalFeedback === 0) return "too_early_to_tell";
+
+  const helpful = feedbackTally.helpful || 0;
+  const usable  = feedbackTally.usable || 0;
+  const notNeeded = feedbackTally.not_needed || 0;
+  const unclear = feedbackTally.unclear || 0;
+  const positiveRatio = (helpful + usable) / totalFeedback;
+  const negativeRatio = (notNeeded + unclear) / totalFeedback;
+
+  if (totalFeedback < 2) return "too_early_to_tell";
+  if (positiveRatio >= 0.7) return "clearly_helpful";
+  if (positiveRatio >= 0.4) return "somewhat_helpful";
+  if (negativeRatio >= 0.6) return "not_helpful";
+  return "unclear";
+}
+
+/**
+ * Update the operative case status for a given pattern key.
+ * This is the operator/admin action endpoint – allows manual
+ * status changes, outcome marking, and note-taking.
+ *
+ * The system does NOT auto-resolve or auto-dismiss.
+ * All status transitions are operator-driven.
+ *
+ * @param {Object} payload
+ * @param {string}  payload.patternKey     – the case's pattern key
+ * @param {string}  [payload.caseStatus]   – new case status
+ * @param {string}  [payload.caseOutcome]  – new case outcome
+ * @param {string}  [payload.caseNote]     – operator note
+ * @param {boolean} [payload.wasHelpful]   – operator helpfulness verdict
+ * @param {boolean} [payload.followupNeeded] – whether follow-up is needed
+ * @returns {Object} acknowledgement with updated case state
+ */
+function updateCaseStatus(payload = {}) {
+  const patternKey = toStr(payload.patternKey);
+  if (!patternKey) {
+    return { success: false, error: "patternKey is required" };
+  }
+
+  // Normalise inputs
+  const newStatus = VALID_CASE_STATUSES.includes(toStr(payload.caseStatus))
+    ? toStr(payload.caseStatus)
+    : null;
+  const newOutcome = VALID_CASE_OUTCOMES.includes(toStr(payload.caseOutcome))
+    ? toStr(payload.caseOutcome)
+    : null;
+  const caseNote = capText(payload.caseNote, 500) || null;
+  const wasHelpful = typeof payload.wasHelpful === "boolean" ? payload.wasHelpful : null;
+  const followupNeeded = typeof payload.followupNeeded === "boolean" ? payload.followupNeeded : null;
+
+  // Get or create registry entry
+  const existing = _caseRegistry.get(patternKey) || {
+    patternKey,
+    caseStatus:      "open",
+    caseOutcome:     "pending",
+    helpfulnessBand: "too_early_to_tell",
+    caseNote:        null,
+    wasHelpful:      null,
+    followupNeeded:  null,
+    manualOverride:  false,
+    createdAt:       new Date().toISOString(),
+    updatedAt:       new Date().toISOString(),
+    statusHistory:   [],
+  };
+
+  // Track status transitions
+  if (newStatus && newStatus !== existing.caseStatus) {
+    existing.statusHistory.push({
+      from: existing.caseStatus,
+      to:   newStatus,
+      at:   new Date().toISOString(),
+    });
+    // Cap history at 20 entries
+    if (existing.statusHistory.length > 20) {
+      existing.statusHistory = existing.statusHistory.slice(-20);
+    }
+    existing.caseStatus = newStatus;
+    existing.manualOverride = true;
+  }
+
+  if (newOutcome) existing.caseOutcome = newOutcome;
+  if (caseNote)   existing.caseNote = caseNote;
+  if (wasHelpful !== null) {
+    existing.wasHelpful = wasHelpful;
+    existing.helpfulnessBand = wasHelpful ? "clearly_helpful" : "not_helpful";
+  }
+  if (followupNeeded !== null) existing.followupNeeded = followupNeeded;
+
+  existing.updatedAt = new Date().toISOString();
+  _caseRegistry.set(patternKey, existing);
+
+  // Evict oldest entries if over limit
+  if (_caseRegistry.size > CASE_MAX_ENTRIES) {
+    let oldestKey = null;
+    let oldestTime = null;
+    for (const [key, val] of _caseRegistry) {
+      if (!oldestTime || val.updatedAt < oldestTime) {
+        oldestTime = val.updatedAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) _caseRegistry.delete(oldestKey);
+  }
+
+  logger.info("[agentBridge] case status updated (Step 11)", {
+    patternKey,
+    caseStatus:     existing.caseStatus,
+    caseOutcome:    existing.caseOutcome,
+    helpfulnessBand: existing.helpfulnessBand,
+    wasHelpful:     existing.wasHelpful,
+    followupNeeded: existing.followupNeeded,
+    manualOverride: existing.manualOverride,
+    statusTransitions: existing.statusHistory.length,
+  });
+
+  return {
+    success:     true,
+    patternKey,
+    caseStatus:     existing.caseStatus,
+    caseOutcome:    existing.caseOutcome,
+    helpfulnessBand: existing.helpfulnessBand,
+    wasHelpful:     existing.wasHelpful,
+    followupNeeded: existing.followupNeeded,
+    manualOverride: existing.manualOverride,
+    updatedAt:      existing.updatedAt,
+    statusHistory:  existing.statusHistory,
+  };
+}
+
+/**
+ * Returns a lightweight summary of the case registry:
+ * - status distribution (open/watching/confirmed/resolved/dismissed/needs_followup)
+ * - outcome distribution
+ * - helpfulness distribution
+ * - cases needing follow-up
+ * - recently updated cases
+ *
+ * Purely observational – the admin can use this to understand
+ * the operative Verlauf of recognised patterns.
+ */
+function getCaseResolutionSummary() {
+  const statusDistribution = {};
+  const outcomeDistribution = {};
+  const helpfulnessDistribution = {};
+  let casesNeedingFollowup = 0;
+  let casesWithManualOverride = 0;
+  let casesHelpful = 0;
+  let casesNotHelpful = 0;
+
+  const caseList = [];
+
+  for (const entry of _caseRegistry.values()) {
+    // Status distribution
+    statusDistribution[entry.caseStatus] =
+      (statusDistribution[entry.caseStatus] || 0) + 1;
+
+    // Outcome distribution
+    outcomeDistribution[entry.caseOutcome] =
+      (outcomeDistribution[entry.caseOutcome] || 0) + 1;
+
+    // Helpfulness distribution
+    helpfulnessDistribution[entry.helpfulnessBand] =
+      (helpfulnessDistribution[entry.helpfulnessBand] || 0) + 1;
+
+    if (entry.followupNeeded === true || entry.caseStatus === "needs_followup") {
+      casesNeedingFollowup += 1;
+    }
+    if (entry.manualOverride) casesWithManualOverride += 1;
+    if (entry.wasHelpful === true) casesHelpful += 1;
+    if (entry.wasHelpful === false) casesNotHelpful += 1;
+
+    caseList.push({
+      patternKey:      entry.patternKey,
+      caseStatus:      entry.caseStatus,
+      caseOutcome:     entry.caseOutcome,
+      helpfulnessBand: entry.helpfulnessBand,
+      wasHelpful:      entry.wasHelpful,
+      followupNeeded:  entry.followupNeeded,
+      manualOverride:  entry.manualOverride,
+      updatedAt:       entry.updatedAt,
+      statusTransitions: entry.statusHistory.length,
+    });
+  }
+
+  // Sort by updatedAt descending (most recently updated first)
+  caseList.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+
+  // Also derive case view from pattern memory for patterns
+  // that have observations but no explicit case yet
+  const patternCaseOverview = {};
+  for (const entry of _patternMemory.values()) {
+    const existingCase = _caseRegistry.get(entry.patternKey);
+    const derivedStatus = existingCase
+      ? existingCase.caseStatus
+      : _deriveFallbackCaseStatus(entry);
+    patternCaseOverview[derivedStatus] =
+      (patternCaseOverview[derivedStatus] || 0) + 1;
+  }
+
+  return {
+    totalCases:            _caseRegistry.size,
+    totalPatternsTracked:  _patternMemory.size,
+    statusDistribution,
+    outcomeDistribution,
+    helpfulnessDistribution,
+    casesNeedingFollowup,
+    casesWithManualOverride,
+    casesHelpful,
+    casesNotHelpful,
+    patternCaseOverview,
+    recentCases:           caseList.slice(0, CASE_MAX_SUMMARY_ENTRIES),
+    generatedAt:           new Date().toISOString(),
+  };
+}
+
+/**
+ * Derive a fallback case status for a pattern that has observations
+ * but no explicit case registry entry.  Used only for summary views.
+ */
+function _deriveFallbackCaseStatus(patternEntry) {
+  if (!patternEntry) return "open";
+  if (patternEntry.count >= CASE_MIN_OBSERVATIONS_FOR_CONFIRMED) return "confirmed";
+  if (patternEntry.count >= CASE_MIN_OBSERVATIONS_FOR_WATCHING)  return "watching";
+  return "open";
+}
+
+/**
+ * Ensure a case registry entry exists for a given pattern key,
+ * initialised with the derived case classification.
+ * Called during bridge package building to keep registry in sync.
+ */
+function _ensureCaseRegistryEntry(patternKey, caseClassification) {
+  if (!patternKey) return;
+
+  const existing = _caseRegistry.get(patternKey);
+  if (existing && existing.manualOverride) {
+    // Do not overwrite manual operator decisions
+    return;
+  }
+
+  const entry = existing || {
+    patternKey,
+    caseStatus:      "open",
+    caseOutcome:     "pending",
+    helpfulnessBand: "too_early_to_tell",
+    caseNote:        null,
+    wasHelpful:      null,
+    followupNeeded:  null,
+    manualOverride:  false,
+    createdAt:       new Date().toISOString(),
+    updatedAt:       new Date().toISOString(),
+    statusHistory:   [],
+  };
+
+  // Update with derived classification (only if not manually overridden)
+  entry.caseStatus      = caseClassification.caseStatus;
+  entry.caseOutcome     = caseClassification.caseOutcome;
+  entry.helpfulnessBand = caseClassification.helpfulnessBand;
+  entry.updatedAt       = new Date().toISOString();
+
+  _caseRegistry.set(patternKey, entry);
+
+  // Evict oldest entries if over limit
+  if (_caseRegistry.size > CASE_MAX_ENTRIES) {
+    let oldestKey = null;
+    let oldestTime = null;
+    for (const [key, val] of _caseRegistry) {
+      if (!oldestTime || val.updatedAt < oldestTime) {
+        oldestTime = val.updatedAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) _caseRegistry.delete(oldestKey);
+  }
 }
 
 /** Pick the key with the highest count from a tally object */
@@ -3359,6 +3932,9 @@ module.exports = {
   getGovernancePolicySummary,
   // Step 10: Issue Intelligence / Error Detection Light
   getIssueIntelligenceSummary,
+  // Step 11: Case / Resolution / Operator Loop Light
+  updateCaseStatus,
+  getCaseResolutionSummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -3379,4 +3955,7 @@ module.exports = {
   VALID_ISSUE_SEVERITY_LEVELS,
   VALID_ISSUE_CAUSES,
   VALID_ISSUE_SUGGESTED_FIXES,
+  VALID_CASE_STATUSES,
+  VALID_CASE_OUTCOMES,
+  VALID_HELPFULNESS_BANDS,
 };
