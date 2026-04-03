@@ -4113,6 +4113,8 @@ const {
   getRecommendationImprovementSummary,
   // Step 8: Governance Policy / Visibility Light
   getGovernancePolicySummary,
+  // Step 10: Issue Intelligence / Error Detection Light
+  getIssueIntelligenceSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4737,6 +4739,53 @@ router.get("/deepseek/agent-bridge/governance-policy", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading governance policy summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/issue-intelligence
+   Step 10: Issue Intelligence / Error Detection Light –
+   returns a lightweight overview of recurring technical
+   Auffälligkeiten, problem categories, affected layers,
+   severity distribution and conservative follow-up hints.
+
+   Important:
+   - purely observational, no auto-fix
+   - deliberately separate from governance / policy
+   - deliberately separate from routing / surface logic
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "issueIntelligence": {
+         "totalPatterns": 5,
+         "currentBridgeIssue": { ... },
+         "issueCategoryDistribution": { "mapping_schema_issue": 2 },
+         "affectedLayerDistribution": { "mapping": 2 },
+         "issueSeverityDistribution": { "medium": 2 },
+         "suspectedCauseDistribution": { "schema_mapping_drift": 2 },
+         "suggestedFixDistribution": { "review_schema_mapping": 2 },
+         "patternsPerIssueCategory": { "mapping_schema_issue": 1 },
+         "patternsPerAffectedLayer": { "mapping": 1 },
+         "patternsNeedingFollowup": 1,
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/issue-intelligence", (_req, res) => {
+  try {
+    const summary = getIssueIntelligenceSummary();
+    return res.json({ success: true, version: "v1", issueIntelligence: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/issue-intelligence error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading issue intelligence summary",
     });
   }
 });

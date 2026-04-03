@@ -659,6 +659,36 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 10: Inject issue intelligence context ──
+  if (bridgeContext && bridgeContext.issueContext) {
+    const ic = bridgeContext.issueContext;
+    const issueParts = [];
+    if (ic.issueCategory) {
+      issueParts.push(`Auffälligkeitskategorie: ${ic.issueCategory}`);
+    }
+    if (ic.affectedLayer) {
+      issueParts.push(`Betroffene Schicht: ${ic.affectedLayer}`);
+    }
+    if (ic.issueSeverity) {
+      issueParts.push(`Konservative Dringlichkeit: ${ic.issueSeverity}`);
+    }
+    if (ic.suspectedCause) {
+      issueParts.push(`Vermutete Ursache: ${ic.suspectedCause}`);
+    }
+    if (ic.suggestedFix) {
+      issueParts.push(`Empfohlene Prüfung: ${ic.suggestedFix}`);
+    }
+    if (ic.needsFollowup) {
+      issueParts.push("Folgeprüfung: sinnvoll");
+    }
+    if (ic.issueReason) {
+      issueParts.push(`Begründung: ${ic.issueReason}`);
+    }
+    if (issueParts.length) {
+      sections.push(`Issue-Intelligence-Sicht (technische Auffälligkeit, keine Auto-Reparatur):\n${issueParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
@@ -815,6 +845,10 @@ async function runGeminiArchitectReview(payload = {}) {
     // Step 7: recommendation improvement context
     bridgeDominantFeedback: normalised.bridgeContext?.improvementContext?.dominantFeedback || null,
     bridgeDominantImprovement: normalised.bridgeContext?.improvementContext?.dominantImprovement || null,
+    // Step 10: issue intelligence context
+    bridgeIssueCategory: normalised.bridgeContext?.issueContext?.issueCategory || null,
+    bridgeIssueLayer: normalised.bridgeContext?.issueContext?.affectedLayer || null,
+    bridgeIssueSeverity: normalised.bridgeContext?.issueContext?.issueSeverity || null,
   });
 
   let response;
