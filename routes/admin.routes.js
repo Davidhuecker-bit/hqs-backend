@@ -4111,6 +4111,8 @@ const {
   // Step 7: Recommendation Feedback / Improvement Loop Light
   submitRecommendationFeedback,
   getRecommendationImprovementSummary,
+  // Step 8: Governance Policy / Visibility Light
+  getGovernancePolicySummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4683,6 +4685,58 @@ router.get("/deepseek/agent-bridge/recommendation-improvement", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading recommendation improvement summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/governance-policy
+   Step 8: Governance Policy Summary – returns a lightweight
+   overview of how recommendations are distributed across
+   governance / policy / visibility classes.
+
+   Helps the HQS system understand:
+   - how many signals remain shadow-only (internal observation)
+   - how many are internal-only
+   - how many need more evidence before surfacing
+   - how many are admin-visible
+   - how many are guardian candidates
+   - how governance relates to readiness and confidence
+
+   Important:
+   - This is purely observational – no auto-promotion
+   - Governance is deliberately separate from readiness
+     (Step 6) and improvement (Step 7)
+   - Guardian candidates are only marked, never
+     auto-activated
+
+   Response:
+     {
+       "success":              true,
+       "version":              "v1",
+       "governancePolicy": {
+         "totalPatterns":           5,
+         "governanceDistribution":  { "shadow_only": 2, "admin_visible": 1, ... },
+         "patternsPerGovernance":   { "shadow_only": 2, "internal_only": 1, ... },
+         "readinessVsGovernance":   { "observation→shadow_only": 2, ... },
+         "confidenceVsGovernance":  { "low→shadow_only": 2, ... },
+         "guardianCandidates":      [ ... ],
+         "generatedAt":             "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/governance-policy", (_req, res) => {
+  try {
+    const summary = getGovernancePolicySummary();
+    return res.json({ success: true, version: "v1", governancePolicy: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/governance-policy error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading governance policy summary",
     });
   }
 });

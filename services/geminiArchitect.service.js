@@ -631,6 +631,34 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 8: Inject governance / policy context ──
+  if (bridgeContext && bridgeContext.governanceContext) {
+    const gc = bridgeContext.governanceContext;
+    const govParts = [];
+    if (gc.policyClass) {
+      const policyLabels = {
+        shadow_only:         "Nur interne Shadow-Beobachtung",
+        internal_only:       "Nur interne Sichtbarkeit",
+        needs_more_evidence: "Benötigt mehr Evidenz vor Freigabe",
+        admin_visible:       "Admin-sichtbar",
+        guardian_candidate:  "Guardian-Kandidat (keine Auto-Freigabe)",
+      };
+      govParts.push(`Policy-Klasse: ${policyLabels[gc.policyClass] || gc.policyClass}`);
+    }
+    if (gc.guardianEligibility) {
+      govParts.push("Guardian-Eignung: vorläufig gegeben (manuelle Prüfung erforderlich)");
+    }
+    if (gc.needsMoreEvidence) {
+      govParts.push("Evidenzlage: noch nicht ausreichend für Freigabe");
+    }
+    if (gc.governanceReason) {
+      govParts.push(`Begründung: ${gc.governanceReason}`);
+    }
+    if (govParts.length) {
+      sections.push(`Governance-/Sichtbarkeitsklassifikation (nur Einordnung, keine Ausführung):\n${govParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
