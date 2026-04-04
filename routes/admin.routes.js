@@ -4118,6 +4118,8 @@ const {
   // Step 11: Case / Resolution / Operator Loop Light
   updateCaseStatus,
   getCaseResolutionSummary,
+  // Step 12: Attention / Priority / Operator Focus Light
+  getAttentionPrioritySummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4889,6 +4891,59 @@ router.post("/deepseek/agent-bridge/case-status-update", (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error updating case status",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/attention-priority
+   Step 12: Attention / Priority / Operator Focus Light –
+   returns a lightweight overview of how attention / priority
+   is distributed across recognised patterns and cases.
+
+   Helps the operator understand:
+   - how many patterns require immediate focus (focus_now)
+   - how many should be reviewed today (review_today)
+   - how many can be watched next (watch_next)
+   - how many are in the background (background)
+   - which issue / case / readiness combinations tend to
+     drive higher attention
+   - which focus drivers appear most frequently
+   - recent high-priority entries with reasons
+
+   Purely observational – no auto-dispatch, no auto-execute.
+   The system recommends attention – the operator decides.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "attentionPriority": {
+         "totalPatterns": 12,
+         "totalCases": 8,
+         "bandDistribution": { "focus_now": 1, "review_today": 3, ... },
+         "driverFrequency": { "issue_severity_high": 2, ... },
+         "issueVsAttention": { "high→focus_now": 1, ... },
+         "caseVsAttention": { ... },
+         "readinessVsAttention": { ... },
+         "highPriorityEntries": [ ... ],
+         "currentBridgeAttention": { ... },
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/attention-priority", (_req, res) => {
+  try {
+    const summary = getAttentionPrioritySummary();
+    return res.json({ success: true, version: "v1", attentionPriority: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/attention-priority error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading attention priority summary",
     });
   }
 });
