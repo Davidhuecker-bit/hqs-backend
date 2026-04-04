@@ -3791,14 +3791,15 @@ function _ensureCaseRegistryEntry(patternKey, caseClassification) {
 
    Inputs (all optional – missing values
    contribute 0):
-   - issueSeverity    (high=3, medium=1)
-   - caseStatus       (needs_followup=2, confirmed=2, watching=1)
-   - readinessBand    (mature_recommendation=2, useful_next_step=1)
-   - confidenceBand   (high=1)
-   - governancePolicy (guardian_candidate=1, admin_visible=1)
-   - patternCount     (>=5 → 1, >=3 → 0.5 treated as 1 after rounding)
-   - helpfulnessBand  (clearly_helpful=1)
-   - needsFollowup    (true=1)
+   - issueSeverity           (high=3, medium=1)
+   - caseStatus              (needs_followup=2, confirmed=2, watching=1)
+   - readinessBand           (mature_recommendation=2, useful_next_step=1)
+   - confidenceBand          (high=1)
+   - governancePolicyClass   (guardian_candidate=1, admin_visible=1)
+   - patternCount            (>=5 → 1)
+   - helpfulnessBand         (clearly_helpful=1)
+   - needsFollowup           (true=1)
+   - hintCount               (not scored directly, reserved for future use)
 
    Output:
    {
