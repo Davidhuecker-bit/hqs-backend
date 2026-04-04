@@ -2737,7 +2737,7 @@ async function loadInterfaceState() {
   try {
     const res  = await fetch(`${API_BASE}/interface-state`);
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unbekannter Fehler');
+    if (!data.success) throw new Error(data.error || data.message || (data.resultType ? ('Fehler: ' + data.resultType) : 'Unbekannter Fehler'));
 
     _renderChiefBanner(data);
     _renderAtAGlance(data);
@@ -3102,7 +3102,7 @@ async function loadRecommendationReview() {
   try {
     const res = await fetch(`${API_BASE}/deepseek/agent-bridge/recommendation-improvement`);
     const data = await res.json();
-    if (!data.success) throw new Error(data.error || 'Unbekannter Fehler');
+    if (!data.success) throw new Error(data.error || data.message || (data.resultType ? ('Fehler: ' + data.resultType) : 'Unbekannter Fehler'));
 
     const ri = data.recommendationImprovement || {};
     const total = ri.totalFeedbackEntries || 0;

@@ -4126,6 +4126,7 @@ const {
   runGeminiArchitectReview,
   VALID_MODES: GEMINI_ARCHITECT_MODES,
   RESULT_TYPES: GEMINI_RESULT_TYPES,
+  FALLBACK_LABELS: GEMINI_FALLBACK_LABELS,
 } = require("../services/geminiArchitect.service");
 
 /* =========================================================
@@ -4367,34 +4368,72 @@ router.post("/deepseek/review-to-human", async (req, res) => {
 ========================================================= */
 
 router.post("/gemini/architect-review", async (req, res) => {
+  logger.info("[admin] gemini/architect-review request received", {
+    mode: req.body?.mode || "not_specified",
+    hasMessage: Boolean(req.body?.message),
+    hasContext: Boolean(req.body?.context),
+    hasBridgeContext: Boolean(req.body?.bridgeContext),
+  });
+
   if (!isGeminiConfigured()) {
+    const rt = GEMINI_RESULT_TYPES.NOT_CONFIGURED;
+    logger.warn("[admin] gemini/architect-review – not configured");
     return res.status(503).json({
       success: false,
-      error: "GEMINI_API_KEY is not configured",
-      resultType: GEMINI_RESULT_TYPES.NOT_CONFIGURED,
+      version: "v1",
+      validModes: GEMINI_ARCHITECT_MODES,
+      mode: req.body?.mode || null,
+      resultType: rt,
+      error: GEMINI_FALLBACK_LABELS[rt] || "Gemini ist nicht konfiguriert",
+      message: "GEMINI_API_KEY is not configured",
+      result: null,
     });
   }
 
   try {
     const review = await runGeminiArchitectReview(req.body);
     const isSuccess = review.resultType === GEMINI_RESULT_TYPES.SUCCESS;
+    const resultType = review.resultType || GEMINI_RESULT_TYPES.FALLBACK;
+
+    logger.info("[admin] gemini/architect-review response", {
+      success: isSuccess,
+      resultType,
+      mode: review.mode,
+    });
+
     return res.json({
       success: isSuccess,
       version: "v1",
       validModes: GEMINI_ARCHITECT_MODES,
       mode: review.mode,
-      resultType: review.resultType || GEMINI_RESULT_TYPES.FALLBACK,
+      resultType,
+      error: isSuccess ? null : (GEMINI_FALLBACK_LABELS[resultType] || GEMINI_FALLBACK_LABELS[GEMINI_RESULT_TYPES.FALLBACK]),
+      message: isSuccess ? null : (review.result?.summaryText || GEMINI_FALLBACK_LABELS[resultType] || null),
       result: review.result,
     });
   } catch (error) {
+    const safeMsg = String(error.message || "").slice(0, 120);
+    const isTimeout = safeMsg.toLowerCase().includes("timeout") ||
+                      safeMsg.toLowerCase().includes("deadline") ||
+                      safeMsg.includes("GEMINI_TIMEOUT");
+    const resultType = isTimeout ? GEMINI_RESULT_TYPES.TIMEOUT : GEMINI_RESULT_TYPES.ROUTE_ERROR;
+    const fallbackLabel = GEMINI_FALLBACK_LABELS[resultType] || GEMINI_FALLBACK_LABELS[GEMINI_RESULT_TYPES.FALLBACK];
+
     logger.error("[admin] gemini/architect-review error", {
-      message: error.message,
+      resultType,
+      isTimeout,
+      reason: safeMsg,
       stack: error.stack,
     });
     return res.status(500).json({
       success: false,
-      resultType: GEMINI_RESULT_TYPES.API_ERROR,
-      error: error.message || "Internal error during Gemini Architect Review",
+      version: "v1",
+      validModes: GEMINI_ARCHITECT_MODES,
+      mode: req.body?.mode || null,
+      resultType,
+      error: fallbackLabel,
+      message: safeMsg || "Internal error during Gemini Architect Review",
+      result: null,
     });
   }
 });
