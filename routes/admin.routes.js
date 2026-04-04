@@ -4125,6 +4125,7 @@ const {
   isGeminiConfigured,
   runGeminiArchitectReview,
   VALID_MODES: GEMINI_ARCHITECT_MODES,
+  RESULT_TYPES: GEMINI_RESULT_TYPES,
 } = require("../services/geminiArchitect.service");
 
 /* =========================================================
@@ -4370,16 +4371,19 @@ router.post("/gemini/architect-review", async (req, res) => {
     return res.status(503).json({
       success: false,
       error: "GEMINI_API_KEY is not configured",
+      resultType: GEMINI_RESULT_TYPES.NOT_CONFIGURED,
     });
   }
 
   try {
     const review = await runGeminiArchitectReview(req.body);
+    const isSuccess = review.resultType === GEMINI_RESULT_TYPES.SUCCESS;
     return res.json({
-      success: true,
+      success: isSuccess,
       version: "v1",
       validModes: GEMINI_ARCHITECT_MODES,
       mode: review.mode,
+      resultType: review.resultType || GEMINI_RESULT_TYPES.FALLBACK,
       result: review.result,
     });
   } catch (error) {
@@ -4389,6 +4393,7 @@ router.post("/gemini/architect-review", async (req, res) => {
     });
     return res.status(500).json({
       success: false,
+      resultType: GEMINI_RESULT_TYPES.API_ERROR,
       error: error.message || "Internal error during Gemini Architect Review",
     });
   }
