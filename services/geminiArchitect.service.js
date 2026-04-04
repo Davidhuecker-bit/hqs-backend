@@ -212,8 +212,11 @@ Ergebnisschwerpunkt: Prioritätsprobleme primär in "priorityRecommendations" un
    Input normalisation helpers
    ───────────────────────────────────────────── */
 
-const MIN_ARRAY_ENTRY_LEN = 4;   // entries ≤ 3 chars are typically punctuation fragments or parsing artefacts
-const MAX_ARRAY_ENTRIES   = 10;  // cap per array to avoid model data-dumps
+const MIN_ARRAY_ENTRY_LEN  = 4;    // entries ≤ 3 chars are typically punctuation fragments or parsing artefacts
+const MAX_ARRAY_ENTRIES    = 10;   // cap per array to avoid model data-dumps
+const GEMINI_MAX_OUTPUT_TOKENS = 2048; // must match generationConfig.maxOutputTokens below
+const SIZE_THRESHOLD_SMALL = 600;  // raw response chars considered a small response
+const SIZE_THRESHOLD_MEDIUM = 1200; // raw response chars considered a medium response
 
 function toStr(value) {
   if (value == null) return "";
@@ -362,14 +365,14 @@ function extractJsonObject(text) {
 }
 
 /**
- * Heuristic: a response is likely truncated when it contains the start of a
- * JSON object but does not end with `}`.  This can happen when Gemini hits
- * the maxOutputTokens limit mid-stream.
+ * Heuristic: a response is likely truncated when it looks like a JSON object
+ * (starts with `{`) but does not end with `}`.  This can happen when Gemini
+ * hits the maxOutputTokens limit mid-stream.
  */
 function isLikelyTruncated(raw) {
   if (typeof raw !== "string" || !raw.trim()) return false;
   const cleaned = stripCodeFences(raw).trim();
-  return cleaned.includes("{") && !cleaned.endsWith("}");
+  return cleaned.startsWith("{") && !cleaned.endsWith("}");
 }
 
 /**
@@ -1004,7 +1007,7 @@ async function runGeminiArchitectReview(payload = {}) {
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       temperature: 0.15,
-      maxOutputTokens: 2048,
+      maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
     },
@@ -1013,7 +1016,7 @@ async function runGeminiArchitectReview(payload = {}) {
   logger.info("[geminiArchitect] sending request", {
     mode: normalised.mode,
     model: modelName,
-    maxOutputTokens: 2048,
+    maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
     promptLengthChars: userPrompt.length,
     hasMessage: Boolean(normalised.message),
     hasContext: Boolean(normalised.context),
@@ -1155,7 +1158,7 @@ async function runGeminiArchitectReview(payload = {}) {
 
   const result = applySeverityGuard(normalisedResult, normalised.mode);
 
-  const sizeClass = rawLengthChars < 600 ? "small" : rawLengthChars < 1200 ? "medium" : "large";
+  const sizeClass = rawLengthChars < SIZE_THRESHOLD_SMALL ? "small" : rawLengthChars < SIZE_THRESHOLD_MEDIUM ? "medium" : "large";
 
   logger.info("[geminiArchitect] review complete", {
     mode: normalised.mode,
