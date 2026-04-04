@@ -1035,13 +1035,18 @@ async function runGeminiArchitectReview(payload = {}) {
   let response;
   try {
     const GEMINI_TIMEOUT_MS = 30_000;
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), GEMINI_TIMEOUT_MS),
-    );
-    response = await Promise.race([
-      model.generateContent(userPrompt),
-      timeoutPromise,
-    ]);
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), GEMINI_TIMEOUT_MS);
+    });
+    try {
+      response = await Promise.race([
+        model.generateContent(userPrompt),
+        timeoutPromise,
+      ]);
+    } finally {
+      clearTimeout(timerId);
+    }
   } catch (apiErr) {
     const safeMsg = String(apiErr.message || "").slice(0, 80);
     const isTimeout = safeMsg.includes("GEMINI_TIMEOUT") ||
