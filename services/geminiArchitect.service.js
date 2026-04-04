@@ -81,42 +81,43 @@ Regeln:
 1. Antworte immer auf Deutsch. Nutze einfache, klare Sprache. Kurze Sätze bevorzugen.
 2. Antworte NUR mit einem einzelnen gültigen JSON-Objekt – kein Markdown, keine Prosa, keine Erklärungen außerhalb des JSON.
 3. JSON NICHT in Code-Fences einschließen.
-4. Verwende genau diese Schlüssel auf oberster Ebene:
-   - "summaryTitle"              (String – prägnanter Titel der Analyse)
-   - "summaryText"               (String – ein bis drei Sätze Zusammenfassung)
+4. Beginne die Antwort SOFORT mit dem Zeichen { – kein einleitender Text, keine Präambel, keine Überschrift. Die Antwort muss mit } enden. Kein Text nach der schließenden Klammer.
+5. Verwende genau diese Schlüssel auf oberster Ebene:
+   - "summaryTitle"              (String – prägnanter Titel, max. 8 Wörter)
+   - "summaryText"               (String – max. 2 kurze Sätze)
    - "severity"                  (String, einer von: "low", "medium", "high")
-   - "uiFindings"                (Array von kurzen Strings – konkrete Beobachtungen zur Oberfläche)
-   - "layoutRecommendations"     (Array von kurzen Strings – Layout-Empfehlungen)
-   - "priorityRecommendations"   (Array von kurzen Strings – Priorisierungshinweise für das UI)
-   - "frontendGuardNotes"        (Array von kurzen Strings – Binding- / View-Risiken)
-   - "recommendedAction"         (String – die eine wichtigste Maßnahme)
-   - "confidenceNote"            (String – kurzer Hinweis zur Verlässlichkeit dieser Einschätzung)
-5. Jeder Array-Wert MUSS ein Array sein, niemals ein einzelner String.
-6. Jeden Array-Eintrag kurz halten (maximal ein Satz).
-7. "severity" muss den Gesamtschweregrad der Frontend-Risiken widerspiegeln:
+   - "uiFindings"                (Array – max. 3 kurze Strings)
+   - "layoutRecommendations"     (Array – max. 3 kurze Strings)
+   - "priorityRecommendations"   (Array – max. 3 kurze Strings)
+   - "frontendGuardNotes"        (Array – max. 3 kurze Strings)
+   - "recommendedAction"         (String – die eine wichtigste Maßnahme, 1 Satz)
+   - "confidenceNote"            (String – 1 kurzer Satz zur Verlässlichkeit)
+6. Jeder Array-Wert MUSS ein Array sein, niemals ein einzelner String. Arrays dürfen leer sein ([]).
+7. Jeden Array-Eintrag auf maximal einen Satz begrenzen.
+8. "severity" muss den Gesamtschweregrad der Frontend-Risiken widerspiegeln:
    - "low"    → kleinere Auffälligkeiten, kein dringender Handlungsbedarf
    - "medium" → merkliche Darstellungs- oder Strukturprobleme, die untersucht werden sollten
    - "high"   → ernste UI-Risiken, die sofortige Aufmerksamkeit erfordern
-8. Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+9. Keine Marketing-Sprache, keine Füllwörter, keine Disclaimers.
+10. Kompakt antworten: keine redundanten Wiederholungen zwischen Feldern, keine unnötig langen Erklärungen.
 
 Beispiel für eine korrekte Antwort (nur als Format-Referenz):
 {
-  "summaryTitle": "Fehlende visuelle Hierarchie im Portfolio-Depot",
-  "summaryText": "Die Depot-Ansicht zeigt Daten ohne klare Priorisierung. Kritische Status-Indikatoren sind nicht prominent genug dargestellt.",
+  "summaryTitle": "Fehlende visuelle Hierarchie im Depot",
+  "summaryText": "Die Depot-Ansicht zeigt Daten ohne klare Priorisierung. Kritische Status-Indikatoren sind nicht prominent genug.",
   "severity": "medium",
   "uiFindings": [
-    "PnL-Werte und Konviktionsstufen befinden sich auf gleicher Hierarchieebene.",
-    "Fehlende Leerstandssignale bei nicht belegten Portfolio-Slots."
+    "PnL-Werte und Konviktionsstufen auf gleicher Hierarchieebene.",
+    "Fehlende Leerstandssignale bei nicht belegten Slots."
   ],
   "layoutRecommendations": [
-    "Kritische Warnungen und Aktionen in einem hervorgehobenen Bereich oben platzieren.",
-    "Sekundäre Metriken einklappbar gestalten."
+    "Kritische Warnungen oben in hervorgehobenem Bereich platzieren."
   ],
   "priorityRecommendations": [
-    "Risikowarnungen immer vor allgemeinen Marktdaten anzeigen."
+    "Risikowarnungen vor allgemeinen Marktdaten anzeigen."
   ],
   "frontendGuardNotes": [
-    "PositionCard bindet an 'riskScore' – Feld muss im Symbol-Summary-Response vorhanden sein."
+    "PositionCard bindet an 'riskScore' – Feld muss im Backend-Response vorhanden sein."
   ],
   "recommendedAction": "Depot-Layout in zwei Zonen aufteilen: oben Aktionen/Warnungen, unten Marktdaten.",
   "confidenceNote": "Einschätzung basiert auf beschriebener Struktur ohne direkten View-Zugriff."
@@ -211,8 +212,11 @@ Ergebnisschwerpunkt: Prioritätsprobleme primär in "priorityRecommendations" un
    Input normalisation helpers
    ───────────────────────────────────────────── */
 
-const MIN_ARRAY_ENTRY_LEN = 4;   // entries ≤ 3 chars are typically punctuation fragments or parsing artefacts
-const MAX_ARRAY_ENTRIES   = 10;  // cap per array to avoid model data-dumps
+const MIN_ARRAY_ENTRY_LEN  = 4;    // entries ≤ 3 chars are typically punctuation fragments or parsing artefacts
+const MAX_ARRAY_ENTRIES    = 10;   // cap per array to avoid model data-dumps
+const GEMINI_MAX_OUTPUT_TOKENS = 2048; // must match generationConfig.maxOutputTokens below
+const SIZE_THRESHOLD_SMALL = 600;  // raw response chars considered a small response
+const SIZE_THRESHOLD_MEDIUM = 1200; // raw response chars considered a medium response
 
 function toStr(value) {
   if (value == null) return "";
@@ -264,17 +268,18 @@ function normaliseLayoutState(value) {
    ───────────────────────────────────────────── */
 
 const RESULT_TYPES = {
-  SUCCESS:        "success",
-  FALLBACK:       "fallback",
-  API_ERROR:      "api_error",
-  EMPTY_RESPONSE: "empty_response",
-  INVALID_JSON:   "invalid_json",
-  INVALID_SCHEMA: "invalid_schema",
-  NOT_CONFIGURED: "not_configured",
-  NO_INPUT:       "no_input",
-  ROUTE_ERROR:    "route_error",
-  TIMEOUT:        "timeout",
-  UNKNOWN:        "unknown",
+  SUCCESS:            "success",
+  FALLBACK:           "fallback",
+  API_ERROR:          "api_error",
+  EMPTY_RESPONSE:     "empty_response",
+  INVALID_JSON:       "invalid_json",
+  INVALID_SCHEMA:     "invalid_schema",
+  TRUNCATED:          "truncated_response",
+  NOT_CONFIGURED:     "not_configured",
+  NO_INPUT:           "no_input",
+  ROUTE_ERROR:        "route_error",
+  TIMEOUT:            "timeout",
+  UNKNOWN:            "unknown",
 };
 
 /* ─────────────────────────────────────────────
@@ -357,6 +362,17 @@ function extractJsonObject(text) {
   }
 
   return null;
+}
+
+/**
+ * Heuristic: a response is likely truncated when it looks like a JSON object
+ * (starts with `{`) but does not end with `}`.  This can happen when Gemini
+ * hits the maxOutputTokens limit mid-stream.
+ */
+function isLikelyTruncated(raw) {
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  const cleaned = stripCodeFences(raw).trim();
+  return cleaned.startsWith("{") && !cleaned.endsWith("}");
 }
 
 /**
@@ -446,6 +462,7 @@ const FALLBACK_LABELS = {
   [RESULT_TYPES.EMPTY_RESPONSE]: "Modell hat eine leere Antwort geliefert",
   [RESULT_TYPES.INVALID_JSON]:   "Modellantwort ist kein gültiges JSON",
   [RESULT_TYPES.INVALID_SCHEMA]: "Modellantwort hat nicht das erwartete Format",
+  [RESULT_TYPES.TRUNCATED]:      "Modellantwort wurde abgeschnitten – Output-Limit erreicht",
   [RESULT_TYPES.NOT_CONFIGURED]: "Gemini API-Schlüssel ist nicht konfiguriert",
   [RESULT_TYPES.NO_INPUT]:       "Keine Eingabedaten für die Analyse vorhanden",
   [RESULT_TYPES.ROUTE_ERROR]:    "Interner Fehler bei der Verarbeitung der Anfrage",
@@ -900,15 +917,6 @@ function buildUserPrompt(normalised) {
     sections.push(`Prioritätskontext:\n${priorityContext}`);
   }
 
-  if (bridgeContext) {
-    try {
-      const bridgeStr = JSON.stringify(bridgeContext, null, 2);
-      sections.push(`Agent-Bridge-Kontext:\n${bridgeStr}`);
-    } catch (_) {
-      // ignore malformed bridge context
-    }
-  }
-
   if (context) {
     sections.push(`Zusätzlicher Kontext:\n${context}`);
   }
@@ -999,7 +1007,7 @@ async function runGeminiArchitectReview(payload = {}) {
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       temperature: 0.15,
-      maxOutputTokens: 1024,
+      maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
     },
@@ -1008,6 +1016,8 @@ async function runGeminiArchitectReview(payload = {}) {
   logger.info("[geminiArchitect] sending request", {
     mode: normalised.mode,
     model: modelName,
+    maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+    promptLengthChars: userPrompt.length,
     hasMessage: Boolean(normalised.message),
     hasContext: Boolean(normalised.context),
     hasBridgeContext: Boolean(normalised.bridgeContext),
@@ -1070,7 +1080,8 @@ async function runGeminiArchitectReview(payload = {}) {
   // ── Extract raw text from Gemini response ──
 
   const rawContent = getResponseText(response);
-  const hasContent = Boolean(rawContent && rawContent.trim().length > 0);
+  const rawLengthChars = rawContent ? rawContent.length : 0;
+  const hasContent = rawLengthChars > 0;
 
   if (!hasContent) {
     logger.warn("[geminiArchitect] Gemini returned empty response", {
@@ -1089,16 +1100,19 @@ async function runGeminiArchitectReview(payload = {}) {
   const parseResult = tryParseJson(rawContent);
 
   if (!parseResult) {
+    const likelyTruncated = isLikelyTruncated(rawContent);
+    const failType = likelyTruncated ? RESULT_TYPES.TRUNCATED : RESULT_TYPES.INVALID_JSON;
     logger.warn("[geminiArchitect] No valid JSON found in response", {
       mode: normalised.mode,
-      resultType: RESULT_TYPES.INVALID_JSON,
-      hasContent,
+      resultType: failType,
+      likelyTruncated,
+      rawLengthChars,
       rawPreview: String(rawContent).slice(0, 160),
     });
     return {
       mode: normalised.mode,
-      resultType: RESULT_TYPES.INVALID_JSON,
-      result: fallbackResult(RESULT_TYPES.INVALID_JSON),
+      resultType: failType,
+      result: fallbackResult(failType),
     };
   }
 
@@ -1114,6 +1128,7 @@ async function runGeminiArchitectReview(payload = {}) {
       resultType: RESULT_TYPES.INVALID_SCHEMA,
       parseMethod,
       schemaReason: schemaCheck.reason,
+      rawLengthChars,
       rawPreview: String(rawContent).slice(0, 160),
     });
     return {
@@ -1132,6 +1147,7 @@ async function runGeminiArchitectReview(payload = {}) {
       mode: normalised.mode,
       resultType: RESULT_TYPES.INVALID_SCHEMA,
       parseMethod,
+      rawLengthChars,
     });
     return {
       mode: normalised.mode,
@@ -1142,12 +1158,17 @@ async function runGeminiArchitectReview(payload = {}) {
 
   const result = applySeverityGuard(normalisedResult, normalised.mode);
 
+  const sizeClass = rawLengthChars < SIZE_THRESHOLD_SMALL ? "small" : rawLengthChars < SIZE_THRESHOLD_MEDIUM ? "medium" : "large";
+
   logger.info("[geminiArchitect] review complete", {
     mode: normalised.mode,
     resultType: RESULT_TYPES.SUCCESS,
     severity: result.severity,
     parseMethod,
     schemaStatus: "valid",
+    rawLengthChars,
+    sizeClass,
+    usedFallback: false,
     uiFindingsCount: result.uiFindings.length,
     guardNotesCount: result.frontendGuardNotes.length,
     bridgeReviewIntent: normalised.bridgeContext?.workflow?.reviewIntent || null,
