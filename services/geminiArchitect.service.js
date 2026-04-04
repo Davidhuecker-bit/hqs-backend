@@ -999,7 +999,7 @@ async function runGeminiArchitectReview(payload = {}) {
     systemInstruction: SYSTEM_PROMPT,
     generationConfig: {
       temperature: 0.15,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 2048,
       responseMimeType: "application/json",
       responseSchema: RESPONSE_SCHEMA,
     },
