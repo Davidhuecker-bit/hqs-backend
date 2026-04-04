@@ -622,6 +622,66 @@ const CASE_MAX_ENTRIES                     = 200;
 const CASE_MAX_SUMMARY_ENTRIES             = 50;
 
 /* ─────────────────────────────────────────────
+   Step 12: Attention / Priority Queue /
+   Operator Focus Light
+   ─────────────────────────────────────────────
+   Adds a lightweight internal attention /
+   priority layer that helps the operator
+   understand what deserves focus right now,
+   what should be reviewed today, what to
+   keep watching, and what can stay in the
+   background.
+
+   Separation principle:
+   - attentionBand = how much operator attention
+     this currently deserves
+   - issueType    = what is technically wrong
+   - caseStatus   = operative Bearbeitungszustand
+   - readiness    = how actionable it is
+   - governance   = visibility classification
+
+   A case can be:
+   - issue-seitig: "mapping_schema_issue"
+   - case-seitig:  "watching"
+   - readiness:    "observation"
+   - attention:    "watch_next"
+   – each dimension independently meaningful.
+
+   Priority is derived transparently from
+   existing dimensions (issue severity, case
+   status, readiness, governance, confidence,
+   pattern frequency, helpfulness, follow-up
+   need) — no black-box scoring.
+   ───────────────────────────────────────────── */
+
+const VALID_ATTENTION_BANDS = [
+  "focus_now",
+  "review_today",
+  "watch_next",
+  "background",
+];
+
+/**
+ * Weights used to derive the attention score
+ * from existing dimensions.  Each dimension
+ * contributes a small, transparent increment.
+ *
+ * The total score is mapped to an attention band:
+ *   >= 7  → focus_now
+ *   >= 4  → review_today
+ *   >= 2  → watch_next
+ *   <  2  → background
+ */
+const ATTENTION_SCORE_THRESHOLDS = {
+  focus_now:    7,
+  review_today: 4,
+  watch_next:   2,
+};
+
+/** Max entries in attention priority summary */
+const ATTENTION_MAX_SUMMARY_ENTRIES = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -1891,6 +1951,20 @@ function buildBridgePackage(payload = {}) {
   // Ensure case registry entry exists (does not overwrite manual decisions)
   _ensureCaseRegistryEntry(bridgePatternKey, caseClassification);
 
+  // ── Step 12: Attention / Priority classification ──
+  const patternEntry = bridgePatternKey ? _patternMemory.get(bridgePatternKey) : null;
+  const attentionClassification = classifyAttentionPriority({
+    issueSeverity:         issueContext.issueSeverity,
+    caseStatus:            caseClassification.caseStatus,
+    readinessBand:         packageReadiness.band,
+    confidenceBand:        packageConfidenceBand,
+    governancePolicyClass: governancePolicy.policyClass,
+    helpfulnessBand:       caseClassification.helpfulnessBand,
+    needsFollowup:         issueContext.needsFollowup,
+    patternCount:          patternEntry ? patternEntry.count : 0,
+    hintCount:             bridgeHints.length,
+  });
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -1934,6 +2008,13 @@ function buildBridgePackage(payload = {}) {
       caseOutcome:      caseClassification.caseOutcome,
       helpfulnessBand:  caseClassification.helpfulnessBand,
       caseReason:       caseClassification.caseReason,
+    },
+    // Step 12: attention / priority / operator focus (ruhige Aufmerksamkeitsschicht)
+    attentionContext: {
+      attentionBand:   attentionClassification.attentionBand,
+      attentionScore:  attentionClassification.attentionScore,
+      attentionReason: attentionClassification.attentionReason,
+      focusDrivers:    attentionClassification.focusDrivers,
     },
     meta: {
       hintsTotal:     rawHints.length,
@@ -2052,6 +2133,32 @@ function buildBridgePackage(payload = {}) {
     readinessBand:    packageReadiness.band,
     policyClass:      governancePolicy.policyClass,
   });
+
+  // Step 12: Attention / Priority classification log
+  logger.info("[agentBridge] attention / priority classified (Step 12)", {
+    attentionBand:   attentionClassification.attentionBand,
+    attentionScore:  attentionClassification.attentionScore,
+    attentionReason: attentionClassification.attentionReason,
+    focusDrivers:    attentionClassification.focusDrivers,
+    patternKey:      bridgePatternKey,
+    // Separation transparency: attention vs issue vs case vs readiness vs governance
+    issueSeverity:   issueContext.issueSeverity,
+    caseStatus:      caseClassification.caseStatus,
+    readinessBand:   packageReadiness.band,
+    policyClass:     governancePolicy.policyClass,
+  });
+
+  // Step 12: Log when attention is high but case is still early
+  if (
+    attentionClassification.attentionBand === "focus_now" &&
+    (caseClassification.caseStatus === "open" || caseClassification.caseStatus === "watching")
+  ) {
+    logger.info("[agentBridge] attention ↔ case divergence (Step 12)", {
+      attentionBand: attentionClassification.attentionBand,
+      caseStatus:    caseClassification.caseStatus,
+      insight:       "Hohe Aufmerksamkeit empfohlen, aber Fall operativ noch früh – bewusste Beobachtung.",
+    });
+  }
 
   // Step 11: Log divergence between case status and issue severity
   if (
@@ -2663,6 +2770,10 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     suggestedFix:           null,
     issueNeedsFollowup:     false,
     issueConfidence:        null,
+
+    // ── Step 12 fields (attention / priority / operator focus) ──
+    attentionBand:          null, // set below after attention classification
+    attentionScore:         null,
   };
 
   // Assess signal quality (must happen after signal is built)
@@ -2721,6 +2832,22 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
   signal.caseStatus       = sigCase.caseStatus;
   signal.caseOutcome      = sigCase.caseOutcome;
   signal.helpfulnessBand  = sigCase.helpfulnessBand;
+
+  // ── Step 12: Attention / Priority classification for learning signal ──
+  const sigPatternEntry = patternKey ? _patternMemory.get(patternKey) : null;
+  const sigAttention = classifyAttentionPriority({
+    issueSeverity:         signal.issueSeverity,
+    caseStatus:            signal.caseStatus,
+    readinessBand:         signal.actionReadinessBand,
+    confidenceBand:        signal.confidenceBand,
+    governancePolicyClass: signal.governancePolicyClass,
+    helpfulnessBand:       signal.helpfulnessBand,
+    needsFollowup:         signal.issueNeedsFollowup,
+    patternCount:          sigPatternEntry ? sigPatternEntry.count : 0,
+    hintCount:             hints.length,
+  });
+  signal.attentionBand   = sigAttention.attentionBand;
+  signal.attentionScore  = sigAttention.attentionScore;
 
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
@@ -2784,6 +2911,18 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     // Separation: case vs issue vs readiness
     issueSeverity:    signal.issueSeverity,
     readinessBand:    signal.actionReadinessBand,
+  });
+
+  // Step 12: Attention / priority classification logging
+  logger.info("[agentBridge] attention / priority classified (Step 12 – learning signal)", {
+    patternKey,
+    attentionBand:   signal.attentionBand,
+    attentionScore:  signal.attentionScore,
+    // Separation: attention vs case vs issue vs readiness
+    caseStatus:      signal.caseStatus,
+    issueSeverity:   signal.issueSeverity,
+    readinessBand:   signal.actionReadinessBand,
+    policyClass:     signal.governancePolicyClass,
   });
 
   return signal;
@@ -2866,6 +3005,8 @@ function recordPatternObservation(patternKey, signal) {
        caseStatusTally:    {},
        caseOutcomeTally:   {},
        helpfulnessTally:   {},
+       // Step 12: attention / priority tallies
+       attentionBandTally: {},
      };
   }
 
@@ -2956,6 +3097,12 @@ function recordPatternObservation(patternKey, signal) {
     entry.helpfulnessTally = entry.helpfulnessTally || {};
     entry.helpfulnessTally[signal.helpfulnessBand] =
       (entry.helpfulnessTally[signal.helpfulnessBand] || 0) + 1;
+  }
+  // Step 12: attention band tally
+  if (signal.attentionBand) {
+    entry.attentionBandTally = entry.attentionBandTally || {};
+    entry.attentionBandTally[signal.attentionBand] =
+      (entry.attentionBandTally[signal.attentionBand] || 0) + 1;
   }
 
   _patternMemory.set(patternKey, entry);
@@ -3634,6 +3781,314 @@ function _ensureCaseRegistryEntry(patternKey, caseClassification) {
   }
 }
 
+/* ─────────────────────────────────────────────
+   Step 12: Attention / Priority Classification
+   ─────────────────────────────────────────────
+   Derives a lightweight attention / priority
+   band from existing dimensions.  This is a
+   quiet distillation of what the system already
+   knows – not a new parallel scoring world.
+
+   Inputs (all optional – missing values
+   contribute 0):
+   - issueSeverity           (high=3, medium=1)
+   - caseStatus              (needs_followup=2, confirmed=2, watching=1)
+   - readinessBand           (mature_recommendation=2, useful_next_step=1)
+   - confidenceBand          (high=1)
+   - governancePolicyClass   (guardian_candidate=1, admin_visible=1)
+   - patternCount            (>=5 → 1)
+   - helpfulnessBand         (clearly_helpful=1)
+   - needsFollowup           (true=1)
+   - hintCount               (not scored directly, reserved for future use)
+
+   Output:
+   {
+     attentionBand,   // focus_now | review_today | watch_next | background
+     attentionScore,  // numeric (transparent, for logging only)
+     attentionReason, // short human-readable explanation
+     focusDrivers,    // array of dimension names that contributed
+   }
+   ───────────────────────────────────────────── */
+
+/**
+ * Classify the attention / priority band for a given
+ * combination of existing dimensions.
+ *
+ * Conservative, rule-based, no model involvement.
+ *
+ * @param {Object} params
+ * @param {string}  [params.issueSeverity]
+ * @param {string}  [params.caseStatus]
+ * @param {string}  [params.readinessBand]
+ * @param {string}  [params.confidenceBand]
+ * @param {string}  [params.governancePolicyClass]
+ * @param {string}  [params.helpfulnessBand]
+ * @param {boolean} [params.needsFollowup]
+ * @param {number}  [params.patternCount]
+ * @param {number}  [params.hintCount]
+ * @returns {Object} { attentionBand, attentionScore, attentionReason, focusDrivers }
+ */
+function classifyAttentionPriority({
+  issueSeverity,
+  caseStatus,
+  readinessBand,
+  confidenceBand,
+  governancePolicyClass,
+  helpfulnessBand,
+  needsFollowup,
+  patternCount,
+  hintCount,
+} = {}) {
+  let score = 0;
+  const drivers = [];
+
+  // ── Issue severity ──
+  if (issueSeverity === "high") {
+    score += 3;
+    drivers.push("issue_severity_high");
+  } else if (issueSeverity === "medium") {
+    score += 1;
+    drivers.push("issue_severity_medium");
+  }
+
+  // ── Case status ──
+  if (caseStatus === "needs_followup") {
+    score += 2;
+    drivers.push("case_needs_followup");
+  } else if (caseStatus === "confirmed") {
+    score += 2;
+    drivers.push("case_confirmed");
+  } else if (caseStatus === "watching") {
+    score += 1;
+    drivers.push("case_watching");
+  }
+
+  // ── Action readiness ──
+  if (readinessBand === "mature_recommendation") {
+    score += 2;
+    drivers.push("readiness_mature");
+  } else if (readinessBand === "useful_next_step") {
+    score += 1;
+    drivers.push("readiness_useful");
+  }
+
+  // ── Confidence ──
+  if (confidenceBand === "high") {
+    score += 1;
+    drivers.push("confidence_high");
+  }
+
+  // ── Governance ──
+  if (governancePolicyClass === "guardian_candidate" || governancePolicyClass === "admin_visible") {
+    score += 1;
+    drivers.push("governance_visible");
+  }
+
+  // ── Pattern frequency ──
+  const pCount = typeof patternCount === "number" ? patternCount : 0;
+  if (pCount >= 5) {
+    score += 1;
+    drivers.push("pattern_recurring");
+  }
+
+  // ── Helpfulness ──
+  if (helpfulnessBand === "clearly_helpful") {
+    score += 1;
+    drivers.push("clearly_helpful");
+  }
+
+  // ── Follow-up need ──
+  if (needsFollowup === true) {
+    score += 1;
+    drivers.push("followup_needed");
+  }
+
+  // ── Classify into attention band ──
+  let attentionBand;
+  if (score >= ATTENTION_SCORE_THRESHOLDS.focus_now) {
+    attentionBand = "focus_now";
+  } else if (score >= ATTENTION_SCORE_THRESHOLDS.review_today) {
+    attentionBand = "review_today";
+  } else if (score >= ATTENTION_SCORE_THRESHOLDS.watch_next) {
+    attentionBand = "watch_next";
+  } else {
+    attentionBand = "background";
+  }
+
+  return {
+    attentionBand,
+    attentionScore:  score,
+    attentionReason: _buildAttentionReason(attentionBand, drivers),
+    focusDrivers:    drivers,
+  };
+}
+
+/**
+ * Build a short, human-readable explanation of
+ * why a given attention band was assigned.
+ *
+ * Cooperative language – no alarm rhetoric.
+ *
+ * @param {string}   band    – the assigned attention band
+ * @param {string[]} drivers – array of contributing dimension names
+ * @returns {string} reason
+ */
+function _buildAttentionReason(band, drivers) {
+  if (!drivers || drivers.length === 0) {
+    return "Keine auffälligen Dimensionen – bleibt im Hintergrund.";
+  }
+
+  const driverLabels = {
+    issue_severity_high:  "hohe technische Dringlichkeit",
+    issue_severity_medium: "mittlere technische Dringlichkeit",
+    case_needs_followup:  "Folgeprüfung empfohlen",
+    case_confirmed:       "Fall bestätigt",
+    case_watching:        "Fall wird beobachtet",
+    readiness_mature:     "reife Handlungsempfehlung",
+    readiness_useful:     "nützlicher nächster Schritt",
+    confidence_high:      "hohe Konfidenz",
+    governance_visible:   "für Admin sichtbar",
+    pattern_recurring:    "häufig beobachtetes Muster",
+    clearly_helpful:      "als hilfreich bestätigt",
+    followup_needed:      "Folgeaktion wird benötigt",
+  };
+
+  const labels = drivers
+    .map((d) => driverLabels[d] || d)
+    .slice(0, 4);
+
+  const bandLabels = {
+    focus_now:    "Jetzt prüfen",
+    review_today: "Heute relevant",
+    watch_next:   "Weiter beobachten",
+    background:   "Im Hintergrund",
+  };
+
+  const bandLabel = bandLabels[band] || band;
+  return `${bandLabel} – ${labels.join(", ")}.`;
+}
+
+/**
+ * Build an aggregated attention / priority overview
+ * from all pattern memory entries and the case registry.
+ *
+ * Provides:
+ * - attention band distribution
+ * - which issue/case/readiness combinations frequently
+ *   produce higher attention
+ * - focus driver frequency
+ * - recent high-priority entries
+ *
+ * @returns {Object} attention priority summary
+ */
+function getAttentionPrioritySummary() {
+  const bandDistribution = {
+    focus_now:    0,
+    review_today: 0,
+    watch_next:   0,
+    background:   0,
+  };
+  const driverFrequency = {};
+  const issueVsAttention = {};
+  const caseVsAttention = {};
+  const readinessVsAttention = {};
+  const highPriorityEntries = [];
+
+  for (const entry of _patternMemory.values()) {
+    // Derive dominant dimensions from tallies
+    const domIssueSeverity     = _topKey(entry.issueSeverityTally);
+    const domCaseStatus        = _topKey(entry.caseStatusTally);
+    const domReadiness         = _topKey(entry.readinessTally);
+    const domConfidence        = _topKey(entry.confidenceTally);
+    const domGovernance        = _topKey(entry.governanceTally);
+    const domHelpfulness       = _topKey(entry.helpfulnessTally);
+
+    // Check case registry for this pattern
+    const caseEntry = _caseRegistry.get(entry.patternKey);
+    const effectiveCaseStatus = caseEntry
+      ? caseEntry.caseStatus
+      : domCaseStatus;
+    const effectiveNeedsFollowup = caseEntry
+      ? (caseEntry.followupNeeded === true || caseEntry.caseStatus === "needs_followup")
+      : false;
+
+    const attention = classifyAttentionPriority({
+      issueSeverity:         domIssueSeverity,
+      caseStatus:            effectiveCaseStatus,
+      readinessBand:         domReadiness,
+      confidenceBand:        domConfidence,
+      governancePolicyClass: domGovernance,
+      helpfulnessBand:       domHelpfulness,
+      needsFollowup:         effectiveNeedsFollowup,
+      patternCount:          entry.count,
+      hintCount:             0,
+    });
+
+    // Tally from pattern memory (if stored)
+    const storedBandTally = entry.attentionBandTally || {};
+    for (const [band, count] of Object.entries(storedBandTally)) {
+      if (bandDistribution[band] !== undefined) {
+        bandDistribution[band] += count;
+      }
+    }
+
+    // Also count the current derived band (for patterns without stored tallies)
+    bandDistribution[attention.attentionBand] =
+      (bandDistribution[attention.attentionBand] || 0) + 1;
+
+    // Driver frequency
+    for (const driver of attention.focusDrivers) {
+      driverFrequency[driver] = (driverFrequency[driver] || 0) + 1;
+    }
+
+    // Cross-references
+    if (domIssueSeverity && attention.attentionBand) {
+      const crossKey = `${domIssueSeverity}→${attention.attentionBand}`;
+      issueVsAttention[crossKey] = (issueVsAttention[crossKey] || 0) + 1;
+    }
+    if (effectiveCaseStatus && attention.attentionBand) {
+      const crossKey = `${effectiveCaseStatus}→${attention.attentionBand}`;
+      caseVsAttention[crossKey] = (caseVsAttention[crossKey] || 0) + 1;
+    }
+    if (domReadiness && attention.attentionBand) {
+      const crossKey = `${domReadiness}→${attention.attentionBand}`;
+      readinessVsAttention[crossKey] = (readinessVsAttention[crossKey] || 0) + 1;
+    }
+
+    // Collect high-priority entries for the summary
+    if (attention.attentionBand === "focus_now" || attention.attentionBand === "review_today") {
+      highPriorityEntries.push({
+        patternKey:      entry.patternKey,
+        attentionBand:   attention.attentionBand,
+        attentionScore:  attention.attentionScore,
+        attentionReason: attention.attentionReason,
+        focusDrivers:    attention.focusDrivers,
+        issueSeverity:   domIssueSeverity,
+        caseStatus:      effectiveCaseStatus,
+        readinessBand:   domReadiness,
+        observationCount: entry.count,
+        lastSeen:        entry.lastSeen,
+      });
+    }
+  }
+
+  // Sort high-priority entries by score (highest first)
+  highPriorityEntries.sort((a, b) => b.attentionScore - a.attentionScore);
+
+  return {
+    totalPatterns:          _patternMemory.size,
+    totalCases:             _caseRegistry.size,
+    bandDistribution,
+    driverFrequency,
+    issueVsAttention,
+    caseVsAttention,
+    readinessVsAttention,
+    highPriorityEntries:    highPriorityEntries.slice(0, ATTENTION_MAX_SUMMARY_ENTRIES),
+    currentBridgeAttention: _currentBridgePackage?.attentionContext || null,
+    generatedAt:            new Date().toISOString(),
+  };
+}
+
 /** Pick the key with the highest count from a tally object */
 function _topKey(tally) {
   if (!tally) return null;
@@ -3935,6 +4390,8 @@ module.exports = {
   // Step 11: Case / Resolution / Operator Loop Light
   updateCaseStatus,
   getCaseResolutionSummary,
+  // Step 12: Attention / Priority / Operator Focus Light
+  getAttentionPrioritySummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -3958,4 +4415,5 @@ module.exports = {
   VALID_CASE_STATUSES,
   VALID_CASE_OUTCOMES,
   VALID_HELPFULNESS_BANDS,
+  VALID_ATTENTION_BANDS,
 };

@@ -710,6 +710,24 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 12: Inject attention / priority context ──
+  if (bridgeContext && bridgeContext.attentionContext) {
+    const ac = bridgeContext.attentionContext;
+    const attParts = [];
+    if (ac.attentionBand) {
+      attParts.push(`Aufmerksamkeitsstufe: ${ac.attentionBand}`);
+    }
+    if (ac.attentionReason) {
+      attParts.push(`Begründung: ${ac.attentionReason}`);
+    }
+    if (ac.focusDrivers && ac.focusDrivers.length > 0) {
+      attParts.push(`Fokustreiber: ${ac.focusDrivers.join(", ")}`);
+    }
+    if (attParts.length) {
+      sections.push(`Aufmerksamkeits-/Fokussicht (operative Priorität, keine automatische Ausführung):\n${attParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
