@@ -289,7 +289,7 @@ function stripCodeFences(raw) {
   do {
     prev = text;
     text = text
-      .replace(/^```(?:json|JSON)?\s*\n?/i, "")
+      .replace(/^```(?:json)?\s*\n?/i, "")
       .replace(/\n?```\s*$/i, "")
       .trim();
   } while (text !== prev);
