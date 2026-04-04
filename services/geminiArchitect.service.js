@@ -272,6 +272,9 @@ const RESULT_TYPES = {
   INVALID_SCHEMA: "invalid_schema",
   NOT_CONFIGURED: "not_configured",
   NO_INPUT:       "no_input",
+  ROUTE_ERROR:    "route_error",
+  TIMEOUT:        "timeout",
+  UNKNOWN:        "unknown",
 };
 
 /* ─────────────────────────────────────────────
@@ -445,6 +448,9 @@ const FALLBACK_LABELS = {
   [RESULT_TYPES.INVALID_SCHEMA]: "Modellantwort hat nicht das erwartete Format",
   [RESULT_TYPES.NOT_CONFIGURED]: "Gemini API-Schlüssel ist nicht konfiguriert",
   [RESULT_TYPES.NO_INPUT]:       "Keine Eingabedaten für die Analyse vorhanden",
+  [RESULT_TYPES.ROUTE_ERROR]:    "Interner Fehler bei der Verarbeitung der Anfrage",
+  [RESULT_TYPES.TIMEOUT]:        "Zeitüberschreitung bei der Modellabfrage",
+  [RESULT_TYPES.UNKNOWN]:        "Unbekannter Fehler bei der Analyse",
   [RESULT_TYPES.FALLBACK]:       "Analyse konnte nicht verarbeitet werden",
 };
 
@@ -1028,19 +1034,36 @@ async function runGeminiArchitectReview(payload = {}) {
 
   let response;
   try {
-    response = await model.generateContent(userPrompt);
+    const GEMINI_TIMEOUT_MS = 30_000;
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), GEMINI_TIMEOUT_MS);
+    });
+    try {
+      response = await Promise.race([
+        model.generateContent(userPrompt),
+        timeoutPromise,
+      ]);
+    } finally {
+      clearTimeout(timerId);
+    }
   } catch (apiErr) {
     const safeMsg = String(apiErr.message || "").slice(0, 80);
+    const isTimeout = safeMsg.includes("GEMINI_TIMEOUT") ||
+                      safeMsg.toLowerCase().includes("timeout") ||
+                      safeMsg.toLowerCase().includes("deadline");
+    const errType = isTimeout ? RESULT_TYPES.TIMEOUT : RESULT_TYPES.API_ERROR;
     logger.warn("[geminiArchitect] Gemini API call failed", {
       mode: normalised.mode,
       model: modelName,
-      resultType: RESULT_TYPES.API_ERROR,
+      resultType: errType,
+      isTimeout,
       reason: safeMsg,
     });
     return {
       mode: normalised.mode,
-      resultType: RESULT_TYPES.API_ERROR,
-      result: fallbackResult(RESULT_TYPES.API_ERROR, safeMsg),
+      resultType: errType,
+      result: fallbackResult(errType, safeMsg),
     };
   }
 
@@ -1148,4 +1171,5 @@ module.exports = {
   runGeminiArchitectReview,
   VALID_MODES,
   RESULT_TYPES,
+  FALLBACK_LABELS,
 };
