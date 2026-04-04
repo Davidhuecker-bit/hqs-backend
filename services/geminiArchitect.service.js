@@ -256,9 +256,32 @@ function normaliseLayoutState(value) {
 }
 
 /* ─────────────────────────────────────────────
+   Result type constants
+   ─────────────────────────────────────────────
+   Every response carries a `resultType` so that
+   consumers (frontend, logs) can distinguish
+   between different outcome categories.
+   ───────────────────────────────────────────── */
+
+const RESULT_TYPES = {
+  SUCCESS:        "success",
+  FALLBACK:       "fallback",
+  API_ERROR:      "api_error",
+  EMPTY_RESPONSE: "empty_response",
+  INVALID_JSON:   "invalid_json",
+  INVALID_SCHEMA: "invalid_schema",
+  NOT_CONFIGURED: "not_configured",
+  NO_INPUT:       "no_input",
+};
+
+/* ─────────────────────────────────────────────
    JSON response parsing & normalisation
    ───────────────────────────────────────────── */
 
+/**
+ * Strip markdown code fences that Gemini may wrap around JSON.
+ * Handles ```json, ``` (plain), and multiple nested fences.
+ */
 function stripCodeFences(raw) {
   if (typeof raw !== "string") return String(raw || "");
   let text = raw.trim();
@@ -266,11 +289,25 @@ function stripCodeFences(raw) {
   do {
     prev = text;
     text = text
-      .replace(/^```(?:json)?\s*\n?/i, "")
+      .replace(/^```(?:json|JSON)?\s*\n?/i, "")
       .replace(/\n?```\s*$/i, "")
       .trim();
   } while (text !== prev);
   return text;
+}
+
+/**
+ * Remove leading / trailing non-JSON prose that Gemini sometimes
+ * prepends or appends (e.g. "Hier ist das Ergebnis:" before the JSON).
+ * Only trims text *outside* the first { … } block.
+ */
+function trimSurroundingProse(text) {
+  if (typeof text !== "string") return "";
+  const trimmed = text.trim();
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace  = trimmed.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return trimmed;
+  return trimmed.slice(firstBrace, lastBrace + 1);
 }
 
 /**
@@ -319,16 +356,111 @@ function extractJsonObject(text) {
   return null;
 }
 
-function fallbackResult(reason) {
+/**
+ * Multi-stage JSON extraction pipeline.
+ * Returns { parsed, parseMethod } on success, or null on failure.
+ *
+ * Stages:
+ *  1. Direct JSON.parse on fence-stripped content
+ *  2. Trim surrounding prose and re-parse
+ *  3. Balanced-brace extraction from cleaned content
+ *  4. Balanced-brace extraction from raw content (before fence-strip)
+ */
+function tryParseJson(rawContent) {
+  const cleaned = stripCodeFences(rawContent);
+
+  // Stage 1 – direct parse on cleaned text
+  try {
+    return { parsed: JSON.parse(cleaned), parseMethod: "direct" };
+  } catch (_) { /* continue */ }
+
+  // Stage 2 – trim surrounding prose and re-parse
+  const proseTrimmed = trimSurroundingProse(cleaned);
+  if (proseTrimmed !== cleaned) {
+    try {
+      return { parsed: JSON.parse(proseTrimmed), parseMethod: "prose_trimmed" };
+    } catch (_) { /* continue */ }
+  }
+
+  // Stage 3 – balanced brace extraction from cleaned text
+  const extracted = extractJsonObject(cleaned);
+  if (extracted) {
+    try {
+      return { parsed: JSON.parse(extracted), parseMethod: "brace_extraction_cleaned" };
+    } catch (_) { /* continue */ }
+  }
+
+  // Stage 4 – balanced brace extraction from raw (pre-fence-strip) text
+  if (rawContent !== cleaned) {
+    const extractedRaw = extractJsonObject(rawContent);
+    if (extractedRaw) {
+      try {
+        return { parsed: JSON.parse(extractedRaw), parseMethod: "brace_extraction_raw" };
+      } catch (_) { /* continue */ }
+    }
+  }
+
+  return null;
+}
+
+/* ─────────────────────────────────────────────
+   Schema validation
+   ─────────────────────────────────────────────
+   Checks that a parsed object has the minimum
+   structural requirements to be a valid Gemini
+   Architect result.
+   ───────────────────────────────────────────── */
+
+const REQUIRED_STRING_KEYS = ["summaryTitle", "summaryText"];
+
+function validateSchema(obj) {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return { valid: false, reason: "Antwort ist kein JSON-Objekt" };
+  }
+
+  // At minimum, summaryTitle or summaryText must be present and non-empty
+  const hasAnyRequiredString = REQUIRED_STRING_KEYS.some(
+    (key) => typeof obj[key] === "string" && obj[key].trim().length >= MIN_ARRAY_ENTRY_LEN
+  );
+  if (!hasAnyRequiredString) {
+    return { valid: false, reason: "Pflichtfelder (summaryTitle/summaryText) fehlen oder sind leer" };
+  }
+
+  return { valid: true, reason: null };
+}
+
+/* ─────────────────────────────────────────────
+   Fallback result builder
+   ─────────────────────────────────────────────
+   Produces a structurally valid result with
+   typed fallback metadata so consumers can
+   distinguish error categories.
+   ───────────────────────────────────────────── */
+
+/** User-facing labels for each result type */
+const FALLBACK_LABELS = {
+  [RESULT_TYPES.API_ERROR]:      "API-Fehler bei der Modellabfrage",
+  [RESULT_TYPES.EMPTY_RESPONSE]: "Modell hat eine leere Antwort geliefert",
+  [RESULT_TYPES.INVALID_JSON]:   "Modellantwort ist kein gültiges JSON",
+  [RESULT_TYPES.INVALID_SCHEMA]: "Modellantwort hat nicht das erwartete Format",
+  [RESULT_TYPES.NOT_CONFIGURED]: "Gemini API-Schlüssel ist nicht konfiguriert",
+  [RESULT_TYPES.NO_INPUT]:       "Keine Eingabedaten für die Analyse vorhanden",
+  [RESULT_TYPES.FALLBACK]:       "Analyse konnte nicht verarbeitet werden",
+};
+
+function fallbackResult(resultType, detail) {
+  const label = FALLBACK_LABELS[resultType] || FALLBACK_LABELS[RESULT_TYPES.FALLBACK];
+  const detailSuffix = detail ? ` – ${detail}` : "";
+
   return {
-    summaryTitle: "Analyse konnte nicht verarbeitet werden",
-    summaryText: `Die Antwort konnte nicht sauber verarbeitet werden – ${reason || "unbekannte Ursache"}.`,
+    summaryTitle: label,
+    summaryText: `${label}${detailSuffix}. Bitte die Analyse erneut ausführen oder die Eingabe anpassen.`,
     severity: "medium",
     uiFindings: [],
     layoutRecommendations: [],
     priorityRecommendations: [],
     frontendGuardNotes: [],
-    recommendedAction: "Bitte die Analyse erneut ausführen oder die Eingabe prüfen.",
+    recommendedAction: "Analyse erneut mit spezifischerer Eingabe ausführen.",
     confidenceNote: "Keine Einschätzung möglich – Verarbeitungsfehler.",
   };
 }
@@ -447,7 +579,7 @@ function normaliseArrayField(value) {
 
 function normaliseResult(obj) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
-    return fallbackResult("response was not an object");
+    return null; // caller handles fallback
   }
 
   const summaryText = toStr(obj.summaryText);
@@ -456,8 +588,6 @@ function normaliseResult(obj) {
 
   const result = {
     summaryTitle: toStr(obj.summaryTitle) || "Gemini Architect Analyse",
-    // summaryText, recommendedAction, confidenceNote: fall back to a neutral German placeholder
-    // when the model returns an empty or near-empty value, so consumers never receive bare empty strings.
     summaryText:
       summaryText.length >= MIN_ARRAY_ENTRY_LEN
         ? summaryText
@@ -826,7 +956,8 @@ async function runGeminiArchitectReview(payload = {}) {
     logger.warn("[geminiArchitect] GEMINI_API_KEY not configured – returning fallback");
     return {
       mode: normaliseMode(payload.mode),
-      result: fallbackResult("GEMINI_API_KEY nicht konfiguriert"),
+      resultType: RESULT_TYPES.NOT_CONFIGURED,
+      result: fallbackResult(RESULT_TYPES.NOT_CONFIGURED),
     };
   }
 
@@ -849,7 +980,8 @@ async function runGeminiArchitectReview(payload = {}) {
   if (!userPrompt.trim()) {
     return {
       mode: normalised.mode,
-      result: fallbackResult("no input data provided"),
+      resultType: RESULT_TYPES.NO_INPUT,
+      result: fallbackResult(RESULT_TYPES.NO_INPUT),
     };
   }
 
@@ -898,70 +1030,103 @@ async function runGeminiArchitectReview(payload = {}) {
   try {
     response = await model.generateContent(userPrompt);
   } catch (apiErr) {
-    logger.warn("[geminiArchitect] Gemini API call failed – using fallback", {
+    const safeMsg = String(apiErr.message || "").slice(0, 80);
+    logger.warn("[geminiArchitect] Gemini API call failed", {
       mode: normalised.mode,
       model: modelName,
-      reason: apiErr.message,
+      resultType: RESULT_TYPES.API_ERROR,
+      reason: safeMsg,
     });
-    const safeMsg = String(apiErr.message || "").slice(0, 80);
     return {
       mode: normalised.mode,
-      result: fallbackResult(`API-Fehler: ${safeMsg}`),
+      resultType: RESULT_TYPES.API_ERROR,
+      result: fallbackResult(RESULT_TYPES.API_ERROR, safeMsg),
     };
   }
 
+  // ── Extract raw text from Gemini response ──
+
   const rawContent = getResponseText(response);
+  const hasContent = Boolean(rawContent && rawContent.trim().length > 0);
 
-  const cleaned = stripCodeFences(rawContent);
-
-  let parsed = null;
-  let parseMethod = "direct";
-
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch (_firstErr) {
-    parseMethod = "extraction";
-    const extracted = extractJsonObject(cleaned) || extractJsonObject(rawContent);
-
-    if (extracted) {
-      try {
-        parsed = JSON.parse(extracted);
-      } catch (err) {
-        logger.warn("[geminiArchitect] JSON parse failed after extraction – using fallback", {
-          mode: normalised.mode,
-          reason: err.message,
-          rawPreview: String(rawContent).slice(0, 120),
-        });
-
-        return {
-          mode: normalised.mode,
-          result: fallbackResult("JSON parse error"),
-        };
-      }
-    } else {
-      logger.warn("[geminiArchitect] No JSON object found in response – using fallback", {
-        mode: normalised.mode,
-        rawPreview: String(rawContent).slice(0, 120),
-      });
-
-      return {
-        mode: normalised.mode,
-        result: fallbackResult("kein JSON-Objekt in Antwort gefunden"),
-      };
-    }
+  if (!hasContent) {
+    logger.warn("[geminiArchitect] Gemini returned empty response", {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.EMPTY_RESPONSE,
+    });
+    return {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.EMPTY_RESPONSE,
+      result: fallbackResult(RESULT_TYPES.EMPTY_RESPONSE),
+    };
   }
 
-  logger.info("[geminiArchitect] response parsed", { mode: normalised.mode, parseMethod });
+  // ── Multi-stage JSON parsing pipeline ──
+
+  const parseResult = tryParseJson(rawContent);
+
+  if (!parseResult) {
+    logger.warn("[geminiArchitect] No valid JSON found in response", {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.INVALID_JSON,
+      hasContent,
+      rawPreview: String(rawContent).slice(0, 160),
+    });
+    return {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.INVALID_JSON,
+      result: fallbackResult(RESULT_TYPES.INVALID_JSON),
+    };
+  }
+
+  const { parsed, parseMethod } = parseResult;
+
+  // ── Schema validation ──
+
+  const schemaCheck = validateSchema(parsed);
+
+  if (!schemaCheck.valid) {
+    logger.warn("[geminiArchitect] Parsed JSON does not match expected schema", {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.INVALID_SCHEMA,
+      parseMethod,
+      schemaReason: schemaCheck.reason,
+      rawPreview: String(rawContent).slice(0, 160),
+    });
+    return {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.INVALID_SCHEMA,
+      result: fallbackResult(RESULT_TYPES.INVALID_SCHEMA, schemaCheck.reason),
+    };
+  }
+
+  // ── Normalise and apply severity guard ──
 
   const normalisedResult = normaliseResult(parsed);
+
+  if (!normalisedResult) {
+    logger.warn("[geminiArchitect] normaliseResult returned null – structural issue", {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.INVALID_SCHEMA,
+      parseMethod,
+    });
+    return {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.INVALID_SCHEMA,
+      result: fallbackResult(RESULT_TYPES.INVALID_SCHEMA, "Strukturnormalisierung fehlgeschlagen"),
+    };
+  }
+
   const result = applySeverityGuard(normalisedResult, normalised.mode);
 
-  logger.info("[geminiArchitect] review complete (cause → effect → follow-up)", {
+  logger.info("[geminiArchitect] review complete", {
     mode: normalised.mode,
+    resultType: RESULT_TYPES.SUCCESS,
     severity: result.severity,
+    parseMethod,
+    schemaStatus: "valid",
     uiFindingsCount: result.uiFindings.length,
     guardNotesCount: result.frontendGuardNotes.length,
-    parseMethod,
     bridgeReviewIntent: normalised.bridgeContext?.workflow?.reviewIntent || null,
     bridgeImpactKind: normalised.bridgeContext?.impactTranslation?.impactKind || null,
     workflowStage: "gemini_complete",
@@ -969,6 +1134,7 @@ async function runGeminiArchitectReview(payload = {}) {
 
   return {
     mode: normalised.mode,
+    resultType: RESULT_TYPES.SUCCESS,
     result,
   };
 }
@@ -981,4 +1147,5 @@ module.exports = {
   isGeminiConfigured,
   runGeminiArchitectReview,
   VALID_MODES,
+  RESULT_TYPES,
 };
