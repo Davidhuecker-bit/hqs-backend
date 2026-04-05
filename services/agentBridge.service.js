@@ -744,6 +744,127 @@ const MATURITY_SCORE_THRESHOLDS = {
 const MATURITY_MAX_SUMMARY_ENTRIES = 50;
 
 /* ─────────────────────────────────────────────
+   Step 14: Agent Problem Detection / Solution
+   Proposal / Approval Chat Foundation
+   ─────────────────────────────────────────────
+   Transforms diagnostic data from Steps 1–13
+   into agentisches Handeln:
+
+   - Problem erkennen
+   - Ursache klar benennen
+   - konkrete Lösung vorschlagen
+   - Freigabe einholen
+   - nach OK Lösungsvorbereitung ermöglichen
+
+   Separation principle:
+   - Trust / Usefulness   = Vertrauenswürdigkeit
+   - Readiness            = Handlungsbereitschaft
+   - Case / Resolution    = operativer Verlauf
+   - Attention / Priority = Fokussierung
+   - Decision Maturity    = Belastbarkeit
+   - Agent Case (Step 14) = agentische Problemerkennung,
+     Lösungsvorschlag, Freigabeschleife und
+     Chat-Grundlage
+
+   This is NOT autonomous execution. It is
+   cooperative agentic behaviour:
+   "Ich habe ein Problem erkannt → Soll ich
+    das vorbereiten?"
+   ───────────────────────────────────────────── */
+
+/** Agent roles – DeepSeek = Backend, Gemini = Frontend */
+const VALID_AGENT_ROLES = [
+  "deepseek_backend",  // Backend / API / Code / Datenfluss / Logik
+  "gemini_frontend",   // Frontend / Design / UX / Darstellung
+];
+
+/** Problem types recognised by the agent layer */
+const VALID_AGENT_PROBLEM_TYPES = [
+  "backend_logic_issue",
+  "backend_schema_issue",
+  "api_contract_issue",
+  "frontend_binding_issue",
+  "frontend_layout_issue",
+  "frontend_presentation_issue",
+  "cross_layer_issue",
+  "data_flow_issue",
+  "mapping_issue",
+  "performance_issue",
+  "staleness_issue",
+  "unknown",
+];
+
+/** Agent message types for the chat foundation */
+const VALID_AGENT_MESSAGE_TYPES = [
+  "problem_detected",
+  "root_cause_identified",
+  "solution_proposed",
+  "approval_requested",
+  "feedback_received",
+  "plan_refined",
+  "preparation_started",
+  "status_update",
+];
+
+/** Message intents for chat messages */
+const VALID_AGENT_MESSAGE_INTENTS = [
+  "inform",
+  "propose",
+  "ask_approval",
+  "ask_feedback",
+  "confirm",
+  "refine",
+];
+
+/** Approval scopes – what the user can approve */
+const VALID_APPROVAL_SCOPES = [
+  "full_fix",
+  "backend_only",
+  "frontend_only",
+  "diagnosis_only",
+  "partial_fix",
+  "observation_only",
+];
+
+/** Preparation types the agent can propose */
+const VALID_PREPARATION_TYPES = [
+  "harden_logic",
+  "fix_mapping",
+  "fix_binding",
+  "adjust_layout",
+  "adjust_presentation",
+  "remove_legacy_path",
+  "add_validation",
+  "refactor_data_flow",
+  "deepen_diagnosis",
+  "cross_layer_review",
+];
+
+/** Feedback types the user can provide */
+const VALID_AGENT_FEEDBACK_TYPES = [
+  "approve",
+  "reject",
+  "modify",
+  "narrow_scope",
+  "suggest_alternative",
+  "request_more_info",
+  "defer",
+  "approve_partial",
+];
+
+/** Confidence thresholds for agent case derivation */
+const AGENT_CONFIDENCE_THRESHOLDS = {
+  high:   0.75,
+  medium: 0.45,
+  low:    0.0,
+};
+
+/** Max entries in in-memory stores */
+const AGENT_CASE_MAX_ENTRIES = 200;
+const AGENT_CHAT_MAX_MESSAGES = 500;
+const AGENT_CASE_MAX_SUMMARY_ENTRIES = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -751,6 +872,19 @@ const MATURITY_MAX_SUMMARY_ENTRIES = 50;
 
 let _currentBridgePackage = null;
 let _pendingFrontendFeedback = [];
+
+/* ─────────────────────────────────────────────
+   Step 14: In-memory agent case & chat stores
+   ───────────────────────────────────────────── */
+
+/** @type {Map<string, Object>} agentCaseId → agent case object */
+const _agentCaseRegistry = new Map();
+
+/** @type {Array<Object>} ordered list of agent chat messages */
+const _agentChatMessages = [];
+
+/** Auto-increment counter for agent case IDs */
+let _agentCaseIdCounter = 0;
 
 /* ─────────────────────────────────────────────
    Step 4: In-memory pattern memory (lightweight)
@@ -2109,6 +2243,28 @@ function buildBridgePackage(payload = {}) {
 
   _currentBridgePackage = pkg;
 
+  // ── Step 14: Derive agent case from completed bridge package ──
+  const agentCase = buildAgentCaseFromBridgePackage(pkg);
+  if (agentCase) {
+    pkg.agentCaseContext = {
+      agentCaseId:            agentCase.agentCaseId,
+      agentRole:              agentCase.agentRole,
+      problemType:            agentCase.problemType,
+      problemTitle:           agentCase.problemTitle,
+      suspectedRootCause:     agentCase.suspectedRootCause,
+      recommendedFixes:       agentCase.recommendedFixes,
+      approvalQuestion:       agentCase.approvalQuestion,
+      agentConfidence:        agentCase.agentConfidence,
+      needsApproval:          agentCase.needsApproval,
+      approvalScope:          agentCase.approvalScope,
+      nextSuggestedStep:      agentCase.nextSuggestedStep,
+      chatMessage:            agentCase.chatMessage,
+    };
+    _currentBridgePackage = pkg;
+  } else {
+    pkg.agentCaseContext = null;
+  }
+
   // ── Step 3 + 4: Cause → Effect → Follow-up logging ──
   const hintTypes = {};
   const severityCounts = { high: 0, medium: 0, low: 0 };
@@ -2979,6 +3135,16 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
   signal.decisionMaturityBand = sigMaturity.decisionMaturityBand;
   signal.maturityScore        = sigMaturity.maturityScore;
 
+  // ── Step 14: Agent case context for learning signal ──
+  const sigAgentRole = _resolveAgentRole(signal.affectedLayer || "cross_layer");
+  const sigProblemType = _deriveAgentProblemType({
+    issueCategory: signal.issueCategory,
+    affectedLayer: signal.affectedLayer,
+    dominantHintType: signal.dominantHintType,
+  });
+  signal.agentRole      = sigAgentRole;
+  signal.agentProblemType = sigProblemType;
+
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
 
@@ -3008,6 +3174,9 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     hasExplicitCause:       !!explicit.suspectedCause,
     hasExplicitEffect:      !!explicit.observedEffect,
     hasExplicitFollowup:    !!explicit.suggestedFollowup,
+    // Step 14: agent case context
+    agentRole:              signal.agentRole,
+    agentProblemType:       signal.agentProblemType,
   });
 
   // ── Step 6: Explicit readiness reasoning log ──
@@ -3254,6 +3423,17 @@ function recordPatternObservation(patternKey, signal) {
     entry.maturityBandTally = entry.maturityBandTally || {};
     entry.maturityBandTally[signal.decisionMaturityBand] =
       (entry.maturityBandTally[signal.decisionMaturityBand] || 0) + 1;
+  }
+  // Step 14: agent role and problem type tallies
+  if (signal.agentRole) {
+    entry.agentRoleTally = entry.agentRoleTally || {};
+    entry.agentRoleTally[signal.agentRole] =
+      (entry.agentRoleTally[signal.agentRole] || 0) + 1;
+  }
+  if (signal.agentProblemType) {
+    entry.agentProblemTypeTally = entry.agentProblemTypeTally || {};
+    entry.agentProblemTypeTally[signal.agentProblemType] =
+      (entry.agentProblemTypeTally[signal.agentProblemType] || 0) + 1;
   }
 
   _patternMemory.set(patternKey, entry);
@@ -4599,6 +4779,890 @@ function _topKey(tally) {
 }
 
 /* ─────────────────────────────────────────────
+   Step 14: Agent Problem Detection / Solution
+   Proposal / Approval Chat Foundation
+   ─────────────────────────────────────────────
+   Core functions that transform diagnostic data
+   from Steps 1–13 into agentisches Handeln:
+
+   1. Problem erkannt
+   2. wahrscheinliche Ursache
+   3. konkrete Lösung
+   4. Freigabefrage
+   5. nächster Schritt bei OK
+
+   Cooperative, not autonomous.
+   ───────────────────────────────────────────── */
+
+/**
+ * Determine the owning agent role based on the affected layer.
+ * DeepSeek owns backend/API/logic/schema layers.
+ * Gemini owns frontend/layout/presentation/binding layers.
+ *
+ * @param {string} affectedLayer
+ * @returns {string} agent role
+ */
+function _resolveAgentRole(affectedLayer) {
+  const frontendLayers = [
+    "frontend_binding",
+    "frontend_layout",
+    "frontend_presentation",
+    "frontend_priority",
+  ];
+  if (frontendLayers.includes(affectedLayer)) {
+    return "gemini_frontend";
+  }
+  return "deepseek_backend";
+}
+
+/**
+ * Derive the problem type from issue/layer/hint information.
+ *
+ * @param {Object} params
+ * @param {string} [params.issueCategory]
+ * @param {string} [params.affectedLayer]
+ * @param {string} [params.dominantHintType]
+ * @returns {string} problem type
+ */
+function _deriveAgentProblemType({ issueCategory, affectedLayer, dominantHintType }) {
+  // Direct layer-based mapping
+  const layerMap = {
+    backend_logic:          "backend_logic_issue",
+    backend_schema:         "backend_schema_issue",
+    api_contract:           "api_contract_issue",
+    frontend_binding:       "frontend_binding_issue",
+    frontend_layout:        "frontend_layout_issue",
+    frontend_presentation:  "frontend_presentation_issue",
+    cross_layer:            "cross_layer_issue",
+  };
+
+  if (affectedLayer && layerMap[affectedLayer]) {
+    return layerMap[affectedLayer];
+  }
+
+  // Issue category fallbacks
+  if (issueCategory === "mapping_problem") return "mapping_issue";
+  if (issueCategory === "stale_data") return "staleness_issue";
+  if (issueCategory === "data_inconsistency") return "data_flow_issue";
+
+  // Hint type fallbacks
+  if (dominantHintType === "schema_risk") return "backend_schema_issue";
+  if (dominantHintType === "binding_risk") return "frontend_binding_issue";
+  if (dominantHintType === "staleness") return "staleness_issue";
+  if (dominantHintType === "contract_warning") return "api_contract_issue";
+
+  return "unknown";
+}
+
+/**
+ * Derive concrete recommended fixes from existing diagnostic data.
+ * Returns an array of short, actionable fix descriptions.
+ *
+ * @param {Object} params
+ * @param {string} params.problemType
+ * @param {string} params.agentRole
+ * @param {string} [params.issueSeverity]
+ * @param {string} [params.suggestedFix]
+ * @param {string} [params.issueCategory]
+ * @param {string} [params.readinessBand]
+ * @returns {string[]} recommended fixes
+ */
+function _deriveRecommendedFixes({ problemType, agentRole, issueSeverity, suggestedFix, issueCategory, readinessBand }) {
+  const fixes = [];
+
+  // Start with system-suggested fix if available
+  if (suggestedFix && suggestedFix !== "none" && suggestedFix !== "observe") {
+    const fixLabels = {
+      review_mapping:   "Mapping-Zuordnung prüfen und korrigieren",
+      fix_binding:      "Datenbindung im Frontend reparieren",
+      fix_schema:       "Schema-Definition bereinigen",
+      fix_contract:     "API-Vertrag absichern",
+      harden_logic:     "Backend-Logik härten",
+      adjust_priority:  "Prioritäts-Darstellung anpassen",
+      review_layout:    "Layout-Struktur überprüfen",
+      add_validation:   "Validierung ergänzen",
+    };
+    fixes.push(fixLabels[suggestedFix] || suggestedFix);
+  }
+
+  // Problem-type-specific fixes
+  if (agentRole === "deepseek_backend") {
+    if (problemType === "backend_logic_issue") {
+      fixes.push("Backend-Logik härten und Fehlerpfade absichern");
+    }
+    if (problemType === "backend_schema_issue") {
+      fixes.push("Schema-Definition bereinigen und Konsistenz sicherstellen");
+    }
+    if (problemType === "api_contract_issue") {
+      fixes.push("API-Vertrag prüfen und Rückgabewerte absichern");
+    }
+    if (problemType === "data_flow_issue") {
+      fixes.push("Datenfluss nachverfolgen und Inkonsistenzen beheben");
+    }
+    if (problemType === "mapping_issue") {
+      fixes.push("Mapping-Zuordnung korrigieren und alten Pfad entfernen");
+    }
+  } else {
+    if (problemType === "frontend_binding_issue") {
+      fixes.push("Datenbindung prüfen und korrekte Felder anbinden");
+    }
+    if (problemType === "frontend_layout_issue") {
+      fixes.push("Layout-Struktur anpassen und Darstellung klären");
+    }
+    if (problemType === "frontend_presentation_issue") {
+      fixes.push("Beschriftung und View-Struktur anpassen");
+    }
+  }
+
+  // Severity-driven additions
+  if (issueSeverity === "high" && !fixes.some(f => f.includes("absichern"))) {
+    fixes.push("Kritischen Pfad absichern");
+  }
+
+  // Cap at 3 fixes to keep proposals concise
+  return fixes.slice(0, 3);
+}
+
+/**
+ * Derive the recommended action path (preparation type).
+ *
+ * @param {Object} params
+ * @param {string} params.problemType
+ * @param {string} params.agentRole
+ * @param {string} [params.suggestedFix]
+ * @returns {string} preparation type
+ */
+function _derivePreparationType({ problemType, agentRole, suggestedFix }) {
+  if (suggestedFix === "harden_logic" || problemType === "backend_logic_issue") return "harden_logic";
+  if (suggestedFix === "fix_binding" || problemType === "frontend_binding_issue") return "fix_binding";
+  if (suggestedFix === "review_mapping" || problemType === "mapping_issue") return "fix_mapping";
+  if (problemType === "frontend_layout_issue") return "adjust_layout";
+  if (problemType === "frontend_presentation_issue") return "adjust_presentation";
+  if (problemType === "backend_schema_issue") return "add_validation";
+  if (problemType === "api_contract_issue") return "add_validation";
+  if (problemType === "data_flow_issue") return "refactor_data_flow";
+  if (problemType === "cross_layer_issue") return "cross_layer_review";
+  return "deepen_diagnosis";
+}
+
+/**
+ * Compute agent confidence from existing dimensions.
+ * Returns a value between 0 and 1.
+ *
+ * @param {Object} params
+ * @returns {number} confidence 0.0–1.0
+ */
+function _computeAgentConfidence({
+  confidenceBand = "low",
+  readinessBand = "observation",
+  maturityBand = "early_signal",
+  attentionBand = "background",
+  observationCount = 0,
+}) {
+  let score = 0;
+
+  // Confidence band contribution
+  if (confidenceBand === "high") score += 0.3;
+  else if (confidenceBand === "medium") score += 0.15;
+
+  // Readiness contribution
+  if (readinessBand === "mature_recommendation") score += 0.25;
+  else if (readinessBand === "useful_next_step") score += 0.15;
+  else if (readinessBand === "further_check_recommended") score += 0.05;
+
+  // Maturity contribution
+  if (maturityBand === "confirmed") score += 0.25;
+  else if (maturityBand === "credible") score += 0.15;
+  else if (maturityBand === "building") score += 0.05;
+
+  // Observation count contribution (capped)
+  score += Math.min(0.15, observationCount * 0.025);
+
+  // Attention contribution (high attention = more relevance)
+  if (attentionBand === "focus_now") score += 0.05;
+  else if (attentionBand === "review_today") score += 0.03;
+
+  return Math.min(1.0, Math.round(score * 100) / 100);
+}
+
+/**
+ * Build a cooperative, human-readable agent chat message
+ * in German. The message follows the pattern:
+ *   1. "Ich habe ein Problem erkannt."
+ *   2. "Es liegt wahrscheinlich an …"
+ *   3. "Ich würde … ändern."
+ *   4. "Soll ich das vorbereiten?"
+ *
+ * @param {Object} agentCase
+ * @returns {string} chat message
+ */
+function _buildAgentChatMessage(agentCase) {
+  const parts = [];
+  const isBackend = agentCase.agentRole === "deepseek_backend";
+  const agentName = isBackend ? "DeepSeek" : "Gemini";
+  const domain = isBackend ? "Backend" : "Frontend";
+
+  // 1. Problem statement
+  if (agentCase.problemTitle) {
+    parts.push(`Ich habe ein ${domain}-Problem erkannt: ${agentCase.problemTitle}.`);
+  } else {
+    parts.push(`Ich habe ein ${domain}-Problem erkannt.`);
+  }
+
+  // 2. Root cause
+  if (agentCase.suspectedRootCause) {
+    parts.push(`Wahrscheinlich liegt es an: ${agentCase.suspectedRootCause}.`);
+  }
+
+  // 3. Proposed fix
+  if (agentCase.recommendedFixes && agentCase.recommendedFixes.length > 0) {
+    if (agentCase.recommendedFixes.length === 1) {
+      parts.push(`Ich würde Folgendes ändern: ${agentCase.recommendedFixes[0]}.`);
+    } else {
+      parts.push(`Das ist mein Vorschlag:\n${agentCase.recommendedFixes.map(f => `– ${f}`).join("\n")}`);
+    }
+  }
+
+  // 4. Approval question
+  if (agentCase.approvalQuestion) {
+    parts.push(agentCase.approvalQuestion);
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Build a targeted approval question based on the agent case.
+ *
+ * @param {Object} params
+ * @param {string} params.agentRole
+ * @param {string} params.problemType
+ * @param {string} params.proposedPreparationType
+ * @param {boolean} params.needsCrossAgentReview
+ * @returns {string} approval question
+ */
+function _buildApprovalQuestion({ agentRole, problemType, proposedPreparationType, needsCrossAgentReview }) {
+  const isBackend = agentRole === "deepseek_backend";
+
+  // Specific approval questions based on preparation type
+  const prepLabels = {
+    harden_logic:       "die Backend-Logik härten",
+    fix_mapping:        "die Mapping-Zuordnung korrigieren",
+    fix_binding:        "die Datenbindung reparieren",
+    adjust_layout:      "die Layout-Struktur anpassen",
+    adjust_presentation: "die Darstellung anpassen",
+    remove_legacy_path: "den alten Pfad entfernen",
+    add_validation:     "eine Validierung ergänzen",
+    refactor_data_flow: "den Datenfluss überarbeiten",
+    deepen_diagnosis:   "die Diagnose vertiefen",
+    cross_layer_review: "eine schichtübergreifende Prüfung vorbereiten",
+  };
+
+  const actionLabel = prepLabels[proposedPreparationType] || "das vorbereiten";
+
+  let question = `Soll ich ${actionLabel}?`;
+
+  if (needsCrossAgentReview) {
+    question += " (Hinweis: Dieser Fall betrifft auch die andere Schicht.)";
+  }
+
+  question += "\nWenn du eine andere Idee hast, passe ich den Vorschlag an.";
+
+  return question;
+}
+
+/**
+ * Derive a suspected root cause description from diagnostic data.
+ *
+ * @param {Object} params
+ * @returns {string} root cause summary
+ */
+function _deriveSuspectedRootCause({ problemType, issueCategory, affectedLayer, dominantHintType, suspectedIssueCause }) {
+  // Use the explicit suspected cause if available
+  if (suspectedIssueCause && suspectedIssueCause !== "unknown" && suspectedIssueCause !== "none") {
+    const causeLabels = {
+      outdated_mapping:     "eine veraltete Mapping-Zuordnung",
+      missing_field:        "ein fehlendes Datenfeld",
+      wrong_binding:        "eine falsche Datenbindung",
+      stale_cache:          "veraltete Cache-Daten",
+      schema_mismatch:      "ein Schema-Mismatch",
+      logic_error:          "ein Logikfehler im Backend",
+      priority_drift:       "eine Prioritätsverschiebung",
+      layout_conflict:      "ein Layout-Konflikt",
+      presentation_error:   "ein Darstellungsfehler",
+    };
+    return causeLabels[suspectedIssueCause] || suspectedIssueCause;
+  }
+
+  // Derive from problem type
+  const typeLabels = {
+    backend_logic_issue:          "fehlerhafte oder unvollständige Backend-Logik",
+    backend_schema_issue:         "ein Schema- oder Strukturproblem im Backend",
+    api_contract_issue:           "ein API-Vertragsproblem",
+    frontend_binding_issue:       "eine falsche oder fehlende Datenbindung im Frontend",
+    frontend_layout_issue:        "ein Layout- oder Strukturproblem in der Darstellung",
+    frontend_presentation_issue:  "unklare oder fehlerhafte Darstellung",
+    cross_layer_issue:            "ein schichtübergreifendes Problem zwischen Backend und Frontend",
+    data_flow_issue:              "Inkonsistenzen im Datenfluss",
+    mapping_issue:                "fehlerhafte Mapping-Zuordnung",
+    staleness_issue:              "veraltete Daten oder Strukturen",
+    performance_issue:            "ein Performance-Engpass",
+  };
+
+  return typeLabels[problemType] || "ein noch nicht vollständig geklärtes Problem";
+}
+
+/**
+ * Build a complete agent case from a bridge package.
+ * This is the central Step 14 function that transforms
+ * diagnostic data into an actionable agent case with:
+ * - problem summary
+ * - root cause
+ * - recommended fixes
+ * - approval question
+ * - chat message
+ *
+ * @param {Object} bridgePackage - current bridge package
+ * @returns {Object|null} agent case or null if not actionable
+ */
+function buildAgentCaseFromBridgePackage(bridgePackage) {
+  if (!bridgePackage) return null;
+
+  const issue = bridgePackage.issueContext || {};
+  const pattern = bridgePackage.patternContext || {};
+  const maturity = bridgePackage.maturityContext || {};
+  const attention = bridgePackage.attentionContext || {};
+  const caseCtx = bridgePackage.caseContext || {};
+  const governance = bridgePackage.governanceContext || {};
+  const impact = bridgePackage.impactTranslation || {};
+  const hints = bridgePackage.bridgeHints || [];
+
+  // Only create agent cases for actionable situations
+  const isActionable =
+    (issue.issueSeverity === "high" || issue.issueSeverity === "medium") ||
+    (attention.attentionBand === "focus_now" || attention.attentionBand === "review_today") ||
+    (pattern.actionReadinessBand === "useful_next_step" || pattern.actionReadinessBand === "mature_recommendation") ||
+    (maturity.decisionMaturityBand === "credible" || maturity.decisionMaturityBand === "confirmed");
+
+  if (!isActionable) {
+    return null;
+  }
+
+  // Determine affected layer and domain
+  const affectedLayer = issue.affectedLayer || pattern.dominantLayer || "cross_layer";
+  const agentRole = _resolveAgentRole(affectedLayer);
+  const problemType = _deriveAgentProblemType({
+    issueCategory: issue.issueCategory,
+    affectedLayer,
+    dominantHintType: pattern.dominantHintType,
+  });
+
+  // Determine if cross-agent review is needed
+  const isBackend = agentRole === "deepseek_backend";
+  const needsCrossAgentReview =
+    affectedLayer === "cross_layer" ||
+    (isBackend && hints.some(h => ["frontend_binding", "frontend_layout", "frontend_presentation"].includes(h.affectedLayer))) ||
+    (!isBackend && hints.some(h => ["backend_logic", "backend_schema", "api_contract"].includes(h.affectedLayer)));
+
+  // Build problem title from issue or hint data
+  const problemTitle = issue.issueTitle
+    || (hints.length > 0 ? hints[0].summary : null)
+    || impact.impactSummary
+    || `${problemType.replace(/_/g, " ")}`;
+
+  // Derive root cause
+  const suspectedRootCause = _deriveSuspectedRootCause({
+    problemType,
+    issueCategory: issue.issueCategory,
+    affectedLayer,
+    dominantHintType: pattern.dominantHintType,
+    suspectedIssueCause: issue.suspectedIssueCause,
+  });
+
+  // Derive recommended fixes
+  const recommendedFixes = _deriveRecommendedFixes({
+    problemType,
+    agentRole,
+    issueSeverity: issue.issueSeverity,
+    suggestedFix: issue.suggestedFix,
+    issueCategory: issue.issueCategory,
+    readinessBand: pattern.actionReadinessBand,
+  });
+
+  // Derive preparation type and action path
+  const proposedPreparationType = _derivePreparationType({
+    problemType,
+    agentRole,
+    suggestedFix: issue.suggestedFix,
+  });
+
+  // Compute agent confidence
+  const agentConfidence = _computeAgentConfidence({
+    confidenceBand: pattern.confidenceBand || "low",
+    readinessBand: pattern.actionReadinessBand,
+    maturityBand: maturity.decisionMaturityBand,
+    attentionBand: attention.attentionBand,
+    observationCount: 0,
+  });
+
+  // Determine approval scope
+  let approvalScope = "full_fix";
+  if (needsCrossAgentReview) approvalScope = "full_fix";
+  else if (isBackend) approvalScope = "backend_only";
+  else approvalScope = "frontend_only";
+  if (agentConfidence < AGENT_CONFIDENCE_THRESHOLDS.medium) {
+    approvalScope = "diagnosis_only";
+  }
+
+  // Build approval question
+  const approvalQuestion = _buildApprovalQuestion({
+    agentRole,
+    problemType,
+    proposedPreparationType,
+    needsCrossAgentReview,
+  });
+
+  // Build change targets
+  const changeTargets = [];
+  if (issue.affectedComponents && issue.affectedComponents.length) {
+    changeTargets.push(...issue.affectedComponents.slice(0, 3));
+  }
+  if (impact.likelyAffectedArtifacts && impact.likelyAffectedArtifacts.length) {
+    for (const a of impact.likelyAffectedArtifacts.slice(0, 2)) {
+      if (!changeTargets.includes(a)) changeTargets.push(a);
+    }
+  }
+
+  // Assign case ID
+  _agentCaseIdCounter += 1;
+  const agentCaseId = `ac-${Date.now()}-${_agentCaseIdCounter}`;
+
+  const agentCase = {
+    agentCaseId,
+    agentRole,
+    ownerAgent: agentRole,
+    affectedDomain: isBackend ? "backend" : "frontend",
+    solutionDomain: isBackend ? "backend" : "frontend",
+    needsCrossAgentReview,
+
+    // Problem description
+    problemType,
+    problemTitle:        problemTitle.length > 120 ? problemTitle.slice(0, 117) + "..." : problemTitle,
+    problemSummary:      `${_resolveAgentRole(affectedLayer) === "deepseek_backend" ? "Backend" : "Frontend"}-Problem erkannt: ${problemTitle}.`,
+    suspectedRootCause,
+
+    // Solution proposal
+    recommendedFixes,
+    recommendedActionPath:   proposedPreparationType,
+    changeTargets:           changeTargets.slice(0, 5),
+
+    // Approval / Feedback
+    needsApproval:           true,
+    approvalQuestion,
+    approvalScope,
+    proposedPreparationType,
+    proposedActionBundle:    recommendedFixes.join("; "),
+    userFeedbackSupported:   true,
+
+    // Feedback loop preparation
+    feedbackOptions:         ["approve", "reject", "modify", "narrow_scope", "suggest_alternative", "defer"],
+    acceptedFeedbackTypes:   VALID_AGENT_FEEDBACK_TYPES,
+    agentCanRefinePlan:      true,
+    planVersion:             1,
+    alternateSuggestionSupported: true,
+
+    // Confidence & context
+    agentConfidence,
+    issueSeverity:           issue.issueSeverity || null,
+    attentionBand:           attention.attentionBand || null,
+    maturityBand:            maturity.decisionMaturityBand || null,
+    readinessBand:           pattern.actionReadinessBand || null,
+    caseStatus:              caseCtx.caseStatus || null,
+    governanceClass:         governance.policyClass || null,
+
+    // Lifecycle
+    status:                  "proposed",
+    feedbackHistory:         [],
+    createdAt:               new Date().toISOString(),
+    updatedAt:               new Date().toISOString(),
+  };
+
+  // Build the chat message
+  agentCase.chatMessage = _buildAgentChatMessage(agentCase);
+
+  // Derive next suggested step
+  if (agentConfidence >= AGENT_CONFIDENCE_THRESHOLDS.high) {
+    agentCase.nextSuggestedStep = "Freigabe erteilen und Vorbereitung starten";
+  } else if (agentConfidence >= AGENT_CONFIDENCE_THRESHOLDS.medium) {
+    agentCase.nextSuggestedStep = "Vorschlag prüfen und ggf. anpassen";
+  } else {
+    agentCase.nextSuggestedStep = "Diagnose vertiefen – noch nicht ausreichend belastbar";
+  }
+
+  // Store in registry
+  _agentCaseRegistry.set(agentCaseId, agentCase);
+
+  // Evict oldest if over limit
+  if (_agentCaseRegistry.size > AGENT_CASE_MAX_ENTRIES) {
+    let oldestKey = null;
+    let oldestTime = null;
+    for (const [key, val] of _agentCaseRegistry) {
+      if (!oldestTime || val.createdAt < oldestTime) {
+        oldestTime = val.createdAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) _agentCaseRegistry.delete(oldestKey);
+  }
+
+  // Create chat messages for this case
+  _recordAgentChatMessage({
+    agentCaseId,
+    agentRole,
+    messageType: "problem_detected",
+    messageIntent: "inform",
+    messagePriority: attention.attentionBand === "focus_now" ? "high" : "normal",
+    requiresUserDecision: true,
+    message: agentCase.chatMessage,
+    problemType,
+  });
+
+  // Log agent case creation
+  logger.info("[agentBridge] Step 14 – agent case created", {
+    agentCaseId,
+    agentRole,
+    problemType,
+    problemTitle: agentCase.problemTitle,
+    suspectedRootCause,
+    fixCount: recommendedFixes.length,
+    approvalScope,
+    agentConfidence,
+    needsCrossAgentReview,
+    preparationType: proposedPreparationType,
+    attentionBand: attention.attentionBand,
+    maturityBand: maturity.decisionMaturityBand,
+    status: "proposed",
+  });
+
+  return agentCase;
+}
+
+/**
+ * Record a chat message in the agent message store.
+ *
+ * @param {Object} params
+ */
+function _recordAgentChatMessage({
+  agentCaseId,
+  agentRole,
+  messageType,
+  messageIntent,
+  messagePriority = "normal",
+  requiresUserDecision = false,
+  message,
+  problemType = null,
+}) {
+  const chatMessage = {
+    messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
+    threadId:            agentCaseId,
+    caseId:              agentCaseId,
+    agentRole,
+    messageType,
+    messageIntent,
+    messagePriority,
+    requiresUserDecision,
+    agentMessage:        message,
+    problemType,
+    createdAt:           new Date().toISOString(),
+  };
+
+  _agentChatMessages.push(chatMessage);
+
+  // Evict oldest if over limit
+  while (_agentChatMessages.length > AGENT_CHAT_MAX_MESSAGES) {
+    _agentChatMessages.shift();
+  }
+
+  return chatMessage;
+}
+
+/**
+ * Process user feedback on an agent case.
+ * Supports: approve, reject, modify, narrow_scope,
+ * suggest_alternative, request_more_info, defer, approve_partial.
+ *
+ * @param {Object} params
+ * @param {string} params.agentCaseId
+ * @param {string} params.feedbackType
+ * @param {string} [params.userMessage]
+ * @param {string} [params.preferredScope]
+ * @param {string} [params.alternativeSuggestion]
+ * @returns {Object} feedback result
+ */
+function submitAgentCaseFeedback({
+  agentCaseId,
+  feedbackType,
+  userMessage = null,
+  preferredScope = null,
+  alternativeSuggestion = null,
+} = {}) {
+  if (!agentCaseId || !_agentCaseRegistry.has(agentCaseId)) {
+    logger.warn("[agentBridge] Step 14 – feedback for unknown agent case", { agentCaseId });
+    return { success: false, error: "Agent case not found" };
+  }
+
+  if (!feedbackType || !VALID_AGENT_FEEDBACK_TYPES.includes(feedbackType)) {
+    return { success: false, error: `Invalid feedback type. Valid: ${VALID_AGENT_FEEDBACK_TYPES.join(", ")}` };
+  }
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId);
+
+  // Record feedback
+  const feedbackEntry = {
+    feedbackType,
+    userMessage:            userMessage || null,
+    preferredScope:         preferredScope || null,
+    alternativeSuggestion:  alternativeSuggestion || null,
+    receivedAt:             new Date().toISOString(),
+    planVersionAtFeedback:  agentCase.planVersion,
+  };
+
+  agentCase.feedbackHistory.push(feedbackEntry);
+  agentCase.updatedAt = new Date().toISOString();
+
+  // Update case status based on feedback
+  if (feedbackType === "approve") {
+    agentCase.status = "approved";
+    agentCase.nextSuggestedStep = "Lösungsvorbereitung kann gestartet werden";
+  } else if (feedbackType === "approve_partial") {
+    agentCase.status = "partially_approved";
+    if (preferredScope && VALID_APPROVAL_SCOPES.includes(preferredScope)) {
+      agentCase.approvalScope = preferredScope;
+    }
+    agentCase.nextSuggestedStep = `Teilweise Freigabe – Scope: ${agentCase.approvalScope}`;
+  } else if (feedbackType === "reject") {
+    agentCase.status = "rejected";
+    agentCase.nextSuggestedStep = "Vorschlag wurde abgelehnt – warte auf neue Richtung";
+  } else if (feedbackType === "modify" || feedbackType === "suggest_alternative") {
+    agentCase.status = "refinement_requested";
+    agentCase.planVersion += 1;
+    if (alternativeSuggestion) {
+      agentCase.recommendedFixes = [alternativeSuggestion];
+      agentCase.proposedActionBundle = alternativeSuggestion;
+    }
+    agentCase.nextSuggestedStep = "Vorschlag wird angepasst – neue Version vorbereiten";
+    agentCase.chatMessage = _buildAgentChatMessage(agentCase);
+  } else if (feedbackType === "narrow_scope") {
+    agentCase.status = "scope_narrowed";
+    if (preferredScope && VALID_APPROVAL_SCOPES.includes(preferredScope)) {
+      agentCase.approvalScope = preferredScope;
+    }
+    agentCase.nextSuggestedStep = `Scope eingegrenzt auf: ${agentCase.approvalScope}`;
+  } else if (feedbackType === "request_more_info") {
+    agentCase.status = "info_requested";
+    agentCase.nextSuggestedStep = "Diagnose wird vertieft – weitere Informationen sammeln";
+  } else if (feedbackType === "defer") {
+    agentCase.status = "deferred";
+    agentCase.nextSuggestedStep = "Fall zurückgestellt – wird später erneut geprüft";
+  }
+
+  _agentCaseRegistry.set(agentCaseId, agentCase);
+
+  // Build response message based on feedback
+  let responseText;
+  switch (feedbackType) {
+    case "approve":
+      responseText = "Verstanden – ich bereite die Umsetzung vor.";
+      break;
+    case "approve_partial":
+      responseText = `Verstanden – ich bereite nur den Bereich „${agentCase.approvalScope}" vor.`;
+      break;
+    case "reject":
+      responseText = "Verstanden – ich halte den Vorschlag zurück und warte auf eine neue Richtung.";
+      break;
+    case "modify":
+    case "suggest_alternative":
+      responseText = "Verstanden – ich passe den Vorschlag entsprechend an.";
+      break;
+    case "narrow_scope":
+      responseText = `Verstanden – ich konzentriere mich auf: ${agentCase.approvalScope}.`;
+      break;
+    case "request_more_info":
+      responseText = "Verstanden – ich vertiefe die Diagnose und sammle weitere Informationen.";
+      break;
+    case "defer":
+      responseText = "Verstanden – der Fall wird zurückgestellt und später erneut geprüft.";
+      break;
+    default:
+      responseText = "Feedback erhalten.";
+  }
+
+  // Record feedback chat message from user side
+  _recordAgentChatMessage({
+    agentCaseId,
+    agentRole: "user",
+    messageType: "feedback_received",
+    messageIntent: feedbackType === "approve" || feedbackType === "approve_partial" ? "confirm" : "refine",
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: userMessage || feedbackType,
+  });
+
+  // Record agent response
+  _recordAgentChatMessage({
+    agentCaseId,
+    agentRole: agentCase.agentRole,
+    messageType: feedbackType === "approve" ? "preparation_started" : "plan_refined",
+    messageIntent: "confirm",
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: responseText,
+  });
+
+  logger.info("[agentBridge] Step 14 – agent case feedback received", {
+    agentCaseId,
+    feedbackType,
+    newStatus: agentCase.status,
+    planVersion: agentCase.planVersion,
+    approvalScope: agentCase.approvalScope,
+    hasUserMessage: !!userMessage,
+    hasAlternative: !!alternativeSuggestion,
+  });
+
+  return {
+    success: true,
+    agentCaseId,
+    feedbackType,
+    newStatus: agentCase.status,
+    planVersion: agentCase.planVersion,
+    approvalScope: agentCase.approvalScope,
+    nextSuggestedStep: agentCase.nextSuggestedStep,
+    agentResponse: responseText,
+  };
+}
+
+/**
+ * Get a summary of all agent cases, problems, and solutions.
+ * Provides overview for the operator including:
+ * - total agent cases
+ * - cases by role / status / problem type
+ * - cases with/without clear fixes
+ * - cases needing approval
+ * - recent agent cases
+ *
+ * @returns {Object} agent case summary
+ */
+function getAgentCaseSummary() {
+  const byRole = { deepseek_backend: 0, gemini_frontend: 0 };
+  const byStatus = {};
+  const byProblemType = {};
+  const bySeverity = {};
+
+  let withClearFixes = 0;
+  let needsApproval = 0;
+  let needsCrossReview = 0;
+  let totalConfidence = 0;
+  const recentCases = [];
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    // By role
+    if (byRole[agentCase.agentRole] !== undefined) {
+      byRole[agentCase.agentRole] += 1;
+    }
+
+    // By status
+    byStatus[agentCase.status] = (byStatus[agentCase.status] || 0) + 1;
+
+    // By problem type
+    byProblemType[agentCase.problemType] = (byProblemType[agentCase.problemType] || 0) + 1;
+
+    // By severity
+    if (agentCase.issueSeverity) {
+      bySeverity[agentCase.issueSeverity] = (bySeverity[agentCase.issueSeverity] || 0) + 1;
+    }
+
+    // Counts
+    if (agentCase.recommendedFixes && agentCase.recommendedFixes.length > 0) {
+      withClearFixes += 1;
+    }
+    if (agentCase.needsApproval && agentCase.status === "proposed") {
+      needsApproval += 1;
+    }
+    if (agentCase.needsCrossAgentReview) {
+      needsCrossReview += 1;
+    }
+    totalConfidence += agentCase.agentConfidence || 0;
+
+    // Collect recent cases
+    recentCases.push({
+      agentCaseId:        agentCase.agentCaseId,
+      agentRole:          agentCase.agentRole,
+      problemType:        agentCase.problemType,
+      problemTitle:       agentCase.problemTitle,
+      status:             agentCase.status,
+      agentConfidence:    agentCase.agentConfidence,
+      needsApproval:      agentCase.needsApproval && agentCase.status === "proposed",
+      approvalScope:      agentCase.approvalScope,
+      fixCount:           (agentCase.recommendedFixes || []).length,
+      nextSuggestedStep:  agentCase.nextSuggestedStep,
+      createdAt:          agentCase.createdAt,
+      updatedAt:          agentCase.updatedAt,
+    });
+  }
+
+  // Sort recent cases (newest first)
+  recentCases.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+
+  const totalCases = _agentCaseRegistry.size;
+
+  return {
+    totalAgentCases:        totalCases,
+    totalChatMessages:      _agentChatMessages.length,
+    casesByRole:            byRole,
+    casesByStatus:          byStatus,
+    casesByProblemType:     byProblemType,
+    casesBySeverity:        bySeverity,
+    withClearFixes,
+    needsApproval,
+    needsCrossAgentReview:  needsCrossReview,
+    averageConfidence:      totalCases > 0 ? Math.round((totalConfidence / totalCases) * 100) / 100 : 0,
+    recentCases:            recentCases.slice(0, AGENT_CASE_MAX_SUMMARY_ENTRIES),
+    generatedAt:            new Date().toISOString(),
+  };
+}
+
+/**
+ * Get agent chat messages, optionally filtered by case.
+ *
+ * @param {Object} [params]
+ * @param {string} [params.agentCaseId] - filter by case
+ * @param {string} [params.agentRole] - filter by role
+ * @param {number} [params.limit] - max messages to return
+ * @returns {Object} chat messages
+ */
+function getAgentChatMessages({ agentCaseId, agentRole, limit = 50 } = {}) {
+  let filtered = [..._agentChatMessages];
+
+  if (agentCaseId) {
+    filtered = filtered.filter(m => m.caseId === agentCaseId);
+  }
+  if (agentRole) {
+    filtered = filtered.filter(m => m.agentRole === agentRole);
+  }
+
+  // Return newest first, capped
+  filtered.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  filtered = filtered.slice(0, Math.min(limit, 100));
+
+  return {
+    totalMessages: _agentChatMessages.length,
+    filteredCount: filtered.length,
+    messages: filtered,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
    getPendingFrontendFeedback
    Returns all stored frontend feedback entries
    (useful for backend inspection / debugging).
@@ -4918,4 +5982,16 @@ module.exports = {
   VALID_HELPFULNESS_BANDS,
   VALID_ATTENTION_BANDS,
   VALID_DECISION_MATURITY_BANDS,
+  // Step 14: Agent Problem Detection / Solution Proposal / Approval Chat Foundation
+  buildAgentCaseFromBridgePackage,
+  submitAgentCaseFeedback,
+  getAgentCaseSummary,
+  getAgentChatMessages,
+  VALID_AGENT_ROLES,
+  VALID_AGENT_PROBLEM_TYPES,
+  VALID_AGENT_MESSAGE_TYPES,
+  VALID_AGENT_MESSAGE_INTENTS,
+  VALID_APPROVAL_SCOPES,
+  VALID_PREPARATION_TYPES,
+  VALID_AGENT_FEEDBACK_TYPES,
 };
