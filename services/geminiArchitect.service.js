@@ -899,6 +899,33 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 14: Inject agent case context (Problem → Lösung → Freigabe) ──
+  if (bridgeContext && bridgeContext.agentCaseContext) {
+    const ac14 = bridgeContext.agentCaseContext;
+    const agentParts = [];
+    if (ac14.problemTitle) {
+      agentParts.push(`Problem: ${ac14.problemTitle}`);
+    }
+    if (ac14.suspectedRootCause) {
+      agentParts.push(`Vermutete Ursache: ${ac14.suspectedRootCause}`);
+    }
+    if (ac14.recommendedFixes && ac14.recommendedFixes.length > 0) {
+      agentParts.push(`Lösungsvorschläge: ${ac14.recommendedFixes.join("; ")}`);
+    }
+    if (ac14.agentConfidence !== undefined) {
+      agentParts.push(`Agentenvertrauen: ${ac14.agentConfidence}`);
+    }
+    if (ac14.approvalScope) {
+      agentParts.push(`Freigabe-Scope: ${ac14.approvalScope}`);
+    }
+    if (ac14.nextSuggestedStep) {
+      agentParts.push(`Nächster Schritt: ${ac14.nextSuggestedStep}`);
+    }
+    if (agentParts.length) {
+      sections.push(`Agentische Problemerkennung (Step 14 – kooperativ, keine automatische Umsetzung):\n${agentParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

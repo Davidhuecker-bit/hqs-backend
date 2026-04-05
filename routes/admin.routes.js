@@ -4122,6 +4122,11 @@ const {
   getAttentionPrioritySummary,
   // Step 13: Decision Maturity / Resolution Confidence Light
   getDecisionMaturitySummary,
+  // Step 14: Agent Problem Detection / Solution Proposal / Approval Chat Foundation
+  buildAgentCaseFromBridgePackage,
+  submitAgentCaseFeedback,
+  getAgentCaseSummary,
+  getAgentChatMessages,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5044,6 +5049,184 @@ router.get("/deepseek/agent-bridge/decision-maturity", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading decision maturity summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/agent-cases
+   Step 14: Agent Problem Detection / Solution Proposal /
+   Approval Chat Foundation – returns an overview of all
+   agent cases including:
+   - total cases by role / status / problem type
+   - cases with clear fix proposals
+   - cases needing approval
+   - recent agent cases with summaries
+
+   Helps the operator understand:
+   - how many agentische Problemfälle exist
+   - how many have concrete solution proposals
+   - how many need approval
+   - what the next suggested steps are
+
+   Cooperative, not autonomous.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "agentCases": {
+         "totalAgentCases": 5,
+         "totalChatMessages": 12,
+         "casesByRole": { "deepseek_backend": 3, "gemini_frontend": 2 },
+         "casesByStatus": { "proposed": 3, "approved": 1, ... },
+         "casesByProblemType": { ... },
+         "withClearFixes": 4,
+         "needsApproval": 3,
+         "recentCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/agent-cases", (_req, res) => {
+  try {
+    const summary = getAgentCaseSummary();
+    return res.json({ success: true, version: "v1", agentCases: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/agent-cases error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading agent cases summary",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/agent-case-feedback
+   Step 14: Submit user feedback on an agent case.
+
+   Supports feedback types:
+   - approve         → start preparation
+   - reject          → hold back proposal
+   - modify          → adjust plan
+   - narrow_scope    → limit to backend/frontend only
+   - suggest_alternative → user has a different idea
+   - request_more_info   → deepen diagnosis
+   - defer           → postpone
+   - approve_partial → approve only part
+
+   Request body:
+     {
+       "agentCaseId": "ac-...",
+       "feedbackType": "approve",
+       "userMessage": "optional user comment",
+       "preferredScope": "backend_only",
+       "alternativeSuggestion": "optional alternative"
+     }
+
+   Response:
+     {
+       "success": true,
+       "agentCaseId": "ac-...",
+       "feedbackType": "approve",
+       "newStatus": "approved",
+       "planVersion": 1,
+       "approvalScope": "backend_only",
+       "nextSuggestedStep": "...",
+       "agentResponse": "Verstanden – ..."
+     }
+========================================================= */
+router.post("/deepseek/agent-bridge/agent-case-feedback", (req, res) => {
+  try {
+    const {
+      agentCaseId,
+      feedbackType,
+      userMessage,
+      preferredScope,
+      alternativeSuggestion,
+    } = req.body || {};
+
+    if (!agentCaseId) {
+      return res.status(400).json({
+        success: false,
+        error: "agentCaseId is required",
+      });
+    }
+    if (!feedbackType) {
+      return res.status(400).json({
+        success: false,
+        error: "feedbackType is required",
+      });
+    }
+
+    const result = submitAgentCaseFeedback({
+      agentCaseId,
+      feedbackType,
+      userMessage: userMessage || null,
+      preferredScope: preferredScope || null,
+      alternativeSuggestion: alternativeSuggestion || null,
+    });
+
+    if (!result.success) {
+      return res.status(400).json(result);
+    }
+
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/agent-case-feedback error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error processing agent case feedback",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/agent-chat-messages
+   Step 14: Returns agent chat messages, optionally filtered
+   by case or role.
+
+   Query params:
+   - agentCaseId (optional) – filter by specific case
+   - agentRole   (optional) – filter by role
+   - limit       (optional) – max messages (default 50)
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "chat": {
+         "totalMessages": 25,
+         "filteredCount": 10,
+         "messages": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/agent-chat-messages", (req, res) => {
+  try {
+    const { agentCaseId, agentRole, limit } = req.query || {};
+    const parsedLimit = limit ? parseInt(limit, 10) : 50;
+    const chat = getAgentChatMessages({
+      agentCaseId: agentCaseId || undefined,
+      agentRole: agentRole || undefined,
+      limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 50,
+    });
+    return res.json({ success: true, version: "v1", chat });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/agent-chat-messages error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading agent chat messages",
     });
   }
 });
