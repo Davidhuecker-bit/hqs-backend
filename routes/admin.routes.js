@@ -4127,6 +4127,8 @@ const {
   submitAgentCaseFeedback,
   getAgentCaseSummary,
   getAgentChatMessages,
+  // Step 15: Agent Approval / Plan Refinement / Controlled Preparation
+  getRefinedPlanSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5227,6 +5229,57 @@ router.get("/deepseek/agent-bridge/agent-chat-messages", (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading agent chat messages",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/plan-refinement-summary
+   Step 15: Plan Refinement / Controlled Preparation Summary.
+
+   Returns an overview of all agent cases with Step 15
+   plan refinement and preparation statistics:
+   - How many cases have a refined plan
+   - How many are ready to prepare
+   - Preparation type distribution
+   - Approval decision stage distribution
+   - Plan phase distribution
+   - Cross-agent coordination counts
+   - Per-case refinement status
+
+   Cooperative, not autonomous.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "planRefinement": {
+         "totalAgentCases": 5,
+         "withRefinedPlan": 3,
+         "readyToPrepare": 2,
+         "awaitingDecision": 1,
+         "diagnosisOnly": 1,
+         "byPreparationType": { "backend_prepare": 1, ... },
+         "byApprovalDecisionStage": { "approved_full": 1, ... },
+         "byPlanPhase": { "preparation_phase": 2, ... },
+         "crossAgentStatus": { "needsCrossAgentReview": 1, ... },
+         "refinedCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/plan-refinement-summary", (_req, res) => {
+  try {
+    const planRefinement = getRefinedPlanSummary();
+    return res.json({ success: true, version: "v1", planRefinement });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/plan-refinement-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading plan refinement summary",
     });
   }
 });

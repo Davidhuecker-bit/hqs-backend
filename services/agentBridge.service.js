@@ -867,6 +867,69 @@ const AGENT_CHAT_MAX_QUERY_LIMIT = 100;
 const MAX_PROBLEM_TITLE_LENGTH = 120;
 
 /* ─────────────────────────────────────────────
+   Step 15: Agent Approval / Plan Refinement /
+   Controlled Preparation – Constants
+   ─────────────────────────────────────────────
+   These constants extend the Step 14 foundation
+   to support:
+   - real plan-refinement phases
+   - controlled preparation categories
+   - richer approval decision stages
+   - cross-agent coordination fields
+   ───────────────────────────────────────────── */
+
+/**
+ * Plan phases for the agent work lifecycle.
+ * Tracks which stage of the Problem→Preparation
+ * pipeline a case is currently in.
+ */
+const VALID_PLAN_PHASES = [
+  "problem_phase",       // Agent detected problem, not yet proposed
+  "solution_phase",      // Agent proposed solution, awaiting approval
+  "feedback_phase",      // User provided feedback, plan being refined
+  "refinement_phase",    // Plan is actively being refined
+  "preparation_phase",   // Plan approved, controlled preparation started
+  "hold_phase",          // Case deferred or requires cross-agent review
+];
+
+/**
+ * Controlled preparation types for Step 15.
+ * Deliberately conservative – no auto-execution.
+ * Each type describes what the agent *prepares*,
+ * not what it *executes*.
+ */
+const VALID_CONTROLLED_PREPARATION_TYPES = [
+  "diagnosis_only",        // Deepen analysis, no fix yet
+  "backend_prepare",       // Prepare backend-side change only
+  "frontend_prepare",      // Prepare frontend-side change only
+  "partial_fix_prepare",   // Prepare a limited / scoped fix
+  "cross_agent_review",    // Requires DeepSeek ↔ Gemini review before proceeding
+  "full_preparation",      // Both backend + frontend preparation
+  "hold",                  // No preparation yet – case held back
+];
+
+/**
+ * Approval decision stages – richer than a boolean.
+ * Tracks the precise state of the operator's decision.
+ */
+const VALID_APPROVAL_DECISION_STAGES = [
+  "awaiting_decision",        // No feedback yet
+  "approved_full",            // Full fix approved
+  "approved_partial",         // Partial / scoped approval
+  "approved_diagnosis_only",  // Only deepen diagnosis, no fix
+  "approved_backend_only",    // Backend preparation approved
+  "approved_frontend_only",   // Frontend preparation approved
+  "deferred",                 // Operator deferred the decision
+  "rejected",                 // Operator rejected the proposal
+  "refinement_in_progress",   // Operator requested modification/alternative
+  "cross_agent_pending",      // Cross-agent review required before deciding
+];
+
+/** Step 15 size limits */
+const PLAN_REFINEMENT_MAX_STEPS = 10;
+const REFINED_PLAN_SUMMARY_MAX_ENTRIES = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -5355,6 +5418,8 @@ function buildAgentCaseFromBridgePackage(bridgePackage) {
 
 /**
  * Record a chat message in the agent message store.
+ * Step 15 adds optional planPhase and controlledPreparationType
+ * fields to support richer thread tracking.
  *
  * @param {Object} params
  */
@@ -5367,6 +5432,8 @@ function _recordAgentChatMessage({
   requiresUserDecision = false,
   message,
   problemType = null,
+  planPhase = null,
+  controlledPreparationType = null,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -5382,6 +5449,14 @@ function _recordAgentChatMessage({
     createdAt:           new Date().toISOString(),
   };
 
+  // Step 15: attach plan context when available
+  if (planPhase) {
+    chatMessage.planPhase = planPhase;
+  }
+  if (controlledPreparationType) {
+    chatMessage.controlledPreparationType = controlledPreparationType;
+  }
+
   _agentChatMessages.push(chatMessage);
 
   // Evict oldest if over limit
@@ -5396,6 +5471,10 @@ function _recordAgentChatMessage({
  * Process user feedback on an agent case.
  * Supports: approve, reject, modify, narrow_scope,
  * suggest_alternative, request_more_info, defer, approve_partial.
+ *
+ * Step 15: After updating the case status, this function now
+ * also builds a refined plan via _translateFeedbackToRefinedPlan()
+ * and attaches it to the case as `refinedPlan15`.
  *
  * @param {Object} params
  * @param {string} params.agentCaseId
@@ -5472,36 +5551,22 @@ function submitAgentCaseFeedback({
     agentCase.nextSuggestedStep = "Fall zurückgestellt – wird später erneut geprüft";
   }
 
-  _agentCaseRegistry.set(agentCaseId, agentCase);
+  // ── Step 15: Translate feedback into a real refined plan ──
+  const refinedPlan = _translateFeedbackToRefinedPlan({
+    agentCase,
+    feedbackType,
+    userMessage,
+    preferredScope,
+    alternativeSuggestion,
+  });
 
-  // Build response message based on feedback
-  let responseText;
-  switch (feedbackType) {
-    case "approve":
-      responseText = "Verstanden – ich bereite die Umsetzung vor.";
-      break;
-    case "approve_partial":
-      responseText = `Verstanden – ich bereite nur den Bereich „${agentCase.approvalScope}" vor.`;
-      break;
-    case "reject":
-      responseText = "Verstanden – ich halte den Vorschlag zurück und warte auf eine neue Richtung.";
-      break;
-    case "modify":
-    case "suggest_alternative":
-      responseText = "Verstanden – ich passe den Vorschlag entsprechend an.";
-      break;
-    case "narrow_scope":
-      responseText = `Verstanden – ich konzentriere mich auf: ${agentCase.approvalScope}.`;
-      break;
-    case "request_more_info":
-      responseText = "Verstanden – ich vertiefe die Diagnose und sammle weitere Informationen.";
-      break;
-    case "defer":
-      responseText = "Verstanden – der Fall wird zurückgestellt und später erneut geprüft.";
-      break;
-    default:
-      responseText = "Feedback erhalten.";
-  }
+  // Attach refined plan to agent case
+  agentCase.refinedPlan15 = refinedPlan;
+
+  // Use the Step 15 cooperative response message
+  const responseText = refinedPlan.refinedPlanMessage;
+
+  _agentCaseRegistry.set(agentCaseId, agentCase);
 
   // Record feedback chat message from user side
   _recordAgentChatMessage({
@@ -5512,38 +5577,58 @@ function submitAgentCaseFeedback({
     messagePriority: "normal",
     requiresUserDecision: false,
     message: userMessage || feedbackType,
+    planPhase: refinedPlan.planPhase,
   });
 
-  // Record agent response
+  // Record agent response (Step 15: richer plan_refined message)
   _recordAgentChatMessage({
     agentCaseId,
     agentRole: agentCase.agentRole,
-    messageType: feedbackType === "approve" ? "preparation_started" : "plan_refined",
-    messageIntent: "confirm",
+    messageType: refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined",
+    messageIntent: refinedPlan.canPrepareNow ? "confirm" : "refine",
     messagePriority: "normal",
-    requiresUserDecision: false,
+    requiresUserDecision: !refinedPlan.canPrepareNow,
     message: responseText,
+    planPhase: refinedPlan.planPhase,
+    controlledPreparationType: refinedPlan.controlledPreparationType,
   });
 
-  logger.info("[agentBridge] Step 14 – agent case feedback received", {
+  logger.info("[agentBridge] Step 15 – plan refinement applied", {
     agentCaseId,
     feedbackType,
-    newStatus: agentCase.status,
-    planVersion: agentCase.planVersion,
-    approvalScope: agentCase.approvalScope,
-    hasUserMessage: !!userMessage,
-    hasAlternative: !!alternativeSuggestion,
+    newStatus:                 agentCase.status,
+    planVersion:               agentCase.planVersion,
+    approvalScope:             agentCase.approvalScope,
+    planPhase:                 refinedPlan.planPhase,
+    approvalDecisionStage:     refinedPlan.approvalDecisionStage,
+    controlledPreparationType: refinedPlan.controlledPreparationType,
+    preparationStatus:         refinedPlan.preparationStatus,
+    canPrepareNow:             refinedPlan.canPrepareNow,
+    handoffSuggested:          refinedPlan.handoffSuggested,
+    needsCrossAgentReview:     refinedPlan.needsCrossAgentReview,
+    refinementReason:          refinedPlan.refinementReason,
+    hasAlternative:            !!alternativeSuggestion,
   });
 
   return {
-    success: true,
+    success:              true,
     agentCaseId,
     feedbackType,
-    newStatus: agentCase.status,
-    planVersion: agentCase.planVersion,
-    approvalScope: agentCase.approvalScope,
-    nextSuggestedStep: agentCase.nextSuggestedStep,
-    agentResponse: responseText,
+    newStatus:            agentCase.status,
+    planVersion:          agentCase.planVersion,
+    approvalScope:        agentCase.approvalScope,
+    nextSuggestedStep:    agentCase.nextSuggestedStep,
+    agentResponse:        responseText,
+    // Step 15 additions
+    planPhase:                 refinedPlan.planPhase,
+    approvalDecisionStage:     refinedPlan.approvalDecisionStage,
+    controlledPreparationType: refinedPlan.controlledPreparationType,
+    preparationSteps:          refinedPlan.preparationSteps,
+    preparationStatus:         refinedPlan.preparationStatus,
+    canPrepareNow:             refinedPlan.canPrepareNow,
+    handoffSuggested:          refinedPlan.handoffSuggested,
+    needsCrossAgentReview:     refinedPlan.needsCrossAgentReview,
+    refinementReason:          refinedPlan.refinementReason,
   };
 }
 
@@ -5665,6 +5750,584 @@ function getAgentChatMessages({ agentCaseId, agentRole, limit = 50 } = {}) {
     filteredCount: filtered.length,
     messages: filtered,
     generatedAt: new Date().toISOString(),
+  };
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Step 15: Agent Approval / Plan Refinement /
+   Controlled Preparation
+   ═══════════════════════════════════════════════════════════
+   This layer sits on top of Step 14 and transforms
+   user feedback into real plan refinement:
+
+     Problem → Solution Proposal → User Feedback
+       → Plan Refinement → Controlled Preparation
+
+   Key principles:
+   - No automatic productive execution
+   - Agent cooperates with user, does not act alone
+   - Each feedback type maps to a concrete plan change
+   - Controlled preparation types distinguish what the
+     agent prepares (never what it executes autonomously)
+   ─────────────────────────────────────────────────────── */
+
+/**
+ * Derive the controlled preparation type from the agent case
+ * scope and feedback type.  This is the central Step 15 mapping:
+ *   approvalScope + feedbackType → VALID_CONTROLLED_PREPARATION_TYPES
+ *
+ * Conservative by design: defaults to "diagnosis_only" when unsure.
+ *
+ * @param {Object} params
+ * @param {string} params.feedbackType
+ * @param {string} params.approvalScope
+ * @param {boolean} params.needsCrossAgentReview
+ * @returns {string} one of VALID_CONTROLLED_PREPARATION_TYPES
+ */
+function _deriveControlledPreparationType({ feedbackType, approvalScope, needsCrossAgentReview }) {
+  if (feedbackType === "reject" || feedbackType === "defer") {
+    return "hold";
+  }
+  if (feedbackType === "request_more_info") {
+    return "diagnosis_only";
+  }
+  if (needsCrossAgentReview && feedbackType !== "reject" && feedbackType !== "defer") {
+    return "cross_agent_review";
+  }
+  if (feedbackType === "approve") {
+    if (approvalScope === "backend_only")    return "backend_prepare";
+    if (approvalScope === "frontend_only")   return "frontend_prepare";
+    if (approvalScope === "diagnosis_only")  return "diagnosis_only";
+    if (approvalScope === "partial_fix")     return "partial_fix_prepare";
+    if (approvalScope === "full_fix")        return "full_preparation";
+    return "full_preparation";
+  }
+  if (feedbackType === "approve_partial") {
+    if (approvalScope === "backend_only")    return "backend_prepare";
+    if (approvalScope === "frontend_only")   return "frontend_prepare";
+    if (approvalScope === "diagnosis_only")  return "diagnosis_only";
+    return "partial_fix_prepare";
+  }
+  if (feedbackType === "narrow_scope") {
+    if (approvalScope === "backend_only")    return "backend_prepare";
+    if (approvalScope === "frontend_only")   return "frontend_prepare";
+    if (approvalScope === "diagnosis_only")  return "diagnosis_only";
+    return "partial_fix_prepare";
+  }
+  // modify / suggest_alternative → still refining, not yet preparing
+  return "diagnosis_only";
+}
+
+/**
+ * Derive the approval decision stage from the agent case status
+ * and scope.  This is richer than a boolean approved/not-approved.
+ *
+ * @param {Object} params
+ * @param {string} params.status          - current agent case status
+ * @param {string} params.approvalScope   - current approval scope
+ * @param {boolean} params.needsCrossAgentReview
+ * @returns {string} one of VALID_APPROVAL_DECISION_STAGES
+ */
+function _deriveApprovalDecisionStage({ status, approvalScope, needsCrossAgentReview }) {
+  if (status === "proposed")             return "awaiting_decision";
+  if (status === "rejected")             return "rejected";
+  if (status === "deferred")             return "deferred";
+  if (status === "refinement_requested") return "refinement_in_progress";
+  if (status === "info_requested")       return "approved_diagnosis_only";
+  if (status === "scope_narrowed") {
+    if (approvalScope === "backend_only")   return "approved_backend_only";
+    if (approvalScope === "frontend_only")  return "approved_frontend_only";
+    if (approvalScope === "diagnosis_only") return "approved_diagnosis_only";
+    return "approved_partial";
+  }
+  if (status === "partially_approved") {
+    if (approvalScope === "backend_only")   return "approved_backend_only";
+    if (approvalScope === "frontend_only")  return "approved_frontend_only";
+    if (approvalScope === "diagnosis_only") return "approved_diagnosis_only";
+    return "approved_partial";
+  }
+  if (status === "approved") {
+    if (needsCrossAgentReview)            return "cross_agent_pending";
+    if (approvalScope === "backend_only")   return "approved_backend_only";
+    if (approvalScope === "frontend_only")  return "approved_frontend_only";
+    if (approvalScope === "diagnosis_only") return "approved_diagnosis_only";
+    if (approvalScope === "partial_fix")    return "approved_partial";
+    return "approved_full";
+  }
+  return "awaiting_decision";
+}
+
+/**
+ * Derive the current plan phase from the agent case status.
+ *
+ * @param {string} status - agent case status
+ * @returns {string} one of VALID_PLAN_PHASES
+ */
+function _derivePlanPhase(status) {
+  switch (status) {
+    case "proposed":             return "solution_phase";
+    case "refinement_requested": return "refinement_phase";
+    case "scope_narrowed":       return "feedback_phase";
+    case "info_requested":       return "feedback_phase";
+    case "partially_approved":   return "preparation_phase";
+    case "approved":             return "preparation_phase";
+    case "rejected":             return "hold_phase";
+    case "deferred":             return "hold_phase";
+    default:                     return "problem_phase";
+  }
+}
+
+/**
+ * Build the concrete preparation steps for the refined plan.
+ * These are human-readable action items that describe what
+ * the agent would prepare – no auto-execution.
+ *
+ * @param {Object} params
+ * @param {string} params.controlledPreparationType
+ * @param {string} params.agentRole
+ * @param {string[]} params.recommendedFixes
+ * @param {string[]} params.changeTargets
+ * @param {string} params.problemType
+ * @returns {string[]} ordered preparation steps
+ */
+function _buildPreparationSteps({
+  controlledPreparationType,
+  agentRole,
+  recommendedFixes,
+  changeTargets,
+  problemType,
+}) {
+  const isBackend = agentRole === "deepseek_backend";
+  const steps = [];
+
+  switch (controlledPreparationType) {
+    case "diagnosis_only":
+      steps.push("Ursache vollständig dokumentieren");
+      steps.push("Betroffene Codestellen identifizieren");
+      steps.push("Auswirkungsanalyse erstellen");
+      break;
+    case "backend_prepare":
+      steps.push("Backend-Änderungsumfang festlegen");
+      if (recommendedFixes.length > 0) {
+        steps.push(`Geplante Maßnahme: ${recommendedFixes[0]}`);
+      }
+      if (changeTargets.length > 0) {
+        steps.push(`Betroffene Komponenten: ${changeTargets.slice(0, 3).join(", ")}`);
+      }
+      steps.push("Vorbereitung prüfen – keine automatische Ausführung");
+      break;
+    case "frontend_prepare":
+      steps.push("Frontend-Änderungsumfang festlegen");
+      if (recommendedFixes.length > 0) {
+        steps.push(`Geplante Maßnahme: ${recommendedFixes[0]}`);
+      }
+      steps.push("UI-Auswirkung prüfen");
+      steps.push("Vorbereitung prüfen – keine automatische Ausführung");
+      break;
+    case "partial_fix_prepare":
+      steps.push("Teilumfang klären und eingrenzen");
+      if (recommendedFixes.length > 0) {
+        steps.push(`Eingegrenzter Fix: ${recommendedFixes[0]}`);
+      }
+      steps.push("Auswirkung auf angrenzende Bereiche prüfen");
+      steps.push("Vorbereitung prüfen – keine automatische Ausführung");
+      break;
+    case "cross_agent_review":
+      steps.push("DeepSeek-Backend-Analyse vorbereiten");
+      steps.push("Gemini-Frontend-Analyse vorbereiten");
+      steps.push("Schichtübergreifende Auswirkungen dokumentieren");
+      steps.push("Cross-Agent-Zusammenfassung erstellen");
+      break;
+    case "full_preparation":
+      steps.push("Backend-Änderungsumfang festlegen");
+      steps.push("Frontend-Änderungsumfang festlegen");
+      if (recommendedFixes.length > 0) {
+        steps.push(`Geplante Maßnahmen: ${recommendedFixes.slice(0, 2).join("; ")}`);
+      }
+      steps.push("Vollständige Auswirkungsanalyse erstellen");
+      steps.push("Vorbereitung prüfen – keine automatische Ausführung");
+      break;
+    case "hold":
+    default:
+      steps.push("Fall zurückgestellt – keine Vorbereitung");
+      steps.push("Auf neue Richtung warten");
+      break;
+  }
+
+  return steps.slice(0, PLAN_REFINEMENT_MAX_STEPS);
+}
+
+/**
+ * Build a cooperative, agent-style response message for
+ * plan refinement.  This is the Step 15 equivalent of
+ * _buildAgentChatMessage() for the refinement phase.
+ *
+ * Language is deliberately cooperative and first-person.
+ *
+ * @param {Object} params
+ * @param {string} params.feedbackType
+ * @param {string} params.controlledPreparationType
+ * @param {string} params.agentRole
+ * @param {string} params.approvalScope
+ * @param {string} params.refinementReason
+ * @param {string} [params.alternativeSuggestion]
+ * @param {string} [params.userMessage]
+ * @returns {string} German cooperative agent message
+ */
+function _buildRefinedPlanMessage({
+  feedbackType,
+  controlledPreparationType,
+  agentRole,
+  approvalScope,
+  refinementReason,
+  alternativeSuggestion = null,
+  userMessage = null,
+}) {
+  const agentLabel = agentRole === "deepseek_backend" ? "Backend-Analyse" : "Frontend-Analyse";
+  const parts = [];
+
+  // Acknowledge user input
+  if (userMessage) {
+    parts.push(`Ich habe deinen Hinweis berücksichtigt.`);
+  }
+
+  // Describe what the agent now plans to do
+  switch (feedbackType) {
+    case "approve":
+      if (controlledPreparationType === "full_preparation") {
+        parts.push("Ich bereite jetzt die vollständige Lösung vor.");
+      } else if (controlledPreparationType === "backend_prepare") {
+        parts.push("Ich bereite nur den Backend-Teil vor.");
+      } else if (controlledPreparationType === "frontend_prepare") {
+        parts.push("Ich bereite nur den Frontend-Teil vor.");
+      } else if (controlledPreparationType === "diagnosis_only") {
+        parts.push("Ich vertiefe zuerst die Ursache, bevor ich einen Fix vorbereite.");
+      } else if (controlledPreparationType === "cross_agent_review") {
+        parts.push("Ich koordiniere mit dem anderen Agenten, bevor wir weitermachen.");
+      } else {
+        parts.push("Ich starte die kontrollierte Vorbereitung.");
+      }
+      break;
+    case "approve_partial":
+      parts.push(`Ich habe den Plan auf den Bereich „${approvalScope}" eingegrenzt.`);
+      if (controlledPreparationType === "backend_prepare") {
+        parts.push("Ich bereite nur den Backend-Teil vor.");
+      } else if (controlledPreparationType === "frontend_prepare") {
+        parts.push("Ich bereite nur den Frontend-Teil vor.");
+      } else {
+        parts.push("Ich bereite den freigegebenen Teilbereich vor.");
+      }
+      break;
+    case "narrow_scope":
+      parts.push(`Ich würde den Plan so eingrenzen: nur ${approvalScope.replace(/_/g, " ")}.`);
+      if (controlledPreparationType === "backend_prepare") {
+        parts.push("Ich konzentriere mich auf den Backend-Teil.");
+      } else if (controlledPreparationType === "frontend_prepare") {
+        parts.push("Ich konzentriere mich auf den Frontend-Teil.");
+      } else if (controlledPreparationType === "diagnosis_only") {
+        parts.push("Ich vertiefe zuerst die Diagnose.");
+      }
+      break;
+    case "modify":
+      parts.push("Ich passe den Vorschlag entsprechend an.");
+      if (alternativeSuggestion) {
+        parts.push(`Ich habe deinen Vorschlag übernommen: „${alternativeSuggestion}".`);
+      }
+      parts.push("Der angepasste Plan liegt zur Prüfung bereit.");
+      break;
+    case "suggest_alternative":
+      if (alternativeSuggestion) {
+        parts.push(`Ich habe deinen Alternativvorschlag übernommen: „${alternativeSuggestion}".`);
+      } else {
+        parts.push("Ich baue auf deinem Alternativvorschlag auf.");
+      }
+      parts.push("Ich passe den Plan auf dieser Basis an.");
+      break;
+    case "request_more_info":
+      parts.push("Ich vertiefe zuerst die Ursache.");
+      parts.push("Ich sammle weitere Informationen, bevor ich einen Fix vorbereite.");
+      break;
+    case "defer":
+      parts.push("Ich stelle den Fall zurück.");
+      parts.push("Ich warte auf eine neue Richtung, bevor ich weitermache.");
+      break;
+    case "reject":
+      parts.push("Ich halte den Vorschlag zurück.");
+      parts.push("Sobald du eine neue Richtung gibst, passe ich den Plan an.");
+      break;
+    default:
+      parts.push("Ich habe das Feedback berücksichtigt.");
+  }
+
+  // Add refinement reason if available
+  if (refinementReason) {
+    parts.push(`Grund: ${refinementReason}`);
+  }
+
+  // Close with cooperative question for actionable states
+  if (!["reject", "defer"].includes(feedbackType)) {
+    parts.push("Soll ich auf dieser Basis weitermachen?");
+  }
+
+  return parts.join(" ");
+}
+
+/**
+ * Translate user feedback into a concrete refined plan object.
+ * This is the core Step 15 transformation:
+ *   feedbackType + agentCase → refinedPlan object
+ *
+ * The refined plan is attached to the agent case and carries
+ * all information needed to describe what the agent now proposes
+ * to prepare (without executing anything).
+ *
+ * @param {Object} params
+ * @param {Object} params.agentCase        - current agent case
+ * @param {string} params.feedbackType     - user feedback type
+ * @param {string|null} params.userMessage
+ * @param {string|null} params.preferredScope
+ * @param {string|null} params.alternativeSuggestion
+ * @returns {Object} refined plan object
+ */
+function _translateFeedbackToRefinedPlan({
+  agentCase,
+  feedbackType,
+  userMessage,
+  preferredScope,
+  alternativeSuggestion,
+}) {
+  const effectiveScope = (preferredScope && VALID_APPROVAL_SCOPES.includes(preferredScope))
+    ? preferredScope
+    : agentCase.approvalScope;
+
+  const controlledPreparationType = _deriveControlledPreparationType({
+    feedbackType,
+    approvalScope: effectiveScope,
+    needsCrossAgentReview: agentCase.needsCrossAgentReview,
+  });
+
+  // Derive what changed and why
+  const refinementReason = _buildRefinementReason({ feedbackType, alternativeSuggestion, preferredScope });
+
+  // Build the preparation steps
+  const preparationSteps = _buildPreparationSteps({
+    controlledPreparationType,
+    agentRole: agentCase.agentRole,
+    recommendedFixes: alternativeSuggestion
+      ? [alternativeSuggestion]
+      : (agentCase.recommendedFixes || []),
+    changeTargets: agentCase.changeTargets || [],
+    problemType: agentCase.problemType,
+  });
+
+  // Determine if the agent can now prepare (needs actionable approval)
+  const canPrepareNow = [
+    "approve", "approve_partial", "narrow_scope",
+  ].includes(feedbackType) && controlledPreparationType !== "hold";
+
+  // Build cooperative agent message for this refinement step
+  const refinedPlanMessage = _buildRefinedPlanMessage({
+    feedbackType,
+    controlledPreparationType,
+    agentRole: agentCase.agentRole,
+    approvalScope: effectiveScope,
+    refinementReason,
+    alternativeSuggestion,
+    userMessage,
+  });
+
+  // Determine secondary agent and handoff needs
+  const secondaryAgent = agentCase.agentRole === "deepseek_backend"
+    ? "gemini_frontend"
+    : "deepseek_backend";
+
+  const handoffSuggested = controlledPreparationType === "cross_agent_review" ||
+    controlledPreparationType === "full_preparation";
+
+  const handoffReason = handoffSuggested
+    ? (controlledPreparationType === "full_preparation"
+      ? "Vollständige Vorbereitung erfordert beide Agenten"
+      : "Schichtübergreifendes Problem erfordert Cross-Agent-Prüfung")
+    : null;
+
+  return {
+    planVersion:            agentCase.planVersion,
+    planPhase:              _derivePlanPhase(agentCase.status),
+    refinedPlan:            alternativeSuggestion || agentCase.proposedActionBundle || null,
+    refinementReason,
+    userDecision:           feedbackType,
+    decisionSnapshot:       {
+      feedbackType,
+      preferredScope:       preferredScope || null,
+      userMessage:          userMessage || null,
+      alternativeSuggestion: alternativeSuggestion || null,
+      decidedAt:            new Date().toISOString(),
+    },
+    approvedScope:          effectiveScope,
+    narrowedScope:          (feedbackType === "narrow_scope" || feedbackType === "approve_partial")
+      ? effectiveScope
+      : null,
+    controlledPreparationType,
+    preparationSteps,
+    preparationStatus:      canPrepareNow ? "ready_to_prepare" : "not_ready",
+    canPrepareNow,
+
+    // Agent message for this refinement
+    refinedPlanMessage,
+
+    // Cross-agent coordination
+    ownerAgent:             agentCase.agentRole,
+    secondaryAgent,
+    handoffSuggested,
+    handoffReason,
+    needsCrossAgentReview:  agentCase.needsCrossAgentReview,
+
+    // Approval decision stage
+    approvalDecisionStage:  _deriveApprovalDecisionStage({
+      status: agentCase.status,
+      approvalScope: effectiveScope,
+      needsCrossAgentReview: agentCase.needsCrossAgentReview,
+    }),
+
+    refinedAt:              new Date().toISOString(),
+  };
+}
+
+/**
+ * Build a human-readable reason string for a plan refinement.
+ *
+ * @param {Object} params
+ * @returns {string} German reason label
+ */
+function _buildRefinementReason({ feedbackType, alternativeSuggestion, preferredScope }) {
+  switch (feedbackType) {
+    case "approve":         return "Vollständige Freigabe erteilt";
+    case "approve_partial": return `Teilfreigabe erteilt${preferredScope ? ` (${preferredScope})` : ""}`;
+    case "narrow_scope":    return `Scope eingegrenzt auf: ${preferredScope || "unbekannt"}`;
+    case "modify":          return alternativeSuggestion
+      ? `Vorschlag angepasst: ${alternativeSuggestion}`
+      : "Anpassung angefordert";
+    case "suggest_alternative": return alternativeSuggestion
+      ? `Alternativvorschlag übernommen: ${alternativeSuggestion}`
+      : "Alternativer Ansatz angefordert";
+    case "request_more_info": return "Diagnose-Vertiefung angefordert";
+    case "defer":           return "Fall zurückgestellt";
+    case "reject":          return "Vorschlag abgelehnt";
+    default:                return "Feedback verarbeitet";
+  }
+}
+
+/**
+ * Get a summary of all agent cases with Step 15 plan refinement
+ * and preparation statistics.
+ *
+ * Extends the Step 14 getAgentCaseSummary() with:
+ * - preparation type distribution
+ * - approval decision stage distribution
+ * - plan phase distribution
+ * - cases ready to prepare
+ * - cross-agent coordination counts
+ * - refined plan count
+ *
+ * @returns {Object} plan refinement summary
+ */
+function getRefinedPlanSummary() {
+  const byPreparationType = {};
+  const byApprovalDecisionStage = {};
+  const byPlanPhase = {};
+  const byCrossAgentStatus = { needsCrossAgentReview: 0, handoffSuggested: 0 };
+
+  let readyToPrepare = 0;
+  let withRefinedPlan = 0;
+  let diagnosisOnly = 0;
+  let awaitingDecision = 0;
+
+  const refinedCases = [];
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    const refinedPlan = agentCase.refinedPlan15 || null;
+
+    // Approval decision stage
+    const decisionStage = refinedPlan
+      ? refinedPlan.approvalDecisionStage
+      : _deriveApprovalDecisionStage({
+        status: agentCase.status,
+        approvalScope: agentCase.approvalScope,
+        needsCrossAgentReview: agentCase.needsCrossAgentReview,
+      });
+    byApprovalDecisionStage[decisionStage] = (byApprovalDecisionStage[decisionStage] || 0) + 1;
+
+    // Plan phase
+    const planPhase = refinedPlan
+      ? refinedPlan.planPhase
+      : _derivePlanPhase(agentCase.status);
+    byPlanPhase[planPhase] = (byPlanPhase[planPhase] || 0) + 1;
+
+    // Preparation type
+    const prepType = refinedPlan
+      ? refinedPlan.controlledPreparationType
+      : null;
+    if (prepType) {
+      byPreparationType[prepType] = (byPreparationType[prepType] || 0) + 1;
+    }
+
+    // Cross-agent
+    if (agentCase.needsCrossAgentReview) {
+      byCrossAgentStatus.needsCrossAgentReview += 1;
+    }
+    if (refinedPlan && refinedPlan.handoffSuggested) {
+      byCrossAgentStatus.handoffSuggested += 1;
+    }
+
+    // Counts
+    if (refinedPlan && refinedPlan.canPrepareNow) {
+      readyToPrepare += 1;
+    }
+    if (refinedPlan) {
+      withRefinedPlan += 1;
+    }
+    if (prepType === "diagnosis_only") {
+      diagnosisOnly += 1;
+    }
+    if (decisionStage === "awaiting_decision") {
+      awaitingDecision += 1;
+    }
+
+    refinedCases.push({
+      agentCaseId:            agentCase.agentCaseId,
+      agentRole:              agentCase.agentRole,
+      problemType:            agentCase.problemType,
+      problemTitle:           agentCase.problemTitle,
+      status:                 agentCase.status,
+      planPhase,
+      approvalDecisionStage:  decisionStage,
+      controlledPreparationType: prepType || null,
+      preparationStatus:      refinedPlan ? refinedPlan.preparationStatus : "not_started",
+      canPrepareNow:          refinedPlan ? refinedPlan.canPrepareNow : false,
+      hasRefinedPlan:         !!refinedPlan,
+      planVersion:            agentCase.planVersion,
+      needsCrossAgentReview:  agentCase.needsCrossAgentReview,
+      handoffSuggested:       refinedPlan ? refinedPlan.handoffSuggested : false,
+      ownerAgent:             agentCase.agentRole,
+      secondaryAgent:         agentCase.agentRole === "deepseek_backend" ? "gemini_frontend" : "deepseek_backend",
+      updatedAt:              agentCase.updatedAt,
+    });
+  }
+
+  refinedCases.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+
+  return {
+    totalAgentCases:          _agentCaseRegistry.size,
+    withRefinedPlan,
+    readyToPrepare,
+    awaitingDecision,
+    diagnosisOnly,
+    byPreparationType,
+    byApprovalDecisionStage,
+    byPlanPhase,
+    crossAgentStatus:         byCrossAgentStatus,
+    refinedCases:             refinedCases.slice(0, REFINED_PLAN_SUMMARY_MAX_ENTRIES),
+    generatedAt:              new Date().toISOString(),
   };
 }
 
@@ -6000,4 +6663,9 @@ module.exports = {
   VALID_APPROVAL_SCOPES,
   VALID_PREPARATION_TYPES,
   VALID_AGENT_FEEDBACK_TYPES,
+  // Step 15: Agent Approval / Plan Refinement / Controlled Preparation
+  getRefinedPlanSummary,
+  VALID_PLAN_PHASES,
+  VALID_CONTROLLED_PREPARATION_TYPES,
+  VALID_APPROVAL_DECISION_STAGES,
 };
