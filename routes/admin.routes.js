@@ -4120,6 +4120,8 @@ const {
   getCaseResolutionSummary,
   // Step 12: Attention / Priority / Operator Focus Light
   getAttentionPrioritySummary,
+  // Step 13: Decision Maturity / Resolution Confidence Light
+  getDecisionMaturitySummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -4988,6 +4990,60 @@ router.get("/deepseek/agent-bridge/attention-priority", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading attention priority summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/decision-maturity
+   Step 13: Decision Maturity / Resolution Confidence Light –
+   returns a lightweight overview of how decision maturity /
+   resolution confidence is distributed across recognised
+   patterns and cases.
+
+   Helps the operator understand:
+   - how many patterns are still early signals (early_signal)
+   - how many are building substance (building)
+   - how many have gained credibility (credible)
+   - how many are robustly confirmed (confirmed)
+   - which dimensions frequently drive higher maturity
+   - which patterns are early despite high attention
+   - recent high-maturity entries with reasons
+
+   Purely observational – no auto-dispatch, no auto-execute.
+   The system assesses robustness – the operator decides.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "decisionMaturity": {
+         "totalPatterns": 12,
+         "totalCases": 8,
+         "bandDistribution": { "early_signal": 3, "building": 4, ... },
+         "driverFrequency": { "observations_recurring": 5, ... },
+         "readinessVsMaturity": { ... },
+         "caseVsMaturity": { ... },
+         "attentionVsMaturity": { ... },
+         "highMaturityEntries": [ ... ],
+         "earlyDespiteAttention": [ ... ],
+         "currentBridgeMaturity": { ... },
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/decision-maturity", (_req, res) => {
+  try {
+    const summary = getDecisionMaturitySummary();
+    return res.json({ success: true, version: "v1", decisionMaturity: summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/decision-maturity error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading decision maturity summary",
     });
   }
 });

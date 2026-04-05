@@ -881,6 +881,24 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 13: Inject decision maturity / resolution confidence context ──
+  if (bridgeContext && bridgeContext.maturityContext) {
+    const mc = bridgeContext.maturityContext;
+    const matParts = [];
+    if (mc.decisionMaturityBand) {
+      matParts.push(`Reifestufe: ${mc.decisionMaturityBand}`);
+    }
+    if (mc.maturityReason) {
+      matParts.push(`Begründung: ${mc.maturityReason}`);
+    }
+    if (mc.maturityDrivers && mc.maturityDrivers.length > 0) {
+      matParts.push(`Reifetreiber: ${mc.maturityDrivers.join(", ")}`);
+    }
+    if (matParts.length) {
+      sections.push(`Entscheidungsreife-/Belastbarkeitssicht (keine automatische Entscheidung, ruhige Einordnung):\n${matParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
@@ -1040,6 +1058,9 @@ async function runGeminiArchitectReview(payload = {}) {
     bridgeCaseStatus: normalised.bridgeContext?.caseContext?.caseStatus || null,
     bridgeCaseOutcome: normalised.bridgeContext?.caseContext?.caseOutcome || null,
     bridgeHelpfulnessBand: normalised.bridgeContext?.caseContext?.helpfulnessBand || null,
+    // Step 13: decision maturity context
+    bridgeDecisionMaturityBand: normalised.bridgeContext?.maturityContext?.decisionMaturityBand || null,
+    bridgeMaturityScore: normalised.bridgeContext?.maturityContext?.maturityScore || null,
   });
 
   let response;
