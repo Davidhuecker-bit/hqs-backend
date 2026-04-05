@@ -953,6 +953,43 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 16: Inject action draft context (Plan → konkreter Lösungsentwurf) ──
+  if (bridgeContext && bridgeContext.actionDraftContext) {
+    const ad = bridgeContext.actionDraftContext;
+    const adParts = [];
+    if (ad.draftType) {
+      adParts.push(`Entwurfstyp: ${ad.draftType}`);
+    }
+    if (ad.changeCategory) {
+      adParts.push(`Änderungskategorie: ${ad.changeCategory}`);
+    }
+    if (ad.draftStatus) {
+      adParts.push(`Status: ${ad.draftStatus}`);
+    }
+    if (ad.preparationOwner) {
+      adParts.push(`Verantwortlich: ${ad.preparationOwner}`);
+    }
+    if (ad.affectedDomain) {
+      adParts.push(`Betroffene Domäne: ${ad.affectedDomain}`);
+    }
+    if (ad.handoffSuggested) {
+      adParts.push(`Cross-Agent-Übergabe vorgeschlagen: ja`);
+    }
+    if (ad.requiresFurtherApproval) {
+      adParts.push(`Weitere Freigabe nötig: ja`);
+    }
+    if (ad.draftSummary) {
+      adParts.push(`Zusammenfassung: ${ad.draftSummary}`);
+    }
+    if (adParts.length) {
+      sections.push(`Lösungsentwurf (Step 16 – kontrolliert vorbereitet, keine automatische Ausführung):\n${adParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 16 – kooperativer Entwurfskontext eingebunden", {
+        draftType: ad.draftType,
+        changeCategory: ad.changeCategory,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

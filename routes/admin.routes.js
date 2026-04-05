@@ -4129,6 +4129,8 @@ const {
   getAgentChatMessages,
   // Step 15: Agent Approval / Plan Refinement / Controlled Preparation
   getRefinedPlanSummary,
+  // Step 16: Controlled Action Draft / Fix Bundle Preparation
+  getActionDraftSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5280,6 +5282,57 @@ router.get("/deepseek/agent-bridge/plan-refinement-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading plan refinement summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/action-draft-summary
+   Step 16: Controlled Action Draft / Fix Bundle Summary.
+
+   Returns an overview of all agent cases with Step 16
+   action drafts / fix bundles:
+   - How many cases have drafts
+   - Draft type / change category distribution
+   - Preparation ownership distribution
+   - Drafts awaiting further approval
+   - Cross-agent / handoff status
+   - Per-case draft status
+
+   Cooperative, not autonomous.  Drafts are prepared,
+   never executed automatically.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "actionDrafts": {
+         "totalAgentCases": 5,
+         "totalWithDraft": 3,
+         "totalDiagnosisOnly": 1,
+         "totalAwaitingApproval": 2,
+         "totalBackendDrafts": 1,
+         "totalFrontendDrafts": 1,
+         "byDraftType": { "backend_fix_draft": 1, ... },
+         "byChangeCategory": { "backend_logic": 1, ... },
+         "byPreparationOwner": { "deepseek_backend": 1, ... },
+         "draftCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/action-draft-summary", (_req, res) => {
+  try {
+    const actionDrafts = getActionDraftSummary();
+    return res.json({ success: true, version: "v1", actionDrafts });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/action-draft-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading action draft summary",
     });
   }
 });
