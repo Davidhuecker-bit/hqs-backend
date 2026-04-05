@@ -990,6 +990,49 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 17: Inject apply-readiness / execution proposal context ──
+  if (bridgeContext && bridgeContext.applyReadinessContext) {
+    const ar = bridgeContext.applyReadinessContext;
+    const arParts = [];
+    if (ar.readinessBand) {
+      arParts.push(`Bereitschaftsband: ${ar.readinessBand}`);
+    }
+    if (ar.readinessScore !== null && ar.readinessScore !== undefined) {
+      arParts.push(`Bereitschaftswert: ${ar.readinessScore}/10`);
+    }
+    if (ar.recommendedApplyMode) {
+      arParts.push(`Empfohlener Modus: ${ar.recommendedApplyMode}`);
+    }
+    if (ar.executionOwner) {
+      arParts.push(`Ausführungsverantwortlich: ${ar.executionOwner}`);
+    }
+    if (ar.eligibleForApply) {
+      arParts.push("Anwendungsberechtigt: ja");
+    }
+    if (ar.applyBlocked) {
+      arParts.push("Anwendung blockiert: ja");
+    }
+    if (ar.requiresFinalApproval) {
+      arParts.push("Letzte Freigabe erforderlich: ja");
+    }
+    if (ar.blockingFactorCount > 0) {
+      arParts.push(`Blockierende Faktoren: ${ar.blockingFactorCount}`);
+    }
+    if (ar.riskFlagCount > 0) {
+      arParts.push(`Risikohinweise: ${ar.riskFlagCount}`);
+    }
+    if (ar.openCheckCount > 0) {
+      arParts.push(`Offene Prüfpunkte: ${ar.openCheckCount}`);
+    }
+    if (arParts.length) {
+      sections.push(`Anwendungsbereitschaft (Step 17 – kontrollierte Freigabebewertung, keine automatische Ausführung):\n${arParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 17 – kooperativer Freigabekontext eingebunden", {
+        readinessBand: ar.readinessBand,
+        recommendedApplyMode: ar.recommendedApplyMode,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

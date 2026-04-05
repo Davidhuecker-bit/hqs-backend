@@ -4131,6 +4131,8 @@ const {
   getRefinedPlanSummary,
   // Step 16: Controlled Action Draft / Fix Bundle Preparation
   getActionDraftSummary,
+  // Step 17: Controlled Execution Proposal / Apply-Readiness / Final Approval Layer
+  getApplyReadinessSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5333,6 +5335,59 @@ router.get("/deepseek/agent-bridge/action-draft-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading action draft summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/apply-readiness-summary
+   Step 17: Controlled Execution Proposal /
+   Apply-Readiness / Final Approval Summary.
+
+   Returns an overview of all agent cases with Step 17
+   apply-readiness assessments:
+   - How many drafts are at each readiness band
+   - How many are eligible for apply / blocked
+   - Which blocking factors are most common
+   - Which risk flags appear frequently
+   - Which apply modes are recommended
+   - Cross-agent review needs
+   - Per-case readiness status
+
+   Cooperative, not autonomous.  The system evaluates
+   readiness and prepares a proposal – the user decides.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "applyReadiness": {
+         "totalAgentCases": 5,
+         "totalWithReadiness": 3,
+         "totalEligibleForApply": 1,
+         "totalBlocked": 1,
+         "totalFinalApprovalReady": 1,
+         "byReadinessBand": { "review_ready": 2, ... },
+         "byApplyMode": { "review_only": 2, ... },
+         "byBlockingFactor": { "approval_pending": 1, ... },
+         "byRiskFlag": { "scope_uncertainty": 1, ... },
+         "readinessCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/apply-readiness-summary", (_req, res) => {
+  try {
+    const applyReadiness = getApplyReadinessSummary();
+    return res.json({ success: true, version: "v1", applyReadiness });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/apply-readiness-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading apply-readiness summary",
     });
   }
 });
