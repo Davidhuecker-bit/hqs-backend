@@ -6098,7 +6098,9 @@ function _translateFeedbackToRefinedPlan({
 }) {
   const effectiveScope = (preferredScope && VALID_APPROVAL_SCOPES.includes(preferredScope))
     ? preferredScope
-    : agentCase.approvalScope;
+    : (agentCase.approvalScope && VALID_APPROVAL_SCOPES.includes(agentCase.approvalScope))
+      ? agentCase.approvalScope
+      : "diagnosis_only";
 
   const controlledPreparationType = _deriveControlledPreparationType({
     feedbackType,
