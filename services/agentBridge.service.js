@@ -930,6 +930,70 @@ const PLAN_REFINEMENT_MAX_STEPS = 10;
 const REFINED_PLAN_SUMMARY_MAX_ENTRIES = 50;
 
 /* ─────────────────────────────────────────────
+   Step 16: Controlled Action Draft /
+   Fix Bundle Preparation – Constants
+   ─────────────────────────────────────────────
+   These constants extend Steps 14+15 so that
+   approved / refined plans can be translated
+   into concrete, controlled solution drafts.
+
+   Key principle: drafts are *prepared*, never
+   *executed* autonomously.  The user must
+   explicitly approve every draft before any
+   productive action.
+   ───────────────────────────────────────────── */
+
+/**
+ * Draft types – what kind of solution draft the agent prepares.
+ * Each type maps to a specific domain of change.
+ */
+const VALID_DRAFT_TYPES = [
+  "diagnosis_draft",         // Deeper diagnostic steps, no fix yet
+  "backend_fix_draft",       // Backend-focused fix preparation
+  "frontend_fix_draft",      // Frontend-focused fix preparation
+  "partial_fix_draft",       // Scoped / limited fix draft
+  "cross_agent_draft",       // Coordinated draft requiring both agents
+  "data_contract_draft",     // API / data-contract change draft
+  "mapping_fix_draft",       // Data-mapping / binding fix draft
+  "route_hardening_draft",   // Route / API hardening draft
+  "config_check_draft",      // Configuration / ops check draft
+  "ui_clarity_draft",        // UI labeling / clarity improvement draft
+];
+
+/**
+ * Change categories – what kind of change the draft represents.
+ * Used for grouping, filtering, and summary views.
+ */
+const VALID_CHANGE_CATEGORIES = [
+  "backend_logic",           // Core backend logic change
+  "api_contract",            // API endpoint / contract change
+  "data_mapping",            // Data-binding / mapping fix
+  "frontend_structure",      // Frontend component / structure change
+  "ui_clarity",              // UI labeling / copy improvement
+  "ops_check",               // Operational / config verification
+  "schema_alignment",        // Schema / model alignment fix
+  "diagnosis_extension",     // Deeper diagnostic investigation
+  "route_hardening",         // Route validation / security hardening
+  "cross_layer_coordination",// Change that spans backend ↔ frontend
+];
+
+/**
+ * Draft statuses – lifecycle of a single draft.
+ */
+const VALID_DRAFT_STATUSES = [
+  "prepared",                // Draft created, awaiting review
+  "reviewed",                // Draft reviewed by operator
+  "approved_for_execution",  // Draft approved for productive execution
+  "rejected",                // Draft rejected
+  "superseded",              // Draft replaced by a newer version
+  "needs_revision",          // Draft requires further changes
+];
+
+/** Step 16 size limits */
+const ACTION_DRAFT_MAX_STEPS = 8;
+const ACTION_DRAFT_SUMMARY_MAX_ENTRIES = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -2325,6 +2389,22 @@ function buildBridgePackage(payload = {}) {
       nextSuggestedStep:      agentCase.nextSuggestedStep,
       chatMessage:            agentCase.chatMessage,
     };
+
+    // ── Step 16: Attach action draft context when available ──
+    if (agentCase.actionDraft16) {
+      const ad = agentCase.actionDraft16;
+      pkg.actionDraftContext = {
+        draftType:              ad.draftType,
+        draftStatus:            ad.draftStatus,
+        changeCategory:         ad.changeCategory,
+        draftSummary:           ad.draftSummary,
+        preparationOwner:       ad.preparationOwner,
+        affectedDomain:         ad.affectedTargets ? ad.affectedTargets.affectedDomain : null,
+        handoffSuggested:       ad.handoffSuggested,
+        requiresFurtherApproval: ad.requiresFurtherApproval,
+      };
+    }
+
     _currentBridgePackage = pkg;
   } else {
     pkg.agentCaseContext = null;
@@ -5434,6 +5514,12 @@ function _recordAgentChatMessage({
   problemType = null,
   planPhase = null,
   controlledPreparationType = null,
+  // Step 16 additions
+  draftType = null,
+  draftStatus = null,
+  bundleType = null,
+  actionIntent = null,
+  nextActionAvailable = false,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -5455,6 +5541,38 @@ function _recordAgentChatMessage({
   }
   if (controlledPreparationType) {
     chatMessage.controlledPreparationType = controlledPreparationType;
+  }
+
+  // Step 16: attach draft / bundle context when available
+  if (draftType) {
+    chatMessage.draftType = draftType;
+  }
+  if (draftStatus) {
+    chatMessage.draftStatus = draftStatus;
+  }
+  if (bundleType) {
+    chatMessage.bundleType = bundleType;
+  }
+  if (actionIntent) {
+    chatMessage.actionIntent = actionIntent;
+  }
+  if (nextActionAvailable) {
+    chatMessage.nextActionAvailable = true;
+  }
+
+  // Derive message phase from available context (Step 16 thread tracking)
+  if (draftType || planPhase === "draft_phase") {
+    chatMessage.messagePhase = "draft_phase";
+  } else if (planPhase === "preparation_phase") {
+    chatMessage.messagePhase = "preparation_phase";
+  } else if (planPhase === "refinement_phase") {
+    chatMessage.messagePhase = "refinement_phase";
+  } else if (planPhase === "feedback_phase") {
+    chatMessage.messagePhase = "feedback_phase";
+  } else if (planPhase === "solution_phase") {
+    chatMessage.messagePhase = "solution_phase";
+  } else if (planPhase === "problem_phase" || messageType === "problem_detected") {
+    chatMessage.messagePhase = "problem_phase";
   }
 
   _agentChatMessages.push(chatMessage);
@@ -5563,8 +5681,16 @@ function submitAgentCaseFeedback({
   // Attach refined plan to agent case
   agentCase.refinedPlan15 = refinedPlan;
 
-  // Use the Step 15 cooperative response message
-  const responseText = refinedPlan.refinedPlanMessage;
+  // ── Step 16: Build action draft when preparation is possible ──
+  const actionDraft = _buildActionDraft(agentCase);
+  if (actionDraft) {
+    agentCase.actionDraft16 = actionDraft;
+  }
+
+  // Use the Step 15 cooperative response message, enriched by Step 16 draft
+  const responseText = actionDraft
+    ? actionDraft.draftMessage
+    : refinedPlan.refinedPlanMessage;
 
   _agentCaseRegistry.set(agentCaseId, agentCase);
 
@@ -5580,18 +5706,46 @@ function submitAgentCaseFeedback({
     planPhase: refinedPlan.planPhase,
   });
 
-  // Record agent response (Step 15: richer plan_refined message)
+  // Record agent response (Step 16: draft_prepared when draft exists)
   _recordAgentChatMessage({
     agentCaseId,
     agentRole: agentCase.agentRole,
-    messageType: refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined",
-    messageIntent: refinedPlan.canPrepareNow ? "confirm" : "refine",
+    messageType: actionDraft ? "draft_prepared" : (refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined"),
+    messageIntent: actionDraft ? "draft" : (refinedPlan.canPrepareNow ? "confirm" : "refine"),
     messagePriority: "normal",
-    requiresUserDecision: !refinedPlan.canPrepareNow,
+    requiresUserDecision: actionDraft ? actionDraft.requiresFurtherApproval : !refinedPlan.canPrepareNow,
     message: responseText,
-    planPhase: refinedPlan.planPhase,
+    planPhase: actionDraft ? "draft_phase" : refinedPlan.planPhase,
     controlledPreparationType: refinedPlan.controlledPreparationType,
+    // Step 16 additions
+    draftType: actionDraft ? actionDraft.draftType : null,
+    draftStatus: actionDraft ? actionDraft.draftStatus : null,
+    bundleType: actionDraft ? actionDraft.changeCategory : null,
+    actionIntent: actionDraft ? "prepare_draft" : null,
+    nextActionAvailable: actionDraft ? !actionDraft.executionBlocked : false,
   });
+
+  // Step 16 logging
+  if (actionDraft) {
+    logger.info("[agentBridge] Step 16 – action draft prepared", {
+      agentCaseId,
+      draftId:                actionDraft.draftId,
+      draftType:              actionDraft.draftType,
+      draftStatus:            actionDraft.draftStatus,
+      changeCategory:         actionDraft.changeCategory,
+      preparationOwner:       actionDraft.preparationOwner,
+      draftOwner:             actionDraft.draftOwner,
+      handoffSuggested:       actionDraft.handoffSuggested,
+      handoffReason:          actionDraft.handoffReason,
+      needsCrossAgentReview:  actionDraft.needsCrossAgentReview,
+      requiresFurtherApproval: actionDraft.requiresFurtherApproval,
+      affectedDomain:         actionDraft.affectedTargets.affectedDomain,
+      affectedRoutesCount:    actionDraft.affectedTargets.affectedRoutes.length,
+      affectedServicesCount:  actionDraft.affectedTargets.affectedServices.length,
+      draftVersion:           actionDraft.draftVersion,
+      preparedByAgent:        actionDraft.preparedByAgent,
+    });
+  }
 
   logger.info("[agentBridge] Step 15 – plan refinement applied", {
     agentCaseId,
@@ -5629,6 +5783,16 @@ function submitAgentCaseFeedback({
     handoffSuggested:          refinedPlan.handoffSuggested,
     needsCrossAgentReview:     refinedPlan.needsCrossAgentReview,
     refinementReason:          refinedPlan.refinementReason,
+    // Step 16 additions
+    hasActionDraft:            !!actionDraft,
+    draftType:                 actionDraft ? actionDraft.draftType : null,
+    draftStatus:               actionDraft ? actionDraft.draftStatus : null,
+    changeCategory:            actionDraft ? actionDraft.changeCategory : null,
+    preparationOwner:          actionDraft ? actionDraft.preparationOwner : null,
+    affectedTargets:           actionDraft ? actionDraft.affectedTargets : null,
+    draftMessage:              actionDraft ? actionDraft.draftMessage : null,
+    requiresFurtherApproval:   actionDraft ? actionDraft.requiresFurtherApproval : null,
+    executionBlocked:          actionDraft ? actionDraft.executionBlocked : null,
   };
 }
 
@@ -6333,6 +6497,509 @@ function getRefinedPlanSummary() {
   };
 }
 
+/* ═══════════════════════════════════════════════════════════
+   Step 16: Controlled Action Draft / Fix Bundle Preparation
+   ═══════════════════════════════════════════════════════════
+   This layer sits on top of Steps 14+15 and translates
+   approved / refined plans into concrete, controlled
+   solution drafts (Action Drafts / Fix Bundles).
+
+     Problem → Solution Proposal → User Feedback
+       → Plan Refinement → Controlled Preparation
+       → **Action Draft / Fix Bundle**
+
+   Key principles:
+   - Drafts are PREPARED, never executed autonomously
+   - Every draft requires explicit user approval
+   - DeepSeek owns backend/API/data drafts
+   - Gemini owns frontend/UX/presentation drafts
+   - Cross-agent drafts carry handoff metadata
+   ─────────────────────────────────────────────────────── */
+
+/**
+ * Derive the draft type from the controlled preparation type
+ * and agent role.  This maps the Step 15 preparation intent
+ * into a concrete Step 16 draft type.
+ *
+ * @param {Object} params
+ * @param {string} params.controlledPreparationType
+ * @param {string} params.agentRole
+ * @param {string} params.problemType
+ * @returns {string} one of VALID_DRAFT_TYPES
+ */
+function _deriveDraftType({ controlledPreparationType, agentRole, problemType }) {
+  const isBackend = agentRole === "deepseek_backend";
+
+  switch (controlledPreparationType) {
+    case "diagnosis_only":
+      return "diagnosis_draft";
+    case "backend_prepare":
+      if (problemType === "api_issue" || problemType === "contract_mismatch") return "data_contract_draft";
+      if (problemType === "mapping_error" || problemType === "binding_error") return "mapping_fix_draft";
+      if (problemType === "route_issue") return "route_hardening_draft";
+      return "backend_fix_draft";
+    case "frontend_prepare":
+      if (problemType === "presentation_issue" || problemType === "labeling_error") return "ui_clarity_draft";
+      return "frontend_fix_draft";
+    case "partial_fix_prepare":
+      return "partial_fix_draft";
+    case "cross_agent_review":
+      return "cross_agent_draft";
+    case "full_preparation":
+      return isBackend ? "backend_fix_draft" : "frontend_fix_draft";
+    case "hold":
+    default:
+      return "diagnosis_draft";
+  }
+}
+
+/**
+ * Derive the change category from the draft type and problem type.
+ *
+ * @param {Object} params
+ * @param {string} params.draftType
+ * @param {string} params.problemType
+ * @param {string} params.agentRole
+ * @returns {string} one of VALID_CHANGE_CATEGORIES
+ */
+function _deriveChangeCategory({ draftType, problemType, agentRole }) {
+  switch (draftType) {
+    case "diagnosis_draft":       return "diagnosis_extension";
+    case "backend_fix_draft":     return "backend_logic";
+    case "frontend_fix_draft":    return "frontend_structure";
+    case "data_contract_draft":   return "api_contract";
+    case "mapping_fix_draft":     return "data_mapping";
+    case "route_hardening_draft": return "route_hardening";
+    case "config_check_draft":    return "ops_check";
+    case "ui_clarity_draft":      return "ui_clarity";
+    case "cross_agent_draft":     return "cross_layer_coordination";
+    case "partial_fix_draft": {
+      if (agentRole === "deepseek_backend") return "backend_logic";
+      if (agentRole === "gemini_frontend")  return "frontend_structure";
+      return "backend_logic";
+    }
+    default:
+      return "diagnosis_extension";
+  }
+}
+
+/**
+ * Derive structured affected targets from the agent case.
+ * Conservative: only includes what is reasonably derivable.
+ *
+ * @param {Object} params
+ * @param {Object} params.agentCase
+ * @param {string} params.draftType
+ * @param {string} params.changeCategory
+ * @returns {Object} structured affected targets
+ */
+function _deriveAffectedTargets({ agentCase, draftType, changeCategory }) {
+  const targets = {
+    affectedDomain:     agentCase.affectedDomain || (agentCase.agentRole === "deepseek_backend" ? "backend" : "frontend"),
+    affectedServices:   [],
+    affectedRoutes:     [],
+    affectedFiles:      [],
+    affectedTables:     [],
+    affectedComponents: [],
+  };
+
+  // Pull from change targets (Step 14)
+  const ct = agentCase.changeTargets || [];
+  for (const t of ct) {
+    const lower = (t || "").toLowerCase();
+    if (lower.includes("route") || lower.includes("/api/")) {
+      targets.affectedRoutes.push(t);
+    } else if (lower.includes("service") || lower.includes("Service")) {
+      targets.affectedServices.push(t);
+    } else if (lower.includes("table") || lower.includes("schema") || lower.includes("model")) {
+      targets.affectedTables.push(t);
+    } else if (lower.includes("component") || lower.includes("view") || lower.includes("page")) {
+      targets.affectedComponents.push(t);
+    } else {
+      // Default: treat as file reference
+      targets.affectedFiles.push(t);
+    }
+  }
+
+  // Enrich based on change category
+  if (changeCategory === "api_contract" && targets.affectedRoutes.length === 0) {
+    targets.affectedRoutes.push("(API-Vertrag – Routen prüfen)");
+  }
+  if (changeCategory === "data_mapping" && targets.affectedServices.length === 0) {
+    targets.affectedServices.push("(Mapping-Service prüfen)");
+  }
+
+  return targets;
+}
+
+/**
+ * Determine preparation ownership for the draft.
+ *
+ * Ownership rules:
+ * - `draftOwner` is always the agent that initiated the case
+ *   (tracks origin for audit purposes).
+ * - `preparationOwner` may differ when the draft domain
+ *   does not match the initiating agent:
+ *   - Backend drafts from gemini_frontend → preparationOwner = deepseek_backend
+ *   - Frontend drafts from deepseek_backend → preparationOwner = gemini_frontend
+ *   - Cross-agent drafts → both agents coordinate (handoff suggested)
+ * - `secondaryAgent` is the other agent (for potential review).
+ *
+ * @param {Object} params
+ * @param {string} params.draftType   - one of VALID_DRAFT_TYPES
+ * @param {string} params.agentRole   - the initiating agent role
+ * @returns {Object} ownership metadata with:
+ *   preparationOwner, draftOwner, secondaryAgent,
+ *   handoffSuggested, handoffReason, needsCrossAgentReview
+ */
+function _derivePreparationOwnership({ draftType, agentRole }) {
+  const isBackendDraft = [
+    "backend_fix_draft", "data_contract_draft", "mapping_fix_draft",
+    "route_hardening_draft", "config_check_draft",
+  ].includes(draftType);
+
+  const isFrontendDraft = [
+    "frontend_fix_draft", "ui_clarity_draft",
+  ].includes(draftType);
+
+  const isCrossDraft = draftType === "cross_agent_draft";
+
+  let preparationOwner = agentRole;
+  let draftOwner = agentRole;
+  let secondaryAgent = agentRole === "deepseek_backend" ? "gemini_frontend" : "deepseek_backend";
+  let handoffSuggested = false;
+  let handoffReason = null;
+  let needsCrossAgentReview = false;
+
+  if (isCrossDraft) {
+    needsCrossAgentReview = true;
+    handoffSuggested = true;
+    handoffReason = "Schichtübergreifender Draft erfordert Abstimmung beider Agenten";
+  } else if (isBackendDraft && agentRole === "gemini_frontend") {
+    handoffSuggested = true;
+    handoffReason = "Backend-Draft – DeepSeek sollte die Federführung übernehmen";
+    preparationOwner = "deepseek_backend";
+  } else if (isFrontendDraft && agentRole === "deepseek_backend") {
+    handoffSuggested = true;
+    handoffReason = "Frontend-Draft – Gemini sollte die Federführung übernehmen";
+    preparationOwner = "gemini_frontend";
+  }
+
+  return {
+    preparationOwner,
+    draftOwner,
+    secondaryAgent,
+    handoffSuggested,
+    handoffReason,
+    needsCrossAgentReview,
+  };
+}
+
+/**
+ * Build a human-readable, cooperative German message for
+ * the action draft.  This is the Step 16 equivalent of
+ * _buildRefinedPlanMessage() for the draft phase.
+ *
+ * @param {Object} params
+ * @returns {string} German cooperative agent message
+ */
+function _buildActionDraftMessage({
+  draftType,
+  changeCategory,
+  agentRole,
+  affectedTargets,
+  preparationOwner,
+  handoffSuggested,
+  draftSummary,
+  requiresFurtherApproval,
+}) {
+  const parts = [];
+
+  // Draft type announcement
+  const draftLabels = {
+    diagnosis_draft:       "einen vertieften Diagnose-Entwurf",
+    backend_fix_draft:     "einen eingegrenzten Backend-Entwurf",
+    frontend_fix_draft:    "einen Frontend-Entwurf für die Darstellungsanpassung",
+    partial_fix_draft:     "einen eingegrenzten Teilfix-Entwurf",
+    cross_agent_draft:     "einen Cross-Agent-Entwurf",
+    data_contract_draft:   "einen Entwurf für die API-/Vertragsanpassung",
+    mapping_fix_draft:     "einen Entwurf für die Daten-Zuordnungskorrektur",
+    route_hardening_draft: "einen Entwurf zur API-Härtung",
+    config_check_draft:    "einen Konfigurationsprüfungs-Entwurf",
+    ui_clarity_draft:      "einen Entwurf für die UI-Verbesserung",
+  };
+  const draftLabel = draftLabels[draftType] || "einen Lösungsentwurf";
+  parts.push(`Ich habe ${draftLabel} vorbereitet.`);
+
+  // Change category
+  const categoryLabels = {
+    backend_logic:            "Backend-Logik",
+    api_contract:             "API-Vertrag",
+    data_mapping:             "Daten-Zuordnung",
+    frontend_structure:       "Frontend-Struktur",
+    ui_clarity:               "UI-Klarheit",
+    ops_check:                "Konfigurationsprüfung",
+    schema_alignment:         "Schema-Abgleich",
+    diagnosis_extension:      "Diagnose-Vertiefung",
+    route_hardening:          "Routen-Härtung",
+    cross_layer_coordination: "Schichtübergreifend",
+  };
+  const catLabel = categoryLabels[changeCategory] || changeCategory;
+  parts.push(`Der Schwerpunkt liegt auf: ${catLabel}.`);
+
+  // Affected areas (show max 2, indicate remaining count)
+  const areas = [];
+  if (affectedTargets.affectedRoutes && affectedTargets.affectedRoutes.length > 0) {
+    const shown = affectedTargets.affectedRoutes.slice(0, 2).join(", ");
+    const remaining = affectedTargets.affectedRoutes.length - 2;
+    areas.push(`Routen: ${shown}${remaining > 0 ? ` und ${remaining} weitere` : ""}`);
+  }
+  if (affectedTargets.affectedServices && affectedTargets.affectedServices.length > 0) {
+    const shown = affectedTargets.affectedServices.slice(0, 2).join(", ");
+    const remaining = affectedTargets.affectedServices.length - 2;
+    areas.push(`Services: ${shown}${remaining > 0 ? ` und ${remaining} weitere` : ""}`);
+  }
+  if (affectedTargets.affectedComponents && affectedTargets.affectedComponents.length > 0) {
+    const shown = affectedTargets.affectedComponents.slice(0, 2).join(", ");
+    const remaining = affectedTargets.affectedComponents.length - 2;
+    areas.push(`Komponenten: ${shown}${remaining > 0 ? ` und ${remaining} weitere` : ""}`);
+  }
+  if (areas.length > 0) {
+    parts.push(`Diese Bereiche wären betroffen: ${areas.join("; ")}.`);
+  }
+
+  // Summary
+  if (draftSummary) {
+    parts.push(draftSummary);
+  }
+
+  // Handoff
+  if (handoffSuggested) {
+    const ownerLabel = preparationOwner === "deepseek_backend" ? "DeepSeek (Backend)" : "Gemini (Frontend)";
+    parts.push(`Ich habe den Fall in einen Cross-Agent-Entwurf überführt – ${ownerLabel} sollte die Federführung übernehmen.`);
+  }
+
+  // Approval notice
+  if (requiresFurtherApproval) {
+    parts.push("Ich brauche dafür noch deine Bestätigung.");
+  } else {
+    parts.push("Auf dieser Basis kann ich den nächsten kontrollierten Schritt vorbereiten.");
+  }
+
+  return parts.join(" ");
+}
+
+/**
+ * Build a concrete action draft from an approved / refined agent case.
+ * This is the central Step 16 function.
+ *
+ * @param {Object} params
+ * @param {Object} params.agentCase - the agent case with refinedPlan15
+ * @returns {Object|null} action draft or null if not ready
+ */
+function _buildActionDraft(agentCase) {
+  if (!agentCase) return null;
+
+  const refinedPlan = agentCase.refinedPlan15;
+  if (!refinedPlan) return null;
+
+  // Only build drafts when preparation is allowed
+  if (!refinedPlan.canPrepareNow && refinedPlan.controlledPreparationType === "hold") {
+    return null;
+  }
+
+  const draftType = _deriveDraftType({
+    controlledPreparationType: refinedPlan.controlledPreparationType,
+    agentRole: agentCase.agentRole,
+    problemType: agentCase.problemType,
+  });
+
+  const changeCategory = _deriveChangeCategory({
+    draftType,
+    problemType: agentCase.problemType,
+    agentRole: agentCase.agentRole,
+  });
+
+  const affectedTargets = _deriveAffectedTargets({
+    agentCase,
+    draftType,
+    changeCategory,
+  });
+
+  const ownership = _derivePreparationOwnership({
+    draftType,
+    agentRole: agentCase.agentRole,
+  });
+
+  const requiresFurtherApproval = !refinedPlan.canPrepareNow ||
+    draftType === "cross_agent_draft" ||
+    refinedPlan.approvalDecisionStage === "refinement_in_progress";
+
+  // Build summary text
+  const fixText = (agentCase.recommendedFixes || []).slice(0, 2).join("; ");
+  const draftSummary = fixText
+    ? `Geplante Maßnahme: ${fixText}.`
+    : null;
+
+  const draftMessage = _buildActionDraftMessage({
+    draftType,
+    changeCategory,
+    agentRole: agentCase.agentRole,
+    affectedTargets,
+    preparationOwner: ownership.preparationOwner,
+    handoffSuggested: ownership.handoffSuggested,
+    draftSummary,
+    requiresFurtherApproval,
+  });
+
+  const actionDraft = {
+    draftId:                `draft-${Date.now()}-${agentCase.agentCaseId}`,
+    agentCaseId:            agentCase.agentCaseId,
+    draftVersion:           agentCase.planVersion || 1,
+    draftType,
+    draftStatus:            "prepared",
+    changeCategory,
+    draftSummary:           draftSummary || `${draftType.replace(/_/g, " ")} vorbereitet`,
+    draftReason:            refinedPlan.refinementReason || "Plan-Verfeinerung abgeschlossen",
+
+    // Affected targets
+    affectedTargets,
+
+    // Ownership
+    preparationOwner:       ownership.preparationOwner,
+    draftOwner:             ownership.draftOwner,
+    secondaryAgent:         ownership.secondaryAgent,
+    handoffSuggested:       ownership.handoffSuggested,
+    handoffReason:          ownership.handoffReason,
+    needsCrossAgentReview:  ownership.needsCrossAgentReview,
+
+    // Execution control
+    requiresFurtherApproval,
+    executionBlocked:       true,  // Always blocked until explicit release
+
+    // Human-readable draft message
+    draftMessage,
+
+    // Context from refined plan
+    planVersion:            agentCase.planVersion,
+    approvalDecisionStage:  refinedPlan.approvalDecisionStage,
+    controlledPreparationType: refinedPlan.controlledPreparationType,
+    preparationSteps:       refinedPlan.preparationSteps || [],
+
+    // Lifecycle
+    preparedAt:             new Date().toISOString(),
+    preparedByAgent:        agentCase.agentRole,
+  };
+
+  return actionDraft;
+}
+
+/**
+ * Get a summary of all action drafts / fix bundles across agent cases.
+ * Provides the operator a clear view of:
+ * - how many cases have drafts
+ * - draft type distribution
+ * - change category distribution
+ * - affected domains
+ * - drafts awaiting further approval
+ * - handoff / cross-agent status
+ *
+ * @returns {Object} action draft summary
+ */
+function getActionDraftSummary() {
+  const byDraftType = {};
+  const byChangeCategory = {};
+  const byDraftStatus = {};
+  const byPreparationOwner = { deepseek_backend: 0, gemini_frontend: 0 };
+  const byAffectedDomain = {};
+
+  let totalWithDraft = 0;
+  let totalDiagnosisOnly = 0;
+  let totalAwaitingApproval = 0;
+  let totalHandoffSuggested = 0;
+  let totalCrossAgentDrafts = 0;
+  let totalBackendDrafts = 0;
+  let totalFrontendDrafts = 0;
+
+  const draftCases = [];
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    const draft = agentCase.actionDraft16 || null;
+    if (!draft) continue;
+
+    totalWithDraft += 1;
+
+    // By draft type
+    byDraftType[draft.draftType] = (byDraftType[draft.draftType] || 0) + 1;
+
+    // By change category
+    byChangeCategory[draft.changeCategory] = (byChangeCategory[draft.changeCategory] || 0) + 1;
+
+    // By draft status
+    byDraftStatus[draft.draftStatus] = (byDraftStatus[draft.draftStatus] || 0) + 1;
+
+    // By preparation owner
+    if (byPreparationOwner[draft.preparationOwner] !== undefined) {
+      byPreparationOwner[draft.preparationOwner] += 1;
+    }
+
+    // By affected domain
+    const domain = draft.affectedTargets ? draft.affectedTargets.affectedDomain : "unknown";
+    byAffectedDomain[domain] = (byAffectedDomain[domain] || 0) + 1;
+
+    // Counts
+    if (draft.draftType === "diagnosis_draft") totalDiagnosisOnly += 1;
+    if (draft.requiresFurtherApproval) totalAwaitingApproval += 1;
+    if (draft.handoffSuggested) totalHandoffSuggested += 1;
+    if (draft.draftType === "cross_agent_draft") totalCrossAgentDrafts += 1;
+    if (["backend_fix_draft", "data_contract_draft", "mapping_fix_draft", "route_hardening_draft", "config_check_draft"].includes(draft.draftType)) {
+      totalBackendDrafts += 1;
+    }
+    if (["frontend_fix_draft", "ui_clarity_draft"].includes(draft.draftType)) {
+      totalFrontendDrafts += 1;
+    }
+
+    draftCases.push({
+      agentCaseId:            agentCase.agentCaseId,
+      agentRole:              agentCase.agentRole,
+      problemType:            agentCase.problemType,
+      problemTitle:           agentCase.problemTitle,
+      draftId:                draft.draftId,
+      draftType:              draft.draftType,
+      draftStatus:            draft.draftStatus,
+      changeCategory:         draft.changeCategory,
+      preparationOwner:       draft.preparationOwner,
+      handoffSuggested:       draft.handoffSuggested,
+      requiresFurtherApproval: draft.requiresFurtherApproval,
+      executionBlocked:       draft.executionBlocked,
+      affectedDomain:         domain,
+      draftVersion:           draft.draftVersion,
+      preparedAt:             draft.preparedAt,
+    });
+  }
+
+  // Sort by preparedAt (newest first)
+  draftCases.sort((a, b) => (b.preparedAt || "").localeCompare(a.preparedAt || ""));
+
+  return {
+    totalAgentCases:          _agentCaseRegistry.size,
+    totalWithDraft,
+    totalDiagnosisOnly,
+    totalAwaitingApproval,
+    totalHandoffSuggested,
+    totalCrossAgentDrafts,
+    totalBackendDrafts,
+    totalFrontendDrafts,
+    byDraftType,
+    byChangeCategory,
+    byDraftStatus,
+    byPreparationOwner,
+    byAffectedDomain,
+    draftCases:               draftCases.slice(0, ACTION_DRAFT_SUMMARY_MAX_ENTRIES),
+    generatedAt:              new Date().toISOString(),
+  };
+}
+
 /* ─────────────────────────────────────────────
    getPendingFrontendFeedback
    Returns all stored frontend feedback entries
@@ -6670,4 +7337,9 @@ module.exports = {
   VALID_PLAN_PHASES,
   VALID_CONTROLLED_PREPARATION_TYPES,
   VALID_APPROVAL_DECISION_STAGES,
+  // Step 16: Controlled Action Draft / Fix Bundle Preparation
+  getActionDraftSummary,
+  VALID_DRAFT_TYPES,
+  VALID_CHANGE_CATEGORIES,
+  VALID_DRAFT_STATUSES,
 };
