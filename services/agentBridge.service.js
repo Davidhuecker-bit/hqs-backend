@@ -6635,10 +6635,22 @@ function _deriveAffectedTargets({ agentCase, draftType, changeCategory }) {
 /**
  * Determine preparation ownership for the draft.
  *
+ * Ownership rules:
+ * - `draftOwner` is always the agent that initiated the case
+ *   (tracks origin for audit purposes).
+ * - `preparationOwner` may differ when the draft domain
+ *   does not match the initiating agent:
+ *   - Backend drafts from gemini_frontend → preparationOwner = deepseek_backend
+ *   - Frontend drafts from deepseek_backend → preparationOwner = gemini_frontend
+ *   - Cross-agent drafts → both agents coordinate (handoff suggested)
+ * - `secondaryAgent` is the other agent (for potential review).
+ *
  * @param {Object} params
- * @param {string} params.draftType
- * @param {string} params.agentRole
- * @returns {Object} ownership metadata
+ * @param {string} params.draftType   - one of VALID_DRAFT_TYPES
+ * @param {string} params.agentRole   - the initiating agent role
+ * @returns {Object} ownership metadata with:
+ *   preparationOwner, draftOwner, secondaryAgent,
+ *   handoffSuggested, handoffReason, needsCrossAgentReview
  */
 function _derivePreparationOwnership({ draftType, agentRole }) {
   const isBackendDraft = [
@@ -6735,16 +6747,22 @@ function _buildActionDraftMessage({
   const catLabel = categoryLabels[changeCategory] || changeCategory;
   parts.push(`Der Schwerpunkt liegt auf: ${catLabel}.`);
 
-  // Affected areas
+  // Affected areas (show max 2, indicate remaining count)
   const areas = [];
   if (affectedTargets.affectedRoutes && affectedTargets.affectedRoutes.length > 0) {
-    areas.push(`Routen: ${affectedTargets.affectedRoutes.slice(0, 2).join(", ")}`);
+    const shown = affectedTargets.affectedRoutes.slice(0, 2).join(", ");
+    const remaining = affectedTargets.affectedRoutes.length - 2;
+    areas.push(`Routen: ${shown}${remaining > 0 ? ` und ${remaining} weitere` : ""}`);
   }
   if (affectedTargets.affectedServices && affectedTargets.affectedServices.length > 0) {
-    areas.push(`Services: ${affectedTargets.affectedServices.slice(0, 2).join(", ")}`);
+    const shown = affectedTargets.affectedServices.slice(0, 2).join(", ");
+    const remaining = affectedTargets.affectedServices.length - 2;
+    areas.push(`Services: ${shown}${remaining > 0 ? ` und ${remaining} weitere` : ""}`);
   }
   if (affectedTargets.affectedComponents && affectedTargets.affectedComponents.length > 0) {
-    areas.push(`Komponenten: ${affectedTargets.affectedComponents.slice(0, 2).join(", ")}`);
+    const shown = affectedTargets.affectedComponents.slice(0, 2).join(", ");
+    const remaining = affectedTargets.affectedComponents.length - 2;
+    areas.push(`Komponenten: ${shown}${remaining > 0 ? ` und ${remaining} weitere` : ""}`);
   }
   if (areas.length > 0) {
     parts.push(`Diese Bereiche wären betroffen: ${areas.join("; ")}.`);

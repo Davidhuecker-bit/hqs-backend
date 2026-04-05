@@ -528,6 +528,9 @@ describe("Step 15 – Chat messages carry plan context", () => {
     );
     expect(refinedMsg).toBeDefined();
     expect(refinedMsg.planPhase).toBeDefined();
+    // Validate planPhase is from valid set (Step 15 or Step 16 draft_phase)
+    const validPhases = [...VALID_PLAN_PHASES, "draft_phase"];
+    expect(validPhases).toContain(refinedMsg.planPhase);
   });
 
   test("messages with preparation have controlledPreparationType", () => {
