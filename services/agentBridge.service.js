@@ -7624,6 +7624,32 @@ function _buildApplyReadinessMessage({
 }
 
 /**
+ * Derive execution intent from recommended apply mode.
+ * @param {string} mode
+ * @returns {string}
+ */
+function _deriveExecutionIntent(mode) {
+  switch (mode) {
+    case "full_apply_candidate": return "controlled_full_apply";
+    case "partial_apply":        return "controlled_partial_apply";
+    default:                     return "no_apply_yet";
+  }
+}
+
+/**
+ * Derive apply scope from draft type.
+ * @param {string} draftType
+ * @returns {string}
+ */
+function _deriveApplyScope(draftType) {
+  switch (draftType) {
+    case "partial_fix_draft": return "partial";
+    case "diagnosis_draft":   return "none";
+    default:                  return "full";
+  }
+}
+
+/**
  * Assess the apply-readiness of an action draft and build
  * a complete execution proposal.
  *
@@ -7714,13 +7740,9 @@ function _assessApplyReadiness(agentCase) {
     needsCrossAgentReview: executionOwnership.needsCrossAgentReview,
     finalApprovalOwner:    executionOwnership.finalApprovalOwner,
 
-    // Execution intent
-    executionIntent:       recommendedApplyMode === "full_apply_candidate"
-      ? "controlled_full_apply" : recommendedApplyMode === "partial_apply"
-        ? "controlled_partial_apply" : "no_apply_yet",
-    applyScope:            actionDraft.draftType === "partial_fix_draft"
-      ? "partial" : actionDraft.draftType === "diagnosis_draft"
-        ? "none" : "full",
+    // Execution intent (derived from recommended apply mode)
+    executionIntent:       _deriveExecutionIntent(recommendedApplyMode),
+    applyScope:            _deriveApplyScope(actionDraft.draftType),
 
     // Human-readable proposal
     executionProposalMessage,
