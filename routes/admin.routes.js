@@ -5212,10 +5212,11 @@ router.post("/deepseek/agent-bridge/agent-case-feedback", (req, res) => {
 router.get("/deepseek/agent-bridge/agent-chat-messages", (req, res) => {
   try {
     const { agentCaseId, agentRole, limit } = req.query || {};
+    const parsedLimit = limit ? parseInt(limit, 10) : 50;
     const chat = getAgentChatMessages({
       agentCaseId: agentCaseId || undefined,
       agentRole: agentRole || undefined,
-      limit: limit ? parseInt(limit, 10) : 50,
+      limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : 50,
     });
     return res.json({ success: true, version: "v1", chat });
   } catch (error) {

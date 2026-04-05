@@ -863,6 +863,8 @@ const AGENT_CONFIDENCE_THRESHOLDS = {
 const AGENT_CASE_MAX_ENTRIES = 200;
 const AGENT_CHAT_MAX_MESSAGES = 500;
 const AGENT_CASE_MAX_SUMMARY_ENTRIES = 50;
+const AGENT_CHAT_MAX_QUERY_LIMIT = 100;
+const MAX_PROBLEM_TITLE_LENGTH = 120;
 
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
@@ -4869,6 +4871,7 @@ function _deriveAgentProblemType({ issueCategory, affectedLayer, dominantHintTyp
  */
 function _deriveRecommendedFixes({ problemType, agentRole, issueSeverity, suggestedFix, issueCategory, readinessBand }) {
   const fixes = [];
+  const addedCategories = new Set();
 
   // Start with system-suggested fix if available
   if (suggestedFix && suggestedFix !== "none" && suggestedFix !== "observe") {
@@ -4883,18 +4886,21 @@ function _deriveRecommendedFixes({ problemType, agentRole, issueSeverity, sugges
       add_validation:   "Validierung ergänzen",
     };
     fixes.push(fixLabels[suggestedFix] || suggestedFix);
+    addedCategories.add(suggestedFix);
   }
 
   // Problem-type-specific fixes
   if (agentRole === "deepseek_backend") {
     if (problemType === "backend_logic_issue") {
       fixes.push("Backend-Logik härten und Fehlerpfade absichern");
+      addedCategories.add("secure_path");
     }
     if (problemType === "backend_schema_issue") {
       fixes.push("Schema-Definition bereinigen und Konsistenz sicherstellen");
     }
     if (problemType === "api_contract_issue") {
       fixes.push("API-Vertrag prüfen und Rückgabewerte absichern");
+      addedCategories.add("secure_path");
     }
     if (problemType === "data_flow_issue") {
       fixes.push("Datenfluss nachverfolgen und Inkonsistenzen beheben");
@@ -4914,8 +4920,8 @@ function _deriveRecommendedFixes({ problemType, agentRole, issueSeverity, sugges
     }
   }
 
-  // Severity-driven additions
-  if (issueSeverity === "high" && !fixes.some(f => f.includes("absichern"))) {
+  // Severity-driven additions (only if no secure_path fix already present)
+  if (issueSeverity === "high" && !addedCategories.has("secure_path")) {
     fixes.push("Kritischen Pfad absichern");
   }
 
@@ -5247,7 +5253,7 @@ function buildAgentCaseFromBridgePackage(bridgePackage) {
 
     // Problem description
     problemType,
-    problemTitle:        problemTitle.length > 120 ? problemTitle.slice(0, 117) + "..." : problemTitle,
+    problemTitle:        problemTitle.length > MAX_PROBLEM_TITLE_LENGTH ? problemTitle.slice(0, MAX_PROBLEM_TITLE_LENGTH - 3) + "..." : problemTitle,
     problemSummary:      `${_resolveAgentRole(affectedLayer) === "deepseek_backend" ? "Backend" : "Frontend"}-Problem erkannt: ${problemTitle}.`,
     suspectedRootCause,
 
@@ -5652,7 +5658,7 @@ function getAgentChatMessages({ agentCaseId, agentRole, limit = 50 } = {}) {
 
   // Return newest first, capped
   filtered.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-  filtered = filtered.slice(0, Math.min(limit, 100));
+  filtered = filtered.slice(0, Math.min(limit, AGENT_CHAT_MAX_QUERY_LIMIT));
 
   return {
     totalMessages: _agentChatMessages.length,

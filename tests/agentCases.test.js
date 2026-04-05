@@ -257,6 +257,8 @@ describe("Step 14 – buildAgentCaseFromBridgePackage", () => {
     expect(agentCase.chatMessage).toContain("Problem erkannt");
     // Should contain approval question
     expect(agentCase.chatMessage).toContain("Soll ich");
+    // Approval question should be contained in chat message
+    expect(agentCase.chatMessage).toContain(agentCase.approvalQuestion);
   });
 
   test("detects cross-agent review need for cross-layer hints", () => {
