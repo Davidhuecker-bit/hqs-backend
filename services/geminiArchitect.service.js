@@ -926,6 +926,33 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 15: Inject plan refinement context (Feedback → verfeinert Plan → Vorbereitung) ──
+  if (bridgeContext && bridgeContext.refinedPlanContext) {
+    const rp = bridgeContext.refinedPlanContext;
+    const rpParts = [];
+    if (rp.planPhase) {
+      rpParts.push(`Plan-Phase: ${rp.planPhase}`);
+    }
+    if (rp.approvalDecisionStage) {
+      rpParts.push(`Freigabe-Entscheidung: ${rp.approvalDecisionStage}`);
+    }
+    if (rp.controlledPreparationType) {
+      rpParts.push(`Vorbereitungsart: ${rp.controlledPreparationType}`);
+    }
+    if (rp.refinementReason) {
+      rpParts.push(`Anpassungsgrund: ${rp.refinementReason}`);
+    }
+    if (rp.canPrepareNow !== undefined) {
+      rpParts.push(`Bereit zur Vorbereitung: ${rp.canPrepareNow ? "ja" : "nein"}`);
+    }
+    if (rp.handoffSuggested) {
+      rpParts.push(`Cross-Agent-Übergabe vorgeschlagen: ja`);
+    }
+    if (rpParts.length) {
+      sections.push(`Plan-Verfeinerung (Step 15 – kooperativ, keine automatische Ausführung):\n${rpParts.map((p) => `- ${p}`).join("\n")}`);
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

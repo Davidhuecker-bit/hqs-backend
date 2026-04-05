@@ -345,7 +345,8 @@ describe("Step 14 – submitAgentCaseFeedback", () => {
 
     expect(result.success).toBe(true);
     expect(result.newStatus).toBe("approved");
-    expect(result.agentResponse).toContain("Verstanden");
+    // Step 15: cooperative refinement message
+    expect(result.agentResponse).toContain("bereite");
     expect(result.nextSuggestedStep).toContain("Lösungsvorbereitung");
   });
 
@@ -413,7 +414,8 @@ describe("Step 14 – submitAgentCaseFeedback", () => {
 
     expect(result.success).toBe(true);
     expect(result.newStatus).toBe("info_requested");
-    expect(result.agentResponse).toContain("vertiefe die Diagnose");
+    // Step 15: cooperative refinement message for diagnosis deepening
+    expect(result.agentResponse).toContain("vertiefe");
   });
 });
 
