@@ -682,6 +682,68 @@ const ATTENTION_SCORE_THRESHOLDS = {
 const ATTENTION_MAX_SUMMARY_ENTRIES = 50;
 
 /* ─────────────────────────────────────────────
+   Step 13: Resolution Confidence / Decision
+   Maturity Light
+   ─────────────────────────────────────────────
+   Adds a lightweight internal maturity /
+   confidence layer that helps the operator
+   understand how robust, confirmed, and
+   operationally reliable a current direction is.
+
+   Separation principle:
+   - Trust / Usefulness     = how trustworthy
+     the underlying hints are
+   - Readiness              = how actionable it is
+   - Case                   = operative processing
+     status
+   - Attention / Priority   = how much focus this
+     currently deserves
+   - Decision Maturity /
+     Resolution Confidence  = how robust / settled /
+     operationally dependable
+     the direction has become
+
+   A case can be:
+   - issue-seitig: "mapping_schema_issue"
+   - case-seitig:  "watching"
+   - attention:    "focus_now"
+   - maturity:     "early_signal"
+   – each dimension independently meaningful.
+
+   Maturity is derived transparently from existing
+   dimensions (observation count, confidence,
+   readiness, case status, helpfulness, governance,
+   issue severity, attention) — no black-box scoring.
+   ───────────────────────────────────────────── */
+
+const VALID_DECISION_MATURITY_BANDS = [
+  "early_signal",  // frühes Signal – noch keine Verdichtung
+  "building",      // baut sich auf – erste Substanz erkennbar
+  "credible",      // tragfähiger – gewinnt an Substanz
+  "confirmed",     // belastbar bestätigt – operativ verlässlich
+];
+
+/**
+ * Weights used to derive the maturity score from
+ * existing dimensions.  Each dimension contributes
+ * a small, transparent increment.
+ *
+ * The total score is mapped to a maturity band:
+ *   >= 9  → confirmed
+ *   >= 6  → credible
+ *   >= 3  → building
+ *   <  3  → early_signal
+ */
+const MATURITY_SCORE_THRESHOLDS = {
+  confirmed: 9,
+  credible:  6,
+  building:  3,
+};
+
+/** Max entries in decision maturity summary */
+const MATURITY_MAX_SUMMARY_ENTRIES = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -1965,6 +2027,20 @@ function buildBridgePackage(payload = {}) {
     hintCount:             bridgeHints.length,
   });
 
+  // ── Step 13: Decision Maturity / Resolution Confidence classification ──
+  const maturityClassification = classifyDecisionMaturity({
+    observationCount:     patternEntry ? patternEntry.count : 0,
+    confidenceBand:       packageConfidenceBand,
+    readinessBand:        packageReadiness.band,
+    caseStatus:           caseClassification.caseStatus,
+    helpfulnessBand:      caseClassification.helpfulnessBand,
+    governancePolicyClass: governancePolicy.policyClass,
+    issueSeverity:        issueContext.issueSeverity,
+    attentionBand:        attentionClassification.attentionBand,
+    needsFollowup:        issueContext.needsFollowup,
+    hintCount:            bridgeHints.length,
+  });
+
   const pkg = {
     version:     BRIDGE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -2015,6 +2091,13 @@ function buildBridgePackage(payload = {}) {
       attentionScore:  attentionClassification.attentionScore,
       attentionReason: attentionClassification.attentionReason,
       focusDrivers:    attentionClassification.focusDrivers,
+    },
+    // Step 13: decision maturity / resolution confidence (ruhige Reifeschicht)
+    maturityContext: {
+      decisionMaturityBand: maturityClassification.decisionMaturityBand,
+      maturityScore:        maturityClassification.maturityScore,
+      maturityReason:       maturityClassification.maturityReason,
+      maturityDrivers:      maturityClassification.maturityDrivers,
     },
     meta: {
       hintsTotal:     rawHints.length,
@@ -2147,6 +2230,33 @@ function buildBridgePackage(payload = {}) {
     readinessBand:   packageReadiness.band,
     policyClass:     governancePolicy.policyClass,
   });
+
+  // Step 13: Decision Maturity / Resolution Confidence log
+  logger.info("[agentBridge] decision maturity classified (Step 13)", {
+    decisionMaturityBand: maturityClassification.decisionMaturityBand,
+    maturityScore:        maturityClassification.maturityScore,
+    maturityReason:       maturityClassification.maturityReason,
+    maturityDrivers:      maturityClassification.maturityDrivers,
+    patternKey:           bridgePatternKey,
+    // Separation transparency: maturity vs attention vs case vs readiness vs governance
+    attentionBand:        attentionClassification.attentionBand,
+    caseStatus:           caseClassification.caseStatus,
+    readinessBand:        packageReadiness.band,
+    policyClass:          governancePolicy.policyClass,
+    issueSeverity:        issueContext.issueSeverity,
+  });
+
+  // Step 13: Log when attention is high but maturity is still early
+  if (
+    (attentionClassification.attentionBand === "focus_now" || attentionClassification.attentionBand === "review_today") &&
+    maturityClassification.decisionMaturityBand === "early_signal"
+  ) {
+    logger.info("[agentBridge] attention ↔ maturity divergence (Step 13)", {
+      attentionBand:        attentionClassification.attentionBand,
+      decisionMaturityBand: maturityClassification.decisionMaturityBand,
+      insight:              "Hohe Aufmerksamkeit empfohlen, aber Richtung noch nicht ausreichend verdichtet – frühes Signal.",
+    });
+  }
 
   // Step 12: Log when attention is high but case is still early
   if (
@@ -2774,6 +2884,10 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     // ── Step 12 fields (attention / priority / operator focus) ──
     attentionBand:          null, // set below after attention classification
     attentionScore:         null,
+
+    // ── Step 13 fields (decision maturity / resolution confidence) ──
+    decisionMaturityBand:   null, // set below after maturity classification
+    maturityScore:          null,
   };
 
   // Assess signal quality (must happen after signal is built)
@@ -2849,6 +2963,22 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
   signal.attentionBand   = sigAttention.attentionBand;
   signal.attentionScore  = sigAttention.attentionScore;
 
+  // ── Step 13: Decision Maturity / Resolution Confidence for learning signal ──
+  const sigMaturity = classifyDecisionMaturity({
+    observationCount:     sigPatternEntry ? sigPatternEntry.count : 0,
+    confidenceBand:       signal.confidenceBand,
+    readinessBand:        signal.actionReadinessBand,
+    caseStatus:           signal.caseStatus,
+    helpfulnessBand:      signal.helpfulnessBand,
+    governancePolicyClass: signal.governancePolicyClass,
+    issueSeverity:        signal.issueSeverity,
+    attentionBand:        signal.attentionBand,
+    needsFollowup:        signal.issueNeedsFollowup,
+    hintCount:            hints.length,
+  });
+  signal.decisionMaturityBand = sigMaturity.decisionMaturityBand;
+  signal.maturityScore        = sigMaturity.maturityScore;
+
   // ── Step 4: Record pattern in lightweight in-memory store ──
   recordPatternObservation(patternKey, signal);
 
@@ -2923,6 +3053,19 @@ function buildLearningSignal(feedbackCategory, hints, explicit = {}) {
     issueSeverity:   signal.issueSeverity,
     readinessBand:   signal.actionReadinessBand,
     policyClass:     signal.governancePolicyClass,
+  });
+
+  // Step 13: Decision maturity / resolution confidence logging
+  logger.info("[agentBridge] decision maturity classified (Step 13 – learning signal)", {
+    patternKey,
+    decisionMaturityBand: signal.decisionMaturityBand,
+    maturityScore:        signal.maturityScore,
+    // Separation: maturity vs attention vs case vs readiness
+    attentionBand:        signal.attentionBand,
+    caseStatus:           signal.caseStatus,
+    readinessBand:        signal.actionReadinessBand,
+    policyClass:          signal.governancePolicyClass,
+    issueSeverity:        signal.issueSeverity,
   });
 
   return signal;
@@ -3007,6 +3150,8 @@ function recordPatternObservation(patternKey, signal) {
        helpfulnessTally:   {},
        // Step 12: attention / priority tallies
        attentionBandTally: {},
+       // Step 13: decision maturity tallies
+       maturityBandTally:  {},
      };
   }
 
@@ -3103,6 +3248,12 @@ function recordPatternObservation(patternKey, signal) {
     entry.attentionBandTally = entry.attentionBandTally || {};
     entry.attentionBandTally[signal.attentionBand] =
       (entry.attentionBandTally[signal.attentionBand] || 0) + 1;
+  }
+  // Step 13: decision maturity band tally
+  if (signal.decisionMaturityBand) {
+    entry.maturityBandTally = entry.maturityBandTally || {};
+    entry.maturityBandTally[signal.decisionMaturityBand] =
+      (entry.maturityBandTally[signal.decisionMaturityBand] || 0) + 1;
   }
 
   _patternMemory.set(patternKey, entry);
@@ -4089,6 +4240,353 @@ function getAttentionPrioritySummary() {
   };
 }
 
+/* ─────────────────────────────────────────────
+   Step 13: Decision Maturity / Resolution
+   Confidence classification
+   ─────────────────────────────────────────────
+   Derives a lightweight maturity / robustness
+   classification from existing dimensions.
+   Not a second trust layer or an auto-decision
+   engine — just a quiet internal robustness
+   assessment.
+   ───────────────────────────────────────────── */
+
+/**
+ * Classify how mature / robust / confirmed a direction
+ * currently is.  Derived transparently from existing
+ * dimensions — no black-box scoring.
+ *
+ * @param {Object} params
+ * @param {number}  [params.observationCount]
+ * @param {string}  [params.confidenceBand]
+ * @param {string}  [params.readinessBand]
+ * @param {string}  [params.caseStatus]
+ * @param {string}  [params.helpfulnessBand]
+ * @param {string}  [params.governancePolicyClass]
+ * @param {string}  [params.issueSeverity]
+ * @param {string}  [params.attentionBand]
+ * @param {boolean} [params.needsFollowup]
+ * @param {number}  [params.hintCount]
+ * @returns {{ decisionMaturityBand: string, maturityScore: number, maturityReason: string, maturityDrivers: string[] }}
+ */
+function classifyDecisionMaturity({
+  observationCount = 0,
+  confidenceBand   = "low",
+  readinessBand    = "observation",
+  caseStatus       = "open",
+  helpfulnessBand  = "too_early_to_tell",
+  governancePolicyClass = "shadow_only",
+  issueSeverity    = null,
+  attentionBand    = "background",
+  needsFollowup    = false,
+  hintCount        = 0,
+} = {}) {
+  let score = 0;
+  const drivers = [];
+
+  // ── Observation count (repeated confirmation strengthens maturity) ──
+  if (observationCount >= 6) {
+    score += 3;
+    drivers.push("observations_substantial");
+  } else if (observationCount >= 4) {
+    score += 2;
+    drivers.push("observations_recurring");
+  } else if (observationCount >= 2) {
+    score += 1;
+    drivers.push("observations_repeated");
+  }
+
+  // ── Confidence band ──
+  if (confidenceBand === "high") {
+    score += 2;
+    drivers.push("confidence_high");
+  } else if (confidenceBand === "medium") {
+    score += 1;
+    drivers.push("confidence_medium");
+  }
+
+  // ── Readiness (mature recommendations strengthen maturity) ──
+  if (readinessBand === "mature_recommendation") {
+    score += 2;
+    drivers.push("readiness_mature");
+  } else if (readinessBand === "useful_next_step") {
+    score += 1;
+    drivers.push("readiness_useful");
+  }
+
+  // ── Case status (confirmed / resolved cases indicate maturity) ──
+  if (caseStatus === "resolved") {
+    score += 2;
+    drivers.push("case_resolved");
+  } else if (caseStatus === "confirmed") {
+    score += 2;
+    drivers.push("case_confirmed");
+  } else if (caseStatus === "watching") {
+    score += 1;
+    drivers.push("case_watching");
+  }
+
+  // ── Helpfulness (clearly helpful signals confirm maturity) ──
+  if (helpfulnessBand === "clearly_helpful") {
+    score += 1;
+    drivers.push("clearly_helpful");
+  } else if (helpfulnessBand === "somewhat_helpful") {
+    score += 1;
+    drivers.push("somewhat_helpful");
+  }
+
+  // ── Governance (visible / guardian candidates carry weight) ──
+  if (governancePolicyClass === "guardian_candidate") {
+    score += 1;
+    drivers.push("governance_guardian");
+  } else if (governancePolicyClass === "admin_visible") {
+    score += 1;
+    drivers.push("governance_visible");
+  }
+
+  // ── Penalty: follow-up need reduces maturity (not yet settled) ──
+  if (needsFollowup) {
+    score = Math.max(0, score - 1);
+    drivers.push("followup_pending");
+  }
+
+  // ── Classify into maturity band ──
+  let decisionMaturityBand;
+  if (score >= MATURITY_SCORE_THRESHOLDS.confirmed) {
+    decisionMaturityBand = "confirmed";
+  } else if (score >= MATURITY_SCORE_THRESHOLDS.credible) {
+    decisionMaturityBand = "credible";
+  } else if (score >= MATURITY_SCORE_THRESHOLDS.building) {
+    decisionMaturityBand = "building";
+  } else {
+    decisionMaturityBand = "early_signal";
+  }
+
+  return {
+    decisionMaturityBand,
+    maturityScore:   score,
+    maturityReason:  _buildMaturityReason(decisionMaturityBand, drivers),
+    maturityDrivers: drivers,
+  };
+}
+
+/**
+ * Build a cooperative, human-readable maturity reason
+ * in German — no alarm language, no absolute certainty.
+ */
+function _buildMaturityReason(band, drivers) {
+  const labels = [];
+
+  for (const d of drivers) {
+    switch (d) {
+      case "observations_substantial":
+        labels.push("mehrfach beobachtet, Substanz vorhanden");
+        break;
+      case "observations_recurring":
+        labels.push("wiederholt beobachtet");
+        break;
+      case "observations_repeated":
+        labels.push("erste Wiederholung erkannt");
+        break;
+      case "confidence_high":
+        labels.push("Konfidenz hoch");
+        break;
+      case "confidence_medium":
+        labels.push("Konfidenz mittel");
+        break;
+      case "readiness_mature":
+        labels.push("Handlungsempfehlung ausgereift");
+        break;
+      case "readiness_useful":
+        labels.push("nützlicher nächster Schritt erkannt");
+        break;
+      case "case_resolved":
+        labels.push("Fall operativ gelöst");
+        break;
+      case "case_confirmed":
+        labels.push("Fall bestätigt");
+        break;
+      case "case_watching":
+        labels.push("Fall wird beobachtet");
+        break;
+      case "clearly_helpful":
+        labels.push("als hilfreich bestätigt");
+        break;
+      case "somewhat_helpful":
+        labels.push("teilweise hilfreich");
+        break;
+      case "governance_guardian":
+        labels.push("Guardian-Eignung erkannt");
+        break;
+      case "governance_visible":
+        labels.push("Admin-sichtbar");
+        break;
+      case "followup_pending":
+        labels.push("Folgeprüfung noch offen – Verdichtung eingeschränkt");
+        break;
+      default:
+        break;
+    }
+  }
+
+  // If no drivers matched, provide a safe default
+  if (!labels.length) {
+    labels.push("noch keine ausreichende Verdichtung");
+  }
+
+  const bandLabels = {
+    early_signal: "Frühes Signal",
+    building:     "Baut sich auf",
+    credible:     "Gewinnt an Substanz",
+    confirmed:    "Belastbar bestätigt",
+  };
+
+  const bandLabel = bandLabels[band] || band;
+  return `${bandLabel} – ${labels.slice(0, 4).join(", ")}.`;
+}
+
+/**
+ * Build an aggregated decision maturity / resolution
+ * confidence overview from all pattern memory entries
+ * and the case registry.
+ *
+ * Provides:
+ * - maturity band distribution
+ * - which dimensions frequently drive higher maturity
+ * - cross-references (readiness vs maturity, case vs maturity,
+ *   attention vs maturity)
+ * - entries that are still early despite high attention
+ *
+ * @returns {Object} decision maturity summary
+ */
+function getDecisionMaturitySummary() {
+  const bandDistribution = {
+    early_signal: 0,
+    building:     0,
+    credible:     0,
+    confirmed:    0,
+  };
+  const driverFrequency = {};
+  const readinessVsMaturity = {};
+  const caseVsMaturity = {};
+  const attentionVsMaturity = {};
+  const highMaturityEntries = [];
+  const earlyDespiteAttention = [];
+
+  for (const entry of _patternMemory.values()) {
+    // Derive dominant dimensions from tallies
+    const domConfidence        = _topKey(entry.confidenceTally);
+    const domReadiness         = _topKey(entry.readinessTally);
+    const domCaseStatus        = _topKey(entry.caseStatusTally);
+    const domHelpfulness       = _topKey(entry.helpfulnessTally);
+    const domGovernance        = _topKey(entry.governanceTally);
+    const domIssueSeverity     = _topKey(entry.issueSeverityTally);
+    const domAttention         = _topKey(entry.attentionBandTally);
+
+    // Check case registry for this pattern
+    const caseEntry = _caseRegistry.get(entry.patternKey);
+    const effectiveCaseStatus = caseEntry
+      ? caseEntry.caseStatus
+      : domCaseStatus;
+    const effectiveNeedsFollowup = caseEntry
+      ? (caseEntry.followupNeeded === true || caseEntry.caseStatus === "needs_followup")
+      : false;
+
+    const maturity = classifyDecisionMaturity({
+      observationCount:     entry.count,
+      confidenceBand:       domConfidence,
+      readinessBand:        domReadiness,
+      caseStatus:           effectiveCaseStatus,
+      helpfulnessBand:      domHelpfulness,
+      governancePolicyClass: domGovernance,
+      issueSeverity:        domIssueSeverity,
+      attentionBand:        domAttention,
+      needsFollowup:        effectiveNeedsFollowup,
+      hintCount:            0,
+    });
+
+    // Tally from pattern memory (if stored)
+    const storedBandTally = entry.maturityBandTally || {};
+    for (const [band, count] of Object.entries(storedBandTally)) {
+      if (bandDistribution[band] !== undefined) {
+        bandDistribution[band] += count;
+      }
+    }
+
+    // Also count current derived band
+    bandDistribution[maturity.decisionMaturityBand] =
+      (bandDistribution[maturity.decisionMaturityBand] || 0) + 1;
+
+    // Driver frequency
+    for (const driver of maturity.maturityDrivers) {
+      driverFrequency[driver] = (driverFrequency[driver] || 0) + 1;
+    }
+
+    // Cross-references
+    if (domReadiness && maturity.decisionMaturityBand) {
+      const crossKey = `${domReadiness}→${maturity.decisionMaturityBand}`;
+      readinessVsMaturity[crossKey] = (readinessVsMaturity[crossKey] || 0) + 1;
+    }
+    if (effectiveCaseStatus && maturity.decisionMaturityBand) {
+      const crossKey = `${effectiveCaseStatus}→${maturity.decisionMaturityBand}`;
+      caseVsMaturity[crossKey] = (caseVsMaturity[crossKey] || 0) + 1;
+    }
+    if (domAttention && maturity.decisionMaturityBand) {
+      const crossKey = `${domAttention}→${maturity.decisionMaturityBand}`;
+      attentionVsMaturity[crossKey] = (attentionVsMaturity[crossKey] || 0) + 1;
+    }
+
+    // Collect high-maturity entries
+    if (maturity.decisionMaturityBand === "confirmed" || maturity.decisionMaturityBand === "credible") {
+      highMaturityEntries.push({
+        patternKey:           entry.patternKey,
+        decisionMaturityBand: maturity.decisionMaturityBand,
+        maturityScore:        maturity.maturityScore,
+        maturityReason:       maturity.maturityReason,
+        maturityDrivers:      maturity.maturityDrivers,
+        readinessBand:        domReadiness,
+        caseStatus:           effectiveCaseStatus,
+        attentionBand:        domAttention,
+        observationCount:     entry.count,
+        lastSeen:             entry.lastSeen,
+      });
+    }
+
+    // Detect entries that are early_signal despite high attention
+    if (
+      maturity.decisionMaturityBand === "early_signal" &&
+      (domAttention === "focus_now" || domAttention === "review_today")
+    ) {
+      earlyDespiteAttention.push({
+        patternKey:           entry.patternKey,
+        decisionMaturityBand: maturity.decisionMaturityBand,
+        attentionBand:        domAttention,
+        maturityReason:       maturity.maturityReason,
+        observationCount:     entry.count,
+        lastSeen:             entry.lastSeen,
+      });
+    }
+  }
+
+  // Sort high-maturity entries by score (highest first)
+  highMaturityEntries.sort((a, b) => b.maturityScore - a.maturityScore);
+  earlyDespiteAttention.sort((a, b) => (b.lastSeen || "").localeCompare(a.lastSeen || ""));
+
+  return {
+    totalPatterns:           _patternMemory.size,
+    totalCases:              _caseRegistry.size,
+    bandDistribution,
+    driverFrequency,
+    readinessVsMaturity,
+    caseVsMaturity,
+    attentionVsMaturity,
+    highMaturityEntries:     highMaturityEntries.slice(0, MATURITY_MAX_SUMMARY_ENTRIES),
+    earlyDespiteAttention:   earlyDespiteAttention.slice(0, 20),
+    currentBridgeMaturity:   _currentBridgePackage?.maturityContext || null,
+    generatedAt:             new Date().toISOString(),
+  };
+}
+
 /** Pick the key with the highest count from a tally object */
 function _topKey(tally) {
   if (!tally) return null;
@@ -4392,6 +4890,9 @@ module.exports = {
   getCaseResolutionSummary,
   // Step 12: Attention / Priority / Operator Focus Light
   getAttentionPrioritySummary,
+  // Step 13: Decision Maturity / Resolution Confidence Light
+  classifyDecisionMaturity,
+  getDecisionMaturitySummary,
   BRIDGE_VERSION,
   VALID_HINT_TYPES,
   VALID_SEVERITIES,
@@ -4416,4 +4917,5 @@ module.exports = {
   VALID_CASE_OUTCOMES,
   VALID_HELPFULNESS_BANDS,
   VALID_ATTENTION_BANDS,
+  VALID_DECISION_MATURITY_BANDS,
 };
