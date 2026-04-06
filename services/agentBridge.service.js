@@ -11220,7 +11220,7 @@ function _generateAgentReply({ speakerAgent, messageIntent, userMessage, agentCa
     ],
     diagnosis_request: [
       `Ich schaue mir die Ursache nochmal tiefer an. Aus ${perspective} liegt das Problem wahrscheinlich bei ${problemTitle}.`,
-      `Ich vertiefte die Diagnose. Aus ${perspective} prüfe ich jetzt gezielt den Bereich ${domain}.`,
+      `Ich vertiefe die Diagnose. Aus ${perspective} prüfe ich jetzt gezielt den Bereich ${domain}.`,
       `Die Ursache wird genauer untersucht. Aus ${perspective} fokussiere ich mich auf die relevanten Zusammenhänge.`,
     ],
     refinement: [
