@@ -4139,6 +4139,10 @@ const {
   getApplyCandidateSummary,
   // Step 20: Controlled Execution Orchestrator / Apply Runtime / Audit & Kill Switch
   getExecutionRuntimeSummary,
+  // Step 21: Agent Conversation Runtime / Persistent Case Chat / Freeform Admin Dialogue
+  sendUserMessage,
+  getConversationThread,
+  getConversationSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5557,6 +5561,156 @@ router.get("/deepseek/agent-bridge/execution-runtime-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading execution-runtime summary",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/conversation-message
+
+   Step 21 – Agent Conversation Runtime / Persistent Case Chat /
+   Freeform Admin Dialogue
+
+   Accepts a free-form user message for an agent case and returns
+   a contextual agent reply (DeepSeek or Gemini, depending on
+   the message content and case context).
+
+   Request body:
+   {
+     "agentCaseId":      "ac-...",       // required
+     "userMessage":      "...",          // required – free-form text
+     "replyToMessageId": "conv-...",     // optional – reply reference
+     "quotedMessageId":  "conv-..."      // optional – quoted message
+   }
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "threadId": "ac-...",
+     "threadStatus": "thread_waiting_for_user",
+     "conversationState": "conversation_phase",
+     "userMessage": { ... },
+     "agentReply": { ... },
+     "crossAgentNote": "..." | null,
+     "routing": { "speakerAgent": "deepseek", ... },
+     "awaitingUserReply": true,
+     "messageCount": 2
+   }
+
+   Cooperative, not autonomous.  The system answers –
+   the user decides the next step.
+========================================================= */
+router.post("/deepseek/agent-bridge/conversation-message", (req, res) => {
+  try {
+    const { agentCaseId, userMessage, replyToMessageId, quotedMessageId } = req.body || {};
+    if (!agentCaseId || !userMessage) {
+      return res.status(400).json({
+        success: false,
+        error: "agentCaseId and userMessage are required",
+      });
+    }
+    const result = sendUserMessage({
+      agentCaseId,
+      userMessage,
+      replyToMessageId: replyToMessageId || null,
+      quotedMessageId: quotedMessageId || null,
+    });
+    return res.json({ success: result.success, version: "v1", ...result });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conversation-message error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error processing conversation message",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conversation-thread
+
+   Step 21 – Retrieve a conversation thread with all messages.
+
+   Query parameters:
+     agentCaseId  – required
+     limit        – optional (default 50)
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "thread": {
+       "threadId": "ac-...",
+       "threadStatus": "thread_waiting_for_user",
+       "messages": [ ... ],
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conversation-thread", (req, res) => {
+  try {
+    const agentCaseId = req.query.agentCaseId;
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 50, 200));
+    if (!agentCaseId) {
+      return res.status(400).json({ success: false, error: "agentCaseId query parameter is required" });
+    }
+    const thread = getConversationThread({ agentCaseId, limit });
+    if (!thread) {
+      return res.json({ success: true, version: "v1", thread: null });
+    }
+    return res.json({ success: true, version: "v1", thread });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conversation-thread error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conversation thread",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conversation-summary
+
+   Step 21 – Summary across all conversation threads.
+
+   Shows:
+     - Total threads / open / waiting
+     - Thread status distribution
+     - Dominant agent distribution
+     - Conversation state distribution
+     - Message intent frequency
+     - Per-thread summaries (most recent first)
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "conversationSummary": {
+       "totalThreads": 5,
+       "totalOpen": 3,
+       "totalWaitingForUser": 2,
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conversation-summary", (_req, res) => {
+  try {
+    const conversationSummary = getConversationSummary();
+    return res.json({ success: true, version: "v1", conversationSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conversation-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conversation summary",
     });
   }
 });

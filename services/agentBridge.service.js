@@ -1186,6 +1186,86 @@ const VALID_EXECUTION_GUARDRAIL_TYPES = [
 
 const RUNTIME_SUMMARY_MAX_ENTRIES = 50;
 
+// ── Step 21 constants: Agent Conversation Runtime / Persistent Case Chat / Freeform Admin Dialogue ──
+
+/** Thread status values for agent conversation threads */
+const VALID_THREAD_STATUSES = [
+  "thread_open",
+  "thread_waiting_for_user",
+  "thread_waiting_for_agent",
+  "thread_blocked",
+  "thread_in_refinement",
+  "thread_ready_for_decision",
+  "thread_runtime_pending",
+  "thread_closed",
+];
+
+/** Speaker roles for conversation messages */
+const VALID_SPEAKER_AGENTS = [
+  "user",
+  "deepseek",
+  "gemini",
+  "system",
+];
+
+/** Speaker role labels for frontend display */
+const VALID_SPEAKER_ROLES = [
+  "admin",
+  "backend_agent",
+  "frontend_agent",
+  "coordinator",
+];
+
+/** Message intents for conversation messages */
+const VALID_CONVERSATION_INTENTS = [
+  "question",
+  "clarification",
+  "scope_change",
+  "diagnosis_request",
+  "approval_feedback",
+  "refinement",
+  "runtime_question",
+  "explanation",
+  "recommendation",
+  "handoff",
+  "follow_up",
+  "freeform",
+];
+
+/** Conversation phases for thread tracking */
+const VALID_CONVERSATION_PHASES = [
+  "problem_phase",
+  "solution_phase",
+  "feedback_phase",
+  "refinement_phase",
+  "draft_phase",
+  "approval_phase",
+  "preview_safety_phase",
+  "candidate_gate_phase",
+  "runtime_execution_phase",
+  "conversation_phase",
+];
+
+/** Keywords for routing to DeepSeek (backend agent) */
+const DEEPSEEK_ROUTING_KEYWORDS = [
+  "backend", "api", "datenfluss", "code", "logik", "mapping",
+  "runtime", "execution", "guard", "schema", "route", "endpoint",
+  "service", "datenbank", "query", "server", "migration",
+  "validierung", "controller", "middleware",
+];
+
+/** Keywords for routing to Gemini (frontend agent) */
+const GEMINI_ROUTING_KEYWORDS = [
+  "frontend", "ux", "design", "darstellung", "label", "layout",
+  "ui", "anzeige", "karte", "ansicht", "button", "formular",
+  "navigation", "farbe", "schrift", "responsive", "komponente",
+  "verständlichkeit", "klarheit", "beschriftung",
+];
+
+const CONVERSATION_THREAD_MAX_ENTRIES = 200;
+const CONVERSATION_MESSAGE_MAX_PER_THREAD = 100;
+const CONVERSATION_SUMMARY_MAX_THREADS = 50;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -1207,6 +1287,16 @@ const _agentChatMessages = [];
 
 /** Auto-increment counter for agent case IDs */
 let _agentCaseIdCounter = 0;
+
+/* ─────────────────────────────────────────────
+   Step 21: In-memory conversation thread store
+   ───────────────────────────────────────────── */
+
+/** @type {Map<string, Object>} threadId → conversation thread object */
+const _conversationThreads = new Map();
+
+/** Auto-increment counter for conversation message IDs */
+let _conversationMsgCounter = 0;
 
 /* ─────────────────────────────────────────────
    Step 4: In-memory pattern memory (lightweight)
@@ -2684,6 +2774,26 @@ function buildBridgePackage(payload = {}) {
         checklistItemCount:      (es.runtimeChecklist || []).length,
         auditEntryCount:         (es.executionAudit || []).length,
         dryRunOnly:              es.dryRunOnly,
+      };
+    }
+
+    // ── Step 21: Attach conversation context when a thread exists ──
+    const convThread = _conversationThreads.get(agentCase.agentCaseId);
+    if (convThread) {
+      pkg.conversationContext = {
+        threadId:            convThread.threadId,
+        threadStatus:        convThread.threadStatus,
+        conversationState:   convThread.conversationState,
+        conversationOpen:    convThread.conversationOpen,
+        messageCount:        convThread.messageCount,
+        userMessageCount:    convThread.userMessageCount,
+        deepseekMessageCount: convThread.deepseekMessageCount,
+        geminiMessageCount:  convThread.geminiMessageCount,
+        awaitingUserReply:   convThread.awaitingUserReply,
+        awaitingAgentReply:  convThread.awaitingAgentReply,
+        lastSpeaker:         convThread.lastSpeaker,
+        dominantAgent:       convThread.dominantAgent,
+        conversationSummary: convThread.conversationSummary,
       };
     }
 
@@ -5957,8 +6067,10 @@ function _recordAgentChatMessage({
     chatMessage.nextRuntimeStep = nextRuntimeStep;
   }
 
-  // Derive message phase from available context (Step 20 → Step 19 → Step 18 → Step 17 → Step 16 → Step 15)
-  if (runtimeStatus || planPhase === "runtime_execution_phase") {
+  // Derive message phase from available context (Step 21 → Step 20 → Step 19 → Step 18 → Step 17 → Step 16 → Step 15)
+  if (planPhase === "conversation_phase") {
+    chatMessage.messagePhase = "conversation_phase";
+  } else if (runtimeStatus || planPhase === "runtime_execution_phase") {
     chatMessage.messagePhase = "runtime_execution_phase";
   } else if (candidateStatus || planPhase === "candidate_gate_phase") {
     chatMessage.messagePhase = "candidate_gate_phase";
@@ -10902,6 +11014,718 @@ function getRecommendationImprovementSummary() {
   };
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   Step 21: Agent Conversation Runtime / Persistent Case Chat /
+            Freeform Admin Dialogue
+   ─────────────────────────────────────────────────────────────────────
+   Adds a real conversational dialogue layer on top of agent cases.
+   The user can write free-form messages and the system routes them
+   to DeepSeek (backend) or Gemini (frontend) with cooperative,
+   human-readable replies.
+
+   Principles:
+   - cooperative, not autonomous
+   - no automatic execution
+   - natural, clear German dialogue language
+   - clean role separation: DeepSeek = backend, Gemini = frontend
+   - compatible with Steps 14-20
+
+   Key functions:
+   - getOrCreateConversationThread()  – ensures a thread exists per case
+   - sendUserMessage()                – accepts free user messages
+   - _routeToAgent()                  – determines which agent should reply
+   - _generateAgentReply()            – builds cooperative dialogue reply
+   - _deriveMessageIntent()           – classifies user message intent
+   - _deriveThreadStatus()            – manages thread state transitions
+   - getConversationThread()          – retrieves thread with messages
+   - getConversationSummary()         – summary across all threads
+   ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Get or create a conversation thread for an agent case.
+ * @param {string} agentCaseId
+ * @returns {Object} thread object
+ */
+function getOrCreateConversationThread(agentCaseId) {
+  if (_conversationThreads.has(agentCaseId)) {
+    return _conversationThreads.get(agentCaseId);
+  }
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId);
+
+  const thread = {
+    threadId: agentCaseId,
+    caseId: agentCaseId,
+    threadStatus: "thread_open",
+    conversationState: "conversation_phase",
+    conversationOpen: true,
+    conversationMessages: [],
+    lastUserMessageAt: null,
+    lastAgentMessageAt: null,
+    awaitingUserReply: false,
+    awaitingAgentReply: false,
+    lastSpeaker: null,
+    nextSuggestedSpeaker: null,
+    nextSuggestedIntent: null,
+    dominantAgent: agentCase ? agentCase.agentRole : null,
+    messageCount: 0,
+    userMessageCount: 0,
+    agentMessageCount: 0,
+    deepseekMessageCount: 0,
+    geminiMessageCount: 0,
+    systemMessageCount: 0,
+    conversationSummary: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  _conversationThreads.set(agentCaseId, thread);
+
+  // Evict oldest threads if over limit
+  if (_conversationThreads.size > CONVERSATION_THREAD_MAX_ENTRIES) {
+    const oldestKey = _conversationThreads.keys().next().value;
+    _conversationThreads.delete(oldestKey);
+  }
+
+  logger.info("[agentBridge] Step 21 – Conversation-Thread eröffnet", {
+    threadId: agentCaseId,
+    dominantAgent: thread.dominantAgent,
+  });
+
+  return thread;
+}
+
+/**
+ * Route a message to the appropriate agent based on content analysis.
+ * DeepSeek: backend / APIs / code / logic / data flow
+ * Gemini: frontend / UX / design / presentation / clarity
+ *
+ * @param {string} userMessage
+ * @param {Object} agentCase
+ * @returns {{ speakerAgent: string, speakerRole: string, routingReason: string }}
+ */
+function _routeToAgent(userMessage, agentCase) {
+  const lowerMsg = (userMessage || "").toLowerCase();
+
+  let deepseekScore = 0;
+  let geminiScore = 0;
+
+  for (const kw of DEEPSEEK_ROUTING_KEYWORDS) {
+    if (lowerMsg.includes(kw)) deepseekScore += 1;
+  }
+  for (const kw of GEMINI_ROUTING_KEYWORDS) {
+    if (lowerMsg.includes(kw)) geminiScore += 1;
+  }
+
+  // Bias toward the case's dominant agent when scores are tied or both zero
+  if (deepseekScore === geminiScore && agentCase) {
+    if (agentCase.agentRole === "deepseek_backend" || agentCase.ownerAgent === "deepseek_backend") {
+      deepseekScore += 1;
+    } else if (agentCase.agentRole === "gemini_frontend" || agentCase.ownerAgent === "gemini_frontend") {
+      geminiScore += 1;
+    }
+  }
+
+  // Default to DeepSeek if still tied
+  if (deepseekScore >= geminiScore) {
+    return {
+      speakerAgent: "deepseek",
+      speakerRole: "backend_agent",
+      routingReason: deepseekScore > 0
+        ? "Nachricht bezieht sich auf Backend / API / Code / Logik"
+        : "Standard-Routing zum Backend-Agenten",
+    };
+  }
+
+  return {
+    speakerAgent: "gemini",
+    speakerRole: "frontend_agent",
+    routingReason: "Nachricht bezieht sich auf Frontend / UX / Design / Darstellung",
+  };
+}
+
+/**
+ * Derive the intent of a user message from its content.
+ * @param {string} userMessage
+ * @returns {string} conversation intent
+ */
+function _deriveMessageIntent(userMessage) {
+  const lower = (userMessage || "").toLowerCase();
+
+  if (lower.includes("warum") || lower.includes("wieso") || lower.includes("weshalb") || lower.includes("?")) {
+    return "question";
+  }
+  if (lower.includes("scope") || lower.includes("nur backend") || lower.includes("nur frontend") || lower.includes("enger") || lower.includes("breiter") || lower.includes("raus")) {
+    return "scope_change";
+  }
+  if (lower.includes("erklär") || lower.includes("versteh") || lower.includes("genauer") || lower.includes("detail")) {
+    return "clarification";
+  }
+  if (lower.includes("prüf") || lower.includes("ursache") || lower.includes("tiefer") || lower.includes("diagnos")) {
+    return "diagnosis_request";
+  }
+  if (lower.includes("verfein") || lower.includes("anpass") || lower.includes("änder") || lower.includes("umstell")) {
+    return "refinement";
+  }
+  if (lower.includes("freigab") || lower.includes("genehmig") || lower.includes("approve") || lower.includes("ableh") || lower.includes("reject")) {
+    return "approval_feedback";
+  }
+  if (lower.includes("runtime") || lower.includes("ausführ") || lower.includes("apply") || lower.includes("starten")) {
+    return "runtime_question";
+  }
+  if (lower.includes("vorschlag") || lower.includes("empfehl") || lower.includes("was würdest") || lower.includes("was wäre")) {
+    return "recommendation";
+  }
+  if (lower.includes("weiter") || lower.includes("dazu noch") || lower.includes("außerdem") || lower.includes("und noch")) {
+    return "follow_up";
+  }
+
+  return "freeform";
+}
+
+/**
+ * Derive the conversation phase from thread and case context.
+ * @param {Object} thread
+ * @param {Object} agentCase
+ * @returns {string}
+ */
+function _deriveConversationPhase(thread, agentCase) {
+  if (!agentCase) return "conversation_phase";
+
+  if (agentCase.executionSession20) return "runtime_execution_phase";
+  if (agentCase.applyCandidate19) return "candidate_gate_phase";
+  if (agentCase.executionPreview18) return "preview_safety_phase";
+  if (agentCase.applyReadiness17) return "approval_phase";
+  if (agentCase.actionDraft16) return "draft_phase";
+  if (agentCase.refinedPlan15) return "refinement_phase";
+  if (agentCase.feedbackHistory && agentCase.feedbackHistory.length > 0) return "feedback_phase";
+  if (agentCase.recommendedFixes && agentCase.recommendedFixes.length > 0) return "solution_phase";
+  if (agentCase.problemType) return "problem_phase";
+
+  return "conversation_phase";
+}
+
+/**
+ * Generate a cooperative, human-readable agent reply based on message intent and context.
+ *
+ * @param {Object} params
+ * @param {string} params.speakerAgent - "deepseek" or "gemini"
+ * @param {string} params.messageIntent
+ * @param {string} params.userMessage
+ * @param {Object} params.agentCase
+ * @param {Object} params.thread
+ * @returns {string} agent reply message
+ */
+function _generateAgentReply({ speakerAgent, messageIntent, userMessage, agentCase, thread }) {
+  const isBackend = speakerAgent === "deepseek";
+  const perspective = isBackend ? "Backend-Sicht" : "Frontend-Sicht";
+  const domain = isBackend ? "Backend / API / Logik" : "Frontend / UX / Darstellung";
+  const problemTitle = (agentCase && agentCase.problemTitle) || "den aktuellen Fall";
+
+  const replies = {
+    question: [
+      `Ich habe mir den Fall nochmal genauer angesehen. Aus ${perspective} kann ich Folgendes sagen:`,
+      `Das Thema berührt primär den Bereich ${domain}. Wenn du weitere Details brauchst, gehe ich gern tiefer rein.`,
+      `Gute Frage. Aus ${perspective} liegt der Schwerpunkt bei ${problemTitle}. Ich schaue mir das weiter an, wenn du möchtest.`,
+    ],
+    clarification: [
+      `Ich versuche es klarer einzuordnen. Aus ${perspective} geht es vor allem um: ${problemTitle}.`,
+      `Lass mich das genauer erklären. Der relevante Bereich aus ${perspective} ist ${domain}.`,
+      `Ich präzisiere gern. Aus ${perspective} sehe ich den Kern des Problems bei ${problemTitle}.`,
+    ],
+    scope_change: [
+      `Verstanden. Ich passe den Scope an und konzentriere mich nur auf ${domain}.`,
+      `Ich kann den Vorschlag enger fassen. Wenn du willst, grenze ich den Vorschlag nur auf ${isBackend ? "den API-Teil" : "den UI-Teil"} ein.`,
+      `Ich reduziere den Scope wie gewünscht. ${isBackend ? "Frontend bleibt bewusst außen vor." : "Backend bleibt bewusst außen vor."}`,
+    ],
+    diagnosis_request: [
+      `Ich schaue mir die Ursache nochmal tiefer an. Aus ${perspective} liegt das Problem wahrscheinlich bei ${problemTitle}.`,
+      `Ich vertiefe die Diagnose. Aus ${perspective} prüfe ich jetzt gezielt den Bereich ${domain}.`,
+      `Die Ursache wird genauer untersucht. Aus ${perspective} fokussiere ich mich auf die relevanten Zusammenhänge.`,
+    ],
+    refinement: [
+      `Ich passe den Plan entsprechend an. Aus ${perspective} berücksichtige ich deine Rückmeldung.`,
+      `Verstanden. Ich verfeinere den Vorschlag im Bereich ${domain} basierend auf deiner Eingabe.`,
+      `Wenn du eine andere Idee hast, passe ich den Plan daran an. Aktuell fokussiere ich mich auf ${domain}.`,
+    ],
+    approval_feedback: [
+      `Danke für deine Rückmeldung. Ich ordne sie ein und aktualisiere den Stand für ${problemTitle}.`,
+      `Ich habe deine Entscheidung aufgenommen. Der Fall wird entsprechend weitergeführt.`,
+      `Verstanden. Ich verarbeite dein Feedback und bereite den nächsten Schritt vor.`,
+    ],
+    runtime_question: [
+      `Aus ${perspective} kann ich zum Ausführungsstatus Folgendes sagen: Der Fall befindet sich aktuell in der Vorbereitungsphase.`,
+      `Zur Runtime: Aus ${perspective} ist die Ausführung derzeit nur als Probelauf vorgesehen. Keine autonome Aktion.`,
+      `Ich bereite es vor, aber wende es noch nicht an. Du entscheidest, wann der nächste Schritt erfolgt.`,
+    ],
+    explanation: [
+      `Aus ${perspective} erkläre ich den Zusammenhang: ${problemTitle} betrifft primär ${domain}.`,
+      `Ich ordne den Fall ein. Aus ${perspective} sehe ich die Hauptursache im Bereich ${domain}.`,
+    ],
+    recommendation: [
+      `Aus ${perspective} würde ich Folgendes empfehlen: Zunächst den Bereich ${domain} gezielt prüfen.`,
+      `Mein Vorschlag aus ${perspective}: Wir schauen uns erst ${problemTitle} genauer an, bevor wir Maßnahmen einleiten.`,
+      `Aus ${perspective} halte ich eine gezielte Prüfung im Bereich ${domain} für den sinnvollsten nächsten Schritt.`,
+    ],
+    handoff: [
+      `Dieses Thema berührt auch den ${isBackend ? "Frontend" : "Backend"}-Bereich. Ich empfehle, dass der ${isBackend ? "Frontend-Agent" : "Backend-Agent"} sich das ebenfalls ansieht.`,
+      `Ich übergebe den Teil, der ${isBackend ? "Frontend / UX" : "Backend / API"} betrifft, an den zuständigen Agenten.`,
+    ],
+    follow_up: [
+      `Ich knüpfe an den letzten Punkt an. Aus ${perspective} gibt es noch Folgendes zu ergänzen.`,
+      `Dazu noch aus ${perspective}: Der Bereich ${domain} zeigt weitere relevante Aspekte.`,
+    ],
+    freeform: [
+      `Ich habe mir den Fall nochmal angesehen. Aus ${perspective} liegt der Schwerpunkt bei ${problemTitle}.`,
+      `Danke für deine Nachricht. Aus ${perspective} ordne ich das wie folgt ein.`,
+      `Ich habe deine Nachricht aufgenommen. Wenn du eine bestimmte Richtung bevorzugst, passe ich den Plan daran an.`,
+      `Ich warte auf deine Rückmeldung, falls du möchtest, dass ich den Vorschlag in eine bestimmte Richtung anpasse.`,
+    ],
+  };
+
+  const candidates = replies[messageIntent] || replies.freeform;
+  // Deterministic selection based on thread message count
+  const idx = (thread ? thread.messageCount : 0) % candidates.length;
+  return candidates[idx];
+}
+
+/**
+ * Determine whether a cross-agent note should be added.
+ * @param {string} primaryAgent
+ * @param {string} messageIntent
+ * @param {Object} agentCase
+ * @returns {{ needed: boolean, note: string|null }}
+ */
+function _checkCrossAgentCoordination(primaryAgent, messageIntent, agentCase) {
+  if (!agentCase || !agentCase.needsCrossAgentReview) {
+    return { needed: false, note: null };
+  }
+
+  const otherAgent = primaryAgent === "deepseek" ? "Gemini (Frontend-Agent)" : "DeepSeek (Backend-Agent)";
+
+  if (messageIntent === "scope_change" || messageIntent === "handoff") {
+    return {
+      needed: true,
+      note: `Hinweis: Dieses Thema hat auch eine ${primaryAgent === "deepseek" ? "Frontend" : "Backend"}-Dimension. ${otherAgent} wird bei Bedarf ergänzend hinzugezogen.`,
+    };
+  }
+
+  return { needed: false, note: null };
+}
+
+/**
+ * Derive thread status from current state.
+ * @param {Object} thread
+ * @param {Object} agentCase
+ * @returns {string} thread status
+ */
+function _deriveThreadStatus(thread, agentCase) {
+  if (!thread.conversationOpen) return "thread_closed";
+
+  if (agentCase) {
+    if (agentCase.executionSession20 && agentCase.executionSession20.runtimeStatus === "runtime_running") {
+      return "thread_runtime_pending";
+    }
+    if (agentCase.status === "blocked" || agentCase.status === "rejected") {
+      return "thread_blocked";
+    }
+  }
+
+  if (thread.awaitingUserReply) return "thread_waiting_for_user";
+  if (thread.awaitingAgentReply) return "thread_waiting_for_agent";
+
+  // Check conversation phase for readiness
+  const phase = _deriveConversationPhase(thread, agentCase);
+  if (phase === "approval_phase" || phase === "candidate_gate_phase") {
+    return "thread_ready_for_decision";
+  }
+  if (phase === "refinement_phase" || phase === "feedback_phase") {
+    return "thread_in_refinement";
+  }
+
+  return "thread_open";
+}
+
+/**
+ * Build a conversation summary line for a thread.
+ * @param {Object} thread
+ * @returns {string}
+ */
+function _buildConversationSummaryLine(thread) {
+  const parts = [];
+  parts.push(`${thread.messageCount} Nachrichten`);
+  if (thread.userMessageCount > 0) parts.push(`${thread.userMessageCount} vom User`);
+  if (thread.deepseekMessageCount > 0) parts.push(`${thread.deepseekMessageCount} von DeepSeek`);
+  if (thread.geminiMessageCount > 0) parts.push(`${thread.geminiMessageCount} von Gemini`);
+  parts.push(`Status: ${thread.threadStatus}`);
+  if (thread.awaitingUserReply) parts.push("wartet auf User");
+  if (thread.awaitingAgentReply) parts.push("wartet auf Agent");
+  return parts.join(" · ");
+}
+
+/**
+ * Accept a free user message for an agent case and generate a contextual agent reply.
+ *
+ * @param {Object} params
+ * @param {string} params.agentCaseId - the agent case to address
+ * @param {string} params.userMessage - free-form user text
+ * @param {string} [params.replyToMessageId] - optional reference to a prior message
+ * @param {string} [params.quotedMessageId] - optional quoted message
+ * @returns {Object} result with user message, agent reply, thread state
+ */
+function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, quotedMessageId = null } = {}) {
+  if (!agentCaseId) {
+    logger.warn("[agentBridge] Step 21 – sendUserMessage ohne agentCaseId");
+    return { success: false, error: "agentCaseId is required" };
+  }
+  if (!userMessage || typeof userMessage !== "string" || userMessage.trim().length === 0) {
+    logger.warn("[agentBridge] Step 21 – sendUserMessage ohne userMessage");
+    return { success: false, error: "userMessage is required and must be a non-empty string" };
+  }
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId) || null;
+  const thread = getOrCreateConversationThread(agentCaseId);
+
+  // Derive intent from user message
+  const messageIntent = _deriveMessageIntent(userMessage);
+
+  // --- 1. Record user message ---
+  _conversationMsgCounter += 1;
+  const userMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+  const now = new Date().toISOString();
+
+  const userMsgRecord = {
+    messageId: userMsgId,
+    threadId: agentCaseId,
+    caseId: agentCaseId,
+    messageRole: "user",
+    speakerAgent: "user",
+    speakerRole: "admin",
+    messageIntent,
+    messagePhase: _deriveConversationPhase(thread, agentCase),
+    content: userMessage.trim(),
+    replyToMessageId: replyToMessageId || null,
+    quotedMessageId: quotedMessageId || null,
+    followUpOf: thread.conversationMessages.length > 0
+      ? thread.conversationMessages[thread.conversationMessages.length - 1].messageId
+      : null,
+    relatedCaseId: agentCaseId,
+    relatedDraftId: agentCase && agentCase.actionDraft16 ? agentCase.actionDraft16.draftId || null : null,
+    createdAt: now,
+  };
+
+  thread.conversationMessages.push(userMsgRecord);
+  thread.userMessageCount += 1;
+  thread.messageCount += 1;
+  thread.lastUserMessageAt = now;
+  thread.lastSpeaker = "user";
+  thread.awaitingAgentReply = true;
+  thread.awaitingUserReply = false;
+
+  // Also record in global agent chat messages
+  _recordAgentChatMessage({
+    agentCaseId,
+    agentRole: "user",
+    messageType: "status_update",
+    messageIntent: messageIntent,
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: userMessage.trim(),
+    planPhase: "conversation_phase",
+  });
+
+  logger.info("[agentBridge] Step 21 – User-Nachricht empfangen", {
+    threadId: agentCaseId,
+    messageIntent,
+    messageLength: userMessage.trim().length,
+  });
+
+  // --- 2. Route to appropriate agent ---
+  const routing = _routeToAgent(userMessage, agentCase);
+
+  // --- 3. Generate agent reply ---
+  const agentReplyText = _generateAgentReply({
+    speakerAgent: routing.speakerAgent,
+    messageIntent,
+    userMessage: userMessage.trim(),
+    agentCase,
+    thread,
+  });
+
+  _conversationMsgCounter += 1;
+  const agentMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+  const agentNow = new Date().toISOString();
+
+  const agentMsgRecord = {
+    messageId: agentMsgId,
+    threadId: agentCaseId,
+    caseId: agentCaseId,
+    messageRole: "agent",
+    speakerAgent: routing.speakerAgent,
+    speakerRole: routing.speakerRole,
+    messageIntent: messageIntent === "question" ? "explanation" : (messageIntent === "scope_change" ? "recommendation" : "follow_up"),
+    messagePhase: _deriveConversationPhase(thread, agentCase),
+    content: agentReplyText,
+    replyToMessageId: userMsgId,
+    quotedMessageId: null,
+    followUpOf: userMsgId,
+    relatedCaseId: agentCaseId,
+    relatedDraftId: agentCase && agentCase.actionDraft16 ? agentCase.actionDraft16.draftId || null : null,
+    routingReason: routing.routingReason,
+    createdAt: agentNow,
+  };
+
+  thread.conversationMessages.push(agentMsgRecord);
+  thread.agentMessageCount += 1;
+  thread.messageCount += 1;
+  if (routing.speakerAgent === "deepseek") thread.deepseekMessageCount += 1;
+  if (routing.speakerAgent === "gemini") thread.geminiMessageCount += 1;
+  thread.lastAgentMessageAt = agentNow;
+  thread.lastSpeaker = routing.speakerAgent;
+  thread.awaitingAgentReply = false;
+  thread.awaitingUserReply = true;
+  thread.nextSuggestedSpeaker = "user";
+  thread.nextSuggestedIntent = "follow_up";
+
+  // Record agent reply in global chat messages
+  _recordAgentChatMessage({
+    agentCaseId,
+    agentRole: routing.speakerAgent === "deepseek" ? "deepseek_backend" : "gemini_frontend",
+    messageType: "status_update",
+    messageIntent: agentMsgRecord.messageIntent,
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: agentReplyText,
+    planPhase: "conversation_phase",
+  });
+
+  // --- 4. Check cross-agent coordination ---
+  const crossAgent = _checkCrossAgentCoordination(routing.speakerAgent, messageIntent, agentCase);
+  let crossAgentNote = null;
+
+  if (crossAgent.needed && crossAgent.note) {
+    _conversationMsgCounter += 1;
+    const systemMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+
+    const systemMsgRecord = {
+      messageId: systemMsgId,
+      threadId: agentCaseId,
+      caseId: agentCaseId,
+      messageRole: "system",
+      speakerAgent: "system",
+      speakerRole: "coordinator",
+      messageIntent: "handoff",
+      messagePhase: _deriveConversationPhase(thread, agentCase),
+      content: crossAgent.note,
+      replyToMessageId: agentMsgId,
+      quotedMessageId: null,
+      followUpOf: agentMsgId,
+      relatedCaseId: agentCaseId,
+      relatedDraftId: null,
+      createdAt: new Date().toISOString(),
+    };
+
+    thread.conversationMessages.push(systemMsgRecord);
+    thread.systemMessageCount += 1;
+    thread.messageCount += 1;
+    crossAgentNote = crossAgent.note;
+
+    logger.info("[agentBridge] Step 21 – Cross-Agent-Koordination vorgeschlagen", {
+      threadId: agentCaseId,
+      primaryAgent: routing.speakerAgent,
+      messageIntent,
+    });
+  }
+
+  // --- 5. Update thread status and summary ---
+  thread.threadStatus = _deriveThreadStatus(thread, agentCase);
+  thread.conversationState = _deriveConversationPhase(thread, agentCase);
+  thread.conversationSummary = _buildConversationSummaryLine(thread);
+  thread.updatedAt = new Date().toISOString();
+
+  // Evict oldest messages if thread exceeds limit
+  while (thread.conversationMessages.length > CONVERSATION_MESSAGE_MAX_PER_THREAD) {
+    thread.conversationMessages.shift();
+  }
+
+  logger.info("[agentBridge] Step 21 – Agent-Antwort erzeugt", {
+    threadId: agentCaseId,
+    speakerAgent: routing.speakerAgent,
+    messageIntent,
+    threadStatus: thread.threadStatus,
+    messageCount: thread.messageCount,
+  });
+
+  return {
+    success: true,
+    threadId: agentCaseId,
+    threadStatus: thread.threadStatus,
+    conversationState: thread.conversationState,
+    userMessage: userMsgRecord,
+    agentReply: agentMsgRecord,
+    crossAgentNote,
+    routing: {
+      speakerAgent: routing.speakerAgent,
+      speakerRole: routing.speakerRole,
+      routingReason: routing.routingReason,
+    },
+    awaitingUserReply: thread.awaitingUserReply,
+    awaitingAgentReply: thread.awaitingAgentReply,
+    lastSpeaker: thread.lastSpeaker,
+    nextSuggestedSpeaker: thread.nextSuggestedSpeaker,
+    messageCount: thread.messageCount,
+  };
+}
+
+/**
+ * Retrieve a conversation thread with all messages.
+ *
+ * @param {Object} params
+ * @param {string} params.agentCaseId
+ * @param {number} [params.limit] - max messages to return (newest first)
+ * @returns {Object|null}
+ */
+function getConversationThread({ agentCaseId, limit = 50 } = {}) {
+  if (!agentCaseId) return null;
+
+  const thread = _conversationThreads.get(agentCaseId);
+  if (!thread) return null;
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId) || null;
+
+  // Refresh thread status
+  thread.threadStatus = _deriveThreadStatus(thread, agentCase);
+  thread.conversationState = _deriveConversationPhase(thread, agentCase);
+  thread.conversationSummary = _buildConversationSummaryLine(thread);
+
+  const messages = thread.conversationMessages.slice(-limit);
+
+  return {
+    threadId: thread.threadId,
+    caseId: thread.caseId,
+    threadStatus: thread.threadStatus,
+    conversationState: thread.conversationState,
+    conversationOpen: thread.conversationOpen,
+    lastUserMessageAt: thread.lastUserMessageAt,
+    lastAgentMessageAt: thread.lastAgentMessageAt,
+    awaitingUserReply: thread.awaitingUserReply,
+    awaitingAgentReply: thread.awaitingAgentReply,
+    lastSpeaker: thread.lastSpeaker,
+    nextSuggestedSpeaker: thread.nextSuggestedSpeaker,
+    nextSuggestedIntent: thread.nextSuggestedIntent,
+    dominantAgent: thread.dominantAgent,
+    messageCount: thread.messageCount,
+    userMessageCount: thread.userMessageCount,
+    agentMessageCount: thread.agentMessageCount,
+    deepseekMessageCount: thread.deepseekMessageCount,
+    geminiMessageCount: thread.geminiMessageCount,
+    systemMessageCount: thread.systemMessageCount,
+    conversationSummary: thread.conversationSummary,
+    messages,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+  };
+}
+
+/**
+ * Build a summary across all conversation threads.
+ * Shows: open/waiting/active threads, dominant agents, intent distribution.
+ *
+ * @returns {Object}
+ */
+function getConversationSummary() {
+  const threads = Array.from(_conversationThreads.values());
+
+  const byThreadStatus = {};
+  const byDominantAgent = {};
+  const byConversationState = {};
+  const intentFrequency = {};
+
+  let totalOpen = 0;
+  let totalWaitingForUser = 0;
+  let totalWaitingForAgent = 0;
+  let totalDeepseekDominated = 0;
+  let totalGeminiDominated = 0;
+  let totalCrossAgent = 0;
+  let totalMessages = 0;
+
+  for (const t of threads) {
+    // Refresh status
+    const agentCase = _agentCaseRegistry.get(t.caseId) || null;
+    t.threadStatus = _deriveThreadStatus(t, agentCase);
+    t.conversationState = _deriveConversationPhase(t, agentCase);
+    t.conversationSummary = _buildConversationSummaryLine(t);
+
+    byThreadStatus[t.threadStatus] = (byThreadStatus[t.threadStatus] || 0) + 1;
+    byConversationState[t.conversationState] = (byConversationState[t.conversationState] || 0) + 1;
+
+    const da = t.dominantAgent || "unknown";
+    byDominantAgent[da] = (byDominantAgent[da] || 0) + 1;
+
+    if (t.conversationOpen) totalOpen += 1;
+    if (t.awaitingUserReply) totalWaitingForUser += 1;
+    if (t.awaitingAgentReply) totalWaitingForAgent += 1;
+
+    if (t.deepseekMessageCount > t.geminiMessageCount) totalDeepseekDominated += 1;
+    else if (t.geminiMessageCount > t.deepseekMessageCount) totalGeminiDominated += 1;
+    else if (t.deepseekMessageCount > 0 && t.geminiMessageCount > 0) totalCrossAgent += 1;
+
+    totalMessages += t.messageCount;
+
+    // Collect intent frequencies from messages
+    for (const msg of t.conversationMessages) {
+      if (msg.messageIntent) {
+        intentFrequency[msg.messageIntent] = (intentFrequency[msg.messageIntent] || 0) + 1;
+      }
+    }
+  }
+
+  // Build thread summaries (most recent first)
+  const threadSummaries = threads
+    .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+    .slice(0, CONVERSATION_SUMMARY_MAX_THREADS)
+    .map((t) => ({
+      threadId: t.threadId,
+      threadStatus: t.threadStatus,
+      conversationState: t.conversationState,
+      dominantAgent: t.dominantAgent,
+      messageCount: t.messageCount,
+      userMessageCount: t.userMessageCount,
+      deepseekMessageCount: t.deepseekMessageCount,
+      geminiMessageCount: t.geminiMessageCount,
+      awaitingUserReply: t.awaitingUserReply,
+      awaitingAgentReply: t.awaitingAgentReply,
+      lastSpeaker: t.lastSpeaker,
+      conversationSummary: t.conversationSummary,
+      updatedAt: t.updatedAt,
+    }));
+
+  logger.info("[agentBridge] Step 21 – Conversation-Zusammenfassung erzeugt", {
+    totalThreads: threads.length,
+    totalOpen,
+    totalMessages,
+    totalWaitingForUser,
+    totalWaitingForAgent,
+  });
+
+  return {
+    totalThreads: threads.length,
+    totalOpen,
+    totalWaitingForUser,
+    totalWaitingForAgent,
+    totalDeepseekDominated,
+    totalGeminiDominated,
+    totalCrossAgent,
+    totalMessages,
+    byThreadStatus,
+    byDominantAgent,
+    byConversationState,
+    intentFrequency,
+    threadSummaries,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   buildBridgePackage,
   getCurrentBridgePackage,
@@ -10994,4 +11818,14 @@ module.exports = {
   VALID_RUNTIME_MODES,
   VALID_EXECUTION_STATES,
   VALID_EXECUTION_GUARDRAIL_TYPES,
+  // Step 21: Agent Conversation Runtime / Persistent Case Chat / Freeform Admin Dialogue
+  sendUserMessage,
+  getConversationThread,
+  getConversationSummary,
+  getOrCreateConversationThread,
+  VALID_THREAD_STATUSES,
+  VALID_SPEAKER_AGENTS,
+  VALID_SPEAKER_ROLES,
+  VALID_CONVERSATION_INTENTS,
+  VALID_CONVERSATION_PHASES,
 };
