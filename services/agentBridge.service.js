@@ -9485,7 +9485,7 @@ function _buildApplyCandidate(agentCase) {
   } else if (candidateMode === "diagnosis_only") {
     disallowedApplyTargets.push("backend", "frontend", "api", "datenbank");
   } else {
-    allowedApplyTargets.push("nach_scope_bestätigung");
+    allowedApplyTargets.push("pending_scope_confirmation");
   }
 
   // Build human-readable candidate message

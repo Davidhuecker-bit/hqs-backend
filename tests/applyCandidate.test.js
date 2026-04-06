@@ -32,7 +32,7 @@ function buildMockBridgePackage(overrides = {}) {
   };
 }
 
-function createAgentCaseWithCandidate(draftType = "backend_fix_draft", agentRole = "deepseek_backend", readinessOverrides = {}) {
+function createAgentCaseForCandidateTests(draftType = "backend_fix_draft", agentRole = "deepseek_backend", readinessOverrides = {}) {
   const pkg = buildMockBridgePackage();
   const agentCase = agentBridge.buildAgentCaseFromBridgePackage(pkg);
 
@@ -193,76 +193,86 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
   });
 
   describe("Apply candidate derivation", () => {
-    test("backend_fix_draft produces backend_only candidate with scope_confirmation_needed", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+    test("backend_fix_draft with review_ready produces scope_confirmation_needed candidate", () => {
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase) return; // skip if no actionable case
 
-      // _buildApplyCandidate is called internally, simulate by accessing applyCandidate19
-      // It should have been populated if we manually call buildAgentCaseFromBridgePackage
-      // For unit testing we check the summary
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
-      expect(typeof summary.totalWithCandidate).toBe("number");
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateStatus).toBe("candidate_scope_confirmation_needed");
+      expect(ac.candidateMode).toBe("backend_only");
     });
 
     test("diagnosis_draft produces candidate_diagnosis_only", () => {
-      const agentCase = createAgentCaseWithCandidate("diagnosis_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("diagnosis_draft", "deepseek_backend");
       if (!agentCase) return;
 
-      // Diagnosis draft should not produce a real apply candidate
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateStatus).toBe("candidate_diagnosis_only");
+      expect(ac.candidateMode).toBe("diagnosis_only");
     });
 
-    test("cross_agent_draft produces cross_agent_pending or cross_agent_candidate", () => {
-      const agentCase = createAgentCaseWithCandidate("cross_agent_draft", "deepseek_backend");
+    test("cross_agent_draft produces candidate_cross_agent_pending", () => {
+      const agentCase = createAgentCaseForCandidateTests("cross_agent_draft", "deepseek_backend");
       if (!agentCase) return;
 
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateStatus).toBe("candidate_cross_agent_pending");
+      expect(ac.candidateMode).toBe("cross_agent_candidate");
     });
 
     test("partial_fix_draft produces candidate_partial", () => {
-      const agentCase = createAgentCaseWithCandidate("partial_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("partial_fix_draft", "deepseek_backend");
       if (!agentCase) return;
 
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateStatus).toBe("candidate_partial");
+      expect(ac.candidateMode).toBe("partial_scope");
     });
 
     test("frontend_fix_draft with gemini_frontend produces frontend_only candidate", () => {
-      const agentCase = createAgentCaseWithCandidate("frontend_fix_draft", "gemini_frontend");
+      const agentCase = createAgentCaseForCandidateTests("frontend_fix_draft", "gemini_frontend");
       if (!agentCase) return;
 
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateMode).toBe("frontend_only");
+      expect(ac.candidateOwner).toBe("gemini_frontend");
     });
 
     test("final_approval_ready readiness produces candidate_ready_for_final_approval", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend", {
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend", {
         readinessBand: "final_approval_ready",
       });
       if (!agentCase) return;
 
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateStatus).toBe("candidate_ready_for_final_approval");
+      expect(ac.candidateReadyForFinalApproval).toBe(true);
+      expect(ac.scopeLocked).toBe(true);
     });
 
     test("blocked apply readiness produces candidate_blocked", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend", {
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend", {
         applyBlocked: true,
         blockingFactors: [{ type: "missing_review", description: "Review fehlt" }],
       });
       if (!agentCase) return;
 
-      const summary = agentBridge.getApplyCandidateSummary();
-      expect(summary).toBeDefined();
+      const ac = agentCase.applyCandidate19;
+      expect(ac).toBeDefined();
+      expect(ac.candidateStatus).toBe("candidate_blocked");
+      expect(ac.candidateBlocked).toBe(true);
     });
   });
 
   describe("Guardrails", () => {
     test("every candidate has no_auto_execute and requires_user_confirmation guardrails", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       const guardrails = agentCase.applyCandidate19.guardrails || [];
@@ -272,19 +282,18 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
     });
 
     test("backend_only candidate has layer_restriction guardrail", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
-      if (agentCase.applyCandidate19.candidateMode === "backend_only") {
-        const types = agentCase.applyCandidate19.guardrails.map(g => g.type);
-        expect(types).toContain("layer_restriction");
-      }
+      expect(agentCase.applyCandidate19.candidateMode).toBe("backend_only");
+      const types = agentCase.applyCandidate19.guardrails.map(g => g.type);
+      expect(types).toContain("layer_restriction");
     });
   });
 
   describe("Approval checklist", () => {
     test("every candidate has scope_confirmation and final_user_approval items", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       const checklist = agentCase.applyCandidate19.approvalChecklist || [];
@@ -294,7 +303,7 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
     });
 
     test("all checklist items start as not completed", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       const checklist = agentCase.applyCandidate19.approvalChecklist || [];
@@ -306,21 +315,21 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
 
   describe("Ownership", () => {
     test("finalApprovalOwner is always user", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       expect(agentCase.applyCandidate19.finalApprovalOwner).toBe("user");
     });
 
     test("dryRunOnly is always true", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       expect(agentCase.applyCandidate19.dryRunOnly).toBe(true);
     });
 
     test("deepseek_backend role has deepseek_backend as candidateOwner", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       expect(agentCase.applyCandidate19.candidateOwner).toBe("deepseek_backend");
@@ -329,7 +338,7 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
 
   describe("Human-readable messages", () => {
     test("apply candidate message is non-empty and cooperative", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       const msg = agentCase.applyCandidate19.applyCandidateMessage;
@@ -341,7 +350,7 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
     });
 
     test("candidate message mentions user decision", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       const msg = agentCase.applyCandidate19.applyCandidateMessage;
@@ -351,7 +360,7 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
 
   describe("Candidate structure completeness", () => {
     test("candidate has all expected fields", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       const ac = agentCase.applyCandidate19;
@@ -381,20 +390,18 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
     });
 
     test("included actions are non-empty for non-diagnosis drafts", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
       expect(agentCase.applyCandidate19.includedActions.length).toBeGreaterThan(0);
     });
 
-    test("excluded actions are non-empty for scoped candidates", () => {
-      const agentCase = createAgentCaseWithCandidate("backend_fix_draft", "deepseek_backend");
+    test("excluded actions are non-empty for backend_only candidates", () => {
+      const agentCase = createAgentCaseForCandidateTests("backend_fix_draft", "deepseek_backend");
       if (!agentCase || !agentCase.applyCandidate19) return;
 
-      // Backend-only candidate should exclude frontend
-      if (agentCase.applyCandidate19.candidateMode === "backend_only") {
-        expect(agentCase.applyCandidate19.excludedActions.length).toBeGreaterThan(0);
-      }
+      expect(agentCase.applyCandidate19.candidateMode).toBe("backend_only");
+      expect(agentCase.applyCandidate19.excludedActions.length).toBeGreaterThan(0);
     });
   });
 });
