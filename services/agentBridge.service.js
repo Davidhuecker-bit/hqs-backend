@@ -1069,6 +1069,42 @@ const VALID_RISK_FLAG_TYPES = [
 /** Step 17 size limits */
 const APPLY_READINESS_SUMMARY_MAX_ENTRIES = 50;
 
+// ── Step 18 constants: Controlled Apply Simulation / Execution Preview / Reversal Safety ──
+
+const VALID_PREVIEW_STATES = [
+  "preview_not_available",
+  "low_impact_preview",
+  "moderate_impact_preview",
+  "high_attention_preview",
+  "blocked_pending_safety",
+  "rollback_required",
+  "cross_agent_preview_pending",
+];
+
+const VALID_SAFETY_BANDS = [
+  "low_risk",
+  "controlled_risk",
+  "elevated_attention",
+  "blocked",
+];
+
+const VALID_REVERSAL_COMPLEXITY = [
+  "simple",
+  "moderate",
+  "complex",
+  "not_reversible",
+];
+
+const VALID_APPLY_WINDOWS = [
+  "safe_anytime",
+  "low_activity_window",
+  "after_review",
+  "after_cross_agent_review",
+  "not_recommended_yet",
+];
+
+const EXECUTION_PREVIEW_SUMMARY_MAX_ENTRIES = 50;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -2497,6 +2533,28 @@ function buildBridgePackage(payload = {}) {
         blockingFactorCount:   (ar.blockingFactors || []).length,
         riskFlagCount:         (ar.riskFlags || []).length,
         openCheckCount:        (ar.openChecks || []).length,
+      };
+    }
+
+    // ── Step 18: Attach execution preview context when available ──
+    if (agentCase.executionPreview18) {
+      const ep = agentCase.executionPreview18;
+      pkg.executionPreviewContext = {
+        previewState:           ep.previewState,
+        safetyBand:             ep.safetyBand,
+        previewConfidence:      ep.previewConfidence,
+        previewBlocked:         ep.previewBlocked,
+        dryRunOnly:             ep.dryRunOnly,
+        reversalComplexity:     ep.reversalComplexity,
+        rollbackRecommended:    ep.rollbackRecommended,
+        recommendedApplyWindow: ep.recommendedApplyWindow,
+        previewOwner:           ep.previewOwner,
+        safetyOwner:            ep.safetyOwner,
+        needsCrossAgentReview:  ep.needsCrossAgentReview,
+        expectedImpactCount:    (ep.expectedImpact || []).length,
+        sideEffectCount:        (ep.possibleSideEffects || []).length,
+        preApplyCheckCount:     (ep.preApplyChecks || []).length,
+        previewWarningCount:    (ep.previewWarnings || []).length,
       };
     }
 
@@ -5596,6 +5654,7 @@ function buildAgentCaseFromBridgePackage(bridgePackage) {
  * Step 15 adds optional planPhase and controlledPreparationType
  * fields to support richer thread tracking.
  * Step 17 adds apply-readiness / approval phase fields.
+ * Step 18 adds execution preview / safety / reversal fields.
  *
  * @param {Object} params
  */
@@ -5622,6 +5681,13 @@ function _recordAgentChatMessage({
   applyBlocked = null,
   recommendedApplyMode = null,
   nextApprovalAvailable = false,
+  // Step 18 additions
+  previewState = null,
+  safetyBand = null,
+  previewBlocked = null,
+  rollbackRequired = null,
+  recommendedApplyWindow = null,
+  nextSafetyStep = null,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -5679,8 +5745,30 @@ function _recordAgentChatMessage({
     chatMessage.nextApprovalAvailable = true;
   }
 
-  // Derive message phase from available context (Step 17 → Step 16 → Step 15)
-  if (planPhase === "approval_phase" || readinessBand) {
+  // Step 18: attach preview / safety context when available
+  if (previewState) {
+    chatMessage.previewState = previewState;
+  }
+  if (safetyBand) {
+    chatMessage.safetyBand = safetyBand;
+  }
+  if (previewBlocked !== null && previewBlocked !== undefined) {
+    chatMessage.previewBlocked = previewBlocked;
+  }
+  if (rollbackRequired !== null && rollbackRequired !== undefined) {
+    chatMessage.rollbackRequired = rollbackRequired;
+  }
+  if (recommendedApplyWindow) {
+    chatMessage.recommendedApplyWindow = recommendedApplyWindow;
+  }
+  if (nextSafetyStep) {
+    chatMessage.nextSafetyStep = nextSafetyStep;
+  }
+
+  // Derive message phase from available context (Step 18 → Step 17 → Step 16 → Step 15)
+  if (previewState || planPhase === "preview_safety_phase") {
+    chatMessage.messagePhase = "preview_safety_phase";
+  } else if (planPhase === "approval_phase" || readinessBand) {
     chatMessage.messagePhase = "approval_phase";
   } else if (draftType || planPhase === "draft_phase") {
     chatMessage.messagePhase = "draft_phase";
@@ -7859,6 +7947,854 @@ function getApplyReadinessSummary() {
 }
 
 /* ─────────────────────────────────────────────
+   Step 18: Controlled Apply Simulation /
+   Execution Preview / Reversal Safety
+   ─────────────────────────────────────────────
+   Extends Steps 14–17 so that the system can:
+
+   1. Build a *preview* of what would happen
+      if a draft were applied.
+   2. Structure expected impact, benefits,
+      side effects, and safety checks.
+   3. Prepare a rollback / reversal plan.
+   4. Assign preview / safety ownership to
+      the responsible agent.
+   5. Produce cooperative, human-readable
+      preview messages.
+
+   No productive execution.  No autonomous
+   decisions.  The user always decides.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive expected impact areas from draft and agent case.
+ *
+ * @param {Object} params
+ * @returns {Array<string>} expected impact areas
+ */
+function _deriveExpectedImpact({ actionDraft, agentCase }) {
+  const impact = [];
+  if (!actionDraft) return impact;
+
+  const dt = actionDraft.draftType || "";
+  const cc = actionDraft.changeCategory || "";
+
+  if (dt === "backend_fix_draft" || cc === "backend_logic") {
+    impact.push("Backend-Logik und Datenverarbeitung");
+  }
+  if (dt === "frontend_fix_draft" || cc === "frontend_structure") {
+    impact.push("Frontend-Darstellung und UI-Struktur");
+  }
+  if (cc === "api_contract" || dt === "route_hardening_draft") {
+    impact.push("API-Schnittstellen und Route-Härtung");
+  }
+  if (cc === "data_mapping" || dt === "mapping_fix_draft") {
+    impact.push("Daten-Mapping und Feldverknüpfungen");
+  }
+  if (cc === "schema_alignment") {
+    impact.push("Schema-Ausrichtung und Datenstruktur");
+  }
+  if (dt === "ui_clarity_draft" || cc === "ui_clarity") {
+    impact.push("UI-Klarheit und Beschriftungen");
+  }
+  if (dt === "config_check_draft" || cc === "ops_check") {
+    impact.push("Konfiguration und Betriebsprüfung");
+  }
+  if (dt === "cross_agent_draft" || cc === "cross_layer_coordination") {
+    impact.push("Cross-Layer-Koordination zwischen Agenten");
+  }
+  if (dt === "data_contract_draft") {
+    impact.push("Datenvertrag und Schnittstellendefinition");
+  }
+  if (dt === "diagnosis_draft" || cc === "diagnosis_extension") {
+    impact.push("Diagnose und Analysevertiefung");
+  }
+
+  if (impact.length === 0) {
+    impact.push("Allgemeiner Systembereich");
+  }
+
+  return impact;
+}
+
+/**
+ * Derive expected benefits from applying the draft.
+ *
+ * @param {Object} params
+ * @returns {Array<string>} expected benefits
+ */
+function _deriveExpectedBenefits({ actionDraft, agentCase }) {
+  const benefits = [];
+  if (!actionDraft) return benefits;
+
+  const dt = actionDraft.draftType || "";
+
+  if (dt.includes("fix")) {
+    benefits.push("Behebung des identifizierten Problems");
+  }
+  if (dt === "route_hardening_draft") {
+    benefits.push("Erhöhte Stabilität und Sicherheit der API-Routen");
+  }
+  if (dt === "ui_clarity_draft") {
+    benefits.push("Verbesserte Verständlichkeit der Benutzeroberfläche");
+  }
+  if (dt === "mapping_fix_draft" || dt === "data_contract_draft") {
+    benefits.push("Korrektere Datenzuordnung und konsistentere Datenflüsse");
+  }
+  if (dt === "config_check_draft") {
+    benefits.push("Sicherere und geprüfte Konfiguration");
+  }
+  if (dt === "diagnosis_draft") {
+    benefits.push("Tieferes Verständnis des Problems für gezieltere Lösungsschritte");
+  }
+  if (dt === "cross_agent_draft") {
+    benefits.push("Abgestimmte Cross-Agent-Lösung mit reduziertem Konfliktpotenzial");
+  }
+
+  if (benefits.length === 0) {
+    benefits.push("Verbesserung des betroffenen Systembereichs");
+  }
+
+  return benefits;
+}
+
+/**
+ * Derive possible side effects from applying the draft.
+ *
+ * @param {Object} params
+ * @returns {Array<string>} possible side effects
+ */
+function _derivePossibleSideEffects({ actionDraft, agentCase }) {
+  const effects = [];
+  if (!actionDraft) return effects;
+
+  const riskFlags = agentCase.applyReadiness17?.riskFlags || [];
+  const dt = actionDraft.draftType || "";
+
+  for (const rf of riskFlags.slice(0, 4)) {
+    if (rf.type === "regression_risk") {
+      effects.push("Mögliches Regressionsrisiko in angrenzenden Bereichen");
+    } else if (rf.type === "cross_layer_impact") {
+      effects.push("Potenzieller Cross-Layer-Effekt auf andere Systemschichten");
+    } else if (rf.type === "data_integrity_concern") {
+      effects.push("Datenintegrität sollte nach Anwendung geprüft werden");
+    } else if (rf.type === "side_effect_possible") {
+      effects.push("Nebenwirkungen in benachbarten Modulen nicht ausgeschlossen");
+    } else if (rf.type === "timing_sensitivity") {
+      effects.push("Zeitkritische Abhängigkeiten könnten betroffen sein");
+    }
+  }
+
+  if (dt === "cross_agent_draft") {
+    effects.push("Änderungen könnten Agent-übergreifende Abstimmung erfordern");
+  }
+  if (dt === "partial_fix_draft") {
+    effects.push("Teilweise Lösung – verbleibende Teile könnten inkonsistent bleiben");
+  }
+
+  return effects;
+}
+
+/**
+ * Derive safety checks that should run before / after applying.
+ *
+ * @param {Object} params
+ * @returns {{ preApplyChecks: string[], postApplyChecks: string[] }}
+ */
+function _deriveSafetyChecks({ actionDraft, agentCase }) {
+  const preApplyChecks = [];
+  const postApplyChecks = [];
+
+  if (!actionDraft) return { preApplyChecks, postApplyChecks };
+
+  const dt = actionDraft.draftType || "";
+  const ar = agentCase.applyReadiness17;
+  const blockingFactors = ar?.blockingFactors || [];
+
+  // Pre-apply checks
+  if (blockingFactors.length > 0) {
+    preApplyChecks.push("Alle blockierenden Faktoren vor Anwendung klären");
+  }
+  if (dt === "backend_fix_draft" || dt === "route_hardening_draft") {
+    preApplyChecks.push("API-Endpunkte auf Kompatibilität prüfen");
+  }
+  if (dt === "frontend_fix_draft" || dt === "ui_clarity_draft") {
+    preApplyChecks.push("Visuelle Prüfung der betroffenen Views");
+  }
+  if (dt === "mapping_fix_draft" || dt === "data_contract_draft") {
+    preApplyChecks.push("Datenkonsistenz vor Anwendung sicherstellen");
+  }
+  if (dt === "cross_agent_draft") {
+    preApplyChecks.push("Cross-Agent-Abstimmung abschließen");
+  }
+  if (ar?.needsCrossAgentReview) {
+    preApplyChecks.push("Cross-Agent-Review durchführen");
+  }
+
+  // Post-apply checks
+  postApplyChecks.push("Funktionsprüfung der betroffenen Bereiche");
+  if (dt === "backend_fix_draft" || dt === "route_hardening_draft") {
+    postApplyChecks.push("API-Antworten und Fehlercodes kontrollieren");
+  }
+  if (dt === "frontend_fix_draft" || dt === "ui_clarity_draft") {
+    postApplyChecks.push("UI-Darstellung und Beschriftungen überprüfen");
+  }
+  if (dt === "mapping_fix_draft") {
+    postApplyChecks.push("Datenfluss und Mapping-Ergebnisse validieren");
+  }
+
+  return { preApplyChecks, postApplyChecks };
+}
+
+/**
+ * Derive rollback / reversal plan for a draft.
+ *
+ * @param {Object} params
+ * @returns {Object} rollback plan
+ */
+function _deriveRollbackPlan({ actionDraft, agentCase }) {
+  if (!actionDraft) {
+    return {
+      rollbackRecommended: false,
+      reversalComplexity: "simple",
+      rollbackPrerequisites: [],
+      rollbackNotes: "Kein Entwurf vorhanden – kein Rollback erforderlich.",
+      reversalPlan: null,
+    };
+  }
+
+  const dt = actionDraft.draftType || "";
+  const cc = actionDraft.changeCategory || "";
+  const riskFlags = agentCase.applyReadiness17?.riskFlags || [];
+  const hasDataRisk = riskFlags.some((r) => r.type === "data_integrity_concern");
+  const hasCrossLayerRisk = riskFlags.some((r) => r.type === "cross_layer_impact");
+
+  let reversalComplexity = "simple";
+  const rollbackPrerequisites = [];
+  const rollbackNotes = [];
+
+  // Determine complexity
+  if (hasDataRisk) {
+    reversalComplexity = "complex";
+    rollbackPrerequisites.push("Datensicherung vor Anwendung empfohlen");
+    rollbackNotes.push("Datenänderungen sind möglicherweise schwer rückgängig zu machen.");
+  } else if (hasCrossLayerRisk || dt === "cross_agent_draft") {
+    reversalComplexity = "moderate";
+    rollbackPrerequisites.push("Cross-Layer-Zustand vor Anwendung dokumentieren");
+    rollbackNotes.push("Rückweg erfordert Abstimmung zwischen betroffenen Schichten.");
+  } else if (dt === "partial_fix_draft") {
+    reversalComplexity = "moderate";
+    rollbackNotes.push("Teilweise Änderung – Rückweg grundsätzlich möglich, aber mit Vorsicht.");
+  }
+
+  if (dt === "backend_fix_draft" || dt === "route_hardening_draft") {
+    rollbackPrerequisites.push("Aktuelle API-Konfiguration sichern");
+    rollbackNotes.push("Backend-Änderungen können durch Konfigurations-Revert zurückgenommen werden.");
+  }
+  if (dt === "frontend_fix_draft" || dt === "ui_clarity_draft") {
+    rollbackNotes.push("Frontend-Änderungen sind in der Regel einfach rückgängig zu machen.");
+  }
+  if (dt === "mapping_fix_draft" || dt === "data_contract_draft") {
+    rollbackPrerequisites.push("Mapping-Zustand vor Anwendung dokumentieren");
+  }
+  if (dt === "config_check_draft") {
+    rollbackPrerequisites.push("Aktuelle Konfiguration exportieren");
+    rollbackNotes.push("Konfigurationsänderungen sind durch Reimport rückgängig zu machen.");
+  }
+  if (dt === "diagnosis_draft") {
+    reversalComplexity = "simple";
+    rollbackNotes.push("Diagnose-Entwurf hat keine produktiven Auswirkungen – kein Rollback nötig.");
+  }
+
+  const rollbackRecommended = reversalComplexity !== "simple" || riskFlags.length > 0;
+
+  const reversalPlan = reversalComplexity === "simple" && !rollbackRecommended
+    ? "Standard-Revert nach Anwendung ausreichend."
+    : `Vor Anwendung: ${rollbackPrerequisites.join(", ") || "keine besonderen Voraussetzungen"}. ` +
+      `Nach Bedarf: kontrollierter Revert mit ${reversalComplexity === "complex" ? "erhöhtem" : "moderatem"} Aufwand.`;
+
+  return {
+    rollbackRecommended,
+    reversalComplexity,
+    rollbackPrerequisites,
+    rollbackNotes: rollbackNotes.join(" "),
+    reversalPlan,
+  };
+}
+
+/**
+ * Derive preview state from apply-readiness and safety analysis.
+ *
+ * @param {Object} params
+ * @returns {string} preview state
+ */
+function _derivePreviewState({ applyReadiness, safetyBand, rollbackPlan }) {
+  if (!applyReadiness) return "preview_not_available";
+
+  if (applyReadiness.applyBlocked && safetyBand === "blocked") {
+    return "blocked_pending_safety";
+  }
+  if (rollbackPlan && rollbackPlan.reversalComplexity === "complex") {
+    return "rollback_required";
+  }
+  if (applyReadiness.needsCrossAgentReview) {
+    return "cross_agent_preview_pending";
+  }
+  if (safetyBand === "elevated_attention") {
+    return "high_attention_preview";
+  }
+  if (safetyBand === "controlled_risk") {
+    return "moderate_impact_preview";
+  }
+  return "low_impact_preview";
+}
+
+/**
+ * Derive safety band from risk flags and blocking factors.
+ *
+ * @param {Object} params
+ * @returns {string} safety band
+ */
+function _deriveSafetyBand({ applyReadiness, possibleSideEffects, rollbackPlan }) {
+  if (!applyReadiness) return "blocked";
+
+  const riskCount = (applyReadiness.riskFlags || []).length;
+  const blockingCount = (applyReadiness.blockingFactors || []).length;
+  const hasComplexReversal = rollbackPlan?.reversalComplexity === "complex";
+
+  if (blockingCount > 2 || hasComplexReversal) return "blocked";
+  if (riskCount >= 3 || blockingCount > 0) return "elevated_attention";
+  if (riskCount >= 1 || possibleSideEffects.length >= 2) return "controlled_risk";
+  return "low_risk";
+}
+
+/**
+ * Derive recommended apply window from safety band and readiness.
+ *
+ * @param {Object} params
+ * @returns {string} recommended apply window
+ */
+function _deriveApplyWindow({ safetyBand, applyReadiness }) {
+  if (safetyBand === "blocked") return "not_recommended_yet";
+  if (applyReadiness?.needsCrossAgentReview) return "after_cross_agent_review";
+  if (safetyBand === "elevated_attention") return "after_review";
+  if (safetyBand === "controlled_risk") return "low_activity_window";
+  return "safe_anytime";
+}
+
+/**
+ * Derive preview / safety ownership for a draft.
+ *
+ * @param {Object} params
+ * @returns {Object} preview ownership
+ */
+function _derivePreviewOwnership({ actionDraft, agentRole }) {
+  const dt = actionDraft?.draftType || "";
+
+  const backendTypes = [
+    "backend_fix_draft", "route_hardening_draft", "mapping_fix_draft",
+    "data_contract_draft", "config_check_draft",
+  ];
+  const frontendTypes = [
+    "frontend_fix_draft", "ui_clarity_draft",
+  ];
+
+  let previewOwner = agentRole || "deepseek_backend";
+  let safetyOwner = agentRole || "deepseek_backend";
+  let rollbackOwner = agentRole || "deepseek_backend";
+  let secondaryAgent = null;
+  let handoffSuggested = false;
+  let needsCrossAgentReview = false;
+
+  if (backendTypes.includes(dt)) {
+    previewOwner = "deepseek_backend";
+    safetyOwner = "deepseek_backend";
+    rollbackOwner = "deepseek_backend";
+  } else if (frontendTypes.includes(dt)) {
+    previewOwner = "gemini_frontend";
+    safetyOwner = "gemini_frontend";
+    rollbackOwner = "gemini_frontend";
+  } else if (dt === "cross_agent_draft") {
+    previewOwner = agentRole || "deepseek_backend";
+    safetyOwner = agentRole || "deepseek_backend";
+    rollbackOwner = agentRole || "deepseek_backend";
+    secondaryAgent = agentRole === "deepseek_backend" ? "gemini_frontend" : "deepseek_backend";
+    handoffSuggested = true;
+    needsCrossAgentReview = true;
+  }
+
+  return {
+    previewOwner,
+    safetyOwner,
+    rollbackOwner,
+    secondaryAgent,
+    handoffSuggested,
+    needsCrossAgentReview,
+  };
+}
+
+/**
+ * Derive preview warnings from safety analysis.
+ *
+ * @param {Object} params
+ * @returns {Array<string>} preview warnings
+ */
+function _derivePreviewWarnings({ safetyBand, previewState, rollbackPlan, possibleSideEffects }) {
+  const warnings = [];
+
+  if (safetyBand === "blocked") {
+    warnings.push("Anwendung ist aktuell blockiert – offene Sicherheitsfragen klären.");
+  }
+  if (safetyBand === "elevated_attention") {
+    warnings.push("Erhöhte Aufmerksamkeit erforderlich – bitte sorgfältig prüfen.");
+  }
+  if (rollbackPlan?.reversalComplexity === "complex") {
+    warnings.push("Rückweg wäre aufwendig – Datensicherung vor Anwendung empfohlen.");
+  }
+  if (rollbackPlan?.reversalComplexity === "moderate") {
+    warnings.push("Rückweg wäre mit moderatem Aufwand verbunden.");
+  }
+  if (previewState === "cross_agent_preview_pending") {
+    warnings.push("Cross-Agent-Abstimmung steht noch aus.");
+  }
+  if (possibleSideEffects.length >= 3) {
+    warnings.push("Mehrere mögliche Nebenwirkungen identifiziert – erhöhte Vorsicht empfohlen.");
+  }
+
+  return warnings;
+}
+
+/**
+ * Build a human-readable execution preview message.
+ *
+ * @param {Object} params
+ * @returns {string} cooperative German preview message
+ */
+function _buildExecutionPreviewMessage({
+  previewState,
+  safetyBand,
+  expectedImpact,
+  expectedBenefits,
+  possibleSideEffects,
+  safetyChecks,
+  rollbackPlan,
+  previewWarnings,
+  recommendedApplyWindow,
+  draftType,
+  draftSummary,
+}) {
+  const parts = [];
+
+  // Opening – preview assessment
+  switch (previewState) {
+    case "low_impact_preview":
+      parts.push("Ich habe eine Anwendungsvorschau vorbereitet. Die erwarteten Auswirkungen sind überschaubar.");
+      break;
+    case "moderate_impact_preview":
+      parts.push("Ich habe eine Anwendungsvorschau vorbereitet. Ich sehe hier mittlere Auswirkungen.");
+      break;
+    case "high_attention_preview":
+      parts.push("Ich habe eine Anwendungsvorschau vorbereitet. Ich sehe hier erhöhte Aufmerksamkeit.");
+      parts.push("Bitte prüfe die Sicherheitsfragen vor einer möglichen Anwendung.");
+      break;
+    case "blocked_pending_safety":
+      parts.push("Ich habe eine Vorschau vorbereitet, aber die Anwendung ist aktuell noch blockiert.");
+      parts.push("Es gibt offene Sicherheitsfragen, die zuerst geklärt werden sollten.");
+      break;
+    case "rollback_required":
+      parts.push("Ich habe eine Vorschau vorbereitet. Wichtig: Ein Rückweg wäre bei diesem Entwurf aufwendiger.");
+      parts.push("Ich empfehle, vor einer Anwendung die Rollback-Voraussetzungen zu prüfen.");
+      break;
+    case "cross_agent_preview_pending":
+      parts.push("Ich habe eine Vorschau vorbereitet, aber die Cross-Agent-Abstimmung ist noch offen.");
+      parts.push("Für den nächsten Schritt sollte die Abstimmung abgeschlossen werden.");
+      break;
+    case "preview_not_available":
+    default:
+      parts.push("Eine Anwendungsvorschau ist aktuell noch nicht verfügbar.");
+      parts.push("Der Entwurf ist noch nicht weit genug fortgeschritten.");
+      break;
+  }
+
+  // Draft summary
+  if (draftSummary) {
+    parts.push(`Zusammenfassung: ${draftSummary}`);
+  }
+
+  // Expected impact
+  if (expectedImpact.length > 0) {
+    parts.push("Diese Bereiche wären voraussichtlich betroffen:");
+    for (const area of expectedImpact.slice(0, 5)) {
+      parts.push(`– ${area}`);
+    }
+  }
+
+  // Expected benefits
+  if (expectedBenefits.length > 0) {
+    parts.push("Ich erwarte vor allem diese positiven Wirkungen:");
+    for (const benefit of expectedBenefits.slice(0, 3)) {
+      parts.push(`– ${benefit}`);
+    }
+  }
+
+  // Possible side effects
+  if (possibleSideEffects.length > 0) {
+    parts.push("Folgende Nebenwirkungen sind nicht ausgeschlossen:");
+    for (const effect of possibleSideEffects.slice(0, 3)) {
+      parts.push(`– ${effect}`);
+    }
+  }
+
+  // Safety band
+  switch (safetyBand) {
+    case "low_risk":
+      parts.push("Ich sehe aktuell geringe Sicherheitsbedenken.");
+      break;
+    case "controlled_risk":
+      parts.push("Ich sehe aktuell mittlere Sicherheitsbedenken – kontrollierte Anwendung möglich.");
+      break;
+    case "elevated_attention":
+      parts.push("Ich sehe aktuell erhöhte Sicherheitsbedenken.");
+      break;
+    case "blocked":
+      parts.push("Ich sehe aktuell noch offene Sicherheitsfragen, die eine Anwendung blockieren.");
+      break;
+  }
+
+  // Pre-apply checks
+  if (safetyChecks.preApplyChecks.length > 0) {
+    parts.push("Ich würde vor einer Anwendung noch diese Prüfschritte empfehlen:");
+    for (const check of safetyChecks.preApplyChecks.slice(0, 4)) {
+      parts.push(`– ${check}`);
+    }
+  }
+
+  // Rollback assessment
+  if (rollbackPlan) {
+    switch (rollbackPlan.reversalComplexity) {
+      case "simple":
+        parts.push("Ein Rückweg wäre in diesem Fall eher einfach.");
+        break;
+      case "moderate":
+        parts.push("Ein Rückweg wäre in diesem Fall mit moderatem Aufwand verbunden.");
+        break;
+      case "complex":
+        parts.push("Ein Rückweg wäre in diesem Fall aufwendiger. Vor einer Anwendung sollte ein Rückweg mitgedacht werden.");
+        break;
+    }
+  }
+
+  // Apply window
+  switch (recommendedApplyWindow) {
+    case "safe_anytime":
+      parts.push("Empfehlung: Die Anwendung wäre aus meiner Sicht jederzeit sicher möglich.");
+      break;
+    case "low_activity_window":
+      parts.push("Empfehlung: Ich würde die Anwendung in einem ruhigeren Zeitfenster durchführen.");
+      break;
+    case "after_review":
+      parts.push("Empfehlung: Bitte zuerst noch ein Review durchführen, bevor eine Anwendung erfolgt.");
+      break;
+    case "after_cross_agent_review":
+      parts.push("Empfehlung: Zuerst die Cross-Agent-Abstimmung abschließen.");
+      break;
+    case "not_recommended_yet":
+      parts.push("Empfehlung: Eine Anwendung ist zum jetzigen Zeitpunkt noch nicht empfohlen.");
+      break;
+  }
+
+  parts.push("Für den nächsten Schritt brauche ich noch deine Bestätigung.");
+
+  return parts.join("\n");
+}
+
+/**
+ * Build a complete execution preview / apply simulation
+ * for an agent case that has an apply-readiness assessment.
+ *
+ * This is the central Step 18 function.
+ *
+ * @param {Object} agentCase - the agent case with applyReadiness17
+ * @returns {Object|null} execution preview or null
+ */
+function _buildExecutionPreview(agentCase) {
+  if (!agentCase) return null;
+
+  const applyReadiness = agentCase.applyReadiness17;
+  const actionDraft = agentCase.actionDraft16;
+  if (!applyReadiness || !actionDraft) return null;
+
+  // Derive all preview components
+  const expectedImpact = _deriveExpectedImpact({ actionDraft, agentCase });
+  const expectedBenefits = _deriveExpectedBenefits({ actionDraft, agentCase });
+  const possibleSideEffects = _derivePossibleSideEffects({ actionDraft, agentCase });
+  const safetyChecks = _deriveSafetyChecks({ actionDraft, agentCase });
+  const rollbackPlan = _deriveRollbackPlan({ actionDraft, agentCase });
+
+  // Derive safety band
+  const safetyBand = _deriveSafetyBand({
+    applyReadiness,
+    possibleSideEffects,
+    rollbackPlan,
+  });
+
+  // Derive preview state
+  const previewState = _derivePreviewState({
+    applyReadiness,
+    safetyBand,
+    rollbackPlan,
+  });
+
+  // Derive apply window
+  const recommendedApplyWindow = _deriveApplyWindow({
+    safetyBand,
+    applyReadiness,
+  });
+
+  // Derive preview ownership
+  const previewOwnership = _derivePreviewOwnership({
+    actionDraft,
+    agentRole: agentCase.agentRole,
+  });
+
+  // Derive preview warnings
+  const previewWarnings = _derivePreviewWarnings({
+    safetyBand,
+    previewState,
+    rollbackPlan,
+    possibleSideEffects,
+  });
+
+  // Determine if preview is blocked
+  const previewBlocked = previewState === "blocked_pending_safety" ||
+    previewState === "preview_not_available";
+
+  // Dry run only = always true (no real execution in Step 18)
+  const dryRunOnly = true;
+
+  // Confidence
+  const previewConfidence = safetyBand === "low_risk" ? "high"
+    : safetyBand === "controlled_risk" ? "medium"
+    : "low";
+
+  // Build human-readable preview message
+  const executionPreviewMessage = _buildExecutionPreviewMessage({
+    previewState,
+    safetyBand,
+    expectedImpact,
+    expectedBenefits,
+    possibleSideEffects,
+    safetyChecks,
+    rollbackPlan,
+    previewWarnings,
+    recommendedApplyWindow,
+    draftType: actionDraft.draftType,
+    draftSummary: actionDraft.draftSummary,
+  });
+
+  const executionPreview = {
+    // Identity
+    previewId:              `preview-${Date.now()}-${agentCase.agentCaseId}`,
+    agentCaseId:            agentCase.agentCaseId,
+    proposalId:             applyReadiness.proposalId,
+    draftId:                actionDraft.draftId,
+
+    // Preview state
+    previewState,
+    safetyBand,
+    previewConfidence,
+    previewBlocked,
+    dryRunOnly,
+
+    // Expected impact
+    expectedImpact,
+    expectedBenefits,
+    possibleSideEffects,
+
+    // Safety checks
+    preApplyChecks:         safetyChecks.preApplyChecks,
+    postApplyChecks:        safetyChecks.postApplyChecks,
+    previewWarnings,
+
+    // Rollback / reversal
+    rollbackPlan:           rollbackPlan.reversalPlan,
+    reversalComplexity:     rollbackPlan.reversalComplexity,
+    rollbackPrerequisites:  rollbackPlan.rollbackPrerequisites,
+    rollbackRecommended:    rollbackPlan.rollbackRecommended,
+    rollbackNotes:          rollbackPlan.rollbackNotes,
+
+    // Apply window
+    recommendedApplyWindow,
+    requiresRollbackPlan:   rollbackPlan.rollbackRecommended,
+
+    // Preview ownership
+    previewOwner:           previewOwnership.previewOwner,
+    safetyOwner:            previewOwnership.safetyOwner,
+    rollbackOwner:          previewOwnership.rollbackOwner,
+    secondaryAgent:         previewOwnership.secondaryAgent,
+    handoffSuggested:       previewOwnership.handoffSuggested,
+    needsCrossAgentReview:  previewOwnership.needsCrossAgentReview,
+
+    // Human-readable preview message
+    executionPreviewMessage,
+
+    // Lifecycle
+    previewGeneratedAt:     new Date().toISOString(),
+    previewGeneratedByAgent: agentCase.agentRole,
+  };
+
+  // Attach to agent case
+  agentCase.executionPreview18 = executionPreview;
+
+  // Record preview chat message
+  _recordAgentChatMessage({
+    agentCaseId:          agentCase.agentCaseId,
+    agentRole:            agentCase.agentRole,
+    messageType:          "execution_preview",
+    messageIntent:        "preview_prepared",
+    messagePriority:      safetyBand === "blocked" || safetyBand === "elevated_attention" ? "high" : "normal",
+    requiresUserDecision: true,
+    message:              executionPreviewMessage,
+    problemType:          agentCase.problemType,
+    // Step 18 fields
+    previewState,
+    safetyBand,
+    previewBlocked,
+    rollbackRequired:     rollbackPlan.rollbackRecommended,
+    recommendedApplyWindow,
+    nextSafetyStep:       previewBlocked ? "resolve_safety_blockers" : "user_confirmation",
+  });
+
+  // Logging
+  logger.info("[agentBridge] Step 18 – Execution Preview erzeugt", {
+    agentCaseId:          agentCase.agentCaseId,
+    previewState,
+    safetyBand,
+    previewConfidence,
+    previewBlocked,
+    rollbackRecommended:  rollbackPlan.rollbackRecommended,
+    reversalComplexity:   rollbackPlan.reversalComplexity,
+    recommendedApplyWindow,
+    previewOwner:         previewOwnership.previewOwner,
+    expectedImpactCount:  expectedImpact.length,
+    sideEffectCount:      possibleSideEffects.length,
+    preApplyCheckCount:   safetyChecks.preApplyChecks.length,
+    previewWarningCount:  previewWarnings.length,
+    dryRunOnly,
+  });
+
+  return executionPreview;
+}
+
+/**
+ * Get a summary of all execution previews across agent cases.
+ * Provides the operator a clear view of preview / safety status.
+ *
+ * @returns {Object} execution preview summary
+ */
+function getExecutionPreviewSummary() {
+  const byPreviewState = {};
+  const bySafetyBand = {};
+  const byReversalComplexity = {};
+  const byApplyWindow = {};
+  const byPreviewOwner = { deepseek_backend: 0, gemini_frontend: 0 };
+
+  let totalWithPreview = 0;
+  let totalPreviewBlocked = 0;
+  let totalRollbackRecommended = 0;
+  let totalNeedsCrossAgentReview = 0;
+  let totalLowRisk = 0;
+  let totalElevatedAttention = 0;
+
+  const previewCases = [];
+  const commonWarnings = {};
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    const ep = agentCase.executionPreview18 || null;
+    if (!ep) continue;
+
+    totalWithPreview += 1;
+
+    // By preview state
+    byPreviewState[ep.previewState] = (byPreviewState[ep.previewState] || 0) + 1;
+
+    // By safety band
+    bySafetyBand[ep.safetyBand] = (bySafetyBand[ep.safetyBand] || 0) + 1;
+
+    // By reversal complexity
+    byReversalComplexity[ep.reversalComplexity] = (byReversalComplexity[ep.reversalComplexity] || 0) + 1;
+
+    // By apply window
+    byApplyWindow[ep.recommendedApplyWindow] = (byApplyWindow[ep.recommendedApplyWindow] || 0) + 1;
+
+    // By preview owner
+    if (byPreviewOwner[ep.previewOwner] !== undefined) {
+      byPreviewOwner[ep.previewOwner] += 1;
+    }
+
+    // Counts
+    if (ep.previewBlocked) totalPreviewBlocked += 1;
+    if (ep.rollbackRecommended) totalRollbackRecommended += 1;
+    if (ep.needsCrossAgentReview) totalNeedsCrossAgentReview += 1;
+    if (ep.safetyBand === "low_risk") totalLowRisk += 1;
+    if (ep.safetyBand === "elevated_attention") totalElevatedAttention += 1;
+
+    // Track common warnings
+    for (const w of ep.previewWarnings || []) {
+      commonWarnings[w] = (commonWarnings[w] || 0) + 1;
+    }
+
+    previewCases.push({
+      agentCaseId:            agentCase.agentCaseId,
+      agentRole:              agentCase.agentRole,
+      problemType:            agentCase.problemType,
+      problemTitle:           agentCase.problemTitle,
+      draftId:                ep.draftId,
+      previewState:           ep.previewState,
+      safetyBand:             ep.safetyBand,
+      previewConfidence:      ep.previewConfidence,
+      previewBlocked:         ep.previewBlocked,
+      reversalComplexity:     ep.reversalComplexity,
+      rollbackRecommended:    ep.rollbackRecommended,
+      recommendedApplyWindow: ep.recommendedApplyWindow,
+      previewOwner:           ep.previewOwner,
+      needsCrossAgentReview:  ep.needsCrossAgentReview,
+      expectedImpactCount:    (ep.expectedImpact || []).length,
+      sideEffectCount:        (ep.possibleSideEffects || []).length,
+      previewWarningCount:    (ep.previewWarnings || []).length,
+      previewGeneratedAt:     ep.previewGeneratedAt,
+    });
+  }
+
+  // Sort by previewGeneratedAt (newest first)
+  previewCases.sort((a, b) => (b.previewGeneratedAt || "").localeCompare(a.previewGeneratedAt || ""));
+
+  // Top warnings
+  const topWarnings = Object.entries(commonWarnings)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([warning, count]) => ({ warning, count }));
+
+  return {
+    totalAgentCases:          _agentCaseRegistry.size,
+    totalWithPreview,
+    totalPreviewBlocked,
+    totalRollbackRecommended,
+    totalNeedsCrossAgentReview,
+    totalLowRisk,
+    totalElevatedAttention,
+    byPreviewState,
+    bySafetyBand,
+    byReversalComplexity,
+    byApplyWindow,
+    byPreviewOwner,
+    topWarnings,
+    previewCases:             previewCases.slice(0, EXECUTION_PREVIEW_SUMMARY_MAX_ENTRIES),
+    generatedAt:              new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
    getPendingFrontendFeedback
    Returns all stored frontend feedback entries
    (useful for backend inspection / debugging).
@@ -8206,4 +9142,10 @@ module.exports = {
   VALID_APPLY_MODES,
   VALID_BLOCKING_FACTOR_TYPES,
   VALID_RISK_FLAG_TYPES,
+  // Step 18: Controlled Apply Simulation / Execution Preview / Reversal Safety
+  getExecutionPreviewSummary,
+  VALID_PREVIEW_STATES,
+  VALID_SAFETY_BANDS,
+  VALID_REVERSAL_COMPLEXITY,
+  VALID_APPLY_WINDOWS,
 };

@@ -4133,6 +4133,8 @@ const {
   getActionDraftSummary,
   // Step 17: Controlled Execution Proposal / Apply-Readiness / Final Approval Layer
   getApplyReadinessSummary,
+  // Step 18: Controlled Apply Simulation / Execution Preview / Reversal Safety
+  getExecutionPreviewSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5388,6 +5390,60 @@ router.get("/deepseek/agent-bridge/apply-readiness-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading apply-readiness summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/execution-preview-summary
+   Step 18: Controlled Apply Simulation /
+   Execution Preview / Reversal Safety Summary.
+
+   Returns an overview of all agent cases with Step 18
+   execution previews:
+   - How many cases have a preview
+   - How many are preview-blocked / rollback-recommended
+   - Safety band distribution
+   - Preview state distribution
+   - Reversal complexity distribution
+   - Apply window distribution
+   - Top preview warnings
+   - Per-case preview status
+
+   Cooperative, not autonomous.  The system prepares
+   a preview – the user decides.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "executionPreview": {
+         "totalAgentCases": 5,
+         "totalWithPreview": 3,
+         "totalPreviewBlocked": 0,
+         "totalRollbackRecommended": 1,
+         "byPreviewState": { "low_impact_preview": 2, ... },
+         "bySafetyBand": { "low_risk": 2, ... },
+         "byReversalComplexity": { "simple": 2, ... },
+         "byApplyWindow": { "safe_anytime": 1, ... },
+         "topWarnings": [ ... ],
+         "previewCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/execution-preview-summary", (_req, res) => {
+  try {
+    const executionPreview = getExecutionPreviewSummary();
+    return res.json({ success: true, version: "v1", executionPreview });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/execution-preview-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading execution-preview summary",
     });
   }
 });
