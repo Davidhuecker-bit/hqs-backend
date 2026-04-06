@@ -994,6 +994,82 @@ const ACTION_DRAFT_MAX_STEPS = 8;
 const ACTION_DRAFT_SUMMARY_MAX_ENTRIES = 50;
 
 /* ─────────────────────────────────────────────
+   Step 17: Controlled Execution Proposal /
+   Apply-Readiness / Final Approval Layer –
+   Constants
+   ─────────────────────────────────────────────
+   These constants extend Steps 14–16 so that
+   prepared drafts can be assessed for apply-
+   readiness and a clear execution proposal /
+   final approval proposal can be generated.
+
+   Key principle: no productive execution.
+   The system evaluates *how ready* a draft is,
+   structures what is still missing, and
+   prepares a clear approval package for the
+   user.  The user always has the final say.
+   ───────────────────────────────────────────── */
+
+/**
+ * Readiness bands: how close a draft is to being
+ * ready for the next controlled application step.
+ */
+const VALID_READINESS_BANDS = [
+  "not_ready",               // Draft not ready for any application
+  "diagnosis_only",          // Only suitable for further diagnosis
+  "review_ready",            // Ready for operator review
+  "partial_apply_ready",     // Parts could be applied in isolation
+  "final_approval_ready",    // Fully ready, awaiting last user OK
+  "blocked_pending_review",  // Structurally ready but blocked
+  "cross_agent_pending",     // Needs cross-agent alignment first
+];
+
+/**
+ * Recommended apply modes: what the system would
+ * suggest as a next step for this draft.
+ */
+const VALID_APPLY_MODES = [
+  "diagnosis_only",          // No apply – deepen analysis
+  "review_only",             // Recommend review, no apply yet
+  "partial_apply",           // Partial / scoped application
+  "full_apply_candidate",    // Full application candidate
+  "handoff_first",           // Hand off to other agent first
+  "wait_for_user",           // Wait for explicit user decision
+];
+
+/**
+ * Blocking factor types: why a draft may not
+ * be ready yet.
+ */
+const VALID_BLOCKING_FACTOR_TYPES = [
+  "scope_unclear",           // Draft scope not fully defined
+  "missing_confirmation",    // User confirmation still missing
+  "cross_agent_dependency",  // Depends on other agent's work
+  "needs_fresh_evidence",    // Newer diagnostic data needed
+  "risk_not_mitigated",      // Identified risk not addressed
+  "partial_coverage",        // Draft only covers part of problem
+  "approval_pending",        // Explicit approval not yet given
+  "handoff_incomplete",      // Cross-agent handoff not done
+];
+
+/**
+ * Risk flag types: potential risks identified
+ * in a draft.
+ */
+const VALID_RISK_FLAG_TYPES = [
+  "scope_uncertainty",       // Scope may be wider than drafted
+  "side_effect_possible",    // Fix may have side effects
+  "regression_risk",         // Change could cause regressions
+  "incomplete_testing",      // Testing coverage unclear
+  "cross_layer_impact",      // Affects multiple system layers
+  "data_integrity_concern",  // Could affect data consistency
+  "timing_sensitivity",      // Timing-dependent change
+];
+
+/** Step 17 size limits */
+const APPLY_READINESS_SUMMARY_MAX_ENTRIES = 50;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -2402,6 +2478,25 @@ function buildBridgePackage(payload = {}) {
         affectedDomain:         ad.affectedTargets ? ad.affectedTargets.affectedDomain : null,
         handoffSuggested:       ad.handoffSuggested,
         requiresFurtherApproval: ad.requiresFurtherApproval,
+      };
+    }
+
+    // ── Step 17: Attach apply-readiness context when available ──
+    if (agentCase.applyReadiness17) {
+      const ar = agentCase.applyReadiness17;
+      pkg.applyReadinessContext = {
+        readinessScore:        ar.readinessScore,
+        readinessBand:         ar.readinessBand,
+        recommendedApplyMode:  ar.recommendedApplyMode,
+        eligibleForApply:      ar.eligibleForApply,
+        applyBlocked:          ar.applyBlocked,
+        executionOwner:        ar.executionOwner,
+        proposalOwner:         ar.proposalOwner,
+        executionIntent:       ar.executionIntent,
+        requiresFinalApproval: ar.requiresFinalApproval,
+        blockingFactorCount:   (ar.blockingFactors || []).length,
+        riskFlagCount:         (ar.riskFlags || []).length,
+        openCheckCount:        (ar.openChecks || []).length,
       };
     }
 
@@ -5500,6 +5595,7 @@ function buildAgentCaseFromBridgePackage(bridgePackage) {
  * Record a chat message in the agent message store.
  * Step 15 adds optional planPhase and controlledPreparationType
  * fields to support richer thread tracking.
+ * Step 17 adds apply-readiness / approval phase fields.
  *
  * @param {Object} params
  */
@@ -5520,6 +5616,12 @@ function _recordAgentChatMessage({
   bundleType = null,
   actionIntent = null,
   nextActionAvailable = false,
+  // Step 17 additions
+  readinessBand = null,
+  executionIntent = null,
+  applyBlocked = null,
+  recommendedApplyMode = null,
+  nextApprovalAvailable = false,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -5560,8 +5662,27 @@ function _recordAgentChatMessage({
     chatMessage.nextActionAvailable = true;
   }
 
-  // Derive message phase from available context (Step 16 thread tracking)
-  if (draftType || planPhase === "draft_phase") {
+  // Step 17: attach apply-readiness / approval context when available
+  if (readinessBand) {
+    chatMessage.readinessBand = readinessBand;
+  }
+  if (executionIntent) {
+    chatMessage.executionIntent = executionIntent;
+  }
+  if (applyBlocked !== null && applyBlocked !== undefined) {
+    chatMessage.applyBlocked = applyBlocked;
+  }
+  if (recommendedApplyMode) {
+    chatMessage.recommendedApplyMode = recommendedApplyMode;
+  }
+  if (nextApprovalAvailable) {
+    chatMessage.nextApprovalAvailable = true;
+  }
+
+  // Derive message phase from available context (Step 17 → Step 16 → Step 15)
+  if (planPhase === "approval_phase" || readinessBand) {
+    chatMessage.messagePhase = "approval_phase";
+  } else if (draftType || planPhase === "draft_phase") {
     chatMessage.messagePhase = "draft_phase";
   } else if (planPhase === "preparation_phase") {
     chatMessage.messagePhase = "preparation_phase";
@@ -5687,10 +5808,22 @@ function submitAgentCaseFeedback({
     agentCase.actionDraft16 = actionDraft;
   }
 
-  // Use the Step 15 cooperative response message, enriched by Step 16 draft
-  const responseText = actionDraft
-    ? actionDraft.draftMessage
-    : refinedPlan.refinedPlanMessage;
+  // ── Step 17: Assess apply-readiness and build execution proposal ──
+  let applyReadiness = null;
+  if (actionDraft) {
+    applyReadiness = _assessApplyReadiness(agentCase);
+    if (applyReadiness) {
+      agentCase.applyReadiness17 = applyReadiness;
+    }
+  }
+
+  // Use the best available cooperative response message
+  // Step 17 proposal > Step 16 draft > Step 15 plan
+  const responseText = applyReadiness
+    ? applyReadiness.executionProposalMessage
+    : actionDraft
+      ? actionDraft.draftMessage
+      : refinedPlan.refinedPlanMessage;
 
   _agentCaseRegistry.set(agentCaseId, agentCase);
 
@@ -5706,23 +5839,29 @@ function submitAgentCaseFeedback({
     planPhase: refinedPlan.planPhase,
   });
 
-  // Record agent response (Step 16: draft_prepared when draft exists)
+  // Record agent response (Step 17: execution_proposal_ready when readiness assessed)
   _recordAgentChatMessage({
     agentCaseId,
     agentRole: agentCase.agentRole,
-    messageType: actionDraft ? "draft_prepared" : (refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined"),
-    messageIntent: actionDraft ? "draft" : (refinedPlan.canPrepareNow ? "confirm" : "refine"),
-    messagePriority: "normal",
-    requiresUserDecision: actionDraft ? actionDraft.requiresFurtherApproval : !refinedPlan.canPrepareNow,
+    messageType: applyReadiness ? "execution_proposal_ready" : actionDraft ? "draft_prepared" : (refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined"),
+    messageIntent: applyReadiness ? "proposal" : actionDraft ? "draft" : (refinedPlan.canPrepareNow ? "confirm" : "refine"),
+    messagePriority: applyReadiness && applyReadiness.readinessBand === "final_approval_ready" ? "high" : "normal",
+    requiresUserDecision: applyReadiness ? applyReadiness.requiresFinalApproval : actionDraft ? actionDraft.requiresFurtherApproval : !refinedPlan.canPrepareNow,
     message: responseText,
-    planPhase: actionDraft ? "draft_phase" : refinedPlan.planPhase,
+    planPhase: applyReadiness ? "approval_phase" : actionDraft ? "draft_phase" : refinedPlan.planPhase,
     controlledPreparationType: refinedPlan.controlledPreparationType,
     // Step 16 additions
     draftType: actionDraft ? actionDraft.draftType : null,
     draftStatus: actionDraft ? actionDraft.draftStatus : null,
     bundleType: actionDraft ? actionDraft.changeCategory : null,
-    actionIntent: actionDraft ? "prepare_draft" : null,
-    nextActionAvailable: actionDraft ? !actionDraft.executionBlocked : false,
+    actionIntent: applyReadiness ? "execution_proposal" : actionDraft ? "prepare_draft" : null,
+    nextActionAvailable: applyReadiness ? applyReadiness.eligibleForApply : actionDraft ? !actionDraft.executionBlocked : false,
+    // Step 17 additions
+    readinessBand: applyReadiness ? applyReadiness.readinessBand : null,
+    executionIntent: applyReadiness ? applyReadiness.executionIntent : null,
+    applyBlocked: applyReadiness ? applyReadiness.applyBlocked : null,
+    recommendedApplyMode: applyReadiness ? applyReadiness.recommendedApplyMode : null,
+    nextApprovalAvailable: applyReadiness ? applyReadiness.requiresFinalApproval && applyReadiness.eligibleForApply : false,
   });
 
   // Step 16 logging
@@ -5744,6 +5883,28 @@ function submitAgentCaseFeedback({
       affectedServicesCount:  actionDraft.affectedTargets.affectedServices.length,
       draftVersion:           actionDraft.draftVersion,
       preparedByAgent:        actionDraft.preparedByAgent,
+    });
+  }
+
+  // Step 17 logging
+  if (applyReadiness) {
+    logger.info("[agentBridge] Step 17 – apply-readiness assessed", {
+      agentCaseId,
+      proposalId:             applyReadiness.proposalId,
+      readinessScore:         applyReadiness.readinessScore,
+      readinessBand:          applyReadiness.readinessBand,
+      recommendedApplyMode:   applyReadiness.recommendedApplyMode,
+      eligibleForApply:       applyReadiness.eligibleForApply,
+      applyBlocked:           applyReadiness.applyBlocked,
+      requiresFinalApproval:  applyReadiness.requiresFinalApproval,
+      executionOwner:         applyReadiness.executionOwner,
+      proposalOwner:          applyReadiness.proposalOwner,
+      blockingFactorCount:    applyReadiness.blockingFactors.length,
+      openCheckCount:         applyReadiness.openChecks.length,
+      riskFlagCount:          applyReadiness.riskFlags.length,
+      executionIntent:        applyReadiness.executionIntent,
+      handoffSuggested:       applyReadiness.handoffSuggested,
+      assessedByAgent:        applyReadiness.assessedByAgent,
     });
   }
 
@@ -5793,6 +5954,18 @@ function submitAgentCaseFeedback({
     draftMessage:              actionDraft ? actionDraft.draftMessage : null,
     requiresFurtherApproval:   actionDraft ? actionDraft.requiresFurtherApproval : null,
     executionBlocked:          actionDraft ? actionDraft.executionBlocked : null,
+    // Step 17 additions
+    hasApplyReadiness:         !!applyReadiness,
+    readinessScore:            applyReadiness ? applyReadiness.readinessScore : null,
+    readinessBand:             applyReadiness ? applyReadiness.readinessBand : null,
+    recommendedApplyMode:      applyReadiness ? applyReadiness.recommendedApplyMode : null,
+    eligibleForApply:          applyReadiness ? applyReadiness.eligibleForApply : null,
+    applyBlocked:              applyReadiness ? applyReadiness.applyBlocked : null,
+    applyBlockedReason:        applyReadiness ? applyReadiness.applyBlockedReason : null,
+    executionOwner:            applyReadiness ? applyReadiness.executionOwner : null,
+    proposalOwner:             applyReadiness ? applyReadiness.proposalOwner : null,
+    executionIntent:           applyReadiness ? applyReadiness.executionIntent : null,
+    executionProposalMessage:  applyReadiness ? applyReadiness.executionProposalMessage : null,
   };
 }
 
@@ -7001,6 +7174,691 @@ function getActionDraftSummary() {
 }
 
 /* ─────────────────────────────────────────────
+   Step 17: Controlled Execution Proposal /
+   Apply-Readiness / Final Approval Layer
+   ─────────────────────────────────────────────
+   Extends Steps 14–16 so that the system can:
+
+   1. Assess *how ready* a prepared draft is
+      for the next controlled application step.
+   2. Generate a clear Execution Proposal /
+      Final Approval Proposal.
+   3. Structure what still blocks, what risks
+      exist, and whether further review is
+      needed.
+   4. Produce cooperative, human-readable
+      readiness messages.
+
+   No productive execution.  No autonomous
+   decisions.  The user always decides.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive blocking factors for a given draft / agent case.
+ *
+ * Conservative: only flags what can be clearly inferred
+ * from the existing case & draft context.
+ *
+ * @param {Object} params
+ * @returns {Array<Object>} blocking factors
+ */
+function _deriveBlockingFactors({ agentCase, actionDraft }) {
+  const factors = [];
+
+  if (!actionDraft) return factors;
+
+  // Scope unclear when no preparation steps defined
+  if (!actionDraft.preparationSteps || actionDraft.preparationSteps.length === 0) {
+    factors.push({
+      type: "scope_unclear",
+      reason: "Keine konkreten Vorbereitungsschritte definiert.",
+    });
+  }
+
+  // Missing confirmation when still awaiting approval
+  if (actionDraft.requiresFurtherApproval) {
+    factors.push({
+      type: "approval_pending",
+      reason: "Eine weitere Freigabe ist noch erforderlich.",
+    });
+  }
+
+  // Cross-agent dependency
+  if (actionDraft.needsCrossAgentReview) {
+    factors.push({
+      type: "cross_agent_dependency",
+      reason: "Eine Abstimmung mit dem anderen Agenten steht noch aus.",
+    });
+  }
+
+  // Handoff incomplete
+  if (actionDraft.handoffSuggested && actionDraft.draftStatus !== "reviewed") {
+    factors.push({
+      type: "handoff_incomplete",
+      reason: "Die vorgeschlagene Übergabe an den anderen Agenten ist noch nicht abgeschlossen.",
+    });
+  }
+
+  // Partial coverage for partial drafts
+  if (actionDraft.draftType === "partial_fix_draft") {
+    factors.push({
+      type: "partial_coverage",
+      reason: "Der Entwurf deckt nur einen Teil des Problems ab.",
+    });
+  }
+
+  // Needs fresh evidence for diagnosis drafts
+  if (actionDraft.draftType === "diagnosis_draft") {
+    factors.push({
+      type: "needs_fresh_evidence",
+      reason: "Es handelt sich um einen Diagnose-Entwurf – weitere Daten werden benötigt.",
+    });
+  }
+
+  return factors;
+}
+
+/**
+ * Derive open checks that should be completed before
+ * a draft can be safely applied.
+ *
+ * @param {Object} params
+ * @returns {Array<string>} open checks
+ */
+function _deriveOpenChecks({ agentCase, actionDraft }) {
+  const checks = [];
+
+  if (!actionDraft) return checks;
+
+  if (actionDraft.draftStatus === "prepared") {
+    checks.push("Entwurf wurde noch nicht durch den Operator geprüft.");
+  }
+
+  if (actionDraft.draftType === "cross_agent_draft") {
+    checks.push("Cross-Agent-Abstimmung noch offen.");
+  }
+
+  if (actionDraft.handoffSuggested) {
+    checks.push("Übergabe an den zuständigen Agenten prüfen.");
+  }
+
+  const refinedPlan = agentCase.refinedPlan15;
+  if (refinedPlan && refinedPlan.approvalDecisionStage === "refinement_in_progress") {
+    checks.push("Plan-Verfeinerung ist noch nicht abgeschlossen.");
+  }
+
+  if (actionDraft.changeCategory === "cross_layer_coordination") {
+    checks.push("Änderungen betreffen mehrere Systemebenen – zusätzliche Prüfung empfohlen.");
+  }
+
+  return checks;
+}
+
+/**
+ * Derive risk flags for a draft.
+ *
+ * @param {Object} params
+ * @returns {Array<Object>} risk flags
+ */
+function _deriveRiskFlags({ agentCase, actionDraft }) {
+  const flags = [];
+
+  if (!actionDraft) return flags;
+
+  // Cross-layer impact
+  if (actionDraft.changeCategory === "cross_layer_coordination") {
+    flags.push({
+      type: "cross_layer_impact",
+      reason: "Die Änderung betrifft mehrere Systemebenen.",
+    });
+  }
+
+  // Scope uncertainty for broad changes
+  if (actionDraft.affectedTargets) {
+    const targets = actionDraft.affectedTargets;
+    const totalAffected = (targets.affectedRoutes || []).length +
+      (targets.affectedServices || []).length +
+      (targets.affectedViews || []).length;
+    if (totalAffected > 4) {
+      flags.push({
+        type: "scope_uncertainty",
+        reason: `Die Änderung betrifft ${totalAffected} Ziele – der Umfang könnte größer sein als geplant.`,
+      });
+    }
+  }
+
+  // Side effects for backend logic changes
+  if (["backend_logic", "api_contract", "data_mapping"].includes(actionDraft.changeCategory)) {
+    flags.push({
+      type: "side_effect_possible",
+      reason: "Bei Backend-/API-Änderungen sind Seiteneffekte nicht ausgeschlossen.",
+    });
+  }
+
+  // Data integrity concern for schema/mapping changes
+  if (["schema_alignment", "data_mapping"].includes(actionDraft.changeCategory)) {
+    flags.push({
+      type: "data_integrity_concern",
+      reason: "Schema-/Mapping-Änderungen könnten die Datenkonsistenz beeinflussen.",
+    });
+  }
+
+  return flags;
+}
+
+/**
+ * Compute a readiness score (0–10) and derive a readiness band
+ * from the draft's context.
+ *
+ * @param {Object} params
+ * @returns {{ readinessScore: number, readinessBand: string }}
+ */
+function _computeReadinessScore({ agentCase, actionDraft, blockingFactors, riskFlags }) {
+  if (!actionDraft) {
+    return { readinessScore: 0, readinessBand: "not_ready" };
+  }
+
+  let score = 5; // Start at mid-point
+
+  // Boost: draft is reviewed or approved
+  if (actionDraft.draftStatus === "reviewed") score += 2;
+  if (actionDraft.draftStatus === "approved_for_execution") score += 3;
+
+  // Boost: has clear preparation steps
+  if (actionDraft.preparationSteps && actionDraft.preparationSteps.length > 0) score += 1;
+
+  // Boost: no further approval required
+  if (!actionDraft.requiresFurtherApproval) score += 1;
+
+  // Penalty: each blocking factor reduces readiness
+  score -= Math.min(blockingFactors.length, 3);
+
+  // Penalty: risk flags reduce readiness
+  score -= Math.min(Math.floor(riskFlags.length / 2), 2);
+
+  // Penalty: diagnosis-only drafts
+  if (actionDraft.draftType === "diagnosis_draft") score -= 3;
+
+  // Penalty: needs revision
+  if (actionDraft.draftStatus === "needs_revision") score -= 2;
+  if (actionDraft.draftStatus === "rejected") score -= 4;
+
+  // Clamp
+  score = Math.max(0, Math.min(10, score));
+
+  // Derive band
+  let band;
+  if (actionDraft.draftType === "diagnosis_draft") {
+    band = "diagnosis_only";
+  } else if (actionDraft.draftStatus === "rejected" || actionDraft.draftStatus === "superseded") {
+    band = "not_ready";
+  } else if (actionDraft.needsCrossAgentReview && actionDraft.draftStatus !== "approved_for_execution") {
+    band = "cross_agent_pending";
+  } else if (blockingFactors.length > 0 && score < 6) {
+    band = "blocked_pending_review";
+  } else if (score >= 8) {
+    band = "final_approval_ready";
+  } else if (score >= 5 && actionDraft.draftType === "partial_fix_draft") {
+    band = "partial_apply_ready";
+  } else if (score >= 4) {
+    band = "review_ready";
+  } else {
+    band = "not_ready";
+  }
+
+  return { readinessScore: score, readinessBand: band };
+}
+
+/**
+ * Derive the recommended apply mode for a draft.
+ *
+ * @param {Object} params
+ * @returns {string} one of VALID_APPLY_MODES
+ */
+function _deriveApplyMode({ readinessBand, actionDraft }) {
+  if (!actionDraft) return "wait_for_user";
+
+  switch (readinessBand) {
+    case "final_approval_ready":
+      return "full_apply_candidate";
+    case "partial_apply_ready":
+      return "partial_apply";
+    case "review_ready":
+      return "review_only";
+    case "diagnosis_only":
+      return "diagnosis_only";
+    case "cross_agent_pending":
+      return "handoff_first";
+    case "blocked_pending_review":
+      return "review_only";
+    case "not_ready":
+    default:
+      return "wait_for_user";
+  }
+}
+
+/**
+ * Derive execution ownership for the final approval layer.
+ *
+ * DeepSeek = execution owner for backend / API / code / data flow
+ * Gemini   = execution owner for frontend / UX / design / views
+ *
+ * @param {Object} params
+ * @returns {Object} execution ownership details
+ */
+function _deriveExecutionOwnership({ actionDraft, agentRole }) {
+  if (!actionDraft) {
+    return {
+      executionOwner: agentRole || "deepseek_backend",
+      proposalOwner: agentRole || "deepseek_backend",
+      secondaryAgent: null,
+      handoffSuggested: false,
+      handoffReason: null,
+      needsCrossAgentReview: false,
+      finalApprovalOwner: "user",
+    };
+  }
+
+  const isBackendDraft = [
+    "backend_fix_draft", "data_contract_draft", "mapping_fix_draft",
+    "route_hardening_draft", "config_check_draft",
+  ].includes(actionDraft.draftType);
+
+  const isFrontendDraft = [
+    "frontend_fix_draft", "ui_clarity_draft",
+  ].includes(actionDraft.draftType);
+
+  const isCrossAgent = actionDraft.draftType === "cross_agent_draft";
+
+  let executionOwner;
+  let proposalOwner;
+  let secondaryAgent = null;
+  let handoffSuggested = false;
+  let handoffReason = null;
+  let needsCrossAgentReview = false;
+
+  if (isCrossAgent) {
+    executionOwner = agentRole || "deepseek_backend";
+    proposalOwner = agentRole || "deepseek_backend";
+    secondaryAgent = agentRole === "gemini_frontend" ? "deepseek_backend" : "gemini_frontend";
+    handoffSuggested = true;
+    handoffReason = "Cross-Agent-Entwurf erfordert Abstimmung beider Agenten.";
+    needsCrossAgentReview = true;
+  } else if (isBackendDraft) {
+    executionOwner = "deepseek_backend";
+    proposalOwner = "deepseek_backend";
+    if (agentRole === "gemini_frontend") {
+      secondaryAgent = "gemini_frontend";
+      handoffSuggested = true;
+      handoffReason = "Backend-Entwurf stammt vom Frontend-Agenten – Übergabe empfohlen.";
+    }
+  } else if (isFrontendDraft) {
+    executionOwner = "gemini_frontend";
+    proposalOwner = "gemini_frontend";
+    if (agentRole === "deepseek_backend") {
+      secondaryAgent = "deepseek_backend";
+      handoffSuggested = true;
+      handoffReason = "Frontend-Entwurf stammt vom Backend-Agenten – Übergabe empfohlen.";
+    }
+  } else {
+    executionOwner = agentRole || "deepseek_backend";
+    proposalOwner = agentRole || "deepseek_backend";
+  }
+
+  return {
+    executionOwner,
+    proposalOwner,
+    secondaryAgent,
+    handoffSuggested,
+    handoffReason,
+    needsCrossAgentReview,
+    finalApprovalOwner: "user",   // Always the user
+  };
+}
+
+/**
+ * Build a cooperative, human-readable execution proposal message.
+ *
+ * @param {Object} params
+ * @returns {string} German cooperative message
+ */
+function _buildApplyReadinessMessage({
+  readinessBand,
+  readinessScore,
+  recommendedApplyMode,
+  blockingFactors,
+  openChecks,
+  riskFlags,
+  executionOwner,
+  draftType,
+  draftSummary,
+}) {
+  const parts = [];
+
+  // Opening – readiness assessment
+  switch (readinessBand) {
+    case "final_approval_ready":
+      parts.push("Ich habe den Entwurf bewertet und halte ihn für freigabereif.");
+      parts.push("Für den nächsten Schritt brauche ich noch deine letzte Bestätigung.");
+      break;
+    case "partial_apply_ready":
+      parts.push("Ich habe den Entwurf bewertet und halte eine kontrollierte Teilfreigabe für sinnvoll.");
+      parts.push("Nicht alle Teile sind vollständig bereit, aber ein eingegrenzter Anwendungsschritt wäre möglich.");
+      break;
+    case "review_ready":
+      parts.push("Ich würde den Entwurf aktuell als reviewbereit einstufen.");
+      parts.push("Vor einer Anwendung empfehle ich eine sorgfältige Prüfung.");
+      break;
+    case "diagnosis_only":
+      parts.push("Der Entwurf ist ein Diagnose-Entwurf und nicht direkt anwendungsreif.");
+      parts.push("Er dient der weiteren Vertiefung und Analyse.");
+      break;
+    case "cross_agent_pending":
+      parts.push("Der Entwurf benötigt noch eine Abstimmung zwischen den Agenten.");
+      parts.push("Ich würde zuerst die Cross-Agent-Koordination abschließen.");
+      break;
+    case "blocked_pending_review":
+      parts.push("Ich sehe noch offene Prüfpunkte, bevor ich eine Anwendung empfehlen würde.");
+      parts.push("Der Entwurf ist strukturell vorbereitet, aber noch nicht freigabereif.");
+      break;
+    case "not_ready":
+    default:
+      parts.push("Der Entwurf ist noch nicht bereit für den nächsten Schritt.");
+      parts.push("Es sind noch grundlegende Punkte offen.");
+      break;
+  }
+
+  // Draft summary if available
+  if (draftSummary) {
+    parts.push(`Zusammenfassung: ${draftSummary}`);
+  }
+
+  // Blocking factors
+  if (blockingFactors.length > 0) {
+    parts.push("Folgende Punkte blockieren aktuell noch:");
+    for (const f of blockingFactors.slice(0, 4)) {
+      parts.push(`– ${f.reason}`);
+    }
+  }
+
+  // Open checks
+  if (openChecks.length > 0) {
+    parts.push("Offene Prüfpunkte:");
+    for (const c of openChecks.slice(0, 4)) {
+      parts.push(`– ${c}`);
+    }
+  }
+
+  // Risk flags
+  if (riskFlags.length > 0) {
+    parts.push("Ich sehe folgende Risiken:");
+    for (const r of riskFlags.slice(0, 3)) {
+      parts.push(`– ${r.reason}`);
+    }
+  }
+
+  // Apply mode recommendation
+  switch (recommendedApplyMode) {
+    case "full_apply_candidate":
+      parts.push("Empfehlung: Der Entwurf ist aus meiner Sicht ein Kandidat für eine vollständige kontrollierte Anwendung.");
+      break;
+    case "partial_apply":
+      parts.push("Empfehlung: Ich würde zuerst den eingegrenzten Teil freigeben.");
+      break;
+    case "review_only":
+      parts.push("Empfehlung: Bitte zuerst prüfen, bevor eine Anwendung in Betracht kommt.");
+      break;
+    case "handoff_first":
+      parts.push("Empfehlung: Zuerst die Übergabe an den zuständigen Agenten abschließen.");
+      break;
+    case "diagnosis_only":
+      parts.push("Empfehlung: Diagnose vertiefen, keine Anwendung zum jetzigen Zeitpunkt.");
+      break;
+    case "wait_for_user":
+    default:
+      parts.push("Empfehlung: Ich warte auf deine Entscheidung.");
+      break;
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Derive execution intent from recommended apply mode.
+ * @param {string} mode
+ * @returns {string}
+ */
+function _deriveExecutionIntent(mode) {
+  switch (mode) {
+    case "full_apply_candidate": return "controlled_full_apply";
+    case "partial_apply":        return "controlled_partial_apply";
+    default:                     return "no_apply_yet";
+  }
+}
+
+/**
+ * Derive apply scope from draft type.
+ * @param {string} draftType
+ * @returns {string}
+ */
+function _deriveApplyScope(draftType) {
+  switch (draftType) {
+    case "partial_fix_draft": return "partial";
+    case "diagnosis_draft":   return "none";
+    default:                  return "full";
+  }
+}
+
+/**
+ * Assess the apply-readiness of an action draft and build
+ * a complete execution proposal.
+ *
+ * This is the central Step 17 function.
+ *
+ * @param {Object} agentCase - the agent case with actionDraft16
+ * @returns {Object|null} apply-readiness assessment or null
+ */
+function _assessApplyReadiness(agentCase) {
+  if (!agentCase) return null;
+
+  const actionDraft = agentCase.actionDraft16;
+  if (!actionDraft) return null;
+
+  // Derive blocking factors, open checks, risk flags
+  const blockingFactors = _deriveBlockingFactors({ agentCase, actionDraft });
+  const openChecks = _deriveOpenChecks({ agentCase, actionDraft });
+  const riskFlags = _deriveRiskFlags({ agentCase, actionDraft });
+
+  // Compute readiness score and band
+  const { readinessScore, readinessBand } = _computeReadinessScore({
+    agentCase,
+    actionDraft,
+    blockingFactors,
+    riskFlags,
+  });
+
+  // Derive recommended apply mode
+  const recommendedApplyMode = _deriveApplyMode({ readinessBand, actionDraft });
+
+  // Derive execution ownership
+  const executionOwnership = _deriveExecutionOwnership({
+    actionDraft,
+    agentRole: agentCase.agentRole,
+  });
+
+  // Build human-readable message
+  const executionProposalMessage = _buildApplyReadinessMessage({
+    readinessBand,
+    readinessScore,
+    recommendedApplyMode,
+    blockingFactors,
+    openChecks,
+    riskFlags,
+    executionOwner: executionOwnership.executionOwner,
+    draftType: actionDraft.draftType,
+    draftSummary: actionDraft.draftSummary,
+  });
+
+  // Determine key booleans
+  const eligibleForApply = readinessBand === "final_approval_ready" ||
+    readinessBand === "partial_apply_ready";
+  const applyBlocked = blockingFactors.length > 0 || readinessBand === "not_ready" ||
+    readinessBand === "blocked_pending_review";
+  const requiresFinalApproval = readinessBand !== "not_ready" &&
+    readinessBand !== "diagnosis_only";
+
+  const applyReadiness = {
+    // Identity
+    proposalId:            `proposal-${Date.now()}-${agentCase.agentCaseId}`,
+    agentCaseId:           agentCase.agentCaseId,
+    draftId:               actionDraft.draftId,
+
+    // Readiness assessment
+    readinessScore,
+    readinessBand,
+    recommendedApplyMode,
+
+    // Apply eligibility
+    eligibleForApply,
+    applyBlocked,
+    applyBlockedReason:    applyBlocked
+      ? blockingFactors.map((f) => f.reason).join("; ") || "Entwurf noch nicht bereit."
+      : null,
+    requiresFinalApproval,
+
+    // Blocking / risk detail
+    blockingFactors,
+    openChecks,
+    riskFlags,
+
+    // Execution ownership
+    executionOwner:        executionOwnership.executionOwner,
+    proposalOwner:         executionOwnership.proposalOwner,
+    secondaryAgent:        executionOwnership.secondaryAgent,
+    handoffSuggested:      executionOwnership.handoffSuggested,
+    handoffReason:         executionOwnership.handoffReason,
+    needsCrossAgentReview: executionOwnership.needsCrossAgentReview,
+    finalApprovalOwner:    executionOwnership.finalApprovalOwner,
+
+    // Execution intent (derived from recommended apply mode)
+    executionIntent:       _deriveExecutionIntent(recommendedApplyMode),
+    applyScope:            _deriveApplyScope(actionDraft.draftType),
+
+    // Human-readable proposal
+    executionProposalMessage,
+
+    // Lifecycle
+    assessedAt:            new Date().toISOString(),
+    assessedByAgent:       agentCase.agentRole,
+  };
+
+  return applyReadiness;
+}
+
+/**
+ * Get a summary of all apply-readiness assessments across
+ * agent cases.  Provides the operator a clear view of:
+ * - how many drafts are at each readiness band
+ * - which blocking factors are most common
+ * - which apply modes are recommended
+ * - cross-agent review needs
+ * - risk flag frequency
+ *
+ * @returns {Object} apply-readiness summary
+ */
+function getApplyReadinessSummary() {
+  const byReadinessBand = {};
+  const byApplyMode = {};
+  const byBlockingFactor = {};
+  const byRiskFlag = {};
+  const byExecutionOwner = { deepseek_backend: 0, gemini_frontend: 0 };
+
+  let totalWithReadiness = 0;
+  let totalEligibleForApply = 0;
+  let totalBlocked = 0;
+  let totalNeedsCrossAgentReview = 0;
+  let totalFinalApprovalReady = 0;
+  let totalDiagnosisOnly = 0;
+
+  const readinessCases = [];
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    const ar = agentCase.applyReadiness17 || null;
+    if (!ar) continue;
+
+    totalWithReadiness += 1;
+
+    // By readiness band
+    byReadinessBand[ar.readinessBand] = (byReadinessBand[ar.readinessBand] || 0) + 1;
+
+    // By apply mode
+    byApplyMode[ar.recommendedApplyMode] = (byApplyMode[ar.recommendedApplyMode] || 0) + 1;
+
+    // By blocking factor type
+    for (const f of ar.blockingFactors || []) {
+      byBlockingFactor[f.type] = (byBlockingFactor[f.type] || 0) + 1;
+    }
+
+    // By risk flag type
+    for (const r of ar.riskFlags || []) {
+      byRiskFlag[r.type] = (byRiskFlag[r.type] || 0) + 1;
+    }
+
+    // By execution owner
+    if (byExecutionOwner[ar.executionOwner] !== undefined) {
+      byExecutionOwner[ar.executionOwner] += 1;
+    }
+
+    // Counts
+    if (ar.eligibleForApply) totalEligibleForApply += 1;
+    if (ar.applyBlocked) totalBlocked += 1;
+    if (ar.needsCrossAgentReview) totalNeedsCrossAgentReview += 1;
+    if (ar.readinessBand === "final_approval_ready") totalFinalApprovalReady += 1;
+    if (ar.readinessBand === "diagnosis_only") totalDiagnosisOnly += 1;
+
+    readinessCases.push({
+      agentCaseId:           agentCase.agentCaseId,
+      agentRole:             agentCase.agentRole,
+      problemType:           agentCase.problemType,
+      problemTitle:          agentCase.problemTitle,
+      draftId:               ar.draftId,
+      readinessScore:        ar.readinessScore,
+      readinessBand:         ar.readinessBand,
+      recommendedApplyMode:  ar.recommendedApplyMode,
+      eligibleForApply:      ar.eligibleForApply,
+      applyBlocked:          ar.applyBlocked,
+      executionOwner:        ar.executionOwner,
+      needsCrossAgentReview: ar.needsCrossAgentReview,
+      requiresFinalApproval: ar.requiresFinalApproval,
+      blockingFactorCount:   (ar.blockingFactors || []).length,
+      riskFlagCount:         (ar.riskFlags || []).length,
+      openCheckCount:        (ar.openChecks || []).length,
+      assessedAt:            ar.assessedAt,
+    });
+  }
+
+  // Sort by assessedAt (newest first)
+  readinessCases.sort((a, b) => (b.assessedAt || "").localeCompare(a.assessedAt || ""));
+
+  return {
+    totalAgentCases:           _agentCaseRegistry.size,
+    totalWithReadiness,
+    totalEligibleForApply,
+    totalBlocked,
+    totalNeedsCrossAgentReview,
+    totalFinalApprovalReady,
+    totalDiagnosisOnly,
+    byReadinessBand,
+    byApplyMode,
+    byBlockingFactor,
+    byRiskFlag,
+    byExecutionOwner,
+    readinessCases:            readinessCases.slice(0, APPLY_READINESS_SUMMARY_MAX_ENTRIES),
+    generatedAt:               new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
    getPendingFrontendFeedback
    Returns all stored frontend feedback entries
    (useful for backend inspection / debugging).
@@ -7342,4 +8200,10 @@ module.exports = {
   VALID_DRAFT_TYPES,
   VALID_CHANGE_CATEGORIES,
   VALID_DRAFT_STATUSES,
+  // Step 17: Controlled Execution Proposal / Apply-Readiness / Final Approval Layer
+  getApplyReadinessSummary,
+  VALID_READINESS_BANDS,
+  VALID_APPLY_MODES,
+  VALID_BLOCKING_FACTOR_TYPES,
+  VALID_RISK_FLAG_TYPES,
 };
