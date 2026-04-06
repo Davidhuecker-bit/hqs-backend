@@ -1082,6 +1082,55 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 19: Inject apply candidate / approval gate context ──
+  if (bridgeContext && bridgeContext.applyCandidateContext) {
+    const ac = bridgeContext.applyCandidateContext;
+    const acParts = [];
+    if (ac.candidateStatus) {
+      acParts.push(`Kandidaten-Status: ${ac.candidateStatus}`);
+    }
+    if (ac.candidateMode) {
+      acParts.push(`Kandidaten-Modus: ${ac.candidateMode}`);
+    }
+    if (ac.candidateReadyForFinalApproval) {
+      acParts.push("Bereit für finale Freigabe: ja");
+    }
+    if (ac.candidateBlocked) {
+      acParts.push("Kandidat blockiert: ja");
+    }
+    if (ac.scopeLocked) {
+      acParts.push("Scope gesperrt: ja");
+    }
+    if (ac.candidateOwner) {
+      acParts.push(`Kandidaten-Owner: ${ac.candidateOwner}`);
+    }
+    if (ac.needsCrossAgentReview) {
+      acParts.push("Cross-Agent-Review erforderlich: ja");
+    }
+    if (ac.includedActionCount > 0) {
+      acParts.push(`Enthaltene Maßnahmen: ${ac.includedActionCount}`);
+    }
+    if (ac.excludedActionCount > 0) {
+      acParts.push(`Ausgeschlossene Bereiche: ${ac.excludedActionCount}`);
+    }
+    if (ac.guardrailCount > 0) {
+      acParts.push(`Aktive Guardrails: ${ac.guardrailCount}`);
+    }
+    if (ac.missingApprovalCount > 0) {
+      acParts.push(`Fehlende Freigaben: ${ac.missingApprovalCount}`);
+    }
+    if (ac.preconditionCount > 0) {
+      acParts.push(`Offene Voraussetzungen: ${ac.preconditionCount}`);
+    }
+    if (acParts.length) {
+      sections.push(`Anwendungskandidat (Step 19 – kontrolliertes Freigabepaket, keine echte Ausführung):\n${acParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 19 – kooperativer Kandidaten-/Freigabekontext eingebunden", {
+        candidateStatus: ac.candidateStatus,
+        candidateMode: ac.candidateMode,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

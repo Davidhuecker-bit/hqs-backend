@@ -1105,6 +1105,40 @@ const VALID_APPLY_WINDOWS = [
 
 const EXECUTION_PREVIEW_SUMMARY_MAX_ENTRIES = 50;
 
+// ── Step 19 constants: Controlled Apply Candidate / Action Package / Approval Gate ──
+
+const VALID_CANDIDATE_STATUSES = [
+  "candidate_not_available",
+  "candidate_diagnosis_only",
+  "candidate_partial",
+  "candidate_ready_for_final_approval",
+  "candidate_blocked",
+  "candidate_cross_agent_pending",
+  "candidate_scope_confirmation_needed",
+];
+
+const VALID_CANDIDATE_MODES = [
+  "diagnosis_only",
+  "partial_scope",
+  "backend_only",
+  "frontend_only",
+  "cross_agent_candidate",
+  "final_approval_candidate",
+  "wait_for_user",
+];
+
+const VALID_SCOPE_GUARDRAIL_TYPES = [
+  "scope_boundary",
+  "layer_restriction",
+  "no_auto_execute",
+  "requires_user_confirmation",
+  "cross_agent_gate",
+  "rollback_mandatory",
+  "data_safety_gate",
+];
+
+const CANDIDATE_SUMMARY_MAX_ENTRIES = 50;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -2555,6 +2589,29 @@ function buildBridgePackage(payload = {}) {
         sideEffectCount:        (ep.possibleSideEffects || []).length,
         preApplyCheckCount:     (ep.preApplyChecks || []).length,
         previewWarningCount:    (ep.previewWarnings || []).length,
+      };
+    }
+
+    // ── Step 19: Attach apply candidate context when available ──
+    if (agentCase.applyCandidate19) {
+      const ac = agentCase.applyCandidate19;
+      pkg.applyCandidateContext = {
+        candidateStatus:                ac.candidateStatus,
+        candidateMode:                  ac.candidateMode,
+        candidateVersion:               ac.candidateVersion,
+        candidateReadyForFinalApproval: ac.candidateReadyForFinalApproval,
+        candidateBlocked:               ac.candidateBlocked,
+        scopeLocked:                    ac.scopeLocked,
+        candidateOwner:                 ac.candidateOwner,
+        gateOwner:                      ac.gateOwner,
+        finalApprovalOwner:             ac.finalApprovalOwner,
+        needsCrossAgentReview:          ac.needsCrossAgentReview,
+        includedActionCount:            (ac.includedActions || []).length,
+        excludedActionCount:            (ac.excludedActions || []).length,
+        guardrailCount:                 (ac.guardrails || []).length,
+        preconditionCount:              (ac.finalPreconditions || []).length,
+        checklistItemCount:             (ac.approvalChecklist || []).length,
+        missingApprovalCount:           (ac.missingApprovals || []).length,
       };
     }
 
@@ -5655,6 +5712,7 @@ function buildAgentCaseFromBridgePackage(bridgePackage) {
  * fields to support richer thread tracking.
  * Step 17 adds apply-readiness / approval phase fields.
  * Step 18 adds execution preview / safety / reversal fields.
+ * Step 19 adds apply candidate / approval gate fields.
  *
  * @param {Object} params
  */
@@ -5688,6 +5746,12 @@ function _recordAgentChatMessage({
   rollbackRequired = null,
   recommendedApplyWindow = null,
   nextSafetyStep = null,
+  // Step 19 additions
+  candidateStatus = null,
+  candidateMode = null,
+  scopeLocked = null,
+  nextApprovalStep = null,
+  candidateReadyForFinalApproval = null,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -5765,8 +5829,27 @@ function _recordAgentChatMessage({
     chatMessage.nextSafetyStep = nextSafetyStep;
   }
 
-  // Derive message phase from available context (Step 18 → Step 17 → Step 16 → Step 15)
-  if (previewState || planPhase === "preview_safety_phase") {
+  // Step 19: attach apply candidate / approval gate context when available
+  if (candidateStatus) {
+    chatMessage.candidateStatus = candidateStatus;
+  }
+  if (candidateMode) {
+    chatMessage.candidateMode = candidateMode;
+  }
+  if (scopeLocked !== null && scopeLocked !== undefined) {
+    chatMessage.scopeLocked = scopeLocked;
+  }
+  if (nextApprovalStep) {
+    chatMessage.nextApprovalStep = nextApprovalStep;
+  }
+  if (candidateReadyForFinalApproval !== null && candidateReadyForFinalApproval !== undefined) {
+    chatMessage.candidateReadyForFinalApproval = candidateReadyForFinalApproval;
+  }
+
+  // Derive message phase from available context (Step 19 → Step 18 → Step 17 → Step 16 → Step 15)
+  if (candidateStatus || planPhase === "candidate_gate_phase") {
+    chatMessage.messagePhase = "candidate_gate_phase";
+  } else if (previewState || planPhase === "preview_safety_phase") {
     chatMessage.messagePhase = "preview_safety_phase";
   } else if (planPhase === "approval_phase" || readinessBand) {
     chatMessage.messagePhase = "approval_phase";
@@ -8683,6 +8766,9 @@ function _buildExecutionPreview(agentCase) {
     dryRunOnly,
   });
 
+  // Step 19: Build apply candidate after execution preview
+  _buildApplyCandidate(agentCase);
+
   return executionPreview;
 }
 
@@ -8791,6 +8877,856 @@ function getExecutionPreviewSummary() {
     topWarnings,
     previewCases:             previewCases.slice(0, EXECUTION_PREVIEW_SUMMARY_MAX_ENTRIES),
     generatedAt:              new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 19: Controlled Apply Candidate /
+   Action Package / Approval Gate
+   ─────────────────────────────────────────────
+   Translates the complete pipeline (problem →
+   draft → readiness → preview → safety) into
+   a clear final apply candidate with explicit
+   scope, guardrails, preconditions, and an
+   approval checklist.
+
+   The system NEVER auto-executes.  It prepares
+   the candidate – the user decides.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive the candidate status from execution preview,
+ * apply readiness, and action draft data.
+ *
+ * @param {Object} params
+ * @returns {string} candidate status
+ */
+function _deriveCandidateStatus({ executionPreview, applyReadiness, actionDraft }) {
+  if (!actionDraft || !applyReadiness) return "candidate_not_available";
+
+  const dt = actionDraft.draftType || "";
+  if (dt === "diagnosis_draft") return "candidate_diagnosis_only";
+
+  if (applyReadiness.applyBlocked) return "candidate_blocked";
+
+  if (executionPreview && executionPreview.previewBlocked) return "candidate_blocked";
+
+  if (applyReadiness.needsCrossAgentReview) return "candidate_cross_agent_pending";
+
+  if (dt === "partial_fix_draft") return "candidate_partial";
+
+  const rb = applyReadiness.readinessBand || "";
+  if (rb === "final_approval_ready") {
+    const sb = executionPreview ? executionPreview.safetyBand : null;
+    if (sb === "blocked" || sb === "elevated_attention") {
+      return "candidate_scope_confirmation_needed";
+    }
+    return "candidate_ready_for_final_approval";
+  }
+
+  if (rb === "review_ready" || rb === "partial_apply_ready") {
+    return "candidate_scope_confirmation_needed";
+  }
+
+  return "candidate_not_available";
+}
+
+/**
+ * Derive the candidate mode from draft type, agent role,
+ * and apply readiness.
+ *
+ * @param {Object} params
+ * @returns {string} candidate mode
+ */
+function _deriveCandidateMode({ actionDraft, agentRole, applyReadiness }) {
+  if (!actionDraft) return "wait_for_user";
+
+  const dt = actionDraft.draftType || "";
+  if (dt === "diagnosis_draft") return "diagnosis_only";
+
+  if (dt === "partial_fix_draft") return "partial_scope";
+
+  if (dt === "cross_agent_draft") return "cross_agent_candidate";
+
+  if (applyReadiness && applyReadiness.readinessBand === "final_approval_ready") {
+    return "final_approval_candidate";
+  }
+
+  if (agentRole === "deepseek_backend") {
+    if (["backend_fix_draft", "route_hardening_draft", "data_contract_draft", "mapping_fix_draft", "config_check_draft"].includes(dt)) {
+      return "backend_only";
+    }
+  }
+
+  if (agentRole === "gemini_frontend") {
+    if (["frontend_fix_draft", "ui_clarity_draft"].includes(dt)) {
+      return "frontend_only";
+    }
+  }
+
+  return "wait_for_user";
+}
+
+/**
+ * Derive included actions from draft and apply readiness.
+ * Returns a concise list of what the candidate covers.
+ *
+ * @param {Object} params
+ * @returns {string[]} included actions
+ */
+function _deriveIncludedActions({ actionDraft, applyReadiness }) {
+  const actions = [];
+  if (!actionDraft) return actions;
+
+  const dt = actionDraft.draftType || "";
+  const summary = actionDraft.draftSummary || "";
+
+  switch (dt) {
+    case "backend_fix_draft":
+      actions.push("Backend-Logik-Korrektur");
+      break;
+    case "frontend_fix_draft":
+      actions.push("Frontend-Struktur-Anpassung");
+      break;
+    case "route_hardening_draft":
+      actions.push("Route-Härtung / API-Absicherung");
+      break;
+    case "data_contract_draft":
+      actions.push("Datenvertrag-Anpassung");
+      break;
+    case "mapping_fix_draft":
+      actions.push("Mapping-Korrektur");
+      break;
+    case "config_check_draft":
+      actions.push("Konfigurations-Prüfung / Anpassung");
+      break;
+    case "ui_clarity_draft":
+      actions.push("UI-Klarheit / Beschriftungsverbesserung");
+      break;
+    case "partial_fix_draft":
+      actions.push("Teilkorrektur (eingeschränkter Scope)");
+      break;
+    case "cross_agent_draft":
+      actions.push("Schichtübergreifende Korrektur");
+      break;
+    case "diagnosis_draft":
+      actions.push("Diagnose (keine produktive Änderung)");
+      break;
+    default:
+      if (summary) actions.push(summary.slice(0, 120));
+      break;
+  }
+
+  // Add scope details from readiness
+  if (applyReadiness) {
+    const scope = applyReadiness.applyScope || {};
+    if (scope.affectedLayers && scope.affectedLayers.length > 0) {
+      actions.push(`Betroffene Schichten: ${scope.affectedLayers.join(", ")}`);
+    }
+    if (scope.affectedTargets && scope.affectedTargets.length > 0) {
+      actions.push(`Betroffene Bereiche: ${scope.affectedTargets.slice(0, 3).join(", ")}`);
+    }
+  }
+
+  return actions;
+}
+
+/**
+ * Derive excluded actions – what the candidate explicitly does NOT cover.
+ *
+ * @param {Object} params
+ * @returns {string[]} excluded actions
+ */
+function _deriveExcludedActions({ actionDraft, agentRole, applyReadiness }) {
+  const excluded = [];
+  if (!actionDraft) return excluded;
+
+  const dt = actionDraft.draftType || "";
+
+  // Agent scope boundaries
+  if (agentRole === "deepseek_backend") {
+    excluded.push("Frontend- / UI-Änderungen");
+    excluded.push("Visuelle Darstellung / Beschriftungen");
+  }
+  if (agentRole === "gemini_frontend") {
+    excluded.push("Backend-Logik / API-Änderungen");
+    excluded.push("Datenbank- / Schema-Änderungen");
+  }
+
+  // Draft type boundaries
+  if (dt === "diagnosis_draft") {
+    excluded.push("Produktive Code-Änderungen");
+    excluded.push("Automatische Fehlerbehebung");
+  }
+  if (dt === "partial_fix_draft") {
+    excluded.push("Vollständige Lösung aller betroffenen Bereiche");
+  }
+
+  // Blocked cross-agent items
+  if (applyReadiness && applyReadiness.needsCrossAgentReview) {
+    excluded.push("Änderungen an der jeweils anderen Schicht (Cross-Agent-Review ausstehend)");
+  }
+
+  return excluded;
+}
+
+/**
+ * Derive scope guardrails – hard boundaries the candidate respects.
+ *
+ * @param {Object} params
+ * @returns {Object[]} guardrails
+ */
+function _deriveScopeGuardrails({ candidateMode, candidateStatus, executionPreview, applyReadiness }) {
+  const guardrails = [];
+
+  // Always present: no auto-execute
+  guardrails.push({
+    type: "no_auto_execute",
+    label: "Keine automatische Ausführung – nur nach expliziter Freigabe",
+    active: true,
+  });
+
+  guardrails.push({
+    type: "requires_user_confirmation",
+    label: "Endgültige Entscheidung liegt beim Benutzer",
+    active: true,
+  });
+
+  // Scope boundaries
+  if (candidateMode === "backend_only") {
+    guardrails.push({
+      type: "layer_restriction",
+      label: "Nur Backend-Änderungen – Frontend bleibt unverändert",
+      active: true,
+    });
+  }
+  if (candidateMode === "frontend_only") {
+    guardrails.push({
+      type: "layer_restriction",
+      label: "Nur Frontend-Änderungen – Backend bleibt unverändert",
+      active: true,
+    });
+  }
+  if (candidateMode === "partial_scope") {
+    guardrails.push({
+      type: "scope_boundary",
+      label: "Teilkorrektur – nicht alle betroffenen Bereiche abgedeckt",
+      active: true,
+    });
+  }
+
+  // Cross-agent gate
+  if (candidateStatus === "candidate_cross_agent_pending" || candidateMode === "cross_agent_candidate") {
+    guardrails.push({
+      type: "cross_agent_gate",
+      label: "Cross-Agent-Review erforderlich vor Freigabe",
+      active: true,
+    });
+  }
+
+  // Rollback gate
+  if (executionPreview && executionPreview.rollbackRecommended) {
+    guardrails.push({
+      type: "rollback_mandatory",
+      label: "Rollback-Plan muss vor Freigabe bestätigt werden",
+      active: true,
+    });
+  }
+
+  // Data safety
+  if (executionPreview && executionPreview.reversalComplexity === "complex") {
+    guardrails.push({
+      type: "data_safety_gate",
+      label: "Datensicherung vor Anwendung empfohlen",
+      active: true,
+    });
+  }
+
+  return guardrails;
+}
+
+/**
+ * Derive the approval checklist – items to confirm before final approval.
+ *
+ * @param {Object} params
+ * @returns {Object[]} checklist items
+ */
+function _deriveApprovalChecklist({ candidateStatus, candidateMode, executionPreview, applyReadiness }) {
+  const checklist = [];
+
+  checklist.push({
+    item: "scope_confirmation",
+    label: "Umfang des Kandidaten geprüft und bestätigt",
+    required: true,
+    completed: false,
+  });
+
+  if (executionPreview && executionPreview.rollbackRecommended) {
+    checklist.push({
+      item: "rollback_acknowledgement",
+      label: "Rollback-Plan zur Kenntnis genommen",
+      required: true,
+      completed: false,
+    });
+  }
+
+  if (candidateStatus === "candidate_cross_agent_pending" || candidateMode === "cross_agent_candidate") {
+    checklist.push({
+      item: "cross_agent_confirmation",
+      label: "Cross-Agent-Review abgeschlossen",
+      required: true,
+      completed: false,
+    });
+  }
+
+  if (applyReadiness && (applyReadiness.blockingFactors || []).length > 0) {
+    checklist.push({
+      item: "blocking_factors_resolved",
+      label: "Blockierende Faktoren geklärt",
+      required: true,
+      completed: false,
+    });
+  }
+
+  if (applyReadiness && (applyReadiness.riskFlags || []).length > 0) {
+    checklist.push({
+      item: "risk_flags_reviewed",
+      label: "Risiko-Hinweise geprüft",
+      required: true,
+      completed: false,
+    });
+  }
+
+  checklist.push({
+    item: "final_user_approval",
+    label: "Finale Freigabe durch Benutzer",
+    required: true,
+    completed: false,
+  });
+
+  return checklist;
+}
+
+/**
+ * Derive final preconditions – what must be true before the candidate
+ * can be approved.
+ *
+ * @param {Object} params
+ * @returns {string[]} preconditions
+ */
+function _deriveFinalPreconditions({ candidateStatus, executionPreview, applyReadiness }) {
+  const preconditions = [];
+
+  if (candidateStatus === "candidate_blocked") {
+    preconditions.push("Blockierung muss zuerst aufgelöst werden");
+  }
+
+  if (candidateStatus === "candidate_cross_agent_pending") {
+    preconditions.push("Cross-Agent-Review muss abgeschlossen werden");
+  }
+
+  if (candidateStatus === "candidate_scope_confirmation_needed") {
+    preconditions.push("Scope-Bestätigung durch Benutzer erforderlich");
+  }
+
+  if (executionPreview && executionPreview.rollbackRecommended) {
+    preconditions.push("Rollback-Plan muss bestätigt werden");
+  }
+
+  if (applyReadiness && (applyReadiness.blockingFactors || []).length > 0) {
+    preconditions.push("Alle blockierenden Faktoren müssen geklärt werden");
+  }
+
+  if (applyReadiness && (applyReadiness.openChecks || []).length > 0) {
+    preconditions.push("Offene Prüfpunkte müssen abgeschlossen werden");
+  }
+
+  return preconditions;
+}
+
+/**
+ * Derive candidate ownership – who prepared, who gates, who approves.
+ *
+ * @param {Object} params
+ * @returns {Object} ownership
+ */
+function _deriveCandidateOwnership({ agentRole, candidateMode }) {
+  const isBackend = agentRole === "deepseek_backend";
+
+  let candidateOwner = agentRole;
+  let gateOwner = agentRole;
+  let proposalOwner = agentRole;
+  let secondaryAgent = isBackend ? "gemini_frontend" : "deepseek_backend";
+  let handoffSuggested = false;
+  let needsCrossAgentReview = false;
+
+  if (candidateMode === "cross_agent_candidate") {
+    needsCrossAgentReview = true;
+    handoffSuggested = true;
+  }
+
+  return {
+    candidateOwner,
+    gateOwner,
+    proposalOwner,
+    secondaryAgent,
+    handoffSuggested,
+    needsCrossAgentReview,
+    finalApprovalOwner: "user",
+  };
+}
+
+/**
+ * Build a human-readable apply candidate message in cooperative German.
+ *
+ * @param {Object} params
+ * @returns {string} message
+ */
+function _buildApplyCandidateMessage({
+  candidateStatus,
+  candidateMode,
+  includedActions,
+  excludedActions,
+  guardrails,
+  approvalChecklist,
+  finalPreconditions,
+  candidateOwner,
+}) {
+  const parts = [];
+
+  // Opening statement
+  switch (candidateStatus) {
+    case "candidate_ready_for_final_approval":
+      parts.push("Ich habe den finalen Anwendungskandidaten auf den folgenden Umfang eingegrenzt.");
+      break;
+    case "candidate_diagnosis_only":
+      parts.push("Dieser Fall bleibt ein Diagnose-Kandidat – keine produktive Änderung wird vorgeschlagen.");
+      break;
+    case "candidate_partial":
+      parts.push("Ein Teilkandidat liegt vor – er deckt nicht alle betroffenen Bereiche ab.");
+      break;
+    case "candidate_blocked":
+      parts.push("Der Kandidat ist derzeit blockiert und kann noch nicht zur Freigabe vorgelegt werden.");
+      break;
+    case "candidate_cross_agent_pending":
+      parts.push("Ein Cross-Agent-Review steht noch aus, bevor der Kandidat finalisiert werden kann.");
+      break;
+    case "candidate_scope_confirmation_needed":
+      parts.push("Der Kandidat benötigt noch eine Scope-Bestätigung, bevor er zur Freigabe bereit ist.");
+      break;
+    default:
+      parts.push("Es liegt noch kein freigabefähiger Kandidat vor.");
+      break;
+  }
+
+  // Candidate mode
+  switch (candidateMode) {
+    case "backend_only":
+      parts.push("Dieser Kandidat umfasst nur den Backend-Teil und schließt Frontend-Änderungen ausdrücklich aus.");
+      break;
+    case "frontend_only":
+      parts.push("Dieser Kandidat umfasst nur den Frontend-Teil und schließt Backend-Änderungen ausdrücklich aus.");
+      break;
+    case "partial_scope":
+      parts.push("Der Umfang ist bewusst eingegrenzt – nur ein Teil der identifizierten Punkte wird adressiert.");
+      break;
+    case "cross_agent_candidate":
+      parts.push("Dieser Kandidat betrifft mehrere Schichten und erfordert eine abgestimmte Freigabe.");
+      break;
+    case "diagnosis_only":
+      parts.push("Es handelt sich ausschließlich um eine Diagnose – keine Anwendung vorgesehen.");
+      break;
+    case "final_approval_candidate":
+      parts.push("Der Kandidat ist vollständig und bereit für die finale Entscheidung.");
+      break;
+    default:
+      break;
+  }
+
+  // Included actions
+  if (includedActions && includedActions.length > 0) {
+    parts.push(`\nEnthaltene Maßnahmen:\n${includedActions.map(a => `  • ${a}`).join("\n")}`);
+  }
+
+  // Excluded actions
+  if (excludedActions && excludedActions.length > 0) {
+    parts.push(`\nBewusst ausgeschlossen:\n${excludedActions.map(a => `  • ${a}`).join("\n")}`);
+  }
+
+  // Active guardrails
+  const activeGuardrails = (guardrails || []).filter(g => g.active);
+  if (activeGuardrails.length > 0) {
+    parts.push(`\nAktive Guardrails:\n${activeGuardrails.map(g => `  • ${g.label}`).join("\n")}`);
+  }
+
+  // Preconditions
+  if (finalPreconditions && finalPreconditions.length > 0) {
+    parts.push(`\nVor der finalen Freigabe fehlen noch:\n${finalPreconditions.map(p => `  • ${p}`).join("\n")}`);
+  }
+
+  // Approval checklist
+  const pendingChecks = (approvalChecklist || []).filter(c => c.required && !c.completed);
+  if (pendingChecks.length > 0) {
+    parts.push(`\nNoch zu bestätigen:\n${pendingChecks.map(c => `  ☐ ${c.label}`).join("\n")}`);
+  }
+
+  // Owner info
+  const ownerLabel = candidateOwner === "deepseek_backend" ? "DeepSeek (Backend)" : "Gemini (Frontend)";
+  parts.push(`\nVorbereitet von: ${ownerLabel}`);
+  parts.push("Endgültige Freigabe: Du entscheidest.");
+
+  // Closing
+  if (candidateStatus === "candidate_ready_for_final_approval") {
+    parts.push("\nAuf dieser Basis liegt jetzt ein klar abgegrenzter Kandidat zur letzten Entscheidung vor.");
+    parts.push("Für den nächsten Schritt brauche ich noch deine letzte Entscheidung.");
+  } else {
+    parts.push("\nSobald die offenen Punkte geklärt sind, kann der Kandidat zur Freigabe vorbereitet werden.");
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Build a complete controlled apply candidate / action package
+ * for an agent case that has an execution preview.
+ *
+ * This is the central Step 19 function.
+ *
+ * @param {Object} agentCase - the agent case with executionPreview18
+ * @returns {Object|null} apply candidate or null
+ */
+function _buildApplyCandidate(agentCase) {
+  if (!agentCase) return null;
+
+  const executionPreview = agentCase.executionPreview18;
+  const applyReadiness = agentCase.applyReadiness17;
+  const actionDraft = agentCase.actionDraft16;
+  if (!applyReadiness || !actionDraft) return null;
+
+  // Derive candidate status
+  const candidateStatus = _deriveCandidateStatus({
+    executionPreview,
+    applyReadiness,
+    actionDraft,
+  });
+
+  // Derive candidate mode
+  const candidateMode = _deriveCandidateMode({
+    actionDraft,
+    agentRole: agentCase.agentRole,
+    applyReadiness,
+  });
+
+  // Derive included / excluded actions
+  const includedActions = _deriveIncludedActions({ actionDraft, applyReadiness });
+  const excludedActions = _deriveExcludedActions({
+    actionDraft,
+    agentRole: agentCase.agentRole,
+    applyReadiness,
+  });
+
+  // Derive scope guardrails
+  const guardrails = _deriveScopeGuardrails({
+    candidateMode,
+    candidateStatus,
+    executionPreview,
+    applyReadiness,
+  });
+
+  // Derive approval checklist
+  const approvalChecklist = _deriveApprovalChecklist({
+    candidateStatus,
+    candidateMode,
+    executionPreview,
+    applyReadiness,
+  });
+
+  // Derive final preconditions
+  const finalPreconditions = _deriveFinalPreconditions({
+    candidateStatus,
+    executionPreview,
+    applyReadiness,
+  });
+
+  // Derive missing approvals
+  const missingApprovals = approvalChecklist
+    .filter(c => c.required && !c.completed)
+    .map(c => c.item);
+
+  // Derive ownership
+  const ownership = _deriveCandidateOwnership({
+    agentRole: agentCase.agentRole,
+    candidateMode,
+  });
+
+  // Candidate state flags
+  const candidateReadyForFinalApproval = candidateStatus === "candidate_ready_for_final_approval";
+  const candidateBlocked = candidateStatus === "candidate_blocked";
+  const scopeLocked = candidateReadyForFinalApproval;
+  const requiresScopeConfirmation = candidateStatus === "candidate_scope_confirmation_needed";
+
+  // Build scope summary
+  const candidateScope = {
+    affectedLayers: applyReadiness.applyScope?.affectedLayers || [],
+    affectedTargets: applyReadiness.applyScope?.affectedTargets || [],
+    draftType: actionDraft.draftType,
+    changeCategory: actionDraft.changeCategory,
+  };
+
+  // Allowed / disallowed apply targets
+  const allowedApplyTargets = [];
+  const disallowedApplyTargets = [];
+  if (candidateMode === "backend_only") {
+    allowedApplyTargets.push("backend", "api", "datenfluss", "mapping", "route");
+    disallowedApplyTargets.push("frontend", "ui", "design", "darstellung");
+  } else if (candidateMode === "frontend_only") {
+    allowedApplyTargets.push("frontend", "ui", "design", "darstellung", "beschriftung");
+    disallowedApplyTargets.push("backend", "api", "datenbank", "schema");
+  } else if (candidateMode === "diagnosis_only") {
+    disallowedApplyTargets.push("backend", "frontend", "api", "datenbank");
+  } else {
+    allowedApplyTargets.push("nach_scope_bestätigung");
+  }
+
+  // Build human-readable candidate message
+  const applyCandidateMessage = _buildApplyCandidateMessage({
+    candidateStatus,
+    candidateMode,
+    includedActions,
+    excludedActions,
+    guardrails,
+    approvalChecklist,
+    finalPreconditions,
+    candidateOwner: ownership.candidateOwner,
+  });
+
+  // Build the candidate object
+  const applyCandidate = {
+    // Identity
+    candidateId:                   `candidate-${Date.now()}-${agentCase.agentCaseId}`,
+    agentCaseId:                   agentCase.agentCaseId,
+    proposalId:                    applyReadiness.proposalId,
+    draftId:                       actionDraft.draftId,
+    previewId:                     executionPreview ? executionPreview.previewId : null,
+    candidateVersion:              1,
+
+    // Status
+    candidateStatus,
+    candidateMode,
+    candidateReadyForFinalApproval,
+    candidateBlocked,
+    candidateBlockedReason:        candidateBlocked ? "Blockierende Faktoren oder Sicherheitsbedenken verhindern die Freigabe" : null,
+    scopeLocked,
+    requiresScopeConfirmation,
+
+    // Scope
+    candidateScope,
+    candidateSummary:              actionDraft.draftSummary || "",
+    candidateReason:               actionDraft.draftReason || applyReadiness.readinessReason || "",
+    includedActions,
+    excludedActions,
+    allowedApplyTargets,
+    disallowedApplyTargets,
+
+    // Guardrails
+    guardrails,
+
+    // Approval gate
+    approvalChecklist,
+    finalPreconditions,
+    missingApprovals,
+
+    // Ownership
+    candidateOwner:                ownership.candidateOwner,
+    gateOwner:                     ownership.gateOwner,
+    proposalOwner:                 ownership.proposalOwner,
+    secondaryAgent:                ownership.secondaryAgent,
+    handoffSuggested:              ownership.handoffSuggested,
+    needsCrossAgentReview:         ownership.needsCrossAgentReview,
+    finalApprovalOwner:            ownership.finalApprovalOwner,
+
+    // Human-readable message
+    applyCandidateMessage,
+
+    // Lifecycle
+    candidateGeneratedAt:          new Date().toISOString(),
+    candidateGeneratedByAgent:     agentCase.agentRole,
+    dryRunOnly:                    true,
+  };
+
+  // Attach to agent case
+  agentCase.applyCandidate19 = applyCandidate;
+
+  // Record candidate chat message
+  _recordAgentChatMessage({
+    agentCaseId:                 agentCase.agentCaseId,
+    agentRole:                   agentCase.agentRole,
+    messageType:                 "apply_candidate",
+    messageIntent:               "candidate_prepared",
+    messagePriority:             candidateBlocked ? "high" : candidateReadyForFinalApproval ? "high" : "normal",
+    requiresUserDecision:        true,
+    message:                     applyCandidateMessage,
+    problemType:                 agentCase.problemType,
+    // Step 19 fields
+    candidateStatus,
+    candidateMode,
+    scopeLocked,
+    candidateReadyForFinalApproval,
+    nextApprovalStep:            candidateBlocked
+      ? "resolve_blockers"
+      : requiresScopeConfirmation
+        ? "confirm_scope"
+        : candidateReadyForFinalApproval
+          ? "final_user_decision"
+          : "await_prerequisites",
+  });
+
+  // Logging
+  logger.info("[agentBridge] Step 19 – Apply Candidate erzeugt", {
+    agentCaseId:                 agentCase.agentCaseId,
+    candidateStatus,
+    candidateMode,
+    candidateReadyForFinalApproval,
+    candidateBlocked,
+    scopeLocked,
+    requiresScopeConfirmation,
+    candidateOwner:              ownership.candidateOwner,
+    gateOwner:                   ownership.gateOwner,
+    finalApprovalOwner:          ownership.finalApprovalOwner,
+    includedActionCount:         includedActions.length,
+    excludedActionCount:         excludedActions.length,
+    guardrailCount:              guardrails.length,
+    preconditionCount:           finalPreconditions.length,
+    checklistItemCount:          approvalChecklist.length,
+    missingApprovalCount:        missingApprovals.length,
+    dryRunOnly:                  true,
+  });
+
+  return applyCandidate;
+}
+
+/**
+ * Get a summary of all apply candidates across agent cases.
+ * Provides the operator a clear view of candidate / approval gate status.
+ *
+ * @returns {Object} apply candidate summary
+ */
+function getApplyCandidateSummary() {
+  const byCandidateStatus = {};
+  const byCandidateMode = {};
+  const byCandidateOwner = { deepseek_backend: 0, gemini_frontend: 0 };
+  const byGuardrailType = {};
+
+  let totalWithCandidate = 0;
+  let totalReadyForFinalApproval = 0;
+  let totalBlocked = 0;
+  let totalScopeConfirmationNeeded = 0;
+  let totalCrossAgentPending = 0;
+  let totalDiagnosisOnly = 0;
+  let totalPartial = 0;
+
+  const candidateCases = [];
+  const commonMissingApprovals = {};
+  const commonPreconditions = {};
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    const ac = agentCase.applyCandidate19 || null;
+    if (!ac) continue;
+
+    totalWithCandidate += 1;
+
+    // By candidate status
+    byCandidateStatus[ac.candidateStatus] = (byCandidateStatus[ac.candidateStatus] || 0) + 1;
+
+    // By candidate mode
+    byCandidateMode[ac.candidateMode] = (byCandidateMode[ac.candidateMode] || 0) + 1;
+
+    // By candidate owner
+    if (byCandidateOwner[ac.candidateOwner] !== undefined) {
+      byCandidateOwner[ac.candidateOwner] += 1;
+    }
+
+    // Guardrail type distribution
+    for (const g of ac.guardrails || []) {
+      if (g.active) {
+        byGuardrailType[g.type] = (byGuardrailType[g.type] || 0) + 1;
+      }
+    }
+
+    // Counts
+    if (ac.candidateReadyForFinalApproval) totalReadyForFinalApproval += 1;
+    if (ac.candidateBlocked) totalBlocked += 1;
+    if (ac.candidateStatus === "candidate_scope_confirmation_needed") totalScopeConfirmationNeeded += 1;
+    if (ac.candidateStatus === "candidate_cross_agent_pending") totalCrossAgentPending += 1;
+    if (ac.candidateStatus === "candidate_diagnosis_only") totalDiagnosisOnly += 1;
+    if (ac.candidateStatus === "candidate_partial") totalPartial += 1;
+
+    // Track common missing approvals
+    for (const ma of ac.missingApprovals || []) {
+      commonMissingApprovals[ma] = (commonMissingApprovals[ma] || 0) + 1;
+    }
+
+    // Track common preconditions
+    for (const pc of ac.finalPreconditions || []) {
+      commonPreconditions[pc] = (commonPreconditions[pc] || 0) + 1;
+    }
+
+    candidateCases.push({
+      agentCaseId:                   agentCase.agentCaseId,
+      agentRole:                     agentCase.agentRole,
+      problemType:                   agentCase.problemType,
+      problemTitle:                  agentCase.problemTitle,
+      candidateStatus:               ac.candidateStatus,
+      candidateMode:                 ac.candidateMode,
+      candidateReadyForFinalApproval: ac.candidateReadyForFinalApproval,
+      candidateBlocked:              ac.candidateBlocked,
+      scopeLocked:                   ac.scopeLocked,
+      requiresScopeConfirmation:     ac.requiresScopeConfirmation,
+      candidateOwner:                ac.candidateOwner,
+      gateOwner:                     ac.gateOwner,
+      finalApprovalOwner:            ac.finalApprovalOwner,
+      needsCrossAgentReview:         ac.needsCrossAgentReview,
+      includedActionCount:           (ac.includedActions || []).length,
+      excludedActionCount:           (ac.excludedActions || []).length,
+      guardrailCount:                (ac.guardrails || []).length,
+      missingApprovalCount:          (ac.missingApprovals || []).length,
+      preconditionCount:             (ac.finalPreconditions || []).length,
+      candidateGeneratedAt:          ac.candidateGeneratedAt,
+    });
+  }
+
+  // Sort by candidateGeneratedAt (newest first)
+  candidateCases.sort((a, b) => (b.candidateGeneratedAt || "").localeCompare(a.candidateGeneratedAt || ""));
+
+  // Top missing approvals
+  const topMissingApprovals = Object.entries(commonMissingApprovals)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([approval, count]) => ({ approval, count }));
+
+  // Top preconditions
+  const topPreconditions = Object.entries(commonPreconditions)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([precondition, count]) => ({ precondition, count }));
+
+  return {
+    totalAgentCases:               _agentCaseRegistry.size,
+    totalWithCandidate,
+    totalReadyForFinalApproval,
+    totalBlocked,
+    totalScopeConfirmationNeeded,
+    totalCrossAgentPending,
+    totalDiagnosisOnly,
+    totalPartial,
+    byCandidateStatus,
+    byCandidateMode,
+    byCandidateOwner,
+    byGuardrailType,
+    topMissingApprovals,
+    topPreconditions,
+    candidateCases:                candidateCases.slice(0, CANDIDATE_SUMMARY_MAX_ENTRIES),
+    generatedAt:                   new Date().toISOString(),
   };
 }
 
@@ -9148,4 +10084,9 @@ module.exports = {
   VALID_SAFETY_BANDS,
   VALID_REVERSAL_COMPLEXITY,
   VALID_APPLY_WINDOWS,
+  // Step 19: Controlled Apply Candidate / Action Package / Approval Gate
+  getApplyCandidateSummary,
+  VALID_CANDIDATE_STATUSES,
+  VALID_CANDIDATE_MODES,
+  VALID_SCOPE_GUARDRAIL_TYPES,
 };
