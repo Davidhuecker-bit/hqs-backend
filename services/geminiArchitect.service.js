@@ -1187,6 +1187,44 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 21: Inject conversation thread context when available ──
+  if (bridgeContext && bridgeContext.conversationContext) {
+    const cc = bridgeContext.conversationContext;
+    const ccParts = [];
+    if (cc.threadStatus) {
+      ccParts.push(`Thread-Status: ${cc.threadStatus}`);
+    }
+    if (cc.conversationState) {
+      ccParts.push(`Gesprächsphase: ${cc.conversationState}`);
+    }
+    if (cc.messageCount > 0) {
+      ccParts.push(`Nachrichten im Thread: ${cc.messageCount}`);
+    }
+    if (cc.awaitingUserReply) {
+      ccParts.push("Wartet auf User-Antwort: ja");
+    }
+    if (cc.awaitingAgentReply) {
+      ccParts.push("Wartet auf Agenten-Antwort: ja");
+    }
+    if (cc.dominantAgent) {
+      ccParts.push(`Zuständiger Agent: ${cc.dominantAgent}`);
+    }
+    if (cc.lastSpeaker) {
+      ccParts.push(`Letzter Sprecher: ${cc.lastSpeaker}`);
+    }
+    if (cc.conversationSummary) {
+      ccParts.push(`Zusammenfassung: ${cc.conversationSummary}`);
+    }
+    if (ccParts.length) {
+      sections.push(`Gesprächskontext (Step 21 – kooperativer Agenten-Dialog, kein autonomer Chat):\n${ccParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 21 – kooperativer Gesprächskontext eingebunden", {
+        threadStatus: cc.threadStatus,
+        conversationState: cc.conversationState,
+        messageCount: cc.messageCount,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

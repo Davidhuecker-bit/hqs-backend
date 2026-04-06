@@ -2777,6 +2777,26 @@ function buildBridgePackage(payload = {}) {
       };
     }
 
+    // ── Step 21: Attach conversation context when a thread exists ──
+    const convThread = _conversationThreads.get(agentCase.agentCaseId);
+    if (convThread) {
+      pkg.conversationContext = {
+        threadId:            convThread.threadId,
+        threadStatus:        convThread.threadStatus,
+        conversationState:   convThread.conversationState,
+        conversationOpen:    convThread.conversationOpen,
+        messageCount:        convThread.messageCount,
+        userMessageCount:    convThread.userMessageCount,
+        deepseekMessageCount: convThread.deepseekMessageCount,
+        geminiMessageCount:  convThread.geminiMessageCount,
+        awaitingUserReply:   convThread.awaitingUserReply,
+        awaitingAgentReply:  convThread.awaitingAgentReply,
+        lastSpeaker:         convThread.lastSpeaker,
+        dominantAgent:       convThread.dominantAgent,
+        conversationSummary: convThread.conversationSummary,
+      };
+    }
+
     _currentBridgePackage = pkg;
   } else {
     pkg.agentCaseContext = null;
