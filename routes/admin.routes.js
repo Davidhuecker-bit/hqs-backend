@@ -5653,7 +5653,7 @@ router.post("/deepseek/agent-bridge/conversation-message", (req, res) => {
 router.get("/deepseek/agent-bridge/conversation-thread", (req, res) => {
   try {
     const agentCaseId = req.query.agentCaseId;
-    const limit = parseInt(req.query.limit, 10) || 50;
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 50, 200));
     if (!agentCaseId) {
       return res.status(400).json({ success: false, error: "agentCaseId query parameter is required" });
     }
