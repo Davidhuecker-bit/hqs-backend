@@ -1033,6 +1033,55 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 18: Inject execution preview / safety context ──
+  if (bridgeContext && bridgeContext.executionPreviewContext) {
+    const ep = bridgeContext.executionPreviewContext;
+    const epParts = [];
+    if (ep.previewState) {
+      epParts.push(`Vorschau-Status: ${ep.previewState}`);
+    }
+    if (ep.safetyBand) {
+      epParts.push(`Sicherheitsband: ${ep.safetyBand}`);
+    }
+    if (ep.previewConfidence) {
+      epParts.push(`Vorschau-Konfidenz: ${ep.previewConfidence}`);
+    }
+    if (ep.reversalComplexity) {
+      epParts.push(`Reversal-Komplexität: ${ep.reversalComplexity}`);
+    }
+    if (ep.recommendedApplyWindow) {
+      epParts.push(`Empfohlenes Anwendungsfenster: ${ep.recommendedApplyWindow}`);
+    }
+    if (ep.previewBlocked) {
+      epParts.push("Vorschau blockiert: ja");
+    }
+    if (ep.rollbackRecommended) {
+      epParts.push("Rollback empfohlen: ja");
+    }
+    if (ep.needsCrossAgentReview) {
+      epParts.push("Cross-Agent-Review erforderlich: ja");
+    }
+    if (ep.expectedImpactCount > 0) {
+      epParts.push(`Erwartete Auswirkungsbereiche: ${ep.expectedImpactCount}`);
+    }
+    if (ep.sideEffectCount > 0) {
+      epParts.push(`Mögliche Nebenwirkungen: ${ep.sideEffectCount}`);
+    }
+    if (ep.preApplyCheckCount > 0) {
+      epParts.push(`Prüfschritte vor Anwendung: ${ep.preApplyCheckCount}`);
+    }
+    if (ep.previewWarningCount > 0) {
+      epParts.push(`Vorschau-Warnungen: ${ep.previewWarningCount}`);
+    }
+    if (epParts.length) {
+      sections.push(`Anwendungsvorschau (Step 18 – kontrollierte Simulation, keine echte Ausführung):\n${epParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 18 – kooperativer Vorschau-/Sicherheitskontext eingebunden", {
+        previewState: ep.previewState,
+        safetyBand: ep.safetyBand,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
