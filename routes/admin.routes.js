@@ -4137,6 +4137,8 @@ const {
   getExecutionPreviewSummary,
   // Step 19: Controlled Apply Candidate / Action Package / Approval Gate
   getApplyCandidateSummary,
+  // Step 20: Controlled Execution Orchestrator / Apply Runtime / Audit & Kill Switch
+  getExecutionRuntimeSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5500,6 +5502,61 @@ router.get("/deepseek/agent-bridge/apply-candidate-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading apply-candidate summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/execution-runtime-summary
+   Step 20: Controlled Execution Orchestrator /
+   Apply Runtime / Audit & Kill Switch
+
+   Returns runtime / execution session summary across all
+   agent cases.  Shows:
+    - How many runtime sessions exist
+    - How many are blocked / ready / awaiting start / running / completed / aborted / failed
+    - Kill-switch / abort / rollback reservation counts
+    - Runtime status / mode / state distribution
+    - Runtime owner distribution
+    - Guardrail type distribution
+    - Top block reasons
+    - Per-case runtime status
+
+   Cooperative, not autonomous.  The system prepares
+   the runtime session – the user decides when to start.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "executionRuntime": {
+         "totalAgentCases": 5,
+         "totalWithRuntime": 3,
+         "totalBlocked": 1,
+         "totalAwaitingStart": 1,
+         "byRuntimeStatus": { ... },
+         "byRuntimeMode": { ... },
+         "byExecutionState": { ... },
+         "byRuntimeOwner": { ... },
+         "byGuardrailType": { ... },
+         "topBlockReasons": [ ... ],
+         "runtimeCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/execution-runtime-summary", (_req, res) => {
+  try {
+    const executionRuntime = getExecutionRuntimeSummary();
+    return res.json({ success: true, version: "v1", executionRuntime });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/execution-runtime-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading execution-runtime summary",
     });
   }
 });
