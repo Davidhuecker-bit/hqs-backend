@@ -1139,6 +1139,53 @@ const VALID_SCOPE_GUARDRAIL_TYPES = [
 
 const CANDIDATE_SUMMARY_MAX_ENTRIES = 50;
 
+// ── Step 20 constants: Controlled Execution Orchestrator / Apply Runtime / Audit & Kill Switch ──
+
+const VALID_RUNTIME_STATUSES = [
+  "runtime_not_created",
+  "runtime_blocked",
+  "runtime_ready",
+  "runtime_awaiting_user_start",
+  "runtime_running",
+  "runtime_completed",
+  "runtime_aborted",
+  "runtime_failed",
+  "runtime_rollback_reserved",
+];
+
+const VALID_RUNTIME_MODES = [
+  "dry_run",
+  "controlled_apply",
+  "partial_apply",
+  "backend_only",
+  "frontend_only",
+  "cross_agent_controlled",
+];
+
+const VALID_EXECUTION_STATES = [
+  "pending",
+  "ready",
+  "blocked",
+  "active",
+  "stopped",
+  "finished",
+  "failed",
+];
+
+const VALID_EXECUTION_GUARDRAIL_TYPES = [
+  "no_auto_execute",
+  "requires_user_start",
+  "scope_locked",
+  "no_scope_expansion",
+  "target_restriction",
+  "kill_switch_required",
+  "abort_path_required",
+  "rollback_on_failure",
+  "cross_agent_gate",
+];
+
+const RUNTIME_SUMMARY_MAX_ENTRIES = 50;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -2612,6 +2659,31 @@ function buildBridgePackage(payload = {}) {
         preconditionCount:              (ac.finalPreconditions || []).length,
         checklistItemCount:             (ac.approvalChecklist || []).length,
         missingApprovalCount:           (ac.missingApprovals || []).length,
+      };
+    }
+
+    // ── Step 20: Attach execution runtime context when available ──
+    if (agentCase.executionSession20) {
+      const es = agentCase.executionSession20;
+      pkg.executionRuntimeContext = {
+        runtimeId:               es.runtimeId,
+        runtimeStatus:           es.runtimeStatus,
+        runtimeMode:             es.runtimeMode,
+        executionState:          es.executionState,
+        executionAllowed:        es.executionAllowed,
+        executionBlocked:        es.executionBlocked,
+        runtimeOwner:            es.runtimeOwner,
+        executionOwner:          es.executionOwner,
+        finalApprovalOwner:      es.finalApprovalOwner,
+        abortAvailable:          es.abortAvailable,
+        killSwitchAvailable:     es.killSwitchAvailable,
+        rollbackReserved:        es.rollbackReserved,
+        rollbackOnFailure:       es.rollbackOnFailure,
+        needsCrossAgentReview:   es.needsCrossAgentReview,
+        guardrailCount:          (es.runtimeGuardrails || []).length,
+        checklistItemCount:      (es.runtimeChecklist || []).length,
+        auditEntryCount:         (es.executionAudit || []).length,
+        dryRunOnly:              es.dryRunOnly,
       };
     }
 
@@ -5752,6 +5824,16 @@ function _recordAgentChatMessage({
   scopeLocked = null,
   nextApprovalStep = null,
   candidateReadyForFinalApproval = null,
+  // Step 20 additions
+  runtimeStatus = null,
+  runtimeMode = null,
+  executionState = null,
+  executionAllowed = null,
+  executionBlocked = null,
+  abortAvailable = null,
+  killSwitchAvailable = null,
+  rollbackReserved = null,
+  nextRuntimeStep = null,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -5846,8 +5928,39 @@ function _recordAgentChatMessage({
     chatMessage.candidateReadyForFinalApproval = candidateReadyForFinalApproval;
   }
 
-  // Derive message phase from available context (Step 19 → Step 18 → Step 17 → Step 16 → Step 15)
-  if (candidateStatus || planPhase === "candidate_gate_phase") {
+  // Step 20: attach runtime / execution orchestrator context when available
+  if (runtimeStatus) {
+    chatMessage.runtimeStatus = runtimeStatus;
+  }
+  if (runtimeMode) {
+    chatMessage.runtimeMode = runtimeMode;
+  }
+  if (executionState) {
+    chatMessage.executionState = executionState;
+  }
+  if (executionAllowed !== null && executionAllowed !== undefined) {
+    chatMessage.executionAllowed = executionAllowed;
+  }
+  if (executionBlocked !== null && executionBlocked !== undefined) {
+    chatMessage.executionBlocked = executionBlocked;
+  }
+  if (abortAvailable !== null && abortAvailable !== undefined) {
+    chatMessage.abortAvailable = abortAvailable;
+  }
+  if (killSwitchAvailable !== null && killSwitchAvailable !== undefined) {
+    chatMessage.killSwitchAvailable = killSwitchAvailable;
+  }
+  if (rollbackReserved !== null && rollbackReserved !== undefined) {
+    chatMessage.rollbackReserved = rollbackReserved;
+  }
+  if (nextRuntimeStep) {
+    chatMessage.nextRuntimeStep = nextRuntimeStep;
+  }
+
+  // Derive message phase from available context (Step 20 → Step 19 → Step 18 → Step 17 → Step 16 → Step 15)
+  if (runtimeStatus || planPhase === "runtime_execution_phase") {
+    chatMessage.messagePhase = "runtime_execution_phase";
+  } else if (candidateStatus || planPhase === "candidate_gate_phase") {
     chatMessage.messagePhase = "candidate_gate_phase";
   } else if (previewState || planPhase === "preview_safety_phase") {
     chatMessage.messagePhase = "preview_safety_phase";
@@ -9602,6 +9715,9 @@ function _buildApplyCandidate(agentCase) {
     dryRunOnly:                  true,
   });
 
+  // Step 20: Build controlled execution session after apply candidate
+  _buildExecutionSession(agentCase);
+
   return applyCandidate;
 }
 
@@ -9727,6 +9843,789 @@ function getApplyCandidateSummary() {
     topPreconditions,
     candidateCases:                candidateCases.slice(0, CANDIDATE_SUMMARY_MAX_ENTRIES),
     generatedAt:                   new Date().toISOString(),
+  };
+}
+
+/* ─────────────────────────────────────────────
+   Step 20: Controlled Execution Orchestrator /
+   Apply Runtime / Audit & Kill Switch
+   ─────────────────────────────────────────────
+   Translates a final approved candidate into a
+   controlled execution session with hard
+   guardrails, abort/kill-switch paths, rollback
+   reservation, and a full audit trail.
+
+   The system NEVER auto-executes.  It prepares
+   the runtime session – the user must explicitly
+   start it.
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive the runtime status from a candidate's approval state,
+ * guardrails, and readiness information.
+ *
+ * @param {Object} params
+ * @returns {string} runtime status
+ */
+function _deriveRuntimeStatus({ applyCandidate, applyReadiness }) {
+  if (!applyCandidate) return "runtime_not_created";
+
+  if (applyCandidate.candidateBlocked) return "runtime_blocked";
+
+  if (applyCandidate.candidateStatus === "candidate_diagnosis_only") return "runtime_not_created";
+
+  if (!applyCandidate.candidateReadyForFinalApproval) {
+    if (applyCandidate.candidateStatus === "candidate_cross_agent_pending") return "runtime_blocked";
+    if (applyCandidate.candidateStatus === "candidate_scope_confirmation_needed") return "runtime_blocked";
+    return "runtime_not_created";
+  }
+
+  // Candidate is approved – check guardrail completeness
+  const guardrails = applyCandidate.guardrails || [];
+  const allGuardrailsMet = guardrails.every(g => !g.active || g.satisfied !== false);
+  if (!allGuardrailsMet) return "runtime_blocked";
+
+  // Check for missing approvals
+  const missingApprovals = applyCandidate.missingApprovals || [];
+  if (missingApprovals.length > 0) return "runtime_blocked";
+
+  // Check rollback requirements
+  if (applyReadiness && applyReadiness.applyBlocked) return "runtime_blocked";
+
+  return "runtime_awaiting_user_start";
+}
+
+/**
+ * Derive the runtime mode from candidate mode and agent role.
+ *
+ * @param {Object} params
+ * @returns {string} runtime mode
+ */
+function _deriveRuntimeMode({ applyCandidate, agentRole }) {
+  if (!applyCandidate) return "dry_run";
+
+  const cm = applyCandidate.candidateMode || "";
+
+  if (cm === "diagnosis_only") return "dry_run";
+  if (cm === "backend_only") return "backend_only";
+  if (cm === "frontend_only") return "frontend_only";
+  if (cm === "cross_agent_candidate") return "cross_agent_controlled";
+  if (cm === "partial_scope") return "partial_apply";
+
+  if (cm === "final_approval_candidate") {
+    if (agentRole === "deepseek_backend") return "backend_only";
+    if (agentRole === "gemini_frontend") return "frontend_only";
+    return "controlled_apply";
+  }
+
+  return "dry_run";
+}
+
+/**
+ * Derive the execution state from runtime status.
+ *
+ * @param {Object} params
+ * @returns {string} execution state
+ */
+function _deriveExecutionState({ runtimeStatus }) {
+  switch (runtimeStatus) {
+    case "runtime_not_created":            return "pending";
+    case "runtime_blocked":                return "blocked";
+    case "runtime_ready":                  return "ready";
+    case "runtime_awaiting_user_start":    return "ready";
+    case "runtime_running":                return "active";
+    case "runtime_completed":              return "finished";
+    case "runtime_aborted":                return "stopped";
+    case "runtime_failed":                 return "failed";
+    case "runtime_rollback_reserved":      return "ready";
+    default:                               return "pending";
+  }
+}
+
+/**
+ * Derive execution guardrails from candidate guardrails and runtime mode.
+ * These are the hard constraints that govern the execution session.
+ *
+ * @param {Object} params
+ * @returns {Array<Object>} execution guardrails
+ */
+function _deriveExecutionGuardrails({ applyCandidate, runtimeMode, runtimeStatus }) {
+  const guardrails = [];
+
+  // Always present: no auto-execute
+  guardrails.push({
+    type: "no_auto_execute",
+    active: true,
+    description: "Keine automatische Ausführung ohne explizite Benutzerfreigabe",
+    enforced: true,
+  });
+
+  // Always present: requires user start
+  guardrails.push({
+    type: "requires_user_start",
+    active: true,
+    description: "Ausführung erfordert expliziten Startbefehl durch den Benutzer",
+    enforced: true,
+  });
+
+  // Always present: scope locked
+  guardrails.push({
+    type: "scope_locked",
+    active: true,
+    description: "Der Ausführungsumfang ist auf den freigegebenen Kandidaten begrenzt",
+    enforced: true,
+  });
+
+  // Always present: no scope expansion
+  guardrails.push({
+    type: "no_scope_expansion",
+    active: true,
+    description: "Keine Erweiterung des Ausführungsumfangs während der Laufzeit",
+    enforced: true,
+  });
+
+  // Target restriction based on mode
+  if (runtimeMode === "backend_only" || runtimeMode === "frontend_only") {
+    guardrails.push({
+      type: "target_restriction",
+      active: true,
+      description: runtimeMode === "backend_only"
+        ? "Ausführung nur auf Backend-Ziele beschränkt"
+        : "Ausführung nur auf Frontend-Ziele beschränkt",
+      enforced: true,
+    });
+  }
+
+  // Kill switch always required
+  guardrails.push({
+    type: "kill_switch_required",
+    active: true,
+    description: "Kill Switch bleibt während der gesamten Ausführung verfügbar",
+    enforced: true,
+  });
+
+  // Abort path always required
+  guardrails.push({
+    type: "abort_path_required",
+    active: true,
+    description: "Kontrollierter Abbruchpfad ist jederzeit verfügbar",
+    enforced: true,
+  });
+
+  // Rollback on failure
+  const rollbackRequired = applyCandidate
+    && applyCandidate.guardrails
+    && applyCandidate.guardrails.some(g => g.type === "rollback_mandatory" && g.active);
+  guardrails.push({
+    type: "rollback_on_failure",
+    active: true,
+    description: rollbackRequired
+      ? "Rollback ist bei Ausführungsfehler zwingend vorgesehen"
+      : "Rollback-Vormerkung ist bei Ausführungsfehler vorgesehen",
+    enforced: !!rollbackRequired,
+  });
+
+  // Cross-agent gate
+  if (runtimeMode === "cross_agent_controlled") {
+    guardrails.push({
+      type: "cross_agent_gate",
+      active: true,
+      description: "Cross-Agent-Freigabe erforderlich vor Ausführung beider Seiten",
+      enforced: true,
+    });
+  }
+
+  return guardrails;
+}
+
+/**
+ * Derive a runtime checklist based on candidate state and guardrails.
+ *
+ * @param {Object} params
+ * @returns {Array<Object>} checklist items
+ */
+function _deriveRuntimeChecklist({ applyCandidate, runtimeStatus, runtimeMode }) {
+  const checklist = [];
+
+  // Candidate must be approved
+  checklist.push({
+    item: "Kandidat final freigegeben",
+    required: true,
+    completed: applyCandidate && applyCandidate.candidateReadyForFinalApproval === true,
+  });
+
+  // Guardrails must be complete
+  const guardrailsComplete = applyCandidate
+    && (applyCandidate.guardrails || []).every(g => !g.active || g.satisfied !== false);
+  checklist.push({
+    item: "Alle Guardrails erfüllt",
+    required: true,
+    completed: !!guardrailsComplete,
+  });
+
+  // No missing approvals
+  const noMissingApprovals = applyCandidate
+    && (applyCandidate.missingApprovals || []).length === 0;
+  checklist.push({
+    item: "Keine fehlenden Freigaben",
+    required: true,
+    completed: !!noMissingApprovals,
+  });
+
+  // Scope confirmed
+  checklist.push({
+    item: "Ausführungsumfang bestätigt",
+    required: true,
+    completed: applyCandidate && applyCandidate.scopeLocked === true,
+  });
+
+  // User start confirmation pending
+  checklist.push({
+    item: "Benutzer-Startfreigabe erteilt",
+    required: true,
+    completed: runtimeStatus === "runtime_running" || runtimeStatus === "runtime_completed",
+  });
+
+  // Cross-agent review (conditional)
+  if (runtimeMode === "cross_agent_controlled") {
+    checklist.push({
+      item: "Cross-Agent-Review abgeschlossen",
+      required: true,
+      completed: applyCandidate && !applyCandidate.needsCrossAgentReview,
+    });
+  }
+
+  return checklist;
+}
+
+/**
+ * Derive runtime ownership based on agent role and candidate mode.
+ *
+ * @param {Object} params
+ * @returns {Object} ownership info
+ */
+function _deriveRuntimeOwnership({ agentRole, runtimeMode }) {
+  const isBackend = agentRole === "deepseek_backend";
+
+  let runtimeOwner = agentRole;
+  let executionOwner = agentRole;
+  let secondaryAgent = isBackend ? "gemini_frontend" : "deepseek_backend";
+  let handoffSuggested = false;
+  let needsCrossAgentReview = false;
+
+  if (runtimeMode === "cross_agent_controlled") {
+    needsCrossAgentReview = true;
+    handoffSuggested = true;
+  }
+
+  if (runtimeMode === "backend_only") {
+    runtimeOwner = "deepseek_backend";
+    executionOwner = "deepseek_backend";
+  } else if (runtimeMode === "frontend_only") {
+    runtimeOwner = "gemini_frontend";
+    executionOwner = "gemini_frontend";
+  }
+
+  return {
+    runtimeOwner,
+    executionOwner,
+    gateOwner: agentRole,
+    secondaryAgent,
+    handoffSuggested,
+    needsCrossAgentReview,
+    finalApprovalOwner: "user",
+  };
+}
+
+/**
+ * Derive the reason why execution is blocked, if applicable.
+ *
+ * @param {Object} params
+ * @returns {string|null} blocked reason or null
+ */
+function _deriveExecutionBlockedReason({ runtimeStatus, applyCandidate }) {
+  if (runtimeStatus !== "runtime_blocked") return null;
+
+  if (applyCandidate && applyCandidate.candidateBlocked) {
+    return applyCandidate.candidateBlockedReason || "Kandidat ist blockiert – Freigabe nicht möglich";
+  }
+
+  if (applyCandidate && applyCandidate.candidateStatus === "candidate_cross_agent_pending") {
+    return "Cross-Agent-Freigabe steht noch aus";
+  }
+
+  if (applyCandidate && applyCandidate.candidateStatus === "candidate_scope_confirmation_needed") {
+    return "Scope-Bestätigung erforderlich bevor Runtime gestartet werden kann";
+  }
+
+  if (applyCandidate && (applyCandidate.missingApprovals || []).length > 0) {
+    return `Fehlende Freigaben: ${applyCandidate.missingApprovals.join(", ")}`;
+  }
+
+  const incompleteGuardrails = (applyCandidate?.guardrails || []).filter(g => g.active && g.satisfied === false);
+  if (incompleteGuardrails.length > 0) {
+    return `Unerfüllte Guardrails: ${incompleteGuardrails.map(g => g.type).join(", ")}`;
+  }
+
+  return "Runtime-Voraussetzungen nicht vollständig erfüllt";
+}
+
+/**
+ * Build a human-readable, cooperative German message
+ * describing the execution session state.
+ *
+ * @param {Object} params
+ * @returns {string} message
+ */
+function _buildExecutionSessionMessage({
+  runtimeStatus,
+  runtimeMode,
+  executionState,
+  executionAllowed,
+  executionBlocked,
+  executionBlockedReason,
+  runtimeOwner,
+  abortAvailable,
+  killSwitchAvailable,
+  rollbackReserved,
+  runtimeChecklist,
+  runtimeGuardrails,
+}) {
+  const parts = [];
+
+  if (executionBlocked) {
+    parts.push("Ich habe die Ausführungssitzung vorbereitet, aber sie bleibt derzeit blockiert.");
+    if (executionBlockedReason) {
+      parts.push(`Grund: ${executionBlockedReason}`);
+    }
+    parts.push("Sobald die offenen Punkte geklärt sind, kann die Sitzung freigegeben werden.");
+  } else if (executionAllowed) {
+    parts.push("Ich habe eine kontrollierte Ausführungssitzung vorbereitet.");
+    parts.push("Diese Sitzung ist auf den freigegebenen Kandidaten begrenzt.");
+    parts.push("Die Ausführung bleibt blockiert, bis du final bestätigst.");
+  } else {
+    parts.push("Es wurde noch keine Ausführungssitzung erstellt.");
+    parts.push("Dafür wird zunächst ein final freigegebener Kandidat benötigt.");
+    return parts.join("\n");
+  }
+
+  // Scope description
+  if (runtimeMode === "backend_only") {
+    parts.push("\nDer Ausführungsumfang ist auf Backend-Änderungen beschränkt (APIs, Code, Datenfluss, Mapping, Routen).");
+  } else if (runtimeMode === "frontend_only") {
+    parts.push("\nDer Ausführungsumfang ist auf Frontend-Änderungen beschränkt (UX, Design, Darstellung, Beschriftung).");
+  } else if (runtimeMode === "cross_agent_controlled") {
+    parts.push("\nDie Ausführung erfordert koordinierte Änderungen auf Backend- und Frontend-Seite.");
+  } else if (runtimeMode === "partial_apply") {
+    parts.push("\nEs handelt sich um eine Teilanwendung – nicht alle Bereiche sind betroffen.");
+  } else if (runtimeMode === "dry_run") {
+    parts.push("\nDies ist ein Probelauf – keine echten Änderungen werden durchgeführt.");
+  }
+
+  // Guardrail summary
+  const activeGuardrails = (runtimeGuardrails || []).filter(g => g.active);
+  if (activeGuardrails.length > 0) {
+    parts.push(`\nAktive Laufzeit-Guardrails: ${activeGuardrails.length}`);
+    for (const g of activeGuardrails.slice(0, 4)) {
+      parts.push(`- ${g.description}`);
+    }
+    if (activeGuardrails.length > 4) {
+      parts.push(`- … und ${activeGuardrails.length - 4} weitere`);
+    }
+  }
+
+  // Checklist summary
+  const pendingItems = (runtimeChecklist || []).filter(c => c.required && !c.completed);
+  if (pendingItems.length > 0) {
+    parts.push(`\nOffene Prüfpunkte: ${pendingItems.length}`);
+    for (const c of pendingItems) {
+      parts.push(`- ${c.item}`);
+    }
+  }
+
+  // Safety features
+  const safetyNotes = [];
+  if (abortAvailable) safetyNotes.push("Ein Abbruch ist jederzeit vorgesehen");
+  if (killSwitchAvailable) safetyNotes.push("Kill Switch bleibt verfügbar");
+  if (rollbackReserved) safetyNotes.push("Der Rückweg bleibt vorgemerkt, falls Probleme auftreten");
+  if (safetyNotes.length > 0) {
+    parts.push(`\n${safetyNotes.join(". ")}.`);
+  }
+
+  // Next step
+  if (executionAllowed && !executionBlocked) {
+    parts.push("\nFür den nächsten Schritt brauche ich noch deine letzte Startfreigabe.");
+  } else if (executionBlocked) {
+    parts.push("\nSobald die Blockierungsgründe beseitigt sind, kann ich die Sitzung zur Startfreigabe vorbereiten.");
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Build a complete controlled execution session / apply runtime
+ * for an agent case that has an approved apply candidate.
+ *
+ * This is the central Step 20 function.
+ *
+ * @param {Object} agentCase - the agent case with applyCandidate19
+ * @returns {Object|null} execution session or null
+ */
+function _buildExecutionSession(agentCase) {
+  if (!agentCase) return null;
+
+  const applyCandidate = agentCase.applyCandidate19;
+  const applyReadiness = agentCase.applyReadiness17;
+  const actionDraft = agentCase.actionDraft16;
+  if (!applyCandidate) return null;
+
+  // Derive runtime status
+  const runtimeStatus = _deriveRuntimeStatus({ applyCandidate, applyReadiness });
+
+  // Skip if no runtime can be created
+  if (runtimeStatus === "runtime_not_created") return null;
+
+  // Derive runtime mode
+  const runtimeMode = _deriveRuntimeMode({
+    applyCandidate,
+    agentRole: agentCase.agentRole,
+  });
+
+  // Derive execution state
+  const executionState = _deriveExecutionState({ runtimeStatus });
+
+  // Derive execution guardrails
+  const runtimeGuardrails = _deriveExecutionGuardrails({
+    applyCandidate,
+    runtimeMode,
+    runtimeStatus,
+  });
+
+  // Derive runtime checklist
+  const runtimeChecklist = _deriveRuntimeChecklist({
+    applyCandidate,
+    runtimeStatus,
+    runtimeMode,
+  });
+
+  // Derive ownership
+  const ownership = _deriveRuntimeOwnership({
+    agentRole: agentCase.agentRole,
+    runtimeMode,
+  });
+
+  // Derive execution flags
+  const executionBlocked = runtimeStatus === "runtime_blocked";
+  const executionAllowed = runtimeStatus === "runtime_awaiting_user_start" || runtimeStatus === "runtime_ready";
+  const executionBlockedReason = _deriveExecutionBlockedReason({ runtimeStatus, applyCandidate });
+
+  // Abort / Kill Switch / Rollback
+  const abortAvailable = true;
+  const killSwitchAvailable = true;
+  const rollbackReserved = (applyCandidate.guardrails || []).some(g => g.type === "rollback_mandatory" && g.active)
+    || runtimeMode !== "dry_run";
+  const rollbackOnFailure = rollbackReserved;
+
+  // Build human-readable message
+  const executionSessionMessage = _buildExecutionSessionMessage({
+    runtimeStatus,
+    runtimeMode,
+    executionState,
+    executionAllowed,
+    executionBlocked,
+    executionBlockedReason,
+    runtimeOwner: ownership.runtimeOwner,
+    abortAvailable,
+    killSwitchAvailable,
+    rollbackReserved,
+    runtimeChecklist,
+    runtimeGuardrails,
+  });
+
+  // Build audit trail seed
+  const now = new Date().toISOString();
+  const executionAudit = [
+    {
+      event: "session_created",
+      timestamp: now,
+      runtimeStatus,
+      runtimeMode,
+      executionState,
+      agent: agentCase.agentRole,
+      detail: executionBlocked
+        ? `Session erstellt, aber blockiert: ${executionBlockedReason || "unbekannt"}`
+        : "Kontrollierte Ausführungssitzung erstellt und bereit für Startfreigabe",
+    },
+  ];
+
+  // Build the execution session object
+  const executionSession = {
+    // Identity
+    runtimeId:                     `runtime-${Date.now()}-${agentCase.agentCaseId}`,
+    agentCaseId:                   agentCase.agentCaseId,
+    candidateId:                   applyCandidate.candidateId,
+    proposalId:                    applyCandidate.proposalId,
+    draftId:                       applyCandidate.draftId,
+    runtimeVersion:                1,
+
+    // Status
+    runtimeStatus,
+    runtimeMode,
+    executionState,
+    executionAllowed,
+    executionBlocked,
+    executionBlockedReason,
+
+    // Lifecycle timestamps
+    executionStartedAt:            null,
+    executionCompletedAt:          null,
+    executionAbortedAt:            null,
+    sessionCreatedAt:              now,
+
+    // Scope
+    executionScope: {
+      affectedLayers:              applyCandidate.candidateScope?.affectedLayers || [],
+      affectedTargets:             applyCandidate.candidateScope?.affectedTargets || [],
+      allowedApplyTargets:         applyCandidate.allowedApplyTargets || [],
+      disallowedApplyTargets:      applyCandidate.disallowedApplyTargets || [],
+      draftType:                   applyCandidate.candidateScope?.draftType || null,
+      changeCategory:              applyCandidate.candidateScope?.changeCategory || null,
+    },
+
+    // Guardrails
+    runtimeGuardrails,
+    runtimeChecklist,
+
+    // Abort / Kill Switch / Rollback
+    abortAvailable,
+    killSwitchAvailable,
+    abortRequested:                false,
+    abortExecuted:                 false,
+    abortReason:                   null,
+    killSwitchRequested:           false,
+    killSwitchReason:              null,
+    rollbackReserved,
+    rollbackOnFailure,
+    rollbackReservation: rollbackReserved ? {
+      reserved:    true,
+      reservedAt:  now,
+      reason:      "Automatische Rollback-Vormerkung bei kontrollierter Ausführung",
+      triggeredAt: null,
+      completed:   false,
+    } : null,
+
+    // Ownership
+    runtimeOwner:                  ownership.runtimeOwner,
+    executionOwner:                ownership.executionOwner,
+    gateOwner:                     ownership.gateOwner,
+    secondaryAgent:                ownership.secondaryAgent,
+    handoffSuggested:              ownership.handoffSuggested,
+    needsCrossAgentReview:         ownership.needsCrossAgentReview,
+    finalApprovalOwner:            ownership.finalApprovalOwner,
+
+    // Audit trail
+    executionAudit,
+    statusTransitions: [
+      { from: null, to: runtimeStatus, at: now, reason: "Session erstellt" },
+    ],
+
+    // Summary
+    executionSummary:              null,
+    runtimeNotes:                  [],
+
+    // Human-readable message
+    executionSessionMessage,
+
+    // Safety
+    dryRunOnly:                    true,
+    executionGeneratedAt:          now,
+    executionGeneratedByAgent:     agentCase.agentRole,
+  };
+
+  // Attach to agent case
+  agentCase.executionSession20 = executionSession;
+
+  // Record runtime chat message
+  _recordAgentChatMessage({
+    agentCaseId:                 agentCase.agentCaseId,
+    agentRole:                   agentCase.agentRole,
+    messageType:                 "execution_session",
+    messageIntent:               "runtime_prepared",
+    messagePriority:             executionBlocked ? "high" : executionAllowed ? "high" : "normal",
+    requiresUserDecision:        true,
+    message:                     executionSessionMessage,
+    problemType:                 agentCase.problemType,
+    // Step 20 fields
+    runtimeStatus,
+    runtimeMode,
+    executionState,
+    executionAllowed,
+    executionBlocked,
+    abortAvailable,
+    killSwitchAvailable,
+    rollbackReserved,
+    nextRuntimeStep:             executionBlocked
+      ? "resolve_runtime_blockers"
+      : executionAllowed
+        ? "user_start_confirmation"
+        : "await_candidate_approval",
+  });
+
+  // Logging
+  logger.info("[agentBridge] Step 20 – Controlled Execution Session erzeugt", {
+    agentCaseId:                 agentCase.agentCaseId,
+    runtimeId:                   executionSession.runtimeId,
+    runtimeStatus,
+    runtimeMode,
+    executionState,
+    executionAllowed,
+    executionBlocked,
+    executionBlockedReason:      executionBlockedReason || null,
+    runtimeOwner:                ownership.runtimeOwner,
+    executionOwner:              ownership.executionOwner,
+    gateOwner:                   ownership.gateOwner,
+    finalApprovalOwner:          ownership.finalApprovalOwner,
+    abortAvailable,
+    killSwitchAvailable,
+    rollbackReserved,
+    rollbackOnFailure,
+    guardrailCount:              runtimeGuardrails.length,
+    checklistItemCount:          runtimeChecklist.length,
+    auditEntryCount:             executionAudit.length,
+    dryRunOnly:                  true,
+  });
+
+  return executionSession;
+}
+
+/**
+ * Get a summary of all execution runtime sessions across agent cases.
+ * Provides the operator a clear view of runtime / execution status.
+ *
+ * @returns {Object} execution runtime summary
+ */
+function getExecutionRuntimeSummary() {
+  const byRuntimeStatus = {};
+  const byRuntimeMode = {};
+  const byExecutionState = {};
+  const byRuntimeOwner = { deepseek_backend: 0, gemini_frontend: 0 };
+  const byGuardrailType = {};
+
+  let totalWithRuntime = 0;
+  let totalBlocked = 0;
+  let totalReady = 0;
+  let totalAwaitingStart = 0;
+  let totalRunning = 0;
+  let totalCompleted = 0;
+  let totalAborted = 0;
+  let totalFailed = 0;
+  let totalWithKillSwitch = 0;
+  let totalWithAbort = 0;
+  let totalWithRollback = 0;
+
+  const runtimeCases = [];
+  const commonBlockReasons = {};
+
+  for (const agentCase of _agentCaseRegistry.values()) {
+    const es = agentCase.executionSession20 || null;
+    if (!es) continue;
+
+    totalWithRuntime += 1;
+
+    // By runtime status
+    byRuntimeStatus[es.runtimeStatus] = (byRuntimeStatus[es.runtimeStatus] || 0) + 1;
+
+    // By runtime mode
+    byRuntimeMode[es.runtimeMode] = (byRuntimeMode[es.runtimeMode] || 0) + 1;
+
+    // By execution state
+    byExecutionState[es.executionState] = (byExecutionState[es.executionState] || 0) + 1;
+
+    // By runtime owner
+    if (byRuntimeOwner[es.runtimeOwner] !== undefined) {
+      byRuntimeOwner[es.runtimeOwner] += 1;
+    }
+
+    // Guardrail type distribution
+    for (const g of es.runtimeGuardrails || []) {
+      if (g.active) {
+        byGuardrailType[g.type] = (byGuardrailType[g.type] || 0) + 1;
+      }
+    }
+
+    // Counts
+    if (es.runtimeStatus === "runtime_blocked") totalBlocked += 1;
+    if (es.runtimeStatus === "runtime_ready") totalReady += 1;
+    if (es.runtimeStatus === "runtime_awaiting_user_start") totalAwaitingStart += 1;
+    if (es.runtimeStatus === "runtime_running") totalRunning += 1;
+    if (es.runtimeStatus === "runtime_completed") totalCompleted += 1;
+    if (es.runtimeStatus === "runtime_aborted") totalAborted += 1;
+    if (es.runtimeStatus === "runtime_failed") totalFailed += 1;
+    if (es.killSwitchAvailable) totalWithKillSwitch += 1;
+    if (es.abortAvailable) totalWithAbort += 1;
+    if (es.rollbackReserved) totalWithRollback += 1;
+
+    // Track common block reasons
+    if (es.executionBlockedReason) {
+      commonBlockReasons[es.executionBlockedReason] = (commonBlockReasons[es.executionBlockedReason] || 0) + 1;
+    }
+
+    runtimeCases.push({
+      agentCaseId:             agentCase.agentCaseId,
+      agentRole:               agentCase.agentRole,
+      problemType:             agentCase.problemType,
+      problemTitle:            agentCase.problemTitle,
+      runtimeId:               es.runtimeId,
+      runtimeStatus:           es.runtimeStatus,
+      runtimeMode:             es.runtimeMode,
+      executionState:          es.executionState,
+      executionAllowed:        es.executionAllowed,
+      executionBlocked:        es.executionBlocked,
+      runtimeOwner:            es.runtimeOwner,
+      executionOwner:          es.executionOwner,
+      finalApprovalOwner:      es.finalApprovalOwner,
+      abortAvailable:          es.abortAvailable,
+      killSwitchAvailable:     es.killSwitchAvailable,
+      rollbackReserved:        es.rollbackReserved,
+      rollbackOnFailure:       es.rollbackOnFailure,
+      guardrailCount:          (es.runtimeGuardrails || []).length,
+      checklistItemCount:      (es.runtimeChecklist || []).length,
+      auditEntryCount:         (es.executionAudit || []).length,
+      sessionCreatedAt:        es.sessionCreatedAt,
+      dryRunOnly:              es.dryRunOnly,
+    });
+  }
+
+  // Sort by sessionCreatedAt (newest first)
+  runtimeCases.sort((a, b) => (b.sessionCreatedAt || "").localeCompare(a.sessionCreatedAt || ""));
+
+  // Top block reasons
+  const topBlockReasons = Object.entries(commonBlockReasons)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([reason, count]) => ({ reason, count }));
+
+  return {
+    totalAgentCases:             _agentCaseRegistry.size,
+    totalWithRuntime,
+    totalBlocked,
+    totalReady,
+    totalAwaitingStart,
+    totalRunning,
+    totalCompleted,
+    totalAborted,
+    totalFailed,
+    totalWithKillSwitch,
+    totalWithAbort,
+    totalWithRollback,
+    byRuntimeStatus,
+    byRuntimeMode,
+    byExecutionState,
+    byRuntimeOwner,
+    byGuardrailType,
+    topBlockReasons,
+    runtimeCases:                runtimeCases.slice(0, RUNTIME_SUMMARY_MAX_ENTRIES),
+    generatedAt:                 new Date().toISOString(),
   };
 }
 
@@ -10089,4 +10988,10 @@ module.exports = {
   VALID_CANDIDATE_STATUSES,
   VALID_CANDIDATE_MODES,
   VALID_SCOPE_GUARDRAIL_TYPES,
+  // Step 20: Controlled Execution Orchestrator / Apply Runtime / Audit & Kill Switch
+  getExecutionRuntimeSummary,
+  VALID_RUNTIME_STATUSES,
+  VALID_RUNTIME_MODES,
+  VALID_EXECUTION_STATES,
+  VALID_EXECUTION_GUARDRAIL_TYPES,
 };

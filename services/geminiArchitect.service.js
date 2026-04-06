@@ -1131,6 +1131,62 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 20: Inject execution runtime / orchestrator context ──
+  if (bridgeContext && bridgeContext.executionRuntimeContext) {
+    const er = bridgeContext.executionRuntimeContext;
+    const erParts = [];
+    if (er.runtimeStatus) {
+      erParts.push(`Runtime-Status: ${er.runtimeStatus}`);
+    }
+    if (er.runtimeMode) {
+      erParts.push(`Runtime-Modus: ${er.runtimeMode}`);
+    }
+    if (er.executionState) {
+      erParts.push(`Ausführungszustand: ${er.executionState}`);
+    }
+    if (er.executionAllowed) {
+      erParts.push("Ausführung erlaubt: ja (wartet auf Startfreigabe)");
+    }
+    if (er.executionBlocked) {
+      erParts.push("Ausführung blockiert: ja");
+    }
+    if (er.runtimeOwner) {
+      erParts.push(`Runtime-Owner: ${er.runtimeOwner}`);
+    }
+    if (er.executionOwner) {
+      erParts.push(`Execution-Owner: ${er.executionOwner}`);
+    }
+    if (er.abortAvailable) {
+      erParts.push("Abbruch verfügbar: ja");
+    }
+    if (er.killSwitchAvailable) {
+      erParts.push("Kill Switch verfügbar: ja");
+    }
+    if (er.rollbackReserved) {
+      erParts.push("Rollback vorgemerkt: ja");
+    }
+    if (er.needsCrossAgentReview) {
+      erParts.push("Cross-Agent-Review erforderlich: ja");
+    }
+    if (er.guardrailCount > 0) {
+      erParts.push(`Aktive Laufzeit-Guardrails: ${er.guardrailCount}`);
+    }
+    if (er.checklistItemCount > 0) {
+      erParts.push(`Prüfpunkte: ${er.checklistItemCount}`);
+    }
+    if (er.dryRunOnly) {
+      erParts.push("Nur Probelauf (keine echte Ausführung)");
+    }
+    if (erParts.length) {
+      sections.push(`Ausführungssitzung (Step 20 – kontrollierte Runtime-Orchestrierung, keine autonome Ausführung):\n${erParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 20 – kooperativer Runtime-/Ausführungskontext eingebunden", {
+        runtimeStatus: er.runtimeStatus,
+        runtimeMode: er.runtimeMode,
+        executionState: er.executionState,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
