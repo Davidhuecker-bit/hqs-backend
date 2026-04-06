@@ -4135,6 +4135,8 @@ const {
   getApplyReadinessSummary,
   // Step 18: Controlled Apply Simulation / Execution Preview / Reversal Safety
   getExecutionPreviewSummary,
+  // Step 19: Controlled Apply Candidate / Action Package / Approval Gate
+  getApplyCandidateSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5444,6 +5446,60 @@ router.get("/deepseek/agent-bridge/execution-preview-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading execution-preview summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/apply-candidate-summary
+   Step 19: Controlled Apply Candidate /
+   Action Package / Approval Gate Summary.
+
+   Returns an overview of all agent cases with Step 19
+   apply candidates:
+   - How many cases have a candidate
+   - How many are ready for final approval
+   - How many are blocked / need scope confirmation
+   - Candidate status / mode distribution
+   - Guardrail type distribution
+   - Top missing approvals / preconditions
+   - Per-case candidate status
+
+   Cooperative, not autonomous.  The system prepares
+   the candidate – the user decides.
+
+   Response:
+     {
+       "success": true,
+       "version": "v1",
+       "applyCandidate": {
+         "totalAgentCases": 5,
+         "totalWithCandidate": 3,
+         "totalReadyForFinalApproval": 1,
+         "totalBlocked": 0,
+         "byCandidateStatus": { ... },
+         "byCandidateMode": { ... },
+         "byCandidateOwner": { ... },
+         "byGuardrailType": { ... },
+         "topMissingApprovals": [ ... ],
+         "topPreconditions": [ ... ],
+         "candidateCases": [ ... ],
+         "generatedAt": "2026-..."
+       }
+     }
+========================================================= */
+router.get("/deepseek/agent-bridge/apply-candidate-summary", (_req, res) => {
+  try {
+    const applyCandidate = getApplyCandidateSummary();
+    return res.json({ success: true, version: "v1", applyCandidate });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/apply-candidate-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading apply-candidate summary",
     });
   }
 });
