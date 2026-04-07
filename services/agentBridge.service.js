@@ -1542,6 +1542,21 @@ const VALID_COORDINATOR_MESSAGE_TYPES = [
   "leadership_changed",     // Lead agent changed
 ];
 
+/** Keywords used to detect backend domain relevance (Step B lead derivation) */
+const CONFERENCE_BACKEND_KEYWORDS = ["backend", "api", "server", "datenbank", "logik", "route", "endpoint", "service", "middleware"];
+
+/** Keywords used to detect frontend domain relevance (Step B lead derivation) */
+const CONFERENCE_FRONTEND_KEYWORDS = ["frontend", "ui", "ux", "design", "component", "darstellung", "layout", "css", "animation"];
+
+/** Signals that indicate clarification is needed rather than expansion */
+const CONFERENCE_CLARIFICATION_SIGNALS = ["was meinst du", "unklar", "könntest du", "nicht verstanden", "genauer", "was genau", "worum geht es", "bitte erkläre"];
+
+/** Keywords indicating discussion convergence / phase closure */
+const CONFERENCE_CONVERGENCE_KEYWORDS = ["einverstanden", "klar", "abgeschlossen", "verstanden", "passt", "reicht", "nächster punkt", "weiter", "gut so", "erledigt", "zusammengefasst"];
+
+/** Signals indicating a user message covers multiple topics */
+const CONFERENCE_TOPIC_SPLITTERS = ["und auch", "außerdem", "zusätzlich", "und dann noch", "plus"];
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -15516,16 +15531,13 @@ function _deriveLeadAgent(userMessage, session) {
   const lowerMsg = (userMessage || "").toLowerCase();
   
   // Check explicit domain references
-  const backendKeywords = ["backend", "api", "server", "datenbank", "logik", "route", "endpoint", "service", "middleware"];
-  const frontendKeywords = ["frontend", "ui", "ux", "design", "component", "darstellung", "layout", "css", "animation"];
-  
   let dsScore = 0;
   let gmScore = 0;
   
-  for (const kw of backendKeywords) {
+  for (const kw of CONFERENCE_BACKEND_KEYWORDS) {
     if (lowerMsg.includes(kw)) dsScore += 1;
   }
-  for (const kw of frontendKeywords) {
+  for (const kw of CONFERENCE_FRONTEND_KEYWORDS) {
     if (lowerMsg.includes(kw)) gmScore += 1;
   }
 
@@ -15557,8 +15569,7 @@ function _assessReplyPattern(userMessage, session, resolvedTarget) {
   const recentMessages = session.messages.slice(-6);
   
   // Check for clarification signals
-  const clarificationSignals = ["was meinst du", "unklar", "könntest du", "nicht verstanden", "genauer", "was genau", "worum geht es", "bitte erkläre"];
-  const needsClarification = clarificationSignals.some(s => lowerMsg.includes(s));
+  const needsClarification = CONFERENCE_CLARIFICATION_SIGNALS.some(s => lowerMsg.includes(s));
   if (needsClarification) return "needs_user_clarification";
   
   // If phase was just concluded, signal it
@@ -15618,12 +15629,11 @@ function _assessPhaseClosure(session) {
   if (recentMessages.length < 3) return { shouldClose: false, reason: null };
   
   // Check for convergence signals
-  const convergenceKeywords = ["einverstanden", "klar", "abgeschlossen", "verstanden", "passt", "reicht", "nächster punkt", "weiter", "gut so", "erledigt", "zusammengefasst"];
   const recentTexts = recentMessages.map(m => (m.content || "").toLowerCase());
   
   let convergenceScore = 0;
   for (const text of recentTexts) {
-    for (const kw of convergenceKeywords) {
+    for (const kw of CONFERENCE_CONVERGENCE_KEYWORDS) {
       if (text.includes(kw)) convergenceScore += 1;
     }
   }
@@ -15748,8 +15758,7 @@ function _assessClarificationNeed(userMessage, session) {
   }
   
   // Multiple topics in one message
-  const topicSplitters = ["und auch", "außerdem", "zusätzlich", "und dann noch", "plus"];
-  const multiTopicCount = topicSplitters.filter(s => lowerMsg.includes(s)).length;
+  const multiTopicCount = CONFERENCE_TOPIC_SPLITTERS.filter(s => lowerMsg.includes(s)).length;
   if (multiTopicCount >= 2) {
     return { needsClarification: true, reason: "Mehrere Themen in einer Nachricht – Priorisierung klären" };
   }
