@@ -1448,6 +1448,9 @@ const DECISION_FRAME_MAX_OPTIONS = 4;
 /** Maximum comparison dimensions per option */
 const DECISION_FRAME_MAX_DIMENSIONS = 10;
 
+/** Minimum open questions before preferring wait/clarify option */
+const DECISION_OPEN_QUESTIONS_THRESHOLD = 2;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -13186,15 +13189,16 @@ function _deriveActionOptions(thread, agentCase) {
   const msgs = thread.conversationMessages || [];
 
   // Determine problem type / domain
-  const problemType = (agentCase && agentCase.agentProblemType) || "unknown";
   const agentRole = (agentCase && agentCase.agentRole) || null;
   const hasHandoffs = (thread.handoffCount || 0) > 0;
-  const hasAgreedDirection = !!mem.agreedDirection;
   const openQuestionCount = (mem.openQuestions || []).length;
-  const hasDraft = !!(agentCase && agentCase.actionDraft16);
   const hasCandidate = !!(agentCase && agentCase.applyCandidate19);
   const hasRuntime = !!(agentCase && agentCase.executionSession20);
-  const caseScope = mem.caseScope || null;
+
+  /** Derive contributors based on handoff state and agent role */
+  const defaultAgent = agentRole === "gemini_frontend" ? "gemini" : "deepseek";
+  const singleContributors = [defaultAgent];
+  const crossContributors = ["deepseek", "gemini"];
 
   let optionCounter = 0;
 
@@ -13205,8 +13209,8 @@ function _deriveActionOptions(thread, agentCase) {
     optionTitle: "Diagnose vertiefen, noch nichts vorbereiten",
     optionText: _buildOptionText("diagnose_deeper", agentCase, mem),
     optionStatus: "option_viable",
-    optionOwner: agentRole === "gemini_frontend" ? "gemini" : "deepseek",
-    optionContributors: hasHandoffs ? ["deepseek", "gemini"] : [agentRole === "gemini_frontend" ? "gemini" : "deepseek"],
+    optionOwner: defaultAgent,
+    optionContributors: hasHandoffs ? crossContributors : singleContributors,
     optionStrategy: "conservative",
     comparison: _buildOptionComparison("diagnose_deeper", agentCase, mem, thread),
     createdAt: new Date().toISOString(),
@@ -13224,7 +13228,7 @@ function _deriveActionOptions(thread, agentCase) {
     optionText: _buildOptionText("targeted_scope", agentCase, mem),
     optionStatus: "option_viable",
     optionOwner: isBackendCase ? "deepseek" : "gemini",
-    optionContributors: [isBackendCase ? "deepseek" : "gemini"],
+    optionContributors: singleContributors,
     optionStrategy: "targeted",
     comparison: _buildOptionComparison("targeted_scope", agentCase, mem, thread),
     createdAt: new Date().toISOString(),
@@ -13245,7 +13249,7 @@ function _deriveActionOptions(thread, agentCase) {
       optionText: _buildOptionText("broad_scope", agentCase, mem),
       optionStatus: "option_viable",
       optionOwner: "cross_agent",
-      optionContributors: ["deepseek", "gemini"],
+      optionContributors: crossContributors,
       optionStrategy: "broad",
       comparison: _buildOptionComparison("broad_scope", agentCase, mem, thread),
       createdAt: new Date().toISOString(),
@@ -13265,7 +13269,7 @@ function _deriveActionOptions(thread, agentCase) {
       optionText: _buildOptionText("wait_clarify", agentCase, mem),
       optionStatus: "option_viable",
       optionOwner: "user_suggested",
-      optionContributors: hasHandoffs ? ["deepseek", "gemini"] : [agentRole === "gemini_frontend" ? "gemini" : "deepseek"],
+      optionContributors: hasHandoffs ? crossContributors : singleContributors,
       optionStrategy: "wait",
       comparison: _buildOptionComparison("wait_clarify", agentCase, mem, thread),
       createdAt: new Date().toISOString(),
@@ -13281,8 +13285,8 @@ function _deriveActionOptions(thread, agentCase) {
       optionTitle: "Scope eng halten und gezielt vorbereiten",
       optionText: _buildOptionText("targeted_scope", agentCase, mem),
       optionStatus: "option_viable",
-      optionOwner: agentRole === "gemini_frontend" ? "gemini" : "deepseek",
-      optionContributors: [agentRole === "gemini_frontend" ? "gemini" : "deepseek"],
+      optionOwner: defaultAgent,
+      optionContributors: singleContributors,
       optionStrategy: "targeted",
       comparison: _buildOptionComparison("targeted_scope", agentCase, mem, thread),
       createdAt: new Date().toISOString(),
@@ -13296,11 +13300,12 @@ function _deriveActionOptions(thread, agentCase) {
 
 /**
  * Build human-readable option text based on strategy type.
+ * Returns cooperative German text for the admin UI.
  *
  * @param {string} strategyType
  * @param {Object|null} agentCase
  * @param {Object} mem - case memory
- * @returns {string}
+ * @returns {string} German option description
  */
 function _buildOptionText(strategyType, agentCase, mem) {
   const problemTitle = (agentCase && agentCase.problemTitle) || "den aktuellen Fall";
@@ -13460,7 +13465,7 @@ function _deriveRecommendedOption(options, thread, agentCase, mem) {
   let recommended;
   let because;
 
-  if (openQs > 2) {
+  if (openQs > DECISION_OPEN_QUESTIONS_THRESHOLD) {
     recommended = wait || conservative;
     because = "Es gibt noch mehrere offene Punkte. Eine vorsichtige Klärung ist aktuell sinnvoller als ein breiter Entwurf.";
   } else if (!hasAgreedDirection && !hasDraft) {
