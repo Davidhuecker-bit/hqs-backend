@@ -995,6 +995,327 @@
       .blocker-beacon { display: none !important; }
       .rec-review-grid { grid-template-columns: repeat(3, 1fr); }
     }
+
+    /* ─────────────── Konferenz Workspace Step B ─────────────── */
+    .conf-workspace {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 40px;
+      overflow: hidden;
+    }
+
+    /* Header */
+    .conf-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 20px;
+      background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, rgba(139,92,246,0.06) 100%);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .conf-header-title { font-size: 14px; font-weight: 700; color: var(--text); }
+    .conf-header-sub   { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+    .conf-mode-badge {
+      font-size: 10px; font-weight: 700; padding: 3px 10px;
+      border-radius: 10px; border: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .conf-mode-work_chat      { background: rgba(59,130,246,0.12); color: var(--accent); border-color: rgba(59,130,246,0.25); }
+    .conf-mode-problem_solving{ background: rgba(245,158,11,0.12); color: var(--yellow); border-color: rgba(245,158,11,0.25); }
+    .conf-mode-decision_mode  { background: rgba(239,68,68,0.10); color: var(--red);    border-color: rgba(239,68,68,0.20); }
+    .conf-status-badge {
+      font-size: 10px; font-weight: 600; padding: 3px 8px;
+      border-radius: 8px; background: rgba(16,185,129,0.12);
+      color: var(--green); border: 1px solid rgba(16,185,129,0.25);
+    }
+    .conf-status-badge.paused { background: rgba(245,158,11,0.12); color: var(--yellow); border-color: rgba(245,158,11,0.25); }
+    .conf-status-badge.closed { background: rgba(100,116,139,0.12); color: var(--text-muted); border-color: var(--border); }
+
+    /* Agent indicator strip */
+    .conf-agents-strip {
+      display: flex; align-items: center; gap: 8px; margin-left: auto;
+    }
+    .conf-agent-pill {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 10px; font-weight: 600;
+      padding: 3px 10px; border-radius: 10px; border: 1px solid;
+    }
+    .conf-agent-pill.deepseek { background: rgba(59,130,246,0.10); color: var(--accent); border-color: rgba(59,130,246,0.25); }
+    .conf-agent-pill.gemini   { background: rgba(139,92,246,0.10); color: var(--accent2); border-color: rgba(139,92,246,0.25); }
+    .conf-agent-pill.leading  { font-weight: 700; box-shadow: 0 0 0 2px rgba(59,130,246,0.18); }
+    .conf-agent-pill.gemini.leading { box-shadow: 0 0 0 2px rgba(139,92,246,0.18); }
+    .conf-agent-dot { width: 6px; height: 6px; border-radius: 50%; }
+    .conf-agent-pill.deepseek .conf-agent-dot { background: var(--accent); }
+    .conf-agent-pill.gemini   .conf-agent-dot { background: var(--accent2); }
+
+    /* Controls row */
+    .conf-controls {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 20px; border-bottom: 1px solid var(--border);
+      flex-wrap: wrap; background: rgba(0,0,0,0.15);
+    }
+    .conf-ctrl-btn {
+      font-size: 11px; font-weight: 600; padding: 5px 12px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: transparent; color: var(--text-dim); cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .conf-ctrl-btn:hover { background: rgba(59,130,246,0.10); color: var(--accent); border-color: rgba(59,130,246,0.3); }
+    .conf-ctrl-btn.danger:hover { background: rgba(239,68,68,0.10); color: var(--red); border-color: rgba(239,68,68,0.3); }
+    .conf-ctrl-btn.primary { background: rgba(59,130,246,0.14); color: var(--accent); border-color: rgba(59,130,246,0.35); }
+    .conf-mode-select {
+      font-size: 11px; padding: 4px 10px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: var(--bg-card2); color: var(--text-dim); cursor: pointer;
+    }
+    .conf-focus-input {
+      font-size: 11px; padding: 4px 10px; flex: 1; min-width: 140px; max-width: 260px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: var(--bg-card2); color: var(--text);
+    }
+    .conf-focus-input::placeholder { color: var(--text-muted); }
+    .conf-ctrl-label { font-size: 10px; color: var(--text-muted); font-weight: 600; letter-spacing: 0.4px; }
+
+    /* Moderation hint banner */
+    .conf-moderation-hint {
+      margin: 0 20px 0 20px; margin-top: 12px;
+      padding: 8px 14px;
+      background: rgba(6,182,212,0.07);
+      border: 1px solid rgba(6,182,212,0.18);
+      border-radius: var(--radius-sm);
+      font-size: 11px; color: var(--accent3);
+      display: flex; align-items: flex-start; gap: 8px;
+    }
+    .conf-moderation-hint .conf-hint-icon { flex-shrink: 0; margin-top: 1px; }
+
+    /* Chat area */
+    .conf-chat {
+      padding: 16px 20px;
+      max-height: 520px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      scroll-behavior: smooth;
+    }
+
+    /* Message group – clusters messages with a moderation note between groups */
+    .conf-msg-group { margin-bottom: 16px; }
+    .conf-group-label {
+      font-size: 10px; font-weight: 600; color: var(--text-muted);
+      letter-spacing: 0.4px; text-transform: uppercase;
+      margin-bottom: 6px; padding-left: 2px;
+    }
+
+    /* Individual messages */
+    .conf-message {
+      display: flex; gap: 10px; margin-bottom: 8px;
+    }
+    .conf-message.user { flex-direction: row-reverse; }
+    .conf-msg-avatar {
+      width: 28px; height: 28px; border-radius: 8px; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 800;
+    }
+    .conf-msg-avatar.user     { background: rgba(100,116,139,0.25); color: var(--text-dim); }
+    .conf-msg-avatar.deepseek { background: rgba(59,130,246,0.18);  color: var(--accent); }
+    .conf-msg-avatar.gemini   { background: rgba(139,92,246,0.18);  color: var(--accent2); }
+    .conf-msg-avatar.system   { background: rgba(6,182,212,0.14);   color: var(--accent3); }
+
+    .conf-msg-body { flex: 1; max-width: 78%; }
+    .conf-message.user .conf-msg-body { align-items: flex-end; display: flex; flex-direction: column; }
+
+    .conf-msg-meta {
+      display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap;
+    }
+    .conf-message.user .conf-msg-meta { justify-content: flex-end; }
+    .conf-msg-sender { font-size: 11px; font-weight: 700; }
+    .conf-msg-sender.deepseek { color: var(--accent); }
+    .conf-msg-sender.gemini   { color: var(--accent2); }
+    .conf-msg-sender.system   { color: var(--accent3); }
+    .conf-msg-sender.user     { color: var(--text-muted); }
+    .conf-msg-time { font-size: 10px; color: var(--text-muted); }
+
+    /* Reply-type badge */
+    .conf-reply-badge {
+      font-size: 9px; font-weight: 700; padding: 2px 7px;
+      border-radius: 8px; border: 1px solid; white-space: nowrap;
+      letter-spacing: 0.3px;
+    }
+    .conf-reply-badge.solo       { background: rgba(59,130,246,0.10); color: var(--accent);  border-color: rgba(59,130,246,0.25); }
+    .conf-reply-badge.fuehrend   { background: rgba(59,130,246,0.14); color: var(--accent);  border-color: rgba(59,130,246,0.35); font-weight: 800; }
+    .conf-reply-badge.ergaenzend { background: rgba(139,92,246,0.10); color: var(--accent2); border-color: rgba(139,92,246,0.25); }
+    .conf-reply-badge.koordiniert{ background: rgba(6,182,212,0.10);  color: var(--accent3); border-color: rgba(6,182,212,0.25); }
+    .conf-reply-badge.gebuendelt { background: rgba(16,185,129,0.10); color: var(--green);   border-color: rgba(16,185,129,0.25); }
+    .conf-reply-badge.rueckfrage { background: rgba(245,158,11,0.10); color: var(--yellow);  border-color: rgba(245,158,11,0.25); }
+    .conf-reply-badge.moderiert  { background: rgba(6,182,212,0.08);  color: var(--accent3); border-color: rgba(6,182,212,0.18); font-style: italic; }
+
+    /* Bubble */
+    .conf-msg-bubble {
+      padding: 10px 13px;
+      border-radius: 10px;
+      font-size: 13px; line-height: 1.55; color: var(--text);
+      max-width: 100%;
+      word-break: break-word;
+    }
+    .conf-message.user .conf-msg-bubble {
+      background: rgba(59,130,246,0.12);
+      border: 1px solid rgba(59,130,246,0.20);
+      border-radius: 10px 4px 10px 10px;
+    }
+    .conf-message:not(.user) .conf-msg-bubble {
+      background: var(--bg-card2);
+      border: 1px solid var(--border);
+      border-radius: 4px 10px 10px 10px;
+    }
+    .conf-message.system .conf-msg-bubble {
+      background: rgba(6,182,212,0.07);
+      border: 1px solid rgba(6,182,212,0.15);
+      font-size: 11px; color: var(--text-muted); font-style: italic;
+    }
+
+    /* Routing reason note */
+    .conf-routing-note {
+      font-size: 10px; color: var(--text-muted); margin-top: 4px; padding-left: 2px;
+      font-style: italic;
+    }
+
+    /* Open question prompt */
+    .conf-open-prompt {
+      margin: 4px 0 8px 38px;
+      padding: 8px 12px;
+      background: rgba(245,158,11,0.07);
+      border-left: 3px solid rgba(245,158,11,0.35);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      font-size: 11px; color: var(--yellow);
+    }
+
+    /* Phase Closure Card */
+    .conf-closure-card {
+      margin: 12px 0 8px 0;
+      padding: 14px 16px;
+      background: rgba(16,185,129,0.06);
+      border: 1px solid rgba(16,185,129,0.20);
+      border-radius: var(--radius-sm);
+    }
+    .conf-closure-title {
+      font-size: 12px; font-weight: 700; color: var(--green); margin-bottom: 8px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .conf-closure-row {
+      display: flex; align-items: flex-start; gap: 8px;
+      font-size: 11px; color: var(--text-dim); margin-bottom: 4px;
+    }
+    .conf-closure-row .lbl { color: var(--text-muted); min-width: 80px; flex-shrink: 0; }
+    .conf-closure-next {
+      margin-top: 8px; padding: 7px 11px;
+      background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.18);
+      border-radius: 6px; font-size: 11px; color: var(--accent);
+    }
+
+    /* Phase summary chip row */
+    .conf-phase-chips {
+      display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0;
+    }
+    .conf-phase-chip {
+      font-size: 10px; padding: 3px 9px; border-radius: 9px;
+      border: 1px solid var(--border); color: var(--text-muted);
+      background: var(--bg-card2); white-space: nowrap;
+    }
+    .conf-phase-chip.done   { color: var(--green);  border-color: rgba(16,185,129,0.30); background: rgba(16,185,129,0.07); }
+    .conf-phase-chip.open   { color: var(--yellow); border-color: rgba(245,158,11,0.30); background: rgba(245,158,11,0.07); }
+    .conf-phase-chip.decide { color: var(--red);    border-color: rgba(239,68,68,0.25);  background: rgba(239,68,68,0.06); }
+
+    /* Composer */
+    .conf-composer {
+      padding: 14px 20px;
+      border-top: 1px solid var(--border);
+      background: rgba(0,0,0,0.12);
+    }
+    .conf-composer-row {
+      display: flex; gap: 8px; align-items: flex-end;
+    }
+    .conf-target-select {
+      font-size: 11px; padding: 8px 10px; min-width: 110px;
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: var(--bg-card2); color: var(--text-dim); cursor: pointer; flex-shrink: 0;
+    }
+    .conf-textarea {
+      flex: 1; font-size: 13px; padding: 8px 12px; resize: none;
+      border-radius: var(--radius-sm); border: 1px solid var(--border);
+      background: var(--bg-card2); color: var(--text); font-family: inherit;
+      min-height: 38px; max-height: 100px;
+      transition: border-color 0.15s;
+    }
+    .conf-textarea:focus { outline: none; border-color: rgba(59,130,246,0.4); }
+    .conf-send-btn {
+      font-size: 12px; font-weight: 700; padding: 8px 16px;
+      border-radius: var(--radius-sm); border: none;
+      background: rgba(59,130,246,0.18); color: var(--accent);
+      cursor: pointer; transition: background 0.15s; white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .conf-send-btn:hover:not(:disabled) { background: rgba(59,130,246,0.28); }
+    .conf-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* Empty state */
+    .conf-empty {
+      text-align: center; padding: 40px 20px;
+      color: var(--text-muted); font-size: 12px;
+    }
+    .conf-empty-icon { font-size: 32px; margin-bottom: 10px; }
+
+    /* Sending indicator */
+    .conf-typing {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; margin-bottom: 8px;
+      font-size: 11px; color: var(--text-muted); font-style: italic;
+    }
+    .conf-typing-dots span {
+      display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+      background: var(--text-muted); margin: 0 1px;
+      animation: confDot 1.2s infinite;
+    }
+    .conf-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .conf-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes confDot {
+      0%,80%,100% { transform: scale(0.6); opacity: 0.4; }
+      40%         { transform: scale(1.0); opacity: 1; }
+    }
+
+    /* Session list (no active session) */
+    .conf-session-list {
+      padding: 16px 20px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .conf-session-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+      background: var(--bg-card2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .conf-session-item:hover { border-color: rgba(59,130,246,0.35); }
+    .conf-session-item-id { font-size: 10px; color: var(--text-muted); font-family: monospace; }
+    .conf-session-item-focus { font-size: 12px; font-weight: 600; color: var(--text); flex: 1; }
+    .conf-session-item-mode  { font-size: 10px; color: var(--text-muted); }
+
+    /* Mobile adjustments */
+    @media (max-width: 640px) {
+      .conf-header { padding: 12px 14px; gap: 8px; }
+      .conf-agents-strip { margin-left: 0; width: 100%; }
+      .conf-controls { padding: 8px 14px; }
+      .conf-focus-input { max-width: 100%; }
+      .conf-chat { padding: 12px 14px; max-height: 380px; }
+      .conf-msg-body { max-width: 88%; }
+      .conf-composer { padding: 10px 14px; }
+      .conf-composer-row { flex-wrap: wrap; }
+      .conf-target-select { width: 100%; min-width: unset; }
+      .conf-textarea { min-height: 38px; }
+      .conf-moderation-hint { margin: 8px 14px 0 14px; font-size: 10px; }
+      .conf-open-prompt { margin-left: 10px; }
+    }
   </style>
 </head>
 <body>
@@ -1509,6 +1830,79 @@
   </div>
   <!-- End Level 3: Portfolio Twin Stage 4 -->
   </div>
+
+  <!-- ═══════════════════ KONFERENZ WORKSPACE (Step B) ═══════════════════ -->
+  <div class="section-title" style="margin-top:40px">
+    <span class="icon">🤝</span>
+    Konferenz-Workspace
+    <span class="section-sub">DeepSeek · Gemini · Koordinierter Beraterstab</span>
+    <button class="refresh-btn" id="reloadConfBtn" style="margin-left:auto" onclick="loadConferenceWorkspace()">
+      <span class="refresh-icon">↻</span> Übersicht
+    </button>
+  </div>
+
+  <div class="conf-workspace" id="confWorkspace">
+    <!-- Header -->
+    <div class="conf-header" id="confHeader">
+      <div>
+        <div class="conf-header-title" id="confTitle">Konferenz</div>
+        <div class="conf-header-sub" id="confFocusLabel">Noch keine aktive Session</div>
+      </div>
+      <span class="conf-mode-badge conf-mode-work_chat" id="confModeBadge">Arbeitschat</span>
+      <span class="conf-status-badge closed" id="confStatusBadge">Bereit</span>
+      <div class="conf-agents-strip" id="confAgentsStrip">
+        <div class="conf-agent-pill deepseek" id="confPillDS"><div class="conf-agent-dot"></div>DeepSeek</div>
+        <div class="conf-agent-pill gemini"   id="confPillGM"><div class="conf-agent-dot"></div>Gemini</div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="conf-controls" id="confControls">
+      <span class="conf-ctrl-label">MODUS</span>
+      <select class="conf-mode-select" id="confModeSelect">
+        <option value="work_chat">Arbeitschat</option>
+        <option value="problem_solving">Problemanalyse</option>
+        <option value="decision_mode">Entscheidungsmodus</option>
+      </select>
+      <span class="conf-ctrl-label">FOKUS</span>
+      <input class="conf-focus-input" id="confFocusInput" type="text" placeholder="z. B. API-Fehler in Modul X …" maxlength="120" />
+      <button class="conf-ctrl-btn primary" id="confOpenBtn" onclick="confOpenSession()">＋ Neue Session</button>
+      <button class="conf-ctrl-btn" id="confResumeBtn" style="display:none" onclick="confResumeSession()">▶ Fortsetzen</button>
+      <button class="conf-ctrl-btn danger" id="confCloseBtn" style="display:none" onclick="confCloseSession()">✕ Session schließen</button>
+    </div>
+
+    <!-- Moderation hint (appears contextually) -->
+    <div class="conf-moderation-hint" id="confModerationHint" style="display:none">
+      <div class="conf-hint-icon">💬</div>
+      <div id="confModerationHintText">–</div>
+    </div>
+
+    <!-- Chat -->
+    <div class="conf-chat" id="confChat">
+      <div class="conf-empty">
+        <div class="conf-empty-icon">🤝</div>
+        Noch keine Konferenz aktiv.<br>
+        <span style="font-size:11px">Neue Session starten, um DeepSeek und Gemini koordiniert einzusetzen.</span>
+      </div>
+    </div>
+
+    <!-- Composer -->
+    <div class="conf-composer" id="confComposer">
+      <div class="conf-composer-row">
+        <select class="conf-target-select" id="confTargetSelect">
+          <option value="both">🤝 Beide Agenten</option>
+          <option value="deepseek">🔵 DeepSeek</option>
+          <option value="gemini">🟣 Gemini</option>
+          <option value="system">⚙️ System</option>
+        </select>
+        <textarea class="conf-textarea" id="confTextarea" placeholder="Nachricht eingeben …" rows="1"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();confSendMessage()}"
+          oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"></textarea>
+        <button class="conf-send-btn" id="confSendBtn" onclick="confSendMessage()" disabled>Senden →</button>
+      </div>
+    </div>
+  </div>
+  <!-- End Konferenz Workspace -->
 
 </main>
 
@@ -3316,6 +3710,650 @@ async function loadRecommendationReview() {
       </div>`;
   }
 }
+
+/* ═══════════════════ KONFERENZ WORKSPACE – Step B ═══════════════════ */
+
+/* ── State ── */
+const _conf = {
+  sessionId:    null,
+  status:       null,    // session_active | session_paused | session_closed | …
+  mode:         'work_chat',
+  focus:        null,
+  messages:     [],      // all rendered messages (user + agent)
+  lastLeader:   null,    // deepseek | gemini | null
+  sending:      false,
+};
+
+/* ── Labels ── */
+const _CONF_MODE_LABELS = {
+  work_chat:       'Arbeitschat',
+  problem_solving: 'Problemanalyse',
+  decision_mode:   'Entscheidungsmodus',
+};
+const _CONF_STATUS_LABELS = {
+  session_active:   'Aktiv',
+  session_paused:   'Pausiert',
+  session_closed:   'Geschlossen',
+  session_archived: 'Archiviert',
+  session_open:     'Offen',
+};
+
+/* ──────────────────────────────────────────────
+   Reply-type derivation (pure frontend logic)
+   ────────────────────────────────────────────── */
+function _confDeriveReplyType(msg, agentReplies, index) {
+  const agent = msg.speakerAgent;
+  if (msg.messageRole === 'user') return null;
+
+  // System messages are always "moderiert"
+  if (agent === 'system') return 'moderiert';
+
+  // Only reply in group → solo
+  if (agentReplies.length === 1) {
+    // Check if it was targeted solo from prior context
+    return 'solo';
+  }
+
+  // Multiple agent replies in this turn → coordinated or bundled
+  if (agentReplies.length >= 2) {
+    // First agent in a 2-reply group → führend
+    if (index === 0) return 'fuehrend';
+    // Second agent → ergänzend
+    return 'ergaenzend';
+  }
+
+  return 'solo';
+}
+
+/* ──────────────────────────────────────────────
+   Determine leading agent for the header strip
+   ────────────────────────────────────────────── */
+function _confDeriveLeadingAgent(messages) {
+  // Look at last 4 agent messages to determine who is most active/leading
+  const recent = messages.filter(m => m.messageRole === 'agent' && m.speakerAgent !== 'system').slice(-4);
+  if (recent.length === 0) return null;
+
+  const counts = { deepseek: 0, gemini: 0 };
+  recent.forEach(m => { if (counts[m.speakerAgent] !== undefined) counts[m.speakerAgent]++; });
+
+  if (counts.deepseek > counts.gemini) return 'deepseek';
+  if (counts.gemini > counts.deepseek) return 'gemini';
+  // Tie → last speaker
+  const last = recent[recent.length - 1];
+  return last.speakerAgent || null;
+}
+
+/* ──────────────────────────────────────────────
+   Moderation hint generation
+   ────────────────────────────────────────────── */
+function _confBuildModerationHint(messages, lastRouting) {
+  if (!messages || messages.length === 0) return null;
+
+  const recentAgent = messages.filter(m => m.messageRole === 'agent' && m.speakerAgent !== 'system').slice(-2);
+  if (recentAgent.length === 0) return null;
+
+  const lastMsg = recentAgent[recentAgent.length - 1];
+  const prevMsg = recentAgent.length > 1 ? recentAgent[0] : null;
+
+  // Two different agents just replied → coordinated
+  if (prevMsg && prevMsg.speakerAgent !== lastMsg.speakerAgent) {
+    const leadLabel  = lastMsg.speakerAgent === 'deepseek' ? 'DeepSeek' : 'Gemini';
+    const suppLabel  = prevMsg.speakerAgent  === 'deepseek' ? 'DeepSeek' : 'Gemini';
+    const role       = prevMsg.speakerAgent === 'deepseek' ? 'technischen Teil' : 'UI-Folge';
+    const role2      = lastMsg.speakerAgent === 'gemini'   ? 'Ergänzung' : 'Vertiefung';
+    return `${suppLabel} führt hier den ${role}. ${leadLabel} liefert die ${role2}.`;
+  }
+
+  // Routing reason hint
+  if (lastRouting && lastRouting.routingReason) {
+    const reason = lastRouting.routingReason;
+    if (reason.includes('backend') || reason.includes('deepseek')) {
+      return 'DeepSeek führt hier den technischen Teil.';
+    }
+    if (reason.includes('frontend') || reason.includes('gemini') || reason.includes('ui')) {
+      return 'Gemini führt hier die UI-Perspektive.';
+    }
+    if (reason.includes('both') || reason.includes('beide')) {
+      return 'Diese Antwort wurde koordiniert – beide Agenten liefern ihre Sicht.';
+    }
+  }
+
+  // Default by agent
+  if (lastMsg.speakerAgent === 'deepseek') return 'DeepSeek führt die Analyse.';
+  if (lastMsg.speakerAgent === 'gemini')   return 'Gemini gibt die Frontend-Einschätzung.';
+
+  return null;
+}
+
+/* ──────────────────────────────────────────────
+   Phase closure / open-question detection
+   ────────────────────────────────────────────── */
+function _confDetectPhaseState(messages) {
+  const agentMsgs = messages.filter(m => m.messageRole === 'agent');
+  const result = {
+    canSuggestClosure: false,
+    openQuestionPrompt: null,
+    phaseChips: [],
+  };
+
+  if (agentMsgs.length < 3) return result;
+
+  const allContent = agentMsgs.map(m => (m.content || '').toLowerCase()).join(' ');
+
+  // Detect resolution signals
+  const resolved = /ursache|gelöst|behoben|klar|abgeschlossen|verstanden|empfehlung|konkret/i.test(allContent);
+  const openQ    = /unklar|offen|fehlt|brauche noch|frage|rückfrage|scope|entscheidung|klären/i.test(allContent);
+  const needDec  = /entscheidung|option|wählen|abwägen|abwägung|vorschlag/i.test(allContent);
+
+  if (resolved) result.phaseChips.push({ label: '✅ Ursache klar', cls: 'done' });
+  if (openQ)    result.phaseChips.push({ label: '❓ Offen', cls: 'open' });
+  if (needDec)  result.phaseChips.push({ label: '⚖️ Entscheidung nötig', cls: 'decide' });
+  if (!openQ && !needDec && resolved) result.phaseChips.push({ label: '✅ Phase abgeschlossen', cls: 'done' });
+
+  // Open question prompt
+  if (openQ) {
+    const prompts = [
+      'Bevor wir weitergehen – was genau ist noch unklar?',
+      'Für die nächste Empfehlung fehlt noch eine Information.',
+      'Die Analyse ist fast klar. Offen ist noch die Scope-Frage.',
+    ];
+    result.openQuestionPrompt = prompts[agentMsgs.length % prompts.length];
+  }
+
+  // Closure suggestion after ≥6 agent messages and resolved
+  if (agentMsgs.length >= 6 && resolved && !openQ) {
+    result.canSuggestClosure = true;
+  }
+
+  return result;
+}
+
+/* ──────────────────────────────────────────────
+   Build reply-type label text
+   ────────────────────────────────────────────── */
+function _confReplyTypeLabel(type) {
+  const map = {
+    solo:        'Solo',
+    fuehrend:    'Führend',
+    ergaenzend:  'Ergänzend',
+    koordiniert: 'Koordiniert',
+    gebuendelt:  'Gebündelt',
+    rueckfrage:  'Rückfrage',
+    moderiert:   'Moderiert',
+  };
+  return map[type] || type;
+}
+
+/* ──────────────────────────────────────────────
+   Agent avatar letters
+   ────────────────────────────────────────────── */
+function _confAvatarLetter(agent) {
+  if (agent === 'deepseek') return 'DS';
+  if (agent === 'gemini')   return 'GM';
+  if (agent === 'system')   return '⚙';
+  return 'U';
+}
+
+/* ──────────────────────────────────────────────
+   Mode badge class
+   ────────────────────────────────────────────── */
+function _confModeBadgeClass(mode) {
+  const map = {
+    work_chat:       'conf-mode-work_chat',
+    problem_solving: 'conf-mode-problem_solving',
+    decision_mode:   'conf-mode-decision_mode',
+  };
+  return map[mode] || 'conf-mode-work_chat';
+}
+
+/* ──────────────────────────────────────────────
+   Status badge class
+   ────────────────────────────────────────────── */
+function _confStatusBadgeClass(status) {
+  if (status === 'session_active') return '';
+  if (status === 'session_paused') return 'paused';
+  return 'closed';
+}
+
+/* ──────────────────────────────────────────────
+   Update header strip (leading/supplementary)
+   ────────────────────────────────────────────── */
+function _confUpdateAgentStrip(leadingAgent) {
+  const pillDS = document.getElementById('confPillDS');
+  const pillGM = document.getElementById('confPillGM');
+  if (!pillDS || !pillGM) return;
+
+  pillDS.classList.remove('leading');
+  pillGM.classList.remove('leading');
+
+  if (leadingAgent === 'deepseek') {
+    pillDS.classList.add('leading');
+    pillDS.title = 'DeepSeek führt gerade';
+    pillGM.title = 'Gemini ergänzt';
+  } else if (leadingAgent === 'gemini') {
+    pillGM.classList.add('leading');
+    pillGM.title = 'Gemini führt gerade';
+    pillDS.title = 'DeepSeek ergänzt';
+  } else {
+    pillDS.title = 'DeepSeek';
+    pillGM.title = 'Gemini';
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Render a single message element
+   ────────────────────────────────────────────── */
+function _confRenderMessage(msg, replyType) {
+  const agent = msg.speakerAgent || 'user';
+  const isUser = msg.messageRole === 'user';
+  const isSystem = agent === 'system';
+  const senderLabel = isUser ? 'Du' : agent === 'deepseek' ? 'DeepSeek' : agent === 'gemini' ? 'Gemini' : 'System';
+  const timeStr = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+
+  const replyBadge = replyType ? `<span class="conf-reply-badge ${replyType}">${_confReplyTypeLabel(replyType)}</span>` : '';
+  const modeNote = (!isUser && msg.conferenceMode)
+    ? `<span style="font-size:9px;color:var(--text-muted);opacity:0.7">${_CONF_MODE_LABELS[msg.conferenceMode] || msg.conferenceMode}</span>` : '';
+
+  return `
+    <div class="conf-message${isUser ? ' user' : ''}${isSystem ? ' system' : ''}">
+      <div class="conf-msg-avatar ${isUser ? 'user' : agent}">${_confAvatarLetter(isUser ? 'user' : agent)}</div>
+      <div class="conf-msg-body">
+        <div class="conf-msg-meta">
+          <span class="conf-msg-sender ${isUser ? 'user' : agent}">${esc(senderLabel)}</span>
+          ${replyBadge}
+          ${modeNote}
+          <span class="conf-msg-time">${timeStr}</span>
+        </div>
+        <div class="conf-msg-bubble">${esc(msg.content || '')}</div>
+      </div>
+    </div>`;
+}
+
+/* ──────────────────────────────────────────────
+   Build phase closure card HTML
+   ────────────────────────────────────────────── */
+function _confBuildClosureCard(messages, mode) {
+  const agentMsgs = messages.filter(m => m.messageRole === 'agent' && m.speakerAgent !== 'system');
+  if (agentMsgs.length < 4) return '';
+
+  const dsCount = agentMsgs.filter(m => m.speakerAgent === 'deepseek').length;
+  const gmCount = agentMsgs.filter(m => m.speakerAgent === 'gemini').length;
+  const modeLabel = _CONF_MODE_LABELS[mode] || mode;
+
+  const phaseState = _confDetectPhaseState(messages);
+  const chipsHtml  = phaseState.phaseChips.map(c => `<span class="conf-phase-chip ${c.cls}">${c.label}</span>`).join('');
+  const nextStep   = phaseState.canSuggestClosure
+    ? 'Diese Phase kann sauber abgeschlossen werden.'
+    : phaseState.openQuestionPrompt
+      ? phaseState.openQuestionPrompt
+      : 'Das Gespräch läuft noch.';
+
+  return `
+    <div class="conf-closure-card">
+      <div class="conf-closure-title">📋 Phasenverdichtung</div>
+      <div class="conf-closure-row"><span class="lbl">Modus</span><span>${esc(modeLabel)}</span></div>
+      <div class="conf-closure-row"><span class="lbl">DeepSeek</span><span>${dsCount} Beiträge</span></div>
+      <div class="conf-closure-row"><span class="lbl">Gemini</span><span>${gmCount} Beiträge</span></div>
+      ${chipsHtml ? `<div class="conf-phase-chips">${chipsHtml}</div>` : ''}
+      <div class="conf-closure-next">→ ${esc(nextStep)}</div>
+    </div>`;
+}
+
+/* ──────────────────────────────────────────────
+   Full chat render
+   ────────────────────────────────────────────── */
+function _confRenderChat(messages, lastRouting) {
+  const chatEl = document.getElementById('confChat');
+  if (!chatEl) return;
+
+  if (!messages || messages.length === 0) {
+    chatEl.innerHTML = `
+      <div class="conf-empty">
+        <div class="conf-empty-icon">🤝</div>
+        Session offen. Erste Nachricht senden.
+      </div>`;
+    return;
+  }
+
+  let html = '';
+
+  // Group messages: each "turn" = 1 user msg + N agent replies
+  let i = 0;
+  let turnCount = 0;
+  while (i < messages.length) {
+    const msg = messages[i];
+
+    if (msg.messageRole === 'user') {
+      // Collect subsequent agent replies for this user turn
+      const agentReplies = [];
+      let j = i + 1;
+      while (j < messages.length && messages[j].messageRole === 'agent') {
+        agentReplies.push(messages[j]);
+        j++;
+      }
+
+      turnCount++;
+      // Add closure card every 6 turns if conditions met
+      if (turnCount > 1 && turnCount % 4 === 0) {
+        const phaseState = _confDetectPhaseState(messages.slice(0, i));
+        if (phaseState.phaseChips.length > 0) {
+          html += _confBuildClosureCard(messages.slice(0, i), _conf.mode);
+        }
+      }
+
+      // Render user message
+      html += `<div class="conf-msg-group">`;
+      html += _confRenderMessage(msg, null);
+
+      // Moderation hint between user msg and agent replies
+      if (agentReplies.length > 0) {
+        const hint = _confBuildModerationHint(messages.slice(0, j), lastRouting);
+        if (hint && agentReplies.length > 1) {
+          html += `<div class="conf-moderation-hint" style="margin:6px 0 6px 38px;font-size:10px">
+            <div class="conf-hint-icon">💬</div>
+            <div>${esc(hint)}</div>
+          </div>`;
+        }
+      }
+
+      // Render agent replies with coordination badges
+      agentReplies.forEach((ar, idx) => {
+        let replyType = _confDeriveReplyType(ar, agentReplies, idx);
+
+        // If two agents reply in same turn → mark as koordiniert for second
+        if (agentReplies.length === 2 && idx === 1) {
+          replyType = 'ergaenzend';
+        }
+        if (agentReplies.length >= 2 && idx === 0) {
+          replyType = 'fuehrend';
+        }
+
+        html += _confRenderMessage(ar, replyType);
+
+        // Open question prompt after last agent reply if detected
+        if (idx === agentReplies.length - 1) {
+          const phaseState = _confDetectPhaseState(messages.slice(0, j));
+          if (phaseState.openQuestionPrompt && turnCount > 1) {
+            html += `<div class="conf-open-prompt">💬 ${esc(phaseState.openQuestionPrompt)}</div>`;
+          }
+        }
+      });
+
+      html += `</div>`;  // end conf-msg-group
+      i = j;
+    } else {
+      // Orphan agent message (shouldn't happen normally)
+      html += `<div class="conf-msg-group">`;
+      html += _confRenderMessage(msg, 'solo');
+      html += `</div>`;
+      i++;
+    }
+  }
+
+  // Final closure card if enough messages
+  const finalPhase = _confDetectPhaseState(messages);
+  if (finalPhase.canSuggestClosure) {
+    html += _confBuildClosureCard(messages, _conf.mode);
+  }
+
+  chatEl.innerHTML = html;
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  // Update leading agent strip
+  const leading = _confDeriveLeadingAgent(messages);
+  _conf.lastLeader = leading;
+  _confUpdateAgentStrip(leading);
+
+  // Update sticky moderation hint
+  const stickyHint = _confBuildModerationHint(messages, lastRouting);
+  const hintEl = document.getElementById('confModerationHint');
+  const hintTextEl = document.getElementById('confModerationHintText');
+  if (hintEl && hintTextEl) {
+    if (stickyHint && messages.length > 0) {
+      hintTextEl.textContent = stickyHint;
+      hintEl.style.display = 'flex';
+    } else {
+      hintEl.style.display = 'none';
+    }
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Update header after session change
+   ────────────────────────────────────────────── */
+function _confUpdateHeader(session) {
+  if (!session) return;
+
+  const titleEl        = document.getElementById('confTitle');
+  const focusEl        = document.getElementById('confFocusLabel');
+  const modeBadgeEl    = document.getElementById('confModeBadge');
+  const statusBadgeEl  = document.getElementById('confStatusBadge');
+
+  if (titleEl)       titleEl.textContent      = session.conferenceId ? `Konferenz · ${session.conferenceId.split('-').slice(-1)[0]}` : 'Konferenz';
+  if (focusEl)       focusEl.textContent       = session.conferenceFocus || 'Kein spezifischer Fokus';
+  if (modeBadgeEl) {
+    modeBadgeEl.textContent  = _CONF_MODE_LABELS[session.conferenceMode] || session.conferenceMode || 'Arbeitschat';
+    modeBadgeEl.className    = `conf-mode-badge ${_confModeBadgeClass(session.conferenceMode)}`;
+  }
+  if (statusBadgeEl) {
+    statusBadgeEl.textContent = _CONF_STATUS_LABELS[session.conferenceStatus] || session.conferenceStatus || '–';
+    statusBadgeEl.className   = `conf-status-badge ${_confStatusBadgeClass(session.conferenceStatus)}`;
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Update buttons based on state
+   ────────────────────────────────────────────── */
+function _confUpdateButtons() {
+  const openBtn   = document.getElementById('confOpenBtn');
+  const resumeBtn = document.getElementById('confResumeBtn');
+  const closeBtn  = document.getElementById('confCloseBtn');
+  const sendBtn   = document.getElementById('confSendBtn');
+  const textarea  = document.getElementById('confTextarea');
+  const active    = _conf.status === 'session_active';
+  const paused    = _conf.status === 'session_paused';
+  const hasSession = !!_conf.sessionId;
+
+  if (openBtn)   openBtn.style.display   = hasSession ? 'none' : '';
+  if (resumeBtn) resumeBtn.style.display = paused ? '' : 'none';
+  if (closeBtn)  closeBtn.style.display  = hasSession && !paused ? '' : 'none';
+  if (sendBtn)   sendBtn.disabled        = !active || _conf.sending;
+  if (textarea)  textarea.disabled       = !active || _conf.sending;
+}
+
+/* ──────────────────────────────────────────────
+   Open a new conference session
+   ────────────────────────────────────────────── */
+async function confOpenSession() {
+  const modeSelect  = document.getElementById('confModeSelect');
+  const focusInput  = document.getElementById('confFocusInput');
+  const mode        = modeSelect ? modeSelect.value  : 'work_chat';
+  const focus       = focusInput ? focusInput.value.trim() : '';
+
+  try {
+    const res = await fetch(`${API_BASE}/deepseek/agent-bridge/conference-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conferenceMode:  mode,
+        conferenceFocus: focus || null,
+        conferenceOwner: 'admin',
+      }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Session konnte nicht geöffnet werden');
+
+    const session = data.session || {};
+    _conf.sessionId = data.conferenceId;
+    _conf.status    = session.conferenceStatus || 'session_active';
+    _conf.mode      = session.conferenceMode   || mode;
+    _conf.focus     = session.conferenceFocus  || focus || null;
+    _conf.messages  = session.messages         || [];
+
+    _confUpdateHeader(session);
+    _confRenderChat(_conf.messages, null);
+    _confUpdateButtons();
+  } catch (err) {
+    const chatEl = document.getElementById('confChat');
+    if (chatEl) chatEl.innerHTML = `<div class="conf-empty" style="color:var(--red)">⚠️ Session konnte nicht geöffnet werden: ${esc(err.message)}</div>`;
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Resume a paused session
+   ────────────────────────────────────────────── */
+async function confResumeSession() {
+  if (!_conf.sessionId) return;
+  try {
+    const res = await fetch(`${API_BASE}/deepseek/agent-bridge/conference-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conferenceId: _conf.sessionId }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Session konnte nicht fortgesetzt werden');
+
+    const session = data.session || {};
+    _conf.status = session.conferenceStatus || 'session_active';
+    _confUpdateHeader(session);
+    _confUpdateButtons();
+  } catch (err) {
+    // Silently ignore resume errors – buttons will stay in current state
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Close current session
+   ────────────────────────────────────────────── */
+async function confCloseSession() {
+  if (!_conf.sessionId) return;
+  try {
+    const res = await fetch(`${API_BASE}/deepseek/agent-bridge/conference-close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conferenceId: _conf.sessionId }),
+    });
+    const data = await res.json();
+    _conf.status = 'session_closed';
+
+    // Show final closure card
+    const chatEl = document.getElementById('confChat');
+    if (chatEl && _conf.messages.length > 0) {
+      const closureHtml = _confBuildClosureCard(_conf.messages, _conf.mode);
+      if (closureHtml) chatEl.insertAdjacentHTML('beforeend', closureHtml);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    // Update header badge
+    const statusBadgeEl = document.getElementById('confStatusBadge');
+    if (statusBadgeEl) {
+      statusBadgeEl.textContent = 'Geschlossen';
+      statusBadgeEl.className   = 'conf-status-badge closed';
+    }
+
+    _conf.sessionId = null;
+    _confUpdateButtons();
+  } catch (err) {
+    // Silently ignore close errors
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Send a message
+   ────────────────────────────────────────────── */
+async function confSendMessage() {
+  if (!_conf.sessionId || _conf.sending) return;
+  const textarea  = document.getElementById('confTextarea');
+  const targetSel = document.getElementById('confTargetSelect');
+  const sendBtn   = document.getElementById('confSendBtn');
+  const chatEl    = document.getElementById('confChat');
+  if (!textarea || !chatEl) return;
+
+  const text = textarea.value.trim();
+  if (!text) return;
+
+  const target = targetSel ? targetSel.value : 'both';
+  _conf.sending = true;
+  textarea.value = '';
+  textarea.style.height = 'auto';
+  if (sendBtn) sendBtn.disabled = true;
+
+  // Show typing indicator
+  const typingId = 'confTyping_' + Date.now();
+  chatEl.insertAdjacentHTML('beforeend', `
+    <div class="conf-typing" id="${typingId}">
+      <div class="conf-msg-avatar deepseek" style="width:24px;height:24px;font-size:10px">DS</div>
+      <span style="margin-right:2px">Agenten antworten</span>
+      <div class="conf-typing-dots"><span></span><span></span><span></span></div>
+    </div>`);
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  try {
+    const res = await fetch(`${API_BASE}/deepseek/agent-bridge/conference-message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conferenceId: _conf.sessionId,
+        userMessage:  text,
+        targetAgent:  target,
+      }),
+    });
+    const data = await res.json();
+
+    // Remove typing indicator
+    const typingEl = document.getElementById(typingId);
+    if (typingEl) typingEl.remove();
+
+    if (!data.success) throw new Error(data.error || 'Nachricht konnte nicht gesendet werden');
+
+    // Append new messages to local state
+    if (data.userMessage)  _conf.messages.push(data.userMessage);
+    if (data.agentReplies) data.agentReplies.forEach(r => _conf.messages.push(r));
+
+    _confRenderChat(_conf.messages, data.routing || null);
+  } catch (err) {
+    const typingEl = document.getElementById(typingId);
+    if (typingEl) typingEl.remove();
+    chatEl.insertAdjacentHTML('beforeend', `
+      <div style="padding:8px 20px;font-size:11px;color:var(--red)">⚠️ ${esc(err.message)}</div>`);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  } finally {
+    _conf.sending = false;
+    _confUpdateButtons();
+  }
+}
+
+/* ──────────────────────────────────────────────
+   Load conference workspace overview (admin summary)
+   ────────────────────────────────────────────── */
+async function loadConferenceWorkspace() {
+  try {
+    const res  = await fetch(`${API_BASE}/deepseek/agent-bridge/conference-workspace`);
+    const data = await res.json();
+    if (!data.success) return;
+
+    // Show brief admin summary in a tooltip/indicator (non-intrusive)
+    const active = data.activeCount || 0;
+    const paused = data.pausedCount || 0;
+    const statusBadgeEl = document.getElementById('confStatusBadge');
+    if (!_conf.sessionId && statusBadgeEl) {
+      statusBadgeEl.textContent = `${active} aktiv · ${paused} pausiert`;
+    }
+  } catch (_) {
+    // Silently ignore workspace load errors
+  }
+}
+
+/* Enable send button when textarea has content */
+document.addEventListener('DOMContentLoaded', () => {
+  const textarea = document.getElementById('confTextarea');
+  const sendBtn  = document.getElementById('confSendBtn');
+  if (textarea && sendBtn) {
+    textarea.addEventListener('input', () => {
+      sendBtn.disabled = !textarea.value.trim() || !_conf.sessionId || _conf.status !== 'session_active' || _conf.sending;
+    });
+  }
+});
 
 /* ═══════════════════ INIT ═══════════════════ */
 loadInterfaceState();
