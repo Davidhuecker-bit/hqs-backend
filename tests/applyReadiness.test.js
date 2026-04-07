@@ -326,11 +326,11 @@ describe("Step 17 – Execution Ownership", () => {
 describe("Step 17 – Chat Messages", () => {
   test("approved case records chat message with approval_phase", () => {
     const { agentCase } = createAndApproveCase();
-    const messages = getAgentChatMessages({
+    const result = getAgentChatMessages({
       agentCaseId: agentCase.agentCaseId,
     });
     // Should have at least one message in approval_phase
-    const approvalMessages = messages.filter((m) => m.messagePhase === "approval_phase");
+    const approvalMessages = result.messages.filter((m) => m.messagePhase === "approval_phase");
     // When apply readiness is assessed, approval phase messages should exist
     if (approvalMessages.length > 0) {
       expect(approvalMessages[0].readinessBand).toBeTruthy();
@@ -340,10 +340,10 @@ describe("Step 17 – Chat Messages", () => {
 
   test("chat message carries execution intent when available", () => {
     const { agentCase } = createAndApproveCase();
-    const messages = getAgentChatMessages({
+    const result = getAgentChatMessages({
       agentCaseId: agentCase.agentCaseId,
     });
-    const approvalMessages = messages.filter((m) => m.messagePhase === "approval_phase");
+    const approvalMessages = result.messages.filter((m) => m.messagePhase === "approval_phase");
     if (approvalMessages.length > 0) {
       expect(approvalMessages[0].executionIntent).toBeTruthy();
     }
@@ -351,10 +351,10 @@ describe("Step 17 – Chat Messages", () => {
 
   test("chat message carries recommended apply mode", () => {
     const { agentCase } = createAndApproveCase();
-    const messages = getAgentChatMessages({
+    const result = getAgentChatMessages({
       agentCaseId: agentCase.agentCaseId,
     });
-    const approvalMessages = messages.filter((m) => m.messagePhase === "approval_phase");
+    const approvalMessages = result.messages.filter((m) => m.messagePhase === "approval_phase");
     if (approvalMessages.length > 0) {
       expect(VALID_APPLY_MODES).toContain(approvalMessages[0].recommendedApplyMode);
     }
@@ -438,10 +438,11 @@ describe("Step 17 – Cooperative Language", () => {
     }
   });
 
-  test("agent response text is the execution proposal when available", () => {
+  test("execution proposal message is returned as separate field when available", () => {
     const { result } = createAndApproveCase();
     if (result.hasApplyReadiness) {
-      expect(result.agentResponse).toBe(result.executionProposalMessage);
+      expect(result.executionProposalMessage).toBeTruthy();
+      expect(result.executionProposalMessage).toContain("Empfehlung:");
     }
   });
 });

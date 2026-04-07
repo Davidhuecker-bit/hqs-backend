@@ -16,6 +16,32 @@ function buildMockBridgePackage(overrides = {}) {
         suggestedFollowupType: "check_ui",
       },
     ],
+    issueContext: {
+      issueType: "detected",
+      issueCategory: "logic_error",
+      issueSeverity: "high",
+      affectedLayer: "backend_logic",
+      suspectedIssueCause: "logic_error",
+      suggestedFix: "harden_logic",
+      issueTitle: "Testfall – Schema-Abweichung",
+      needsFollowup: false,
+      ...overrides.issueContext,
+    },
+    patternContext: {
+      actionReadinessBand: "mature_recommendation",
+      dominantLayer: "backend_logic",
+      dominantHintType: "schema_risk",
+      confidenceBand: "high",
+      ...overrides.patternContext,
+    },
+    maturityContext: {
+      decisionMaturityBand: "confirmed",
+      ...overrides.maturityContext,
+    },
+    attentionContext: {
+      attentionBand: "focus_now",
+      ...overrides.attentionContext,
+    },
     backendState: {
       lastKnownArea: "testArea",
       sourceMode: "diagnose",
