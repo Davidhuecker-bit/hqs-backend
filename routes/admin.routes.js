@@ -4143,6 +4143,9 @@ const {
   sendUserMessage,
   getConversationThread,
   getConversationSummary,
+  // Step 22: Multi-Agent Handoff / Cross-Agent Dialogue / Coordinated Case Exchange Light
+  triggerHandoff,
+  getHandoffSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5711,6 +5714,109 @@ router.get("/deepseek/agent-bridge/conversation-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading conversation summary",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/trigger-handoff
+
+   Step 22 – Multi-Agent Handoff / Cross-Agent Dialogue /
+   Coordinated Case Exchange Light
+
+   Explicitly triggers a cross-agent handoff within a
+   conversation thread.  The primary agent initiates
+   the handoff, the supporting agent provides a
+   complementary reply, and the handoff is completed.
+
+   Request body:
+   {
+     "agentCaseId":  "ac-...",        // required
+     "targetAgent":  "gemini",        // optional – "deepseek" or "gemini"
+     "reason":       "cross_layer_issue" // optional – one of VALID_HANDOFF_REASONS
+   }
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "threadId": "ac-...",
+     "handoffStatus": "handoff_completed",
+     "crossAgentState": "cross_agent_completed",
+     "handoffFrom": "deepseek",
+     "handoffTo": "gemini",
+     "handoffReason": "cross_layer_issue",
+     "handoffCount": 1,
+     "messagesAdded": 3,
+     "supportingAgentReply": { ... }
+   }
+
+   Cooperative, not autonomous.  The system executes
+   the handoff – the user retains control.
+========================================================= */
+router.post("/deepseek/agent-bridge/trigger-handoff", (req, res) => {
+  try {
+    const { agentCaseId, targetAgent, reason } = req.body || {};
+    if (!agentCaseId) {
+      return res.status(400).json({
+        success: false,
+        error: "agentCaseId is required",
+      });
+    }
+    const result = triggerHandoff({ agentCaseId, targetAgent, reason });
+    return res.json({ success: result.success, version: "v1", ...result });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/trigger-handoff error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error triggering handoff",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/handoff-summary
+
+   Step 22 – Cross-Agent Handoff / Coordinated Dialogue
+   summary across all conversation threads.
+
+   Shows:
+     - Total threads / threads with handoffs
+     - Handoff direction distribution (DeepSeek→Gemini vs. Gemini→DeepSeek)
+     - Handoff status distribution
+     - Cross-agent state distribution
+     - Handoff reason frequency
+     - Per-thread handoff summaries (most recent first)
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "handoffSummary": {
+       "totalThreads": 5,
+       "totalWithHandoffs": 2,
+       "totalHandoffs": 3,
+       "totalDeepseekToGemini": 2,
+       "totalGeminiToDeepseek": 1,
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/handoff-summary", (_req, res) => {
+  try {
+    const handoffSummary = getHandoffSummary();
+    return res.json({ success: true, version: "v1", handoffSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/handoff-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading handoff summary",
     });
   }
 });

@@ -1225,6 +1225,44 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 22: Inject cross-agent handoff context when available ──
+  if (bridgeContext && bridgeContext.crossAgentHandoffContext) {
+    const hc = bridgeContext.crossAgentHandoffContext;
+    const hcParts = [];
+    if (hc.handoffStatus) {
+      hcParts.push(`Übergabe-Status: ${hc.handoffStatus}`);
+    }
+    if (hc.crossAgentState) {
+      hcParts.push(`Cross-Agent-Zustand: ${hc.crossAgentState}`);
+    }
+    if (hc.handoffFrom) {
+      hcParts.push(`Übergabe von: ${hc.handoffFrom}`);
+    }
+    if (hc.handoffTo) {
+      hcParts.push(`Übergabe an: ${hc.handoffTo}`);
+    }
+    if (hc.handoffReason) {
+      hcParts.push(`Übergabe-Grund: ${hc.handoffReason}`);
+    }
+    if (hc.dominantAgent) {
+      hcParts.push(`Führender Agent: ${hc.dominantAgent}`);
+    }
+    if (hc.supportingAgent) {
+      hcParts.push(`Ergänzender Agent: ${hc.supportingAgent}`);
+    }
+    if (hc.handoffCount > 0) {
+      hcParts.push(`Bisherige Übergaben: ${hc.handoffCount}`);
+    }
+    if (hcParts.length) {
+      sections.push(`Cross-Agent-Handoff (Step 22 – kontrollierte Übergabe zwischen DeepSeek und Gemini, keine chaotische Doppelsprache):\n${hcParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 22 – Cross-Agent-Handoff-Kontext eingebunden", {
+        handoffStatus: hc.handoffStatus,
+        crossAgentState: hc.crossAgentState,
+        handoffCount: hc.handoffCount,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
