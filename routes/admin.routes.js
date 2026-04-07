@@ -4146,6 +4146,9 @@ const {
   // Step 22: Multi-Agent Handoff / Cross-Agent Dialogue / Coordinated Case Exchange Light
   triggerHandoff,
   getHandoffSummary,
+  // Step 23: Conversation Memory / Case Continuity / Agent Memory Anchors
+  getCaseMemory,
+  getCaseMemorySummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5817,6 +5820,104 @@ router.get("/deepseek/agent-bridge/handoff-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading handoff summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/case-memory/:agentCaseId
+
+   Step 23 – Conversation Memory / Case Continuity /
+   Agent Memory Anchors for a specific case/thread.
+
+   Returns the structured case memory including:
+     - Working summary (human-readable)
+     - Agreed direction / discarded directions
+     - Open questions / resolved points
+     - Case decisions / user preferences
+     - Memory anchors
+     - Continuity status / memory freshness
+     - Dominant memory owner / contributors
+     - Next open step
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "caseMemory": { ... }
+   }
+
+   Cooperative, not autonomous.  The system tracks
+   case continuity – the user retains full control.
+========================================================= */
+router.get("/deepseek/agent-bridge/case-memory/:agentCaseId", (req, res) => {
+  try {
+    const { agentCaseId } = req.params;
+    if (!agentCaseId) {
+      return res.status(400).json({
+        success: false,
+        error: "agentCaseId is required",
+      });
+    }
+    const result = getCaseMemory({ agentCaseId });
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        error: "No conversation thread found for this case",
+      });
+    }
+    return res.json({ success: true, version: "v1", ...result });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/case-memory error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading case memory",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/case-memory-summary
+
+   Step 23 – Case Memory / Continuity analytics summary
+   across all conversation threads.
+
+   Shows:
+     - Total threads with memory / working summaries
+     - Continuity status distribution
+     - Memory freshness distribution
+     - Dominant memory owner distribution
+     - Memory focus distribution
+     - Threads with open questions / agreed directions
+     - Per-thread memory summaries (most recent first)
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "caseMemorySummary": {
+       "totalThreads": 5,
+       "totalWithMemory": 3,
+       "totalWithWorkingSummary": 2,
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/case-memory-summary", (_req, res) => {
+  try {
+    const caseMemorySummary = getCaseMemorySummary();
+    return res.json({ success: true, version: "v1", caseMemorySummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/case-memory-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading case memory summary",
     });
   }
 });
