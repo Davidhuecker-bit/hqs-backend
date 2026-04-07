@@ -4152,6 +4152,15 @@ const {
   // Step 24: Action Negotiation / Option Comparison / Decision Framing
   getDecisionFrame,
   getDecisionFrameSummary,
+  // Konferenz Step A: DeepSeek ↔ Gemini – Conference Session / Targeting / Mode / Summary
+  openConferenceSession,
+  sendConferenceMessage,
+  updateConferenceSession,
+  closeConferenceSession,
+  getConferenceSession,
+  getConferenceSummary,
+  getConferenceWorkspace,
+  getConferenceAdminSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -6009,6 +6018,373 @@ router.get("/deepseek/agent-bridge/decision-frame-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading decision frame summary",
+    });
+  }
+});
+
+/* =========================================================
+   Konferenz Step A: DeepSeek ↔ Gemini – Conference Session /
+   Targeting / Mode / Summary
+   Endpoints:
+     POST /api/admin/deepseek/agent-bridge/conference-session
+     POST /api/admin/deepseek/agent-bridge/conference-message
+     PUT  /api/admin/deepseek/agent-bridge/conference-session
+     POST /api/admin/deepseek/agent-bridge/conference-close
+     GET  /api/admin/deepseek/agent-bridge/conference-session/:conferenceId
+     GET  /api/admin/deepseek/agent-bridge/conference-summary/:conferenceId
+     GET  /api/admin/deepseek/agent-bridge/conference-workspace
+     GET  /api/admin/deepseek/agent-bridge/conference-admin-summary
+   ========================================================= */
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/conference-session
+
+   Open a new conference session or resume an existing one.
+
+   Request body:
+   {
+     "conferenceId":    "conf-...",      // optional – resume existing
+     "conferenceMode":  "work_chat",     // optional – work_chat | problem_solving | decision_mode
+     "relatedCaseId":   "ac-...",        // optional – link to agent case
+     "conferenceFocus": "...",           // optional – human-readable focus
+     "conferenceOwner": "admin"          // optional – who opens
+   }
+
+   Response:
+   {
+     "success": true,
+     "conferenceId": "conf-...",
+     "session": { ... },
+     "resumed": false
+   }
+========================================================= */
+router.post("/deepseek/agent-bridge/conference-session", (req, res) => {
+  try {
+    const { conferenceId, conferenceMode, relatedCaseId, conferenceFocus, conferenceOwner } = req.body || {};
+    const result = openConferenceSession({
+      conferenceId: conferenceId || null,
+      conferenceMode: conferenceMode || "work_chat",
+      relatedCaseId: relatedCaseId || null,
+      conferenceFocus: conferenceFocus || null,
+      conferenceOwner: conferenceOwner || "admin",
+    });
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-session POST error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error opening conference session",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/conference-message
+
+   Send a message to a conference session with clean agent targeting.
+
+   Request body:
+   {
+     "conferenceId":     "conf-...",     // required
+     "userMessage":      "...",          // required – free-form text
+     "targetAgent":      "deepseek",     // optional – deepseek | gemini | both | system
+     "replyToMessageId": "cfm-..."       // optional – reply reference
+   }
+
+   Response:
+   {
+     "success": true,
+     "conferenceId": "conf-...",
+     "conferenceStatus": "session_active",
+     "conferenceMode": "work_chat",
+     "userMessage": { ... },
+     "agentReplies": [ ... ],
+     "routing": { "targetAgent": "deepseek", "routingReason": "..." },
+     "messageCount": 3
+   }
+========================================================= */
+router.post("/deepseek/agent-bridge/conference-message", (req, res) => {
+  try {
+    const { conferenceId, userMessage, targetAgent, replyToMessageId } = req.body || {};
+    if (!conferenceId || !userMessage) {
+      return res.status(400).json({
+        success: false,
+        error: "conferenceId and userMessage are required",
+      });
+    }
+    const result = sendConferenceMessage({
+      conferenceId,
+      userMessage,
+      targetAgent: targetAgent || null,
+      replyToMessageId: replyToMessageId || null,
+    });
+    if (!result.success) {
+      return res.status(result.error === "Conference session not found" ? 404 : 400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-message POST error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error sending conference message",
+    });
+  }
+});
+
+/* =========================================================
+   PUT /api/admin/deepseek/agent-bridge/conference-session
+
+   Update conference session status, mode, focus, or case binding.
+
+   Request body:
+   {
+     "conferenceId":     "conf-...",       // required
+     "conferenceStatus": "session_paused", // optional
+     "conferenceMode":   "decision_mode",  // optional
+     "conferenceFocus":  "...",            // optional
+     "relatedCaseId":    "ac-..."          // optional
+   }
+
+   Response:
+   {
+     "success": true,
+     "conferenceId": "conf-...",
+     "session": { ... },
+     "changes": [ "Modus: work_chat → decision_mode" ]
+   }
+========================================================= */
+router.put("/deepseek/agent-bridge/conference-session", (req, res) => {
+  try {
+    const { conferenceId, conferenceStatus, conferenceMode, conferenceFocus, relatedCaseId } = req.body || {};
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId is required" });
+    }
+    const result = updateConferenceSession({
+      conferenceId,
+      conferenceStatus: conferenceStatus || null,
+      conferenceMode: conferenceMode || null,
+      conferenceFocus: conferenceFocus !== undefined ? conferenceFocus : null,
+      relatedCaseId: relatedCaseId !== undefined ? relatedCaseId : null,
+    });
+    if (!result.success) {
+      return res.status(result.error === "Conference session not found" ? 404 : 400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-session PUT error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error updating conference session",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/conference-close
+
+   Close or archive a conference session.
+
+   Request body:
+   {
+     "conferenceId": "conf-...",  // required
+     "archive":      false        // optional – if true, archive instead of close
+   }
+
+   Response:
+   {
+     "success": true,
+     "conferenceId": "conf-...",
+     "conferenceStatus": "session_closed",
+     "closedAt": "2026-04-07T..."
+   }
+========================================================= */
+router.post("/deepseek/agent-bridge/conference-close", (req, res) => {
+  try {
+    const { conferenceId, archive } = req.body || {};
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId is required" });
+    }
+    const result = closeConferenceSession({
+      conferenceId,
+      archive: !!archive,
+    });
+    if (!result.success) {
+      return res.status(result.error === "Conference session not found" ? 404 : 400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-close error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error closing conference session",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conference-session/:conferenceId
+
+   Retrieve a conference session with recent messages.
+
+   Query params:
+     limit – max messages to return (default 50)
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "session": { ... , messages: [ ... ] }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conference-session/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId parameter required" });
+    }
+    const session = getConferenceSession({ conferenceId, limit });
+    if (!session) {
+      return res.status(404).json({ success: false, error: "Conference session not found" });
+    }
+    return res.json({ success: true, version: "v1", session });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-session GET error", {
+      message: error.message,
+      stack: error.stack,
+      conferenceId: req.params.conferenceId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference session",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conference-summary/:conferenceId
+
+   Generate a human-readable conference summary.
+   Not a raw data dump – structured, cooperative, readable.
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "summary": {
+       "conferenceId": "conf-...",
+       "status": "Aktiv",
+       "modus": "Arbeitschat",
+       "currentFocus": "...",
+       "understood": "...",
+       "direction": "...",
+       "leadingAgent": "...",
+       "openPoints": [...],
+       "nextStep": "...",
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conference-summary/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId parameter required" });
+    }
+    const summary = getConferenceSummary({ conferenceId });
+    if (!summary) {
+      return res.status(404).json({ success: false, error: "Conference session not found" });
+    }
+    return res.json({ success: true, version: "v1", summary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-summary error", {
+      message: error.message,
+      stack: error.stack,
+      conferenceId: req.params.conferenceId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error generating conference summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conference-workspace
+
+   Load full conference workspace data for frontend:
+   active sessions, paused sessions, recent closed sessions, stats.
+
+   Response:
+   {
+     "success": true,
+     "totalSessions": 5,
+     "activeSessions": [...],
+     "pausedSessions": [...],
+     "recentClosed": [...],
+     "activeCount": 2,
+     "pausedCount": 1,
+     ...
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conference-workspace", (_req, res) => {
+  try {
+    const workspace = getConferenceWorkspace();
+    return res.json(workspace);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-workspace error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error loading conference workspace",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conference-admin-summary
+
+   Admin analytics across all conference sessions:
+   how many active, paused, closed, in decision mode, etc.
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "conferenceSummary": {
+       "totalSessions": 10,
+       "totalActive": 3,
+       "totalInDecisionMode": 2,
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
+  try {
+    const conferenceSummary = getConferenceAdminSummary();
+    return res.json({ success: true, version: "v1", conferenceSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-admin-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference admin summary",
     });
   }
 });
