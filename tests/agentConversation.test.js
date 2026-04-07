@@ -36,11 +36,14 @@ const {
 describe("Step 21 – Constants", () => {
   test("VALID_THREAD_STATUSES has expected entries", () => {
     expect(Array.isArray(VALID_THREAD_STATUSES)).toBe(true);
-    expect(VALID_THREAD_STATUSES.length).toBeGreaterThanOrEqual(7);
+    expect(VALID_THREAD_STATUSES.length).toBe(8);
     expect(VALID_THREAD_STATUSES).toContain("thread_open");
     expect(VALID_THREAD_STATUSES).toContain("thread_waiting_for_user");
     expect(VALID_THREAD_STATUSES).toContain("thread_waiting_for_agent");
     expect(VALID_THREAD_STATUSES).toContain("thread_blocked");
+    expect(VALID_THREAD_STATUSES).toContain("thread_in_refinement");
+    expect(VALID_THREAD_STATUSES).toContain("thread_ready_for_decision");
+    expect(VALID_THREAD_STATUSES).toContain("thread_runtime_pending");
     expect(VALID_THREAD_STATUSES).toContain("thread_closed");
   });
 

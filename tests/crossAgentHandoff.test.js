@@ -64,7 +64,9 @@ describe("Step 22 – Constants", () => {
   });
 
   test("VALID_HANDOFF_MESSAGE_TYPES has expected values", () => {
+    expect(VALID_HANDOFF_MESSAGE_TYPES).toContain("agent_reply");
     expect(VALID_HANDOFF_MESSAGE_TYPES).toContain("handoff_initiation");
+    expect(VALID_HANDOFF_MESSAGE_TYPES).toContain("handoff_acceptance");
     expect(VALID_HANDOFF_MESSAGE_TYPES).toContain("supporting_agent_reply");
     expect(VALID_HANDOFF_MESSAGE_TYPES).toContain("handoff_completion");
     expect(VALID_HANDOFF_MESSAGE_TYPES).toContain("cross_agent_note");

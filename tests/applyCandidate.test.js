@@ -160,6 +160,7 @@ describe("Step 19 – Controlled Apply Candidate / Action Package / Approval Gat
     test("VALID_SCOPE_GUARDRAIL_TYPES exports correct values", () => {
       expect(agentBridge.VALID_SCOPE_GUARDRAIL_TYPES).toBeDefined();
       expect(agentBridge.VALID_SCOPE_GUARDRAIL_TYPES).toContain("scope_boundary");
+      expect(agentBridge.VALID_SCOPE_GUARDRAIL_TYPES).toContain("layer_restriction");
       expect(agentBridge.VALID_SCOPE_GUARDRAIL_TYPES).toContain("no_auto_execute");
       expect(agentBridge.VALID_SCOPE_GUARDRAIL_TYPES).toContain("requires_user_confirmation");
       expect(agentBridge.VALID_SCOPE_GUARDRAIL_TYPES).toContain("cross_agent_gate");
