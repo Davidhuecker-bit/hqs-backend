@@ -12134,6 +12134,12 @@ function getHandoffSummary() {
  * Identifies scope decisions, user preferences, agreed directions,
  * handoff completions, and other meaningful case events.
  *
+ * A single message may produce multiple anchors when it matches
+ * several patterns (e.g. a scope change that also expresses a
+ * user preference).  All matching anchor types are collected
+ * independently and the list is capped to CASE_MEMORY_MAX_ANCHORS
+ * (most recent anchors kept).
+ *
  * @param {Object} thread - conversation thread
  * @param {Object|null} agentCase - associated agent case
  * @returns {Array<Object>} extracted anchors
@@ -12864,8 +12870,8 @@ function _injectMemoryIntoReply(replyText, thread, agentCase) {
     contextParts.push("Ich beziehe mich auf die bisherige Arbeitsrichtung.");
   }
 
-  // Reference discarded directions
-  if (mem.discardedDirections && mem.discardedDirections.length > 0 && Math.random() < 0.3) {
+  // Reference discarded directions (only on every third interaction to avoid repetition)
+  if (mem.discardedDirections && mem.discardedDirections.length > 0 && (thread.messageCount % 3 === 0)) {
     contextParts.push("Wir hatten eine andere Richtung zuvor zurückgestellt.");
   }
 
