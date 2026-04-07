@@ -1368,6 +1368,52 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Konferenz Step B: Inject coordination context when available ──
+  if (bridgeContext && bridgeContext.conferenceCoordinationContext) {
+    const ccc = bridgeContext.conferenceCoordinationContext;
+    const cccParts = [];
+    if (ccc.coordinationState && ccc.coordinationState !== "uncoordinated") {
+      const stateLabels = {
+        lead_assigned: "Führung zugewiesen",
+        support_active: "Ergänzungs-Agent aktiv",
+        coordinated_active: "Koordinierte Zusammenarbeit",
+        bundling_needed: "Bündelung der Antworten",
+        clarification_pending: "Klärung ausstehend",
+        phase_closing: "Phase wird abgeschlossen",
+        phase_closed: "Phase abgeschlossen",
+      };
+      cccParts.push(`Koordinationsstatus: ${stateLabels[ccc.coordinationState] || ccc.coordinationState}`);
+    }
+    if (ccc.replyPattern) {
+      cccParts.push(`Antwortmuster: ${ccc.replyPattern}`);
+    }
+    if (ccc.leadAgent) {
+      cccParts.push(`Führender Agent: ${ccc.leadAgent === "deepseek" ? "DeepSeek (Backend)" : "Gemini (Frontend/UX)"}`);
+    }
+    if (ccc.phaseStatus && ccc.phaseStatus !== "phase_open") {
+      const phaseLabels = {
+        problem_scoped: "Problem eingegrenzt",
+        cause_identified: "Ursache identifiziert",
+        recommendation_ready: "Empfehlung bereit",
+        decision_pending: "Entscheidung ausstehend",
+        clarification_open: "Klärung offen",
+        phase_concluded: "Phase abgeschlossen",
+      };
+      cccParts.push(`Phasenstatus: ${phaseLabels[ccc.phaseStatus] || ccc.phaseStatus}`);
+    }
+    if (ccc.openPointCount > 0) {
+      cccParts.push(`Offene Punkte: ${ccc.openPointCount}`);
+    }
+    if (cccParts.length) {
+      sections.push(`Konferenz-Koordination (Step B – koordinierter Reply-Flow, Moderation):\n${cccParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Konferenz Step B – Koordinationskontext eingebunden", {
+        coordinationState: ccc.coordinationState,
+        replyPattern: ccc.replyPattern,
+        leadAgent: ccc.leadAgent,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
