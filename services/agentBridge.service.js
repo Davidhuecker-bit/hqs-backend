@@ -1625,6 +1625,9 @@ const CONFERENCE_DECISION_KEYWORDS = ["entscheidung", "entscheiden", "beschluss"
 /** Keywords indicating a result/conclusion is forming */
 const CONFERENCE_RESULT_KEYWORDS = ["ergebnis", "fazit", "zusammenfassung", "abschluss", "outcome", "ergibt sich", "im ergebnis", "abschließend", "final"];
 
+/** Max character length for lastContribution excerpts in perspective comparison */
+const PERSPECTIVE_CONTRIBUTION_MAX_LENGTH = 150;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -15652,10 +15655,9 @@ function _deriveConferenceWorkPhase(session) {
   const recentText = recentMessages.map((m) => (m.content || "").toLowerCase()).join(" ");
 
   // Result/conclusion signals → result_transition
-  if (CONFERENCE_RESULT_KEYWORDS.some((kw) => recentText.includes(kw))) {
-    if (phaseStatus === "phase_concluded" || phaseStatus === "recommendation_ready") {
-      return "result_transition";
-    }
+  if (CONFERENCE_RESULT_KEYWORDS.some((kw) => recentText.includes(kw)) &&
+      (phaseStatus === "phase_concluded" || phaseStatus === "recommendation_ready")) {
+    return "result_transition";
   }
 
   // Decision keywords + decision mode → decision_preparation
@@ -15727,7 +15729,6 @@ function _deriveDecisionRoomState(session) {
   // option_room
   if (workPhase === "option_room") {
     if (optionCount >= 2) return "options_compared";
-    if (optionCount === 1) return "options_collected";
     return "options_collected";
   }
 
@@ -16005,13 +16006,13 @@ function _buildPerspectiveComparison(session) {
       agent: "deepseek",
       perspective: dsFocus,
       messageCount: dsMessages.length,
-      lastContribution: (dsLast.content || "").substring(0, 150),
+      lastContribution: (dsLast.content || "").substring(0, PERSPECTIVE_CONTRIBUTION_MAX_LENGTH),
     },
     geminiView: {
       agent: "gemini",
       perspective: gmFocus,
       messageCount: gmMessages.length,
-      lastContribution: (gmLast.content || "").substring(0, 150),
+      lastContribution: (gmLast.content || "").substring(0, PERSPECTIVE_CONTRIBUTION_MAX_LENGTH),
     },
     commonLine,
     dissent,
