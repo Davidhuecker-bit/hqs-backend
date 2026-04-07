@@ -1244,6 +1244,7 @@ const VALID_CONVERSATION_PHASES = [
   "candidate_gate_phase",
   "runtime_execution_phase",
   "conversation_phase",
+  "cross_agent_handoff_phase",
 ];
 
 /** Keywords for routing to DeepSeek (backend agent) */
@@ -1265,6 +1266,63 @@ const GEMINI_ROUTING_KEYWORDS = [
 const CONVERSATION_THREAD_MAX_ENTRIES = 200;
 const CONVERSATION_MESSAGE_MAX_PER_THREAD = 100;
 const CONVERSATION_SUMMARY_MAX_THREADS = 50;
+
+/* ─────────────────────────────────────────────────────────────────────
+   Step 22: Multi-Agent Handoff / Cross-Agent Dialogue /
+            Coordinated Case Exchange Light
+
+   Constants for controlled handoff between DeepSeek and Gemini
+   within the same case/thread.
+   ───────────────────────────────────────────────────────────────────── */
+
+/** Handoff lifecycle statuses */
+const VALID_HANDOFF_STATUSES = [
+  "handoff_not_needed",
+  "handoff_suggested",
+  "handoff_pending",
+  "handoff_in_progress",
+  "handoff_completed",
+];
+
+/** Cross-agent coordination states */
+const VALID_CROSS_AGENT_STATES = [
+  "single_agent",
+  "cross_agent_review_needed",
+  "cross_agent_waiting",
+  "cross_agent_active",
+  "cross_agent_completed",
+];
+
+/** Reasons why a handoff is triggered */
+const VALID_HANDOFF_REASONS = [
+  "cross_layer_issue",
+  "frontend_impact_detected",
+  "backend_cause_detected",
+  "ux_consequence",
+  "data_flow_dependency",
+  "scope_expansion",
+  "user_requested",
+  "complementary_expertise",
+];
+
+/** Message types specific to handoff / cross-agent coordination */
+const VALID_HANDOFF_MESSAGE_TYPES = [
+  "agent_reply",
+  "handoff_initiation",
+  "handoff_acceptance",
+  "supporting_agent_reply",
+  "handoff_completion",
+  "cross_agent_note",
+];
+
+/** Keywords indicating cross-layer / dual-agent concerns */
+const CROSS_LAYER_KEYWORDS = [
+  "frontend und backend", "backend und frontend", "ui und api",
+  "darstellung und logik", "anzeige und daten", "oberfläche und server",
+  "schichtübergreifend", "cross-layer", "beide seiten", "beides",
+  "zusammenspiel", "end-to-end", "full-stack", "fullstack",
+  "api und darstellung", "datenfluss und anzeige", "mapping und ui",
+];
 
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
@@ -2795,6 +2853,21 @@ function buildBridgePackage(payload = {}) {
         dominantAgent:       convThread.dominantAgent,
         conversationSummary: convThread.conversationSummary,
       };
+
+      // ── Step 22: Attach cross-agent handoff context ──
+      if (convThread.handoffCount > 0 || convThread.handoffStatus !== "handoff_not_needed") {
+        pkg.crossAgentHandoffContext = {
+          handoffStatus:    convThread.handoffStatus,
+          crossAgentState:  convThread.crossAgentState,
+          handoffFrom:      convThread.handoffFrom,
+          handoffTo:        convThread.handoffTo,
+          handoffReason:    convThread.handoffReason,
+          dominantAgent:    convThread.dominantAgent,
+          supportingAgent:  convThread.supportingAgent,
+          handoffCount:     convThread.handoffCount,
+          lastHandoffAt:    convThread.lastHandoffAt,
+        };
+      }
     }
 
     _currentBridgePackage = pkg;
@@ -5944,6 +6017,12 @@ function _recordAgentChatMessage({
   killSwitchAvailable = null,
   rollbackReserved = null,
   nextRuntimeStep = null,
+  // Step 22 additions
+  handoffStatus = null,
+  crossAgentState = null,
+  handoffFrom = null,
+  handoffTo = null,
+  handoffReason = null,
 }) {
   const chatMessage = {
     messageId:           `msg-${Date.now()}-${_agentChatMessages.length + 1}`,
@@ -6067,8 +6146,27 @@ function _recordAgentChatMessage({
     chatMessage.nextRuntimeStep = nextRuntimeStep;
   }
 
-  // Derive message phase from available context (Step 21 → Step 20 → Step 19 → Step 18 → Step 17 → Step 16 → Step 15)
-  if (planPhase === "conversation_phase") {
+  // Step 22: attach handoff / cross-agent context when available
+  if (handoffStatus) {
+    chatMessage.handoffStatus = handoffStatus;
+  }
+  if (crossAgentState) {
+    chatMessage.crossAgentState = crossAgentState;
+  }
+  if (handoffFrom) {
+    chatMessage.handoffFrom = handoffFrom;
+  }
+  if (handoffTo) {
+    chatMessage.handoffTo = handoffTo;
+  }
+  if (handoffReason) {
+    chatMessage.handoffReason = handoffReason;
+  }
+
+  // Derive message phase from available context (Step 22 → Step 21 → Step 20 → … → Step 15)
+  if (planPhase === "cross_agent_handoff_phase" || handoffStatus) {
+    chatMessage.messagePhase = "cross_agent_handoff_phase";
+  } else if (planPhase === "conversation_phase") {
     chatMessage.messagePhase = "conversation_phase";
   } else if (runtimeStatus || planPhase === "runtime_execution_phase") {
     chatMessage.messagePhase = "runtime_execution_phase";
@@ -11075,6 +11173,16 @@ function getOrCreateConversationThread(agentCaseId) {
     geminiMessageCount: 0,
     systemMessageCount: 0,
     conversationSummary: null,
+    // Step 22: Cross-Agent Handoff / Coordinated Dialogue fields
+    handoffStatus: "handoff_not_needed",
+    crossAgentState: "single_agent",
+    handoffFrom: null,
+    handoffTo: null,
+    handoffReason: null,
+    supportingAgent: null,
+    handoffCount: 0,
+    lastHandoffAt: null,
+    handoffHistory: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -11313,6 +11421,600 @@ function _checkCrossAgentCoordination(primaryAgent, messageIntent, agentCase) {
   return { needed: false, note: null };
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   Step 22: Multi-Agent Handoff / Cross-Agent Dialogue /
+            Coordinated Case Exchange Light
+
+   Functions:
+   - _assessHandoffNeed()              – detects when handoff is appropriate
+   - _deriveHandoffReason()            – classifies the handoff reason
+   - _generateHandoffMessage()         – human-readable handoff initiation
+   - _generateSupportingAgentReply()   – supporting agent's complementary reply
+   - _generateHandoffCompletionMsg()   – handoff completion message
+   - _executeHandoff()                 – orchestrates handoff within a thread
+   - triggerHandoff()                  – admin-triggered handoff
+   - getHandoffSummary()               – analytics across all threads
+   ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Assess whether a handoff from the primary agent to the other agent
+ * is needed for this message / case combination.
+ *
+ * @param {string} primaryAgent - "deepseek" or "gemini"
+ * @param {string} userMessage - the user's message text
+ * @param {string} messageIntent - derived intent
+ * @param {Object} agentCase - the agent case (may be null)
+ * @param {Object} thread - the conversation thread
+ * @returns {{ needed: boolean, reason: string|null, confidence: string }}
+ */
+function _assessHandoffNeed(primaryAgent, userMessage, messageIntent, agentCase, thread) {
+  const lowerMsg = (userMessage || "").toLowerCase();
+
+  // 1. Check for cross-layer keywords in the message
+  let crossLayerScore = 0;
+  for (const kw of CROSS_LAYER_KEYWORDS) {
+    if (lowerMsg.includes(kw)) crossLayerScore += 2;
+  }
+
+  // 2. Check if message touches both agent domains
+  let deepseekHits = 0;
+  let geminiHits = 0;
+  for (const kw of DEEPSEEK_ROUTING_KEYWORDS) {
+    if (lowerMsg.includes(kw)) deepseekHits += 1;
+  }
+  for (const kw of GEMINI_ROUTING_KEYWORDS) {
+    if (lowerMsg.includes(kw)) geminiHits += 1;
+  }
+  const touchesBothDomains = deepseekHits > 0 && geminiHits > 0;
+
+  // 3. Check if the case itself needs cross-agent review
+  const caseFlagsCrossAgent = agentCase && agentCase.needsCrossAgentReview;
+
+  // 4. User explicitly asks for the other agent or a handoff
+  const userRequestsHandoff =
+    lowerMsg.includes("übergib") || lowerMsg.includes("anderer agent") ||
+    lowerMsg.includes("deepseek dazu") || lowerMsg.includes("gemini dazu") ||
+    lowerMsg.includes("zweite meinung") || lowerMsg.includes("ergänzung") ||
+    messageIntent === "handoff";
+
+  // 5. Determine need
+  if (userRequestsHandoff) {
+    return { needed: true, reason: "user_requested", confidence: "high" };
+  }
+  if (crossLayerScore >= 2) {
+    return { needed: true, reason: "cross_layer_issue", confidence: "high" };
+  }
+  if (touchesBothDomains && crossLayerScore > 0) {
+    return { needed: true, reason: "cross_layer_issue", confidence: "medium" };
+  }
+  if (touchesBothDomains) {
+    const reason = primaryAgent === "deepseek" ? "frontend_impact_detected" : "backend_cause_detected";
+    return { needed: true, reason, confidence: "medium" };
+  }
+  if (caseFlagsCrossAgent && (messageIntent === "scope_change" || messageIntent === "diagnosis_request")) {
+    return { needed: true, reason: "complementary_expertise", confidence: "medium" };
+  }
+
+  // Also detect based on primary agent + message content mismatch
+  if (primaryAgent === "deepseek" && geminiHits > deepseekHits && geminiHits >= 2) {
+    return { needed: true, reason: "ux_consequence", confidence: "low" };
+  }
+  if (primaryAgent === "gemini" && deepseekHits > geminiHits && deepseekHits >= 2) {
+    return { needed: true, reason: "data_flow_dependency", confidence: "low" };
+  }
+
+  return { needed: false, reason: null, confidence: "none" };
+}
+
+/**
+ * Generate a cooperative, human-readable handoff initiation message.
+ *
+ * @param {string} fromAgent - "deepseek" or "gemini"
+ * @param {string} toAgent - "deepseek" or "gemini"
+ * @param {string} reason - one of VALID_HANDOFF_REASONS
+ * @param {Object} thread
+ * @returns {string}
+ */
+function _generateHandoffMessage(fromAgent, toAgent, reason, thread) {
+  const fromLabel = fromAgent === "deepseek" ? "DeepSeek (Backend)" : "Gemini (Frontend)";
+  const toLabel = toAgent === "deepseek" ? "DeepSeek (Backend)" : "Gemini (Frontend)";
+  const toDomain = toAgent === "deepseek" ? "Backend / API / Logik" : "Frontend / UX / Darstellung";
+
+  const templates = {
+    cross_layer_issue: [
+      `Dieses Thema berührt beide Schichten. Ich hole ${toLabel} für den ${toDomain}-Teil dazu.`,
+      `Hier greifen Backend und Frontend ineinander. ${toLabel} ergänzt den relevanten Teil.`,
+    ],
+    frontend_impact_detected: [
+      `Aus Backend-Sicht ist der technische Kern klar, aber die Frontend-Folge sollte ${toLabel} ergänzen.`,
+      `Der technische Teil ist eingeordnet. Für die Auswirkung auf die Darstellung hole ich ${toLabel} dazu.`,
+    ],
+    backend_cause_detected: [
+      `Ich übergebe diesen Teil an ${toLabel}, weil die Ursache eher im Backend liegt.`,
+      `Die Wurzel des Problems liegt im Datenfluss. ${toLabel} kann das genauer einordnen.`,
+    ],
+    ux_consequence: [
+      `Ich hole für die UX-Folge zusätzlich ${toLabel} dazu.`,
+      `Für die Darstellungs- und Nutzbarkeitsseite ergänzt ${toLabel} den Fall.`,
+    ],
+    data_flow_dependency: [
+      `Die Anzeige hängt an einem Datenfluss-Thema. Ich hole ${toLabel} für die technische Einordnung dazu.`,
+      `Hier braucht es einen Blick auf die API-/Datenebene. ${toLabel} übernimmt diesen Teil.`,
+    ],
+    scope_expansion: [
+      `Der Scope erweitert sich. Ich hole ${toLabel} für den ${toDomain}-Teil dazu.`,
+    ],
+    user_requested: [
+      `Verstanden. Ich hole ${toLabel} für eine ergänzende Einschätzung dazu.`,
+      `Wie gewünscht übergebe ich an ${toLabel} zur Ergänzung.`,
+    ],
+    complementary_expertise: [
+      `Für eine vollständigere Einschätzung hole ich ${toLabel} ergänzend dazu.`,
+      `${toLabel} hat für diesen Aspekt die passendere Perspektive. Ich übergebe kurz.`,
+    ],
+  };
+
+  const options = templates[reason] || templates.complementary_expertise;
+  const idx = (thread ? thread.messageCount : 0) % options.length;
+  return options[idx];
+}
+
+/**
+ * Generate a cooperative reply from the supporting (secondary) agent.
+ *
+ * @param {string} supportingAgent - "deepseek" or "gemini"
+ * @param {string} reason - handoff reason
+ * @param {string} userMessage
+ * @param {Object} agentCase
+ * @param {Object} thread
+ * @returns {string}
+ */
+function _generateSupportingAgentReply(supportingAgent, reason, userMessage, agentCase, thread) {
+  const isBackend = supportingAgent === "deepseek";
+  const perspective = isBackend ? "Backend-Sicht" : "Frontend-Sicht";
+  const domain = isBackend ? "Backend / API / Logik" : "Frontend / UX / Darstellung";
+  const problemTitle = (agentCase && agentCase.problemTitle) || "den aktuellen Fall";
+
+  const replies = {
+    cross_layer_issue: [
+      `Ich ergänze aus ${perspective}: ${problemTitle} hat auch eine klare ${domain}-Dimension. Ich schaue mir die relevanten Zusammenhänge an.`,
+      `Aus ${perspective} sehe ich hier folgende Aspekte, die zum Gesamtbild beitragen.`,
+    ],
+    frontend_impact_detected: [
+      `Ich ergänze den Fall jetzt aus ${perspective}. Die Darstellungsfolge ist relevant und wird hier eingeordnet.`,
+      `Aus ${perspective} ordne ich die UX-Auswirkung ein: Das betrifft primär die Anzeige und Verständlichkeit.`,
+    ],
+    backend_cause_detected: [
+      `Aus ${perspective} liegt die Ursache im Datenfluss / in der API-Logik. Ich ordne das technisch ein.`,
+      `Ich schaue mir die technische Seite genauer an. Aus ${perspective} sehe ich den Kern bei ${problemTitle}.`,
+    ],
+    ux_consequence: [
+      `Die UX-Folge ist aus ${perspective} klar erkennbar. Ich ergänze die wichtigsten Punkte.`,
+    ],
+    data_flow_dependency: [
+      `Aus ${perspective} hängt das an einem Datenfluss-Thema. Ich ordne die technische Abhängigkeit ein.`,
+    ],
+    scope_expansion: [
+      `Ich ergänze jetzt aus ${perspective} den erweiterten Scope.`,
+    ],
+    user_requested: [
+      `Ich ergänze gern aus ${perspective}. Bezogen auf ${problemTitle} sehe ich Folgendes.`,
+    ],
+    complementary_expertise: [
+      `Aus ${perspective} ergänze ich: Der relevante Bereich ist ${domain}. Ich schaue mir die Details an.`,
+    ],
+  };
+
+  const options = replies[reason] || replies.complementary_expertise;
+  const idx = (thread ? thread.messageCount : 0) % options.length;
+  return options[idx];
+}
+
+/**
+ * Generate a handoff completion message.
+ *
+ * @param {string} fromAgent
+ * @param {string} toAgent
+ * @returns {string}
+ */
+function _generateHandoffCompletionMsg(fromAgent, toAgent) {
+  const toLabel = toAgent === "deepseek" ? "DeepSeek (Backend)" : "Gemini (Frontend)";
+  return `Die Ergänzung durch ${toLabel} ist abgeschlossen. Der Thread kehrt zur normalen Führung zurück.`;
+}
+
+/**
+ * Execute a handoff within a conversation thread.
+ * Creates handoff initiation message + supporting agent reply + completion.
+ *
+ * @param {Object} params
+ * @param {Object} params.thread
+ * @param {string} params.primaryAgent - "deepseek" or "gemini"
+ * @param {string} params.reason - handoff reason
+ * @param {string} params.userMessage
+ * @param {Object} params.agentCase
+ * @param {string} params.afterMessageId - the message this handoff follows
+ * @returns {{ handoffMessages: Array, supportingAgentReply: Object }}
+ */
+function _executeHandoff({ thread, primaryAgent, reason, userMessage, agentCase, afterMessageId }) {
+  const supportingAgent = primaryAgent === "deepseek" ? "gemini" : "deepseek";
+  const supportingRole = supportingAgent === "deepseek" ? "backend_agent" : "frontend_agent";
+  const handoffMessages = [];
+
+  // 1. Handoff initiation message from primary agent
+  _conversationMsgCounter += 1;
+  const handoffMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+  const handoffText = _generateHandoffMessage(primaryAgent, supportingAgent, reason, thread);
+
+  const handoffInitMsg = {
+    messageId: handoffMsgId,
+    threadId: thread.threadId,
+    caseId: thread.caseId,
+    messageRole: "agent",
+    speakerAgent: primaryAgent,
+    speakerRole: primaryAgent === "deepseek" ? "backend_agent" : "frontend_agent",
+    messageIntent: "handoff",
+    messagePhase: "cross_agent_handoff_phase",
+    messageType: "handoff_initiation",
+    content: handoffText,
+    replyToMessageId: afterMessageId,
+    quotedMessageId: null,
+    followUpOf: afterMessageId,
+    relatedCaseId: thread.caseId,
+    relatedDraftId: null,
+    handoffReason: reason,
+    handoffFrom: primaryAgent,
+    handoffTo: supportingAgent,
+    createdAt: new Date().toISOString(),
+  };
+
+  thread.conversationMessages.push(handoffInitMsg);
+  thread.messageCount += 1;
+  thread.agentMessageCount += 1;
+  if (primaryAgent === "deepseek") thread.deepseekMessageCount += 1;
+  if (primaryAgent === "gemini") thread.geminiMessageCount += 1;
+  handoffMessages.push(handoffInitMsg);
+
+  // Update thread handoff state
+  thread.handoffStatus = "handoff_in_progress";
+  thread.crossAgentState = "cross_agent_active";
+  thread.handoffFrom = primaryAgent;
+  thread.handoffTo = supportingAgent;
+  thread.handoffReason = reason;
+  thread.supportingAgent = supportingAgent;
+
+  // Record in global chat
+  _recordAgentChatMessage({
+    agentCaseId: thread.caseId,
+    agentRole: primaryAgent === "deepseek" ? "deepseek_backend" : "gemini_frontend",
+    messageType: "handoff_initiation",
+    messageIntent: "handoff",
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: handoffText,
+    planPhase: "cross_agent_handoff_phase",
+    handoffStatus: "handoff_in_progress",
+    crossAgentState: "cross_agent_active",
+    handoffFrom: primaryAgent,
+    handoffTo: supportingAgent,
+    handoffReason: reason,
+  });
+
+  logger.info("[agentBridge] Step 22 – Handoff eingeleitet", {
+    threadId: thread.threadId,
+    from: primaryAgent,
+    to: supportingAgent,
+    reason,
+  });
+
+  // 2. Supporting agent reply
+  _conversationMsgCounter += 1;
+  const supportMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+  const supportText = _generateSupportingAgentReply(supportingAgent, reason, userMessage, agentCase, thread);
+
+  const supportMsg = {
+    messageId: supportMsgId,
+    threadId: thread.threadId,
+    caseId: thread.caseId,
+    messageRole: "agent",
+    speakerAgent: supportingAgent,
+    speakerRole: supportingRole,
+    messageIntent: "follow_up",
+    messagePhase: "cross_agent_handoff_phase",
+    messageType: "supporting_agent_reply",
+    content: supportText,
+    replyToMessageId: handoffMsgId,
+    quotedMessageId: null,
+    followUpOf: handoffMsgId,
+    relatedCaseId: thread.caseId,
+    relatedDraftId: null,
+    handoffReason: reason,
+    handoffFrom: primaryAgent,
+    handoffTo: supportingAgent,
+    createdAt: new Date().toISOString(),
+  };
+
+  thread.conversationMessages.push(supportMsg);
+  thread.messageCount += 1;
+  thread.agentMessageCount += 1;
+  if (supportingAgent === "deepseek") thread.deepseekMessageCount += 1;
+  if (supportingAgent === "gemini") thread.geminiMessageCount += 1;
+  handoffMessages.push(supportMsg);
+
+  // Record in global chat
+  _recordAgentChatMessage({
+    agentCaseId: thread.caseId,
+    agentRole: supportingAgent === "deepseek" ? "deepseek_backend" : "gemini_frontend",
+    messageType: "supporting_agent_reply",
+    messageIntent: "follow_up",
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: supportText,
+    planPhase: "cross_agent_handoff_phase",
+    handoffStatus: "handoff_in_progress",
+    crossAgentState: "cross_agent_active",
+    handoffFrom: primaryAgent,
+    handoffTo: supportingAgent,
+    handoffReason: reason,
+  });
+
+  logger.info("[agentBridge] Step 22 – Ergänzung durch zweiten Agenten", {
+    threadId: thread.threadId,
+    supportingAgent,
+    reason,
+  });
+
+  // 3. Handoff completion message (system)
+  _conversationMsgCounter += 1;
+  const completionMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+  const completionText = _generateHandoffCompletionMsg(primaryAgent, supportingAgent);
+
+  const completionMsg = {
+    messageId: completionMsgId,
+    threadId: thread.threadId,
+    caseId: thread.caseId,
+    messageRole: "system",
+    speakerAgent: "system",
+    speakerRole: "coordinator",
+    messageIntent: "handoff",
+    messagePhase: "cross_agent_handoff_phase",
+    messageType: "handoff_completion",
+    content: completionText,
+    replyToMessageId: supportMsgId,
+    quotedMessageId: null,
+    followUpOf: supportMsgId,
+    relatedCaseId: thread.caseId,
+    relatedDraftId: null,
+    handoffReason: reason,
+    handoffFrom: primaryAgent,
+    handoffTo: supportingAgent,
+    createdAt: new Date().toISOString(),
+  };
+
+  thread.conversationMessages.push(completionMsg);
+  thread.messageCount += 1;
+  thread.systemMessageCount += 1;
+  handoffMessages.push(completionMsg);
+
+  // Update thread: handoff complete
+  thread.handoffStatus = "handoff_completed";
+  thread.crossAgentState = "cross_agent_completed";
+  thread.handoffCount += 1;
+  thread.lastHandoffAt = new Date().toISOString();
+  thread.lastSpeaker = "system";
+  thread.awaitingUserReply = true;
+  thread.awaitingAgentReply = false;
+  thread.nextSuggestedSpeaker = "user";
+
+  // Record handoff history entry
+  thread.handoffHistory.push({
+    handoffId: `ho-${Date.now()}-${thread.handoffCount}`,
+    from: primaryAgent,
+    to: supportingAgent,
+    reason,
+    initiatedAt: handoffInitMsg.createdAt,
+    completedAt: completionMsg.createdAt,
+    handoffMessageId: handoffMsgId,
+    supportingMessageId: supportMsgId,
+    completionMessageId: completionMsgId,
+  });
+
+  // Keep handoff history manageable
+  while (thread.handoffHistory.length > 20) {
+    thread.handoffHistory.shift();
+  }
+
+  // Record completion in global chat
+  _recordAgentChatMessage({
+    agentCaseId: thread.caseId,
+    agentRole: "system",
+    messageType: "handoff_completion",
+    messageIntent: "handoff",
+    messagePriority: "normal",
+    requiresUserDecision: false,
+    message: completionText,
+    planPhase: "cross_agent_handoff_phase",
+    handoffStatus: "handoff_completed",
+    crossAgentState: "cross_agent_completed",
+    handoffFrom: primaryAgent,
+    handoffTo: supportingAgent,
+    handoffReason: reason,
+  });
+
+  logger.info("[agentBridge] Step 22 – Handoff abgeschlossen", {
+    threadId: thread.threadId,
+    from: primaryAgent,
+    to: supportingAgent,
+    reason,
+    handoffCount: thread.handoffCount,
+  });
+
+  return {
+    handoffMessages,
+    supportingAgentReply: supportMsg,
+  };
+}
+
+/**
+ * Admin-triggered handoff: explicitly trigger a handoff within a thread.
+ *
+ * @param {Object} params
+ * @param {string} params.agentCaseId
+ * @param {string} [params.targetAgent] - "deepseek" or "gemini" (who to hand off to)
+ * @param {string} [params.reason]
+ * @returns {Object}
+ */
+function triggerHandoff({ agentCaseId, targetAgent, reason } = {}) {
+  if (!agentCaseId) {
+    return { success: false, error: "agentCaseId is required" };
+  }
+
+  const thread = _conversationThreads.get(agentCaseId);
+  if (!thread) {
+    return { success: false, error: "No conversation thread found for this case" };
+  }
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId) || null;
+  const currentDominant = thread.dominantAgent || "deepseek_backend";
+  const currentPrimary = currentDominant.includes("deepseek") ? "deepseek" : "gemini";
+
+  // Determine target
+  const resolvedTarget = targetAgent || (currentPrimary === "deepseek" ? "gemini" : "deepseek");
+  if (resolvedTarget === currentPrimary) {
+    return { success: false, error: "Cannot hand off to the same agent that is currently leading" };
+  }
+
+  const resolvedReason = reason || "user_requested";
+  if (!VALID_HANDOFF_REASONS.includes(resolvedReason)) {
+    return { success: false, error: `Invalid handoff reason. Valid: ${VALID_HANDOFF_REASONS.join(", ")}` };
+  }
+
+  const lastMsg = thread.conversationMessages.length > 0
+    ? thread.conversationMessages[thread.conversationMessages.length - 1]
+    : null;
+  const afterMessageId = lastMsg ? lastMsg.messageId : null;
+
+  const result = _executeHandoff({
+    thread,
+    primaryAgent: currentPrimary,
+    reason: resolvedReason,
+    userMessage: lastMsg ? lastMsg.content : "",
+    agentCase,
+    afterMessageId,
+  });
+
+  thread.updatedAt = new Date().toISOString();
+
+  return {
+    success: true,
+    threadId: thread.threadId,
+    handoffStatus: thread.handoffStatus,
+    crossAgentState: thread.crossAgentState,
+    handoffFrom: currentPrimary,
+    handoffTo: resolvedTarget,
+    handoffReason: resolvedReason,
+    handoffCount: thread.handoffCount,
+    messagesAdded: result.handoffMessages.length,
+    supportingAgentReply: result.supportingAgentReply,
+  };
+}
+
+/**
+ * Build a summary across all conversation threads for handoff / cross-agent analytics.
+ *
+ * @returns {Object}
+ */
+function getHandoffSummary() {
+  const threads = Array.from(_conversationThreads.values());
+
+  const byHandoffStatus = {};
+  const byCrossAgentState = {};
+  const byHandoffReason = {};
+  const byHandoffDirection = {};
+
+  let totalThreads = threads.length;
+  let totalWithHandoffs = 0;
+  let totalHandoffs = 0;
+  let totalDeepseekToGemini = 0;
+  let totalGeminiToDeepseek = 0;
+  let totalCrossAgentActive = 0;
+  let totalSingleAgent = 0;
+
+  for (const t of threads) {
+    const hs = t.handoffStatus || "handoff_not_needed";
+    byHandoffStatus[hs] = (byHandoffStatus[hs] || 0) + 1;
+
+    const cas = t.crossAgentState || "single_agent";
+    byCrossAgentState[cas] = (byCrossAgentState[cas] || 0) + 1;
+
+    if (cas === "single_agent") totalSingleAgent += 1;
+    if (cas === "cross_agent_active") totalCrossAgentActive += 1;
+
+    if (t.handoffCount > 0) {
+      totalWithHandoffs += 1;
+      totalHandoffs += t.handoffCount;
+    }
+
+    for (const h of (t.handoffHistory || [])) {
+      const dir = `${h.from}→${h.to}`;
+      byHandoffDirection[dir] = (byHandoffDirection[dir] || 0) + 1;
+      if (h.reason) {
+        byHandoffReason[h.reason] = (byHandoffReason[h.reason] || 0) + 1;
+      }
+      if (h.from === "deepseek" && h.to === "gemini") totalDeepseekToGemini += 1;
+      if (h.from === "gemini" && h.to === "deepseek") totalGeminiToDeepseek += 1;
+    }
+  }
+
+  // Top handoff reasons
+  const topHandoffReasons = Object.entries(byHandoffReason)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([reason, count]) => ({ reason, count }));
+
+  // Thread-level handoff summaries (most recent first)
+  const handoffThreads = threads
+    .filter((t) => t.handoffCount > 0)
+    .sort((a, b) => (b.lastHandoffAt || "").localeCompare(a.lastHandoffAt || ""))
+    .slice(0, CONVERSATION_SUMMARY_MAX_THREADS)
+    .map((t) => ({
+      threadId: t.threadId,
+      handoffStatus: t.handoffStatus,
+      crossAgentState: t.crossAgentState,
+      dominantAgent: t.dominantAgent,
+      supportingAgent: t.supportingAgent,
+      handoffCount: t.handoffCount,
+      lastHandoffAt: t.lastHandoffAt,
+      messageCount: t.messageCount,
+      deepseekMessageCount: t.deepseekMessageCount,
+      geminiMessageCount: t.geminiMessageCount,
+    }));
+
+  logger.info("[agentBridge] Step 22 – Handoff-Zusammenfassung erzeugt", {
+    totalThreads,
+    totalWithHandoffs,
+    totalHandoffs,
+    totalDeepseekToGemini,
+    totalGeminiToDeepseek,
+  });
+
+  return {
+    totalThreads,
+    totalWithHandoffs,
+    totalHandoffs,
+    totalDeepseekToGemini,
+    totalGeminiToDeepseek,
+    totalCrossAgentActive,
+    totalSingleAgent,
+    byHandoffStatus,
+    byCrossAgentState,
+    byHandoffDirection,
+    byHandoffReason,
+    topHandoffReasons,
+    handoffThreads,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * Derive thread status from current state.
  * @param {Object} thread
@@ -11360,6 +12062,10 @@ function _buildConversationSummaryLine(thread) {
   parts.push(`Status: ${thread.threadStatus}`);
   if (thread.awaitingUserReply) parts.push("wartet auf User");
   if (thread.awaitingAgentReply) parts.push("wartet auf Agent");
+  // Step 22: handoff info
+  if (thread.handoffCount > 0) parts.push(`${thread.handoffCount} Übergabe(n)`);
+  if (thread.handoffStatus === "handoff_in_progress") parts.push("Übergabe aktiv");
+  if (thread.supportingAgent) parts.push(`Unterstützung: ${thread.supportingAgent}`);
   return parts.join(" · ");
 }
 
@@ -11499,42 +12205,73 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     planPhase: "conversation_phase",
   });
 
-  // --- 4. Check cross-agent coordination ---
-  const crossAgent = _checkCrossAgentCoordination(routing.speakerAgent, messageIntent, agentCase);
+  // --- 4. Step 22: Assess and execute cross-agent handoff ---
+  const handoffAssessment = _assessHandoffNeed(routing.speakerAgent, userMessage.trim(), messageIntent, agentCase, thread);
   let crossAgentNote = null;
+  let handoffResult = null;
 
-  if (crossAgent.needed && crossAgent.note) {
-    _conversationMsgCounter += 1;
-    const systemMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+  if (handoffAssessment.needed) {
+    // Execute the full handoff: initiation → supporting reply → completion
+    handoffResult = _executeHandoff({
+      thread,
+      primaryAgent: routing.speakerAgent,
+      reason: handoffAssessment.reason,
+      userMessage: userMessage.trim(),
+      agentCase,
+      afterMessageId: agentMsgId,
+    });
 
-    const systemMsgRecord = {
-      messageId: systemMsgId,
-      threadId: agentCaseId,
-      caseId: agentCaseId,
-      messageRole: "system",
-      speakerAgent: "system",
-      speakerRole: "coordinator",
-      messageIntent: "handoff",
-      messagePhase: _deriveConversationPhase(thread, agentCase),
-      content: crossAgent.note,
-      replyToMessageId: agentMsgId,
-      quotedMessageId: null,
-      followUpOf: agentMsgId,
-      relatedCaseId: agentCaseId,
-      relatedDraftId: null,
-      createdAt: new Date().toISOString(),
-    };
+    crossAgentNote = handoffResult.supportingAgentReply ? handoffResult.supportingAgentReply.content : null;
 
-    thread.conversationMessages.push(systemMsgRecord);
-    thread.systemMessageCount += 1;
-    thread.messageCount += 1;
-    crossAgentNote = crossAgent.note;
-
-    logger.info("[agentBridge] Step 21 – Cross-Agent-Koordination vorgeschlagen", {
+    logger.info("[agentBridge] Step 22 – Automatischer Handoff ausgeführt", {
       threadId: agentCaseId,
       primaryAgent: routing.speakerAgent,
-      messageIntent,
+      reason: handoffAssessment.reason,
+      confidence: handoffAssessment.confidence,
+      messagesAdded: handoffResult.handoffMessages.length,
     });
+  } else {
+    // Fallback: check legacy cross-agent coordination (Step 21 compat)
+    const crossAgent = _checkCrossAgentCoordination(routing.speakerAgent, messageIntent, agentCase);
+
+    if (crossAgent.needed && crossAgent.note) {
+      _conversationMsgCounter += 1;
+      const systemMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
+
+      const systemMsgRecord = {
+        messageId: systemMsgId,
+        threadId: agentCaseId,
+        caseId: agentCaseId,
+        messageRole: "system",
+        speakerAgent: "system",
+        speakerRole: "coordinator",
+        messageIntent: "handoff",
+        messagePhase: _deriveConversationPhase(thread, agentCase),
+        messageType: "cross_agent_note",
+        content: crossAgent.note,
+        replyToMessageId: agentMsgId,
+        quotedMessageId: null,
+        followUpOf: agentMsgId,
+        relatedCaseId: agentCaseId,
+        relatedDraftId: null,
+        createdAt: new Date().toISOString(),
+      };
+
+      thread.conversationMessages.push(systemMsgRecord);
+      thread.systemMessageCount += 1;
+      thread.messageCount += 1;
+      crossAgentNote = crossAgent.note;
+
+      // Update handoff state to suggested
+      thread.handoffStatus = "handoff_suggested";
+      thread.crossAgentState = "cross_agent_review_needed";
+
+      logger.info("[agentBridge] Step 21/22 – Cross-Agent-Koordination vorgeschlagen", {
+        threadId: agentCaseId,
+        primaryAgent: routing.speakerAgent,
+        messageIntent,
+      });
+    }
   }
 
   // --- 5. Update thread status and summary ---
@@ -11548,12 +12285,14 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     thread.conversationMessages.shift();
   }
 
-  logger.info("[agentBridge] Step 21 – Agent-Antwort erzeugt", {
+  logger.info("[agentBridge] Step 21/22 – Agent-Antwort erzeugt", {
     threadId: agentCaseId,
     speakerAgent: routing.speakerAgent,
     messageIntent,
     threadStatus: thread.threadStatus,
     messageCount: thread.messageCount,
+    handoffTriggered: handoffAssessment.needed,
+    handoffReason: handoffAssessment.reason,
   });
 
   return {
@@ -11569,6 +12308,15 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
       speakerRole: routing.speakerRole,
       routingReason: routing.routingReason,
     },
+    // Step 22: Handoff / Cross-Agent state
+    handoffTriggered: handoffAssessment.needed,
+    handoffStatus: thread.handoffStatus,
+    crossAgentState: thread.crossAgentState,
+    handoffReason: handoffAssessment.reason,
+    handoffConfidence: handoffAssessment.confidence,
+    supportingAgent: thread.supportingAgent,
+    handoffCount: thread.handoffCount,
+    supportingAgentReply: handoffResult ? handoffResult.supportingAgentReply : null,
     awaitingUserReply: thread.awaitingUserReply,
     awaitingAgentReply: thread.awaitingAgentReply,
     lastSpeaker: thread.lastSpeaker,
@@ -11621,6 +12369,15 @@ function getConversationThread({ agentCaseId, limit = 50 } = {}) {
     geminiMessageCount: thread.geminiMessageCount,
     systemMessageCount: thread.systemMessageCount,
     conversationSummary: thread.conversationSummary,
+    // Step 22: Cross-Agent Handoff fields
+    handoffStatus: thread.handoffStatus,
+    crossAgentState: thread.crossAgentState,
+    handoffFrom: thread.handoffFrom,
+    handoffTo: thread.handoffTo,
+    handoffReason: thread.handoffReason,
+    supportingAgent: thread.supportingAgent,
+    handoffCount: thread.handoffCount,
+    lastHandoffAt: thread.lastHandoffAt,
     messages,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
@@ -11680,6 +12437,17 @@ function getConversationSummary() {
     }
   }
 
+  // Step 22: Collect handoff analytics
+  let totalWithHandoffs = 0;
+  let totalHandoffsAll = 0;
+
+  for (const t of threads) {
+    if (t.handoffCount > 0) {
+      totalWithHandoffs += 1;
+      totalHandoffsAll += t.handoffCount;
+    }
+  }
+
   // Build thread summaries (most recent first)
   const threadSummaries = threads
     .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
@@ -11689,6 +12457,7 @@ function getConversationSummary() {
       threadStatus: t.threadStatus,
       conversationState: t.conversationState,
       dominantAgent: t.dominantAgent,
+      supportingAgent: t.supportingAgent,
       messageCount: t.messageCount,
       userMessageCount: t.userMessageCount,
       deepseekMessageCount: t.deepseekMessageCount,
@@ -11697,15 +12466,20 @@ function getConversationSummary() {
       awaitingAgentReply: t.awaitingAgentReply,
       lastSpeaker: t.lastSpeaker,
       conversationSummary: t.conversationSummary,
+      // Step 22 handoff fields
+      handoffStatus: t.handoffStatus,
+      crossAgentState: t.crossAgentState,
+      handoffCount: t.handoffCount,
       updatedAt: t.updatedAt,
     }));
 
-  logger.info("[agentBridge] Step 21 – Conversation-Zusammenfassung erzeugt", {
+  logger.info("[agentBridge] Step 21/22 – Conversation-Zusammenfassung erzeugt", {
     totalThreads: threads.length,
     totalOpen,
     totalMessages,
     totalWaitingForUser,
     totalWaitingForAgent,
+    totalWithHandoffs,
   });
 
   return {
@@ -11717,6 +12491,9 @@ function getConversationSummary() {
     totalGeminiDominated,
     totalCrossAgent,
     totalMessages,
+    // Step 22: Handoff analytics
+    totalWithHandoffs,
+    totalHandoffs: totalHandoffsAll,
     byThreadStatus,
     byDominantAgent,
     byConversationState,
@@ -11828,4 +12605,11 @@ module.exports = {
   VALID_SPEAKER_ROLES,
   VALID_CONVERSATION_INTENTS,
   VALID_CONVERSATION_PHASES,
+  // Step 22: Multi-Agent Handoff / Cross-Agent Dialogue / Coordinated Case Exchange Light
+  triggerHandoff,
+  getHandoffSummary,
+  VALID_HANDOFF_STATUSES,
+  VALID_CROSS_AGENT_STATES,
+  VALID_HANDOFF_REASONS,
+  VALID_HANDOFF_MESSAGE_TYPES,
 };
