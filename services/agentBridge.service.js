@@ -1324,6 +1324,9 @@ const CROSS_LAYER_KEYWORDS = [
   "api und darstellung", "datenfluss und anzeige", "mapping und ui",
 ];
 
+/** Maximum handoff history entries per thread */
+const HANDOFF_HISTORY_MAX_ENTRIES = 20;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -6164,7 +6167,7 @@ function _recordAgentChatMessage({
   }
 
   // Derive message phase from available context (Step 22 → Step 21 → Step 20 → … → Step 15)
-  if (planPhase === "cross_agent_handoff_phase" || handoffStatus) {
+  if (planPhase === "cross_agent_handoff_phase" || (handoffStatus && handoffStatus !== "handoff_not_needed")) {
     chatMessage.messagePhase = "cross_agent_handoff_phase";
   } else if (planPhase === "conversation_phase") {
     chatMessage.messagePhase = "conversation_phase";
@@ -11819,7 +11822,7 @@ function _executeHandoff({ thread, primaryAgent, reason, userMessage, agentCase,
   });
 
   // Keep handoff history manageable
-  while (thread.handoffHistory.length > 20) {
+  while (thread.handoffHistory.length > HANDOFF_HISTORY_MAX_ENTRIES) {
     thread.handoffHistory.shift();
   }
 
