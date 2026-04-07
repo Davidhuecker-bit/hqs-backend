@@ -1338,6 +1338,36 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Konferenz Step A: Inject conference context when available ──
+  if (bridgeContext && bridgeContext.conferenceContext) {
+    const cc = bridgeContext.conferenceContext;
+    const ccParts = [];
+    if (cc.conferenceMode) {
+      const modeLabels = { work_chat: "Arbeitschat", problem_solving: "Problemlösung", decision_mode: "Entscheidungsmodus" };
+      ccParts.push(`Konferenz-Modus: ${modeLabels[cc.conferenceMode] || cc.conferenceMode}`);
+    }
+    if (cc.conferenceStatus && cc.conferenceStatus !== "session_open") {
+      ccParts.push(`Session-Status: ${cc.conferenceStatus}`);
+    }
+    if (cc.conferenceFocus) {
+      ccParts.push(`Fokus: ${cc.conferenceFocus}`);
+    }
+    if (cc.targetAgent) {
+      ccParts.push(`Ziel-Agent: ${cc.targetAgent}`);
+    }
+    if (cc.messageCount > 0) {
+      ccParts.push(`Nachrichten: ${cc.messageCount}`);
+    }
+    if (ccParts.length) {
+      sections.push(`Konferenz-Kontext (Step A – dedizierte Konferenz-Session, kein loses Chat-Feld):\n${ccParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Konferenz Step A – Konferenz-Kontext eingebunden", {
+        conferenceMode: cc.conferenceMode,
+        conferenceStatus: cc.conferenceStatus,
+        targetAgent: cc.targetAgent,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

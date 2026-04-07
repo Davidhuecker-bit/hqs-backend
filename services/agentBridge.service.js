@@ -1451,6 +1451,47 @@ const DECISION_FRAME_MAX_DIMENSIONS = 10;
 /** Minimum open questions before preferring wait/clarify option */
 const DECISION_OPEN_QUESTIONS_THRESHOLD = 2;
 
+/* ─────────────────────────────────────────────────────────────────────
+   Konferenz Step A: DeepSeek ↔ Gemini – Conference Session /
+   Targeting / Mode / Summary
+
+   Dedicated backend support for the conference workspace.
+   Provides: session lifecycle, agent targeting, conference modes,
+   conference summaries, and lightweight conference data model.
+
+   Not: new architecture, autonomy, OpenAI, Claude, or monster platform.
+   ───────────────────────────────────────────────────────────────────── */
+
+/** Conference session lifecycle statuses */
+const VALID_CONFERENCE_SESSION_STATUSES = [
+  "session_open",
+  "session_active",
+  "session_paused",
+  "session_closed",
+  "session_archived",
+];
+
+/** Conference modes – how the conference room is operating */
+const VALID_CONFERENCE_MODES = [
+  "work_chat",
+  "problem_solving",
+  "decision_mode",
+];
+
+/** Target agent options – clean routing without text-prefix hacks */
+const VALID_CONFERENCE_TARGET_AGENTS = [
+  "deepseek",
+  "gemini",
+  "both",
+  "system",
+];
+
+/** Maximum conference sessions in memory */
+const CONFERENCE_SESSION_MAX_ENTRIES = 100;
+
+/** Maximum messages per conference session */
+const CONFERENCE_SESSION_MAX_MESSAGES = 500;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -1482,6 +1523,19 @@ const _conversationThreads = new Map();
 
 /** Auto-increment counter for conversation message IDs */
 let _conversationMsgCounter = 0;
+
+/* ─────────────────────────────────────────────
+   Konferenz Step A: In-memory conference session store
+   ───────────────────────────────────────────── */
+
+/** @type {Map<string, Object>} conferenceId → conference session object */
+const _conferenceSessions = new Map();
+
+/** Auto-increment counter for conference session IDs */
+let _conferenceIdCounter = 0;
+
+/** Auto-increment counter for conference message IDs */
+let _conferenceMsgCounter = 0;
 
 /* ─────────────────────────────────────────────
    Step 4: In-memory pattern memory (lightweight)
@@ -14629,6 +14683,744 @@ function getConversationSummary() {
   };
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   Konferenz Step A: DeepSeek ↔ Gemini – Conference Session /
+   Targeting / Mode / Summary
+
+   Functions:
+   - openConferenceSession()          – create or resume a conference session
+   - sendConferenceMessage()          – send a message with clean agent targeting
+   - updateConferenceSession()        – change session status / mode
+   - closeConferenceSession()         – close or archive a session
+   - getConferenceSession()           – retrieve session with messages
+   - getConferenceSummary()           – generate a human-readable conference summary
+   - getConferenceWorkspace()         – load full workspace data for frontend
+   - getConferenceAdminSummary()      – analytics across all conference sessions
+   ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Open (or resume) a conference session.
+ *
+ * @param {Object} params
+ * @param {string} [params.conferenceId] – existing session to resume, or null for new
+ * @param {string} [params.conferenceMode] – "work_chat" | "problem_solving" | "decision_mode"
+ * @param {string} [params.relatedCaseId] – optional link to an agent case
+ * @param {string} [params.conferenceFocus] – human-readable focus description
+ * @param {string} [params.conferenceOwner] – who opened the session
+ * @returns {Object} session data
+ */
+function openConferenceSession({
+  conferenceId = null,
+  conferenceMode = "work_chat",
+  relatedCaseId = null,
+  conferenceFocus = null,
+  conferenceOwner = "admin",
+} = {}) {
+  // Resume existing session
+  if (conferenceId && _conferenceSessions.has(conferenceId)) {
+    const existing = _conferenceSessions.get(conferenceId);
+    if (existing.conferenceStatus === "session_paused" || existing.conferenceStatus === "session_closed") {
+      existing.conferenceStatus = "session_active";
+      existing.updatedAt = new Date().toISOString();
+      logger.info("[agentBridge] Konferenz Step A – Session wiederaufgenommen", {
+        conferenceId,
+        previousStatus: existing.conferenceStatus,
+      });
+    }
+    return { success: true, conferenceId, session: _formatConferenceSession(existing), resumed: true };
+  }
+
+  // Validate mode
+  const mode = VALID_CONFERENCE_MODES.includes(conferenceMode) ? conferenceMode : "work_chat";
+
+  // Create new session
+  _conferenceIdCounter += 1;
+  const newId = conferenceId || `conf-${Date.now()}-${_conferenceIdCounter}`;
+  const now = new Date().toISOString();
+
+  const session = {
+    conferenceId: newId,
+    conferenceStatus: "session_active",
+    conferenceMode: mode,
+    conferenceFocus: conferenceFocus || null,
+    conferenceOwner: conferenceOwner || "admin",
+    relatedCaseId: relatedCaseId || null,
+    activeAgents: ["deepseek", "gemini"],
+    messages: [],
+    messageCount: 0,
+    userMessageCount: 0,
+    deepseekMessageCount: 0,
+    geminiMessageCount: 0,
+    systemMessageCount: 0,
+    lastTargetAgent: null,
+    lastSpeaker: null,
+    lastActivity: now,
+    sessionOpenedAt: now,
+    sessionClosedAt: null,
+    conferenceSummary: null,
+    modeHistory: [{ mode, changedAt: now }],
+    statusHistory: [{ status: "session_active", changedAt: now }],
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  _conferenceSessions.set(newId, session);
+
+  // Evict oldest sessions if over limit
+  if (_conferenceSessions.size > CONFERENCE_SESSION_MAX_ENTRIES) {
+    const oldestKey = _conferenceSessions.keys().next().value;
+    _conferenceSessions.delete(oldestKey);
+  }
+
+  logger.info("[agentBridge] Konferenz Step A – Neue Konferenz-Session eröffnet", {
+    conferenceId: newId,
+    conferenceMode: mode,
+    conferenceFocus,
+    relatedCaseId,
+  });
+
+  return { success: true, conferenceId: newId, session: _formatConferenceSession(session), resumed: false };
+}
+
+/**
+ * Send a message to a conference session with clean agent targeting.
+ *
+ * @param {Object} params
+ * @param {string} params.conferenceId – required
+ * @param {string} params.userMessage – required, free-form text
+ * @param {string} [params.targetAgent] – "deepseek" | "gemini" | "both" | "system"
+ * @param {string} [params.replyToMessageId] – optional reply reference
+ * @returns {Object} message result with agent reply/replies
+ */
+function sendConferenceMessage({
+  conferenceId,
+  userMessage,
+  targetAgent = null,
+  replyToMessageId = null,
+} = {}) {
+  if (!conferenceId) {
+    logger.warn("[agentBridge] Konferenz Step A – sendConferenceMessage ohne conferenceId");
+    return { success: false, error: "conferenceId is required" };
+  }
+  if (!userMessage || typeof userMessage !== "string" || userMessage.trim().length === 0) {
+    logger.warn("[agentBridge] Konferenz Step A – sendConferenceMessage ohne userMessage");
+    return { success: false, error: "userMessage is required and must be a non-empty string" };
+  }
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) {
+    return { success: false, error: "Conference session not found" };
+  }
+
+  if (session.conferenceStatus === "session_closed" || session.conferenceStatus === "session_archived") {
+    return { success: false, error: "Conference session is closed or archived" };
+  }
+
+  // Ensure session is active
+  if (session.conferenceStatus === "session_paused") {
+    session.conferenceStatus = "session_active";
+    session.statusHistory.push({ status: "session_active", changedAt: new Date().toISOString() });
+  }
+
+  // Resolve target agent
+  const resolvedTarget = _resolveConferenceTarget(targetAgent, userMessage, session);
+  const messageIntent = _deriveMessageIntent(userMessage);
+  const now = new Date().toISOString();
+
+  // Record user message
+  _conferenceMsgCounter += 1;
+  const userMsgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
+
+  const userMsgRecord = {
+    messageId: userMsgId,
+    conferenceId,
+    messageRole: "user",
+    speakerAgent: "user",
+    messageIntent,
+    targetAgent: resolvedTarget.target,
+    content: userMessage.trim(),
+    replyToMessageId: replyToMessageId || null,
+    conferenceMode: session.conferenceMode,
+    createdAt: now,
+  };
+
+  session.messages.push(userMsgRecord);
+  session.messageCount += 1;
+  session.userMessageCount += 1;
+  session.lastSpeaker = "user";
+  session.lastActivity = now;
+
+  // Trim messages if over limit
+  if (session.messages.length > CONFERENCE_SESSION_MAX_MESSAGES) {
+    session.messages = session.messages.slice(-CONFERENCE_SESSION_MAX_MESSAGES);
+  }
+
+  logger.info("[agentBridge] Konferenz Step A – Konferenz-Nachricht empfangen", {
+    conferenceId,
+    targetAgent: resolvedTarget.target,
+    routingReason: resolvedTarget.routingReason,
+    messageIntent,
+  });
+
+  // Generate agent replies based on target
+  const agentReplies = [];
+
+  if (resolvedTarget.target === "both") {
+    // Both agents reply
+    const dsReply = _generateConferenceReply("deepseek", messageIntent, userMessage, session);
+    const gmReply = _generateConferenceReply("gemini", messageIntent, userMessage, session);
+    agentReplies.push(_recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId));
+    agentReplies.push(_recordConferenceAgentReply(session, "gemini", gmReply, userMsgId));
+  } else if (resolvedTarget.target === "system") {
+    const sysReply = _generateConferenceSystemReply(messageIntent, session);
+    agentReplies.push(_recordConferenceAgentReply(session, "system", sysReply, userMsgId));
+  } else {
+    // Single agent reply
+    const reply = _generateConferenceReply(resolvedTarget.target, messageIntent, userMessage, session);
+    agentReplies.push(_recordConferenceAgentReply(session, resolvedTarget.target, reply, userMsgId));
+  }
+
+  session.lastTargetAgent = resolvedTarget.target;
+  session.updatedAt = now;
+
+  return {
+    success: true,
+    conferenceId,
+    conferenceStatus: session.conferenceStatus,
+    conferenceMode: session.conferenceMode,
+    userMessage: userMsgRecord,
+    agentReplies,
+    routing: {
+      targetAgent: resolvedTarget.target,
+      routingReason: resolvedTarget.routingReason,
+    },
+    messageCount: session.messageCount,
+  };
+}
+
+/**
+ * Record an agent reply within a conference session.
+ * @private
+ */
+function _recordConferenceAgentReply(session, agent, content, replyToMessageId) {
+  _conferenceMsgCounter += 1;
+  const msgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
+  const now = new Date().toISOString();
+
+  const record = {
+    messageId: msgId,
+    conferenceId: session.conferenceId,
+    messageRole: "agent",
+    speakerAgent: agent,
+    speakerRole: agent === "deepseek" ? "backend_agent" : agent === "gemini" ? "frontend_agent" : "coordinator",
+    content,
+    replyToMessageId,
+    conferenceMode: session.conferenceMode,
+    createdAt: now,
+  };
+
+  session.messages.push(record);
+  session.messageCount += 1;
+  session.lastSpeaker = agent;
+  session.lastActivity = now;
+
+  if (agent === "deepseek") session.deepseekMessageCount += 1;
+  else if (agent === "gemini") session.geminiMessageCount += 1;
+  else session.systemMessageCount += 1;
+
+  return record;
+}
+
+/**
+ * Resolve the target agent for a conference message.
+ * Uses explicit targetAgent parameter, falls back to keyword-based routing.
+ * @private
+ */
+function _resolveConferenceTarget(targetAgent, userMessage, session) {
+  // Explicit targeting – clean, no text prefix hacks
+  if (targetAgent && VALID_CONFERENCE_TARGET_AGENTS.includes(targetAgent)) {
+    const reasonMap = {
+      deepseek: "Explizites Targeting: nur DeepSeek (Backend-Agent)",
+      gemini: "Explizites Targeting: nur Gemini (Frontend-Agent)",
+      both: "Explizites Targeting: beide Agenten",
+      system: "Explizites Targeting: System-Antwort",
+    };
+    return { target: targetAgent, routingReason: reasonMap[targetAgent] || "Explizites Targeting" };
+  }
+
+  // Keyword-based routing as fallback
+  const lowerMsg = (userMessage || "").toLowerCase();
+  let dsScore = 0;
+  let gmScore = 0;
+
+  for (const kw of DEEPSEEK_ROUTING_KEYWORDS) {
+    if (lowerMsg.includes(kw)) dsScore += 1;
+  }
+  for (const kw of GEMINI_ROUTING_KEYWORDS) {
+    if (lowerMsg.includes(kw)) gmScore += 1;
+  }
+
+  // In decision mode, default to both agents
+  if (session.conferenceMode === "decision_mode" && dsScore === 0 && gmScore === 0) {
+    return { target: "both", routingReason: "Entscheidungsmodus – beide Agenten einbezogen" };
+  }
+
+  if (dsScore > 0 && gmScore > 0) {
+    return { target: "both", routingReason: "Nachricht berührt beide Agenten-Domänen" };
+  }
+  if (gmScore > dsScore) {
+    return { target: "gemini", routingReason: "Nachricht bezieht sich auf Frontend / UX / Design" };
+  }
+  if (dsScore > gmScore) {
+    return { target: "deepseek", routingReason: "Nachricht bezieht sich auf Backend / API / Logik" };
+  }
+
+  // Default routing based on last speaker or deepseek
+  return { target: "deepseek", routingReason: "Standard-Routing zum Backend-Agenten" };
+}
+
+/**
+ * Generate a cooperative conference reply for an agent.
+ * @private
+ */
+function _generateConferenceReply(agent, messageIntent, userMessage, session) {
+  const isBackend = agent === "deepseek";
+  const perspective = isBackend ? "Backend-Sicht" : "Frontend-Sicht";
+  const domain = isBackend ? "Backend / API / Logik" : "Frontend / UX / Darstellung";
+  const focus = session.conferenceFocus || "das aktuelle Thema";
+
+  const modeLabel = {
+    work_chat: "Arbeitschat",
+    problem_solving: "Problemlösung",
+    decision_mode: "Entscheidungsmodus",
+  }[session.conferenceMode] || "Arbeitschat";
+
+  const replies = {
+    question: [
+      `Aus ${perspective}: Gute Frage. Ich schaue mir ${focus} genauer an und gebe dir eine Einschätzung.`,
+      `Zum Thema ${focus} – aus ${perspective} kann ich Folgendes beitragen:`,
+    ],
+    clarification: [
+      `Ich präzisiere gern aus ${perspective}. Der relevante Bereich ist ${domain}.`,
+      `Lass mich das aus ${perspective} genauer einordnen.`,
+    ],
+    scope_change: [
+      `Verstanden. Ich passe den Fokus an und konzentriere mich auf ${domain}.`,
+    ],
+    diagnosis_request: [
+      `Ich schaue mir die Ursache aus ${perspective} tiefer an. Fokus: ${focus}.`,
+      `Diagnose aus ${perspective}: Ich prüfe jetzt gezielt den Bereich ${domain}.`,
+    ],
+    recommendation: [
+      `Aus ${perspective} würde ich Folgendes empfehlen – bezogen auf ${focus}.`,
+      `Mein Vorschlag aus ${perspective}: Zunächst ${domain} gezielt prüfen.`,
+    ],
+    follow_up: [
+      `Ich knüpfe an den letzten Punkt an. Aus ${perspective} gibt es noch Folgendes zu ${focus}.`,
+    ],
+    freeform: [
+      `Ich habe deine Nachricht aufgenommen. Aus ${perspective} ordne ich das ein.`,
+      `Danke für den Beitrag. Aus ${perspective} liegt der Schwerpunkt bei ${focus}.`,
+      `Diese Konferenz läuft aktuell im ${modeLabel}. Aus ${perspective} ergänze ich Folgendes.`,
+    ],
+  };
+
+  const candidates = replies[messageIntent] || replies.freeform;
+  const idx = (session.messageCount || 0) % candidates.length;
+  return candidates[idx];
+}
+
+/**
+ * Generate a system reply for conference-level requests.
+ * @private
+ */
+function _generateConferenceSystemReply(messageIntent, session) {
+  const modeLabel = {
+    work_chat: "Arbeitschat",
+    problem_solving: "Problemlösung",
+    decision_mode: "Entscheidungsmodus",
+  }[session.conferenceMode] || "Arbeitschat";
+
+  const focus = session.conferenceFocus || "kein spezifischer Fokus gesetzt";
+  return `Konferenz-Status: ${session.conferenceStatus} | Modus: ${modeLabel} | Fokus: ${focus} | Nachrichten: ${session.messageCount} | Aktive Agenten: ${session.activeAgents.join(", ")}`;
+}
+
+/**
+ * Update conference session status or mode.
+ *
+ * @param {Object} params
+ * @param {string} params.conferenceId – required
+ * @param {string} [params.conferenceStatus] – new status
+ * @param {string} [params.conferenceMode] – new mode
+ * @param {string} [params.conferenceFocus] – new focus description
+ * @param {string} [params.relatedCaseId] – link to agent case
+ * @returns {Object}
+ */
+function updateConferenceSession({
+  conferenceId,
+  conferenceStatus = null,
+  conferenceMode = null,
+  conferenceFocus = null,
+  relatedCaseId = null,
+} = {}) {
+  if (!conferenceId) {
+    return { success: false, error: "conferenceId is required" };
+  }
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) {
+    return { success: false, error: "Conference session not found" };
+  }
+
+  const now = new Date().toISOString();
+  const changes = [];
+
+  if (conferenceStatus && VALID_CONFERENCE_SESSION_STATUSES.includes(conferenceStatus)) {
+    const oldStatus = session.conferenceStatus;
+    session.conferenceStatus = conferenceStatus;
+    session.statusHistory.push({ status: conferenceStatus, changedAt: now });
+    changes.push(`Status: ${oldStatus} → ${conferenceStatus}`);
+    if (conferenceStatus === "session_closed" || conferenceStatus === "session_archived") {
+      session.sessionClosedAt = now;
+    }
+  }
+
+  if (conferenceMode && VALID_CONFERENCE_MODES.includes(conferenceMode)) {
+    const oldMode = session.conferenceMode;
+    session.conferenceMode = conferenceMode;
+    session.modeHistory.push({ mode: conferenceMode, changedAt: now });
+    changes.push(`Modus: ${oldMode} → ${conferenceMode}`);
+  }
+
+  if (conferenceFocus !== null) {
+    session.conferenceFocus = conferenceFocus;
+    changes.push(`Fokus aktualisiert: ${conferenceFocus}`);
+  }
+
+  if (relatedCaseId !== null) {
+    session.relatedCaseId = relatedCaseId;
+    changes.push(`Fallbindung: ${relatedCaseId}`);
+  }
+
+  session.updatedAt = now;
+
+  logger.info("[agentBridge] Konferenz Step A – Session aktualisiert", {
+    conferenceId,
+    changes,
+  });
+
+  return { success: true, conferenceId, session: _formatConferenceSession(session), changes };
+}
+
+/**
+ * Close or archive a conference session.
+ *
+ * @param {Object} params
+ * @param {string} params.conferenceId – required
+ * @param {boolean} [params.archive] – if true, archive instead of close
+ * @returns {Object}
+ */
+function closeConferenceSession({ conferenceId, archive = false } = {}) {
+  if (!conferenceId) {
+    return { success: false, error: "conferenceId is required" };
+  }
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) {
+    return { success: false, error: "Conference session not found" };
+  }
+
+  const now = new Date().toISOString();
+  const newStatus = archive ? "session_archived" : "session_closed";
+  session.conferenceStatus = newStatus;
+  session.sessionClosedAt = now;
+  session.statusHistory.push({ status: newStatus, changedAt: now });
+  session.updatedAt = now;
+
+  logger.info("[agentBridge] Konferenz Step A – Session geschlossen", {
+    conferenceId,
+    archived: archive,
+    messageCount: session.messageCount,
+  });
+
+  return { success: true, conferenceId, conferenceStatus: newStatus, closedAt: now };
+}
+
+/**
+ * Retrieve a conference session with messages.
+ *
+ * @param {Object} params
+ * @param {string} params.conferenceId – required
+ * @param {number} [params.limit] – max messages to return (newest first)
+ * @returns {Object|null}
+ */
+function getConferenceSession({ conferenceId, limit = 50 } = {}) {
+  if (!conferenceId) return null;
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+
+  const messages = session.messages.slice(-limit);
+  return {
+    ..._formatConferenceSession(session),
+    messages,
+  };
+}
+
+/**
+ * Generate a human-readable conference summary.
+ * Not a raw JSON dump – cooperative, structured, human-friendly.
+ *
+ * @param {Object} params
+ * @param {string} params.conferenceId – required
+ * @returns {Object|null}
+ */
+function getConferenceSummary({ conferenceId } = {}) {
+  if (!conferenceId) return null;
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+
+  const modeLabel = {
+    work_chat: "Arbeitschat",
+    problem_solving: "Problemlösung",
+    decision_mode: "Entscheidungsmodus",
+  }[session.conferenceMode] || session.conferenceMode;
+
+  const statusLabel = {
+    session_open: "Offen",
+    session_active: "Aktiv",
+    session_paused: "Pausiert",
+    session_closed: "Geschlossen",
+    session_archived: "Archiviert",
+  }[session.conferenceStatus] || session.conferenceStatus;
+
+  // Derive who is leading
+  const dsCount = session.deepseekMessageCount;
+  const gmCount = session.geminiMessageCount;
+  let leadingAgent = "Keiner klar führend";
+  if (dsCount > gmCount + 2) leadingAgent = "DeepSeek führt den technischen Teil";
+  else if (gmCount > dsCount + 2) leadingAgent = "Gemini führt den Frontend-/UX-Teil";
+  else if (dsCount > 0 && gmCount > 0) leadingAgent = "Beide Agenten tragen bei";
+
+  // Derive open points from recent messages
+  const recentMessages = session.messages.slice(-10);
+  const hasQuestions = recentMessages.some((m) => m.messageIntent === "question" || m.messageIntent === "clarification");
+  const hasFollowUp = recentMessages.some((m) => m.messageIntent === "follow_up");
+  const hasDecisionRequest = recentMessages.some((m) => m.messageIntent === "approval_feedback");
+
+  const openPoints = [];
+  if (hasQuestions) openPoints.push("Offene Fragen im letzten Gesprächsverlauf");
+  if (hasFollowUp) openPoints.push("Follow-up-Themen angesprochen");
+  if (hasDecisionRequest) openPoints.push("Entscheidungsbedarf signalisiert");
+  if (openPoints.length === 0) openPoints.push("Keine offenen Punkte erkannt");
+
+  // Current focus
+  const currentFocus = session.conferenceFocus || "Kein spezifischer Fokus gesetzt";
+
+  // What is understood so far
+  const understood = session.messageCount > 5
+    ? "Das Thema wurde in mehreren Beiträgen besprochen. Die Agenten haben ihre Sichten eingebracht."
+    : session.messageCount > 0
+      ? "Die Konferenz hat begonnen. Erste Einordnungen liegen vor."
+      : "Noch keine Nachrichten ausgetauscht.";
+
+  // Where is this heading
+  const direction = session.conferenceMode === "decision_mode"
+    ? "Die Konferenz steuert auf eine Entscheidung zu."
+    : session.conferenceMode === "problem_solving"
+      ? "Die Konferenz fokussiert sich auf Problemanalyse."
+      : "Die Konferenz läuft als freier Arbeitschat.";
+
+  // Next step
+  const nextStep = session.conferenceStatus === "session_paused"
+    ? "Die Sitzung ist pausiert. Sie kann jederzeit fortgesetzt werden."
+    : session.conferenceStatus === "session_closed"
+      ? "Die Sitzung ist abgeschlossen."
+      : hasDecisionRequest
+        ? "Der nächste Schritt wäre eine Entscheidung oder Freigabe."
+        : "Der nächste Schritt wäre, das Thema weiter zu vertiefen oder den Fokus einzugrenzen.";
+
+  const summary = {
+    conferenceId: session.conferenceId,
+    status: statusLabel,
+    modus: modeLabel,
+    currentFocus,
+    understood,
+    direction,
+    leadingAgent,
+    openPoints,
+    nextStep,
+    hasOpenFollowUp: hasFollowUp,
+    hasOpenDecision: hasDecisionRequest,
+    messageCount: session.messageCount,
+    deepseekContributions: dsCount,
+    geminiContributions: gmCount,
+    sessionDuration: _formatDuration(session.sessionOpenedAt, session.sessionClosedAt || new Date().toISOString()),
+    relatedCaseId: session.relatedCaseId,
+    generatedAt: new Date().toISOString(),
+  };
+
+  // Cache summary on session
+  session.conferenceSummary = summary;
+
+  logger.info("[agentBridge] Konferenz Step A – Zusammenfassung generiert", {
+    conferenceId,
+    status: statusLabel,
+    modus: modeLabel,
+    messageCount: session.messageCount,
+  });
+
+  return summary;
+}
+
+/**
+ * Load full conference workspace data for frontend.
+ *
+ * @returns {Object} workspace with active sessions, recent sessions, stats
+ */
+function getConferenceWorkspace() {
+  const sessions = Array.from(_conferenceSessions.values());
+
+  const activeSessions = sessions
+    .filter((s) => s.conferenceStatus === "session_active" || s.conferenceStatus === "session_open")
+    .map(_formatConferenceSession);
+
+  const pausedSessions = sessions
+    .filter((s) => s.conferenceStatus === "session_paused")
+    .map(_formatConferenceSession);
+
+  const recentClosed = sessions
+    .filter((s) => s.conferenceStatus === "session_closed" || s.conferenceStatus === "session_archived")
+    .sort((a, b) => (b.sessionClosedAt || "").localeCompare(a.sessionClosedAt || ""))
+    .slice(0, 10)
+    .map(_formatConferenceSession);
+
+  return {
+    success: true,
+    totalSessions: sessions.length,
+    activeSessions,
+    pausedSessions,
+    recentClosed,
+    activeCount: activeSessions.length,
+    pausedCount: pausedSessions.length,
+    closedCount: sessions.filter((s) => s.conferenceStatus === "session_closed").length,
+    archivedCount: sessions.filter((s) => s.conferenceStatus === "session_archived").length,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Admin summary / analytics across all conference sessions.
+ *
+ * @returns {Object} aggregated conference stats
+ */
+function getConferenceAdminSummary() {
+  const sessions = Array.from(_conferenceSessions.values());
+  const total = sessions.length;
+
+  const byStatus = {};
+  const byMode = {};
+  const byTarget = {};
+
+  for (const s of sessions) {
+    byStatus[s.conferenceStatus] = (byStatus[s.conferenceStatus] || 0) + 1;
+    byMode[s.conferenceMode] = (byMode[s.conferenceMode] || 0) + 1;
+    if (s.lastTargetAgent) {
+      byTarget[s.lastTargetAgent] = (byTarget[s.lastTargetAgent] || 0) + 1;
+    }
+  }
+
+  const totalActive = byStatus["session_active"] || 0;
+  const totalPaused = byStatus["session_paused"] || 0;
+  const totalClosed = byStatus["session_closed"] || 0;
+  const totalArchived = byStatus["session_archived"] || 0;
+
+  const totalInDecisionMode = byMode["decision_mode"] || 0;
+  const totalInProblemSolving = byMode["problem_solving"] || 0;
+  const totalInWorkChat = byMode["work_chat"] || 0;
+
+  const totalDeepseekOnly = byTarget["deepseek"] || 0;
+  const totalGeminiOnly = byTarget["gemini"] || 0;
+  const totalBothTargeted = byTarget["both"] || 0;
+
+  const totalMessages = sessions.reduce((sum, s) => sum + s.messageCount, 0);
+
+  // Sessions with follow-up need (recent messages with follow_up intent)
+  const totalWithFollowUp = sessions.filter((s) => {
+    const recent = s.messages.slice(-5);
+    return recent.some((m) => m.messageIntent === "follow_up" || m.messageIntent === "question");
+  }).length;
+
+  // Sessions with related cases
+  const totalWithCaseBinding = sessions.filter((s) => !!s.relatedCaseId).length;
+
+  return {
+    totalSessions: total,
+    totalActive,
+    totalPaused,
+    totalClosed,
+    totalArchived,
+    totalInDecisionMode,
+    totalInProblemSolving,
+    totalInWorkChat,
+    totalDeepseekOnly,
+    totalGeminiOnly,
+    totalBothTargeted,
+    totalMessages,
+    totalWithFollowUp,
+    totalWithCaseBinding,
+    byStatus,
+    byMode,
+    byTarget,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Format a conference session for external consumption (without raw message array).
+ * @private
+ */
+function _formatConferenceSession(session) {
+  return {
+    conferenceId: session.conferenceId,
+    conferenceStatus: session.conferenceStatus,
+    conferenceMode: session.conferenceMode,
+    conferenceFocus: session.conferenceFocus,
+    conferenceOwner: session.conferenceOwner,
+    relatedCaseId: session.relatedCaseId,
+    activeAgents: session.activeAgents,
+    messageCount: session.messageCount,
+    userMessageCount: session.userMessageCount,
+    deepseekMessageCount: session.deepseekMessageCount,
+    geminiMessageCount: session.geminiMessageCount,
+    systemMessageCount: session.systemMessageCount,
+    lastTargetAgent: session.lastTargetAgent,
+    lastSpeaker: session.lastSpeaker,
+    lastActivity: session.lastActivity,
+    sessionOpenedAt: session.sessionOpenedAt,
+    sessionClosedAt: session.sessionClosedAt,
+  };
+}
+
+/**
+ * Format a duration between two ISO timestamps in human-readable form.
+ * @private
+ */
+function _formatDuration(startIso, endIso) {
+  try {
+    const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+    if (ms < 0) return "—";
+    const minutes = Math.floor(ms / 60000);
+    if (minutes < 60) return `${minutes} Minuten`;
+    const hours = Math.floor(minutes / 60);
+    const remainMinutes = minutes % 60;
+    return `${hours}h ${remainMinutes}min`;
+  } catch {
+    return "—";
+  }
+}
+
 module.exports = {
   buildBridgePackage,
   getCurrentBridgePackage,
@@ -14753,4 +15545,16 @@ module.exports = {
   VALID_DIMENSION_RATINGS,
   VALID_DECISION_MODES,
   VALID_OPTION_OWNER_TYPES,
+  // Konferenz Step A: DeepSeek ↔ Gemini – Conference Session / Targeting / Mode / Summary
+  openConferenceSession,
+  sendConferenceMessage,
+  updateConferenceSession,
+  closeConferenceSession,
+  getConferenceSession,
+  getConferenceSummary,
+  getConferenceWorkspace,
+  getConferenceAdminSummary,
+  VALID_CONFERENCE_SESSION_STATUSES,
+  VALID_CONFERENCE_MODES,
+  VALID_CONFERENCE_TARGET_AGENTS,
 };
