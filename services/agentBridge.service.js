@@ -1327,6 +1327,54 @@ const CROSS_LAYER_KEYWORDS = [
 /** Maximum handoff history entries per thread */
 const HANDOFF_HISTORY_MAX_ENTRIES = 20;
 
+/* ─────────────────────────────────────────────────────────────────────
+   Step 23: Conversation Memory / Case Continuity / Agent Memory Anchors
+
+   Constants for structured case memory that allows DeepSeek and Gemini
+   to remember the working context, decisions, open points, and agreed
+   directions within a case – without a large external persistence layer.
+   ───────────────────────────────────────────────────────────────────── */
+
+/** Continuity status taxonomy – how well established is the case memory */
+const VALID_CONTINUITY_STATUSES = [
+  "continuity_not_started",
+  "continuity_light",
+  "continuity_established",
+  "continuity_needs_refresh",
+];
+
+/** Memory freshness – how recently was the case memory updated */
+const VALID_MEMORY_FRESHNESS = [
+  "memory_empty",
+  "memory_partial",
+  "memory_stable",
+  "memory_recently_updated",
+];
+
+/** Anchor types – categories of meaningful case anchors */
+const VALID_MEMORY_ANCHOR_TYPES = [
+  "scope_decision",
+  "direction_agreed",
+  "direction_discarded",
+  "user_preference",
+  "open_question",
+  "resolved_point",
+  "handoff_completed",
+  "plan_refinement",
+  "approval_decision",
+  "diagnosis_finding",
+  "next_step_identified",
+];
+
+/** Maximum memory anchors per thread */
+const CASE_MEMORY_MAX_ANCHORS = 30;
+
+/** Maximum open questions per thread */
+const CASE_MEMORY_MAX_OPEN_QUESTIONS = 15;
+
+/** Maximum resolved points per thread */
+const CASE_MEMORY_MAX_RESOLVED_POINTS = 30;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -2869,6 +2917,24 @@ function buildBridgePackage(payload = {}) {
           supportingAgent:  convThread.supportingAgent,
           handoffCount:     convThread.handoffCount,
           lastHandoffAt:    convThread.lastHandoffAt,
+        };
+      }
+
+      // ── Step 23: Attach case memory context ──
+      if (convThread.caseMemory && convThread.caseMemory.caseContinuityStatus !== "continuity_not_started") {
+        pkg.caseMemoryContext = {
+          caseContinuityStatus: convThread.caseMemory.caseContinuityStatus,
+          memoryFreshness:      convThread.caseMemory.memoryFreshness,
+          workingSummary:       convThread.caseMemory.workingSummary,
+          agreedDirection:      convThread.caseMemory.agreedDirection,
+          nextOpenStep:         convThread.caseMemory.nextOpenStep,
+          caseScope:            convThread.caseMemory.caseScope,
+          dominantMemoryOwner:  convThread.caseMemory.dominantMemoryOwner,
+          memoryFocus:          convThread.caseMemory.memoryFocus,
+          openQuestionCount:    (convThread.caseMemory.openQuestions || []).length,
+          resolvedPointCount:   (convThread.caseMemory.resolvedPoints || []).length,
+          anchorCount:          (convThread.caseMemory.memoryAnchors || []).length,
+          memoryUpdateCount:    convThread.caseMemory.memoryUpdateCount,
         };
       }
     }
@@ -11186,6 +11252,32 @@ function getOrCreateConversationThread(agentCaseId) {
     handoffCount: 0,
     lastHandoffAt: null,
     handoffHistory: [],
+    // Step 23: Conversation Memory / Case Continuity / Memory Anchors
+    caseMemory: {
+      memoryVersion: 1,
+      caseContinuityStatus: "continuity_not_started",
+      memoryFreshness: "memory_empty",
+      workingSummary: null,
+      workingSummaryReady: false,
+      agreedDirection: null,
+      discardedDirections: [],
+      openQuestions: [],
+      resolvedPoints: [],
+      caseDecisions: [],
+      userPreferencesInCase: [],
+      lastMeaningfulDecision: null,
+      nextOpenStep: null,
+      pendingClarifications: [],
+      memoryAnchors: [],
+      dominantMemoryOwner: null,
+      lastContributingAgent: null,
+      memoryContributors: [],
+      lastMemorySource: null,
+      memoryFocus: null,
+      caseScope: null,
+      memoryUpdatedAt: null,
+      memoryUpdateCount: 0,
+    },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -12018,6 +12110,928 @@ function getHandoffSummary() {
   };
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   Step 23: Conversation Memory / Case Continuity / Agent Memory Anchors
+
+   Provides structured case memory so DeepSeek and Gemini can remember
+   decisions, open points, scope agreements, and agreed directions
+   within a case – enabling true case continuity rather than isolated
+   message exchanges.
+
+   Functions:
+   - _extractMemoryAnchors()       – derives anchors from conversation history
+   - _buildWorkingSummary()        – generates human-readable case summary
+   - _deriveCaseContinuityStatus() – classifies continuity maturity
+   - _deriveMemoryFreshness()      – classifies memory staleness
+   - _updateCaseMemory()           – updates memory after each interaction
+   - _injectMemoryIntoReply()      – enriches agent replies with memory context
+   - getCaseMemory()               – retrieves case memory for a thread
+   - getCaseMemorySummary()        – analytics across all threads
+   ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Extract memory anchors from conversation messages.
+ * Identifies scope decisions, user preferences, agreed directions,
+ * handoff completions, and other meaningful case events.
+ *
+ * @param {Object} thread - conversation thread
+ * @param {Object|null} agentCase - associated agent case
+ * @returns {Array<Object>} extracted anchors
+ */
+function _extractMemoryAnchors(thread, agentCase) {
+  const anchors = [];
+  const messages = thread.conversationMessages || [];
+
+  for (const msg of messages) {
+    const content = (msg.content || "").toLowerCase();
+    const intent = msg.messageIntent || "";
+    const speaker = msg.speakerAgent || "";
+
+    // Scope decisions: user or agent narrows scope
+    if (intent === "scope_change" || /\b(nur backend|nur frontend|scope eingrenzen|nur api|frontend raus|backend raus)\b/i.test(msg.content || "")) {
+      anchors.push({
+        anchorType: "scope_decision",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // User preferences: explicit user direction
+    if (speaker === "user" && (
+      /\b(ich will|ich möchte|bitte nur|lieber|bevorzuge|konzentrier dich auf)\b/i.test(msg.content || "")
+    )) {
+      anchors.push({
+        anchorType: "user_preference",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // Approval decisions
+    if (intent === "approval_feedback") {
+      anchors.push({
+        anchorType: "approval_decision",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // Diagnosis findings from agents
+    if (intent === "diagnosis_request" && (speaker === "deepseek" || speaker === "gemini")) {
+      anchors.push({
+        anchorType: "diagnosis_finding",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // Plan refinements
+    if (intent === "refinement" && (speaker === "deepseek" || speaker === "gemini")) {
+      anchors.push({
+        anchorType: "plan_refinement",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // Discarded directions
+    if (/\b(verworfen|zurückgestellt|nicht weiter|lassen wir|erstmal nicht|doch nicht)\b/i.test(msg.content || "")) {
+      anchors.push({
+        anchorType: "direction_discarded",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // Handoff completions
+    if (msg.messageType === "handoff_completion" || intent === "handoff") {
+      anchors.push({
+        anchorType: "handoff_completed",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+
+    // Agreed direction
+    if (/\b(einverstanden|einig|einigen wir uns|machen wir so|klingt gut|okay so|passt so)\b/i.test(msg.content || "")) {
+      anchors.push({
+        anchorType: "direction_agreed",
+        anchorText: msg.content || "",
+        sourceMessageId: msg.messageId,
+        sourceAgent: speaker,
+        createdAt: msg.createdAt,
+      });
+    }
+  }
+
+  // Derive anchors from agent case state (non-message-based)
+  if (agentCase) {
+    if (agentCase.refinedPlan15) {
+      anchors.push({
+        anchorType: "plan_refinement",
+        anchorText: `Verfeinerter Plan liegt vor (Phase: ${agentCase.refinedPlan15.planPhase || "unbekannt"})`,
+        sourceMessageId: null,
+        sourceAgent: agentCase.agentRole === "deepseek_backend" ? "deepseek" : "gemini",
+        createdAt: agentCase.refinedPlan15.refinedAt || null,
+      });
+    }
+    if (agentCase.actionDraft16) {
+      anchors.push({
+        anchorType: "next_step_identified",
+        anchorText: `Aktionsentwurf vorbereitet (Typ: ${agentCase.actionDraft16.draftType || "unbekannt"})`,
+        sourceMessageId: null,
+        sourceAgent: agentCase.agentRole === "deepseek_backend" ? "deepseek" : "gemini",
+        createdAt: agentCase.actionDraft16.createdAt || null,
+      });
+    }
+    if (agentCase.applyCandidate19 && agentCase.applyCandidate19.candidateStatus === "candidate_ready_for_final_approval") {
+      anchors.push({
+        anchorType: "next_step_identified",
+        anchorText: "Kandidat ist vorbereitet und wartet auf finale Freigabe.",
+        sourceMessageId: null,
+        sourceAgent: agentCase.agentRole === "deepseek_backend" ? "deepseek" : "gemini",
+        createdAt: agentCase.applyCandidate19.createdAt || null,
+      });
+    }
+  }
+
+  // Limit anchors to most recent
+  return anchors.slice(-CASE_MEMORY_MAX_ANCHORS);
+}
+
+/**
+ * Derive open questions from conversation messages and case state.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {Array<Object>}
+ */
+function _deriveOpenQuestions(thread, agentCase) {
+  const questions = [];
+  const messages = thread.conversationMessages || [];
+
+  for (const msg of messages) {
+    const intent = msg.messageIntent || "";
+    const speaker = msg.speakerAgent || "";
+    const content = msg.content || "";
+
+    // User questions that have not been followed by agent explanation
+    if (speaker === "user" && (intent === "question" || intent === "clarification" || intent === "diagnosis_request")) {
+      const msgIdx = messages.indexOf(msg);
+      const hasAgentReply = messages.slice(msgIdx + 1).some(
+        (m) => (m.speakerAgent === "deepseek" || m.speakerAgent === "gemini") &&
+               (m.messageIntent === "explanation" || m.messageIntent === "recommendation")
+      );
+      if (!hasAgentReply) {
+        questions.push({
+          question: content.length > 120 ? content.substring(0, 120) + "…" : content,
+          askedBy: speaker,
+          askedAt: msg.createdAt,
+          sourceMessageId: msg.messageId,
+          status: "open",
+        });
+      }
+    }
+  }
+
+  // Agent case-derived open questions
+  if (agentCase) {
+    if (agentCase.applyReadiness17 && agentCase.applyReadiness17.readinessBand === "not_ready") {
+      questions.push({
+        question: "Voraussetzungen für Apply-Readiness sind noch nicht erfüllt.",
+        askedBy: "system",
+        askedAt: null,
+        sourceMessageId: null,
+        status: "open",
+      });
+    }
+  }
+
+  return questions.slice(-CASE_MEMORY_MAX_OPEN_QUESTIONS);
+}
+
+/**
+ * Derive resolved points from conversation messages and case state.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {Array<Object>}
+ */
+function _deriveResolvedPoints(thread, agentCase) {
+  const resolved = [];
+  const messages = thread.conversationMessages || [];
+
+  // Find user questions that were followed by agent explanations
+  for (const msg of messages) {
+    const intent = msg.messageIntent || "";
+    const speaker = msg.speakerAgent || "";
+    const content = msg.content || "";
+
+    if (speaker === "user" && (intent === "question" || intent === "clarification")) {
+      const msgIdx = messages.indexOf(msg);
+      const agentReply = messages.slice(msgIdx + 1).find(
+        (m) => (m.speakerAgent === "deepseek" || m.speakerAgent === "gemini") &&
+               (m.messageIntent === "explanation" || m.messageIntent === "recommendation")
+      );
+      if (agentReply) {
+        resolved.push({
+          point: content.length > 120 ? content.substring(0, 120) + "…" : content,
+          resolvedBy: agentReply.speakerAgent,
+          resolvedAt: agentReply.createdAt,
+          sourceMessageId: msg.messageId,
+          resolutionMessageId: agentReply.messageId,
+        });
+      }
+    }
+  }
+
+  // Scope changes that were acknowledged
+  for (const msg of messages) {
+    if (msg.messageIntent === "scope_change" && msg.speakerAgent === "user") {
+      const msgIdx = messages.indexOf(msg);
+      const ack = messages.slice(msgIdx + 1).find((m) => m.speakerAgent !== "user");
+      if (ack) {
+        resolved.push({
+          point: `Scope-Änderung: ${(msg.content || "").substring(0, 80)}`,
+          resolvedBy: ack.speakerAgent,
+          resolvedAt: ack.createdAt,
+          sourceMessageId: msg.messageId,
+          resolutionMessageId: ack.messageId,
+        });
+      }
+    }
+  }
+
+  return resolved.slice(-CASE_MEMORY_MAX_RESOLVED_POINTS);
+}
+
+/**
+ * Derive the agreed direction from conversation history.
+ * Looks for explicit user agreements or scope narrowing.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {string|null}
+ */
+function _deriveAgreedDirection(thread, agentCase) {
+  const messages = (thread.conversationMessages || []).slice().reverse();
+
+  for (const msg of messages) {
+    const content = msg.content || "";
+    if (msg.speakerAgent === "user") {
+      if (/\b(nur backend|nur frontend|nur api|nur ui)\b/i.test(content)) {
+        return content.length > 150 ? content.substring(0, 150) + "…" : content;
+      }
+      if (/\b(machen wir so|passt so|einverstanden|klingt gut|okay so|genau so)\b/i.test(content)) {
+        return content.length > 150 ? content.substring(0, 150) + "…" : content;
+      }
+    }
+  }
+
+  // Fallback: derive from agent case scope
+  if (agentCase && agentCase.refinedPlan15 && agentCase.refinedPlan15.effectiveScope) {
+    return `Scope: ${agentCase.refinedPlan15.effectiveScope}`;
+  }
+
+  return null;
+}
+
+/**
+ * Derive discarded directions from conversation.
+ *
+ * @param {Object} thread
+ * @returns {Array<string>}
+ */
+function _deriveDiscardedDirections(thread) {
+  const discarded = [];
+  const messages = thread.conversationMessages || [];
+
+  for (const msg of messages) {
+    const content = msg.content || "";
+    if (/\b(verworfen|zurückgestellt|nicht weiter|lassen wir|erstmal nicht|doch nicht|brauchen wir nicht)\b/i.test(content)) {
+      const summary = content.length > 120 ? content.substring(0, 120) + "…" : content;
+      discarded.push(summary);
+    }
+  }
+
+  return discarded.slice(-10);
+}
+
+/**
+ * Derive the next open step based on case state and conversation.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {string|null}
+ */
+function _deriveNextOpenStep(thread, agentCase) {
+  // Check case pipeline state
+  if (agentCase) {
+    if (agentCase.executionSession20 && agentCase.executionSession20.runtimeStatus === "runtime_awaiting_user_start") {
+      return "Ausführung wartet auf User-Freigabe.";
+    }
+    if (agentCase.applyCandidate19 && agentCase.applyCandidate19.candidateStatus === "candidate_ready_for_final_approval") {
+      return "Kandidat ist bereit für die finale Freigabe.";
+    }
+    if (agentCase.applyCandidate19 && agentCase.applyCandidate19.candidateStatus === "candidate_scope_confirmation_needed") {
+      return "Scope-Bestätigung erforderlich, bevor fortgefahren wird.";
+    }
+    if (agentCase.applyReadiness17 && agentCase.applyReadiness17.readinessBand === "not_ready") {
+      return "Voraussetzungen für Apply-Readiness müssen noch erfüllt werden.";
+    }
+    if (agentCase.actionDraft16 && agentCase.actionDraft16.draftStatus === "draft_created") {
+      return "Aktionsentwurf liegt vor – Review oder Verfeinerung als nächstes.";
+    }
+    if (agentCase.refinedPlan15) {
+      return "Plan wurde verfeinert – nächster Schritt: Draft oder Scope-Bestätigung.";
+    }
+  }
+
+  // From conversation: last open question
+  const openQ = _deriveOpenQuestions(thread, agentCase);
+  if (openQ.length > 0) {
+    return `Offene Frage klären: ${openQ[openQ.length - 1].question}`;
+  }
+
+  // Default based on thread state
+  if (thread.awaitingUserReply) {
+    return "Wartet auf Rückmeldung des Users.";
+  }
+  if (thread.awaitingAgentReply) {
+    return "Agent bereitet Antwort vor.";
+  }
+
+  return null;
+}
+
+/**
+ * Derive case scope from conversation and agent case.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {string|null}
+ */
+function _deriveCaseScope(thread, agentCase) {
+  // Check for explicit scope narrowing in messages
+  const messages = (thread.conversationMessages || []).slice().reverse();
+  for (const msg of messages) {
+    if (msg.speakerAgent === "user" && msg.messageIntent === "scope_change") {
+      const content = msg.content || "";
+      if (/backend/i.test(content)) return "backend";
+      if (/frontend/i.test(content)) return "frontend";
+      if (/api/i.test(content)) return "api";
+    }
+  }
+
+  // From agent case
+  if (agentCase) {
+    if (agentCase.agentRole === "deepseek_backend") return "backend";
+    if (agentCase.agentRole === "gemini_frontend") return "frontend";
+  }
+
+  // Cross-agent
+  if (thread.crossAgentState === "cross_agent_active" || thread.crossAgentState === "cross_agent_completed") {
+    return "cross_agent";
+  }
+
+  return null;
+}
+
+/**
+ * Derive case decisions from conversation.
+ *
+ * @param {Object} thread
+ * @returns {Array<Object>}
+ */
+function _deriveCaseDecisions(thread) {
+  const decisions = [];
+  const messages = thread.conversationMessages || [];
+
+  for (const msg of messages) {
+    if (msg.messageIntent === "approval_feedback" || msg.messageIntent === "scope_change") {
+      decisions.push({
+        decision: (msg.content || "").substring(0, 120),
+        madeBy: msg.speakerAgent,
+        madeAt: msg.createdAt,
+        sourceMessageId: msg.messageId,
+      });
+    }
+  }
+
+  return decisions.slice(-15);
+}
+
+/**
+ * Derive user preferences expressed within the case.
+ *
+ * @param {Object} thread
+ * @returns {Array<string>}
+ */
+function _deriveUserPreferences(thread) {
+  const prefs = [];
+  const messages = thread.conversationMessages || [];
+
+  for (const msg of messages) {
+    if (msg.speakerAgent !== "user") continue;
+    const content = msg.content || "";
+
+    if (/\b(ich will|ich möchte|bitte nur|lieber|bevorzuge|konzentrier dich)\b/i.test(content)) {
+      prefs.push(content.length > 120 ? content.substring(0, 120) + "…" : content);
+    }
+  }
+
+  return prefs.slice(-10);
+}
+
+/**
+ * Derive the last meaningful decision from the conversation.
+ *
+ * @param {Object} thread
+ * @returns {string|null}
+ */
+function _deriveLastMeaningfulDecision(thread) {
+  const messages = (thread.conversationMessages || []).slice().reverse();
+
+  for (const msg of messages) {
+    if (msg.messageIntent === "approval_feedback" || msg.messageIntent === "scope_change") {
+      return (msg.content || "").substring(0, 150);
+    }
+    if (msg.speakerAgent === "user" && /\b(machen wir so|passt|einverstanden|okay|genehmigt|freigegeben)\b/i.test(msg.content || "")) {
+      return (msg.content || "").substring(0, 150);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Derive pending clarifications.
+ *
+ * @param {Object} thread
+ * @returns {Array<string>}
+ */
+function _derivePendingClarifications(thread) {
+  const clarifications = [];
+  const messages = thread.conversationMessages || [];
+
+  for (const msg of messages) {
+    if ((msg.speakerAgent === "deepseek" || msg.speakerAgent === "gemini") &&
+        msg.messageIntent === "clarification") {
+      // Check if user replied after this clarification
+      const idx = messages.indexOf(msg);
+      const hasUserReply = messages.slice(idx + 1).some((m) => m.speakerAgent === "user");
+      if (!hasUserReply) {
+        clarifications.push(
+          (msg.content || "").length > 120 ? (msg.content || "").substring(0, 120) + "…" : (msg.content || "")
+        );
+      }
+    }
+  }
+
+  return clarifications.slice(-5);
+}
+
+/**
+ * Derive case continuity status from memory state.
+ *
+ * @param {Object} caseMemory
+ * @param {Object} thread
+ * @returns {string}
+ */
+function _deriveCaseContinuityStatus(caseMemory, thread) {
+  const anchorCount = (caseMemory.memoryAnchors || []).length;
+  const hasWorkingSummary = !!caseMemory.workingSummary;
+  const hasAgreedDirection = !!caseMemory.agreedDirection;
+  const messageCount = thread.messageCount || 0;
+
+  if (anchorCount === 0 && !hasWorkingSummary && messageCount < 2) {
+    return "continuity_not_started";
+  }
+
+  if (anchorCount >= 3 && hasWorkingSummary && hasAgreedDirection) {
+    return "continuity_established";
+  }
+
+  // Check staleness: if many messages but no recent memory update
+  if (messageCount > 10 && anchorCount < 2) {
+    return "continuity_needs_refresh";
+  }
+
+  return "continuity_light";
+}
+
+/**
+ * Derive memory freshness from update timestamps.
+ *
+ * @param {Object} caseMemory
+ * @param {Object} thread
+ * @returns {string}
+ */
+function _deriveMemoryFreshness(caseMemory, thread) {
+  if (!caseMemory.memoryUpdatedAt) {
+    return "memory_empty";
+  }
+
+  const anchorCount = (caseMemory.memoryAnchors || []).length;
+  const hasWorkingSummary = !!caseMemory.workingSummary;
+
+  if (anchorCount < 2 && !hasWorkingSummary) {
+    return "memory_partial";
+  }
+
+  // Check if memory was updated recently (same session as last message)
+  const lastMsgAt = thread.updatedAt || thread.createdAt;
+  if (caseMemory.memoryUpdatedAt >= lastMsgAt) {
+    return "memory_recently_updated";
+  }
+
+  return "memory_stable";
+}
+
+/**
+ * Build a human-readable working summary from case memory.
+ * Uses cooperative, natural language – not raw technical labels.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @param {Object} caseMemory
+ * @returns {string}
+ */
+function _buildWorkingSummary(thread, agentCase, caseMemory) {
+  const parts = [];
+  const problemTitle = (agentCase && agentCase.problemTitle) || "den aktuellen Fall";
+
+  // 1. Case scope
+  if (caseMemory.caseScope) {
+    const scopeLabel = {
+      backend: "den Backend-Teil",
+      frontend: "den Frontend-Teil",
+      api: "den API-Bereich",
+      cross_agent: "beide Bereiche (Backend und Frontend)",
+    }[caseMemory.caseScope] || caseMemory.caseScope;
+    parts.push(`Bisher wurde der Fall auf ${scopeLabel} eingegrenzt.`);
+  }
+
+  // 2. Agreed direction
+  if (caseMemory.agreedDirection) {
+    parts.push(`Vereinbarte Richtung: ${caseMemory.agreedDirection.length > 100 ? caseMemory.agreedDirection.substring(0, 100) + "…" : caseMemory.agreedDirection}`);
+  }
+
+  // 3. Discarded directions
+  if (caseMemory.discardedDirections && caseMemory.discardedDirections.length > 0) {
+    const last = caseMemory.discardedDirections[caseMemory.discardedDirections.length - 1];
+    parts.push(`Zurückgestellt wurde: ${last.length > 80 ? last.substring(0, 80) + "…" : last}`);
+  }
+
+  // 4. Resolved points
+  if (caseMemory.resolvedPoints && caseMemory.resolvedPoints.length > 0) {
+    parts.push(`${caseMemory.resolvedPoints.length} Punkt(e) wurden bereits geklärt.`);
+  }
+
+  // 5. Open questions
+  if (caseMemory.openQuestions && caseMemory.openQuestions.length > 0) {
+    const lastQ = caseMemory.openQuestions[caseMemory.openQuestions.length - 1];
+    parts.push(`Offen ist aktuell: ${lastQ.question || "eine Klärungsfrage"}.`);
+  }
+
+  // 6. Handoff state
+  if (thread.handoffCount > 0 && thread.handoffStatus === "handoff_completed") {
+    const from = thread.handoffFrom === "deepseek" ? "DeepSeek" : "Gemini";
+    const to = thread.handoffTo === "deepseek" ? "DeepSeek" : "Gemini";
+    parts.push(`Die Übergabe von ${from} an ${to} wurde bereits abgeschlossen.`);
+  }
+
+  // 7. Dominant agent
+  if (caseMemory.dominantMemoryOwner) {
+    const label = caseMemory.dominantMemoryOwner === "deepseek" ? "DeepSeek (Backend)" : "Gemini (Frontend)";
+    parts.push(`Den Fall prägt aktuell ${label}.`);
+  }
+
+  // 8. Next open step
+  if (caseMemory.nextOpenStep) {
+    parts.push(`Als nächster Schritt ist offen: ${caseMemory.nextOpenStep}`);
+  }
+
+  // 9. Last meaningful decision
+  if (caseMemory.lastMeaningfulDecision && parts.length < 4) {
+    parts.push(`Letzte Entscheidung: ${caseMemory.lastMeaningfulDecision.length > 80 ? caseMemory.lastMeaningfulDecision.substring(0, 80) + "…" : caseMemory.lastMeaningfulDecision}`);
+  }
+
+  if (parts.length === 0) {
+    return `Der Fall „${problemTitle}" wurde eröffnet, bisher liegen noch keine strukturierten Arbeitsergebnisse vor.`;
+  }
+
+  return parts.join(" ");
+}
+
+/**
+ * Update the case memory on a thread after a new interaction.
+ * Re-derives all memory fields from conversation history and case state.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @param {string} triggerSource - what triggered the update (e.g. "user_message", "agent_reply", "handoff")
+ * @returns {Object} updated caseMemory
+ */
+function _updateCaseMemory(thread, agentCase, triggerSource) {
+  const mem = thread.caseMemory;
+  const now = new Date().toISOString();
+
+  // Re-derive all structured memory fields
+  mem.memoryAnchors = _extractMemoryAnchors(thread, agentCase);
+  mem.openQuestions = _deriveOpenQuestions(thread, agentCase);
+  mem.resolvedPoints = _deriveResolvedPoints(thread, agentCase);
+  mem.agreedDirection = _deriveAgreedDirection(thread, agentCase);
+  mem.discardedDirections = _deriveDiscardedDirections(thread);
+  mem.nextOpenStep = _deriveNextOpenStep(thread, agentCase);
+  mem.caseScope = _deriveCaseScope(thread, agentCase);
+  mem.caseDecisions = _deriveCaseDecisions(thread);
+  mem.userPreferencesInCase = _deriveUserPreferences(thread);
+  mem.lastMeaningfulDecision = _deriveLastMeaningfulDecision(thread);
+  mem.pendingClarifications = _derivePendingClarifications(thread);
+
+  // Role-based memory view
+  if (thread.deepseekMessageCount > thread.geminiMessageCount) {
+    mem.dominantMemoryOwner = "deepseek";
+  } else if (thread.geminiMessageCount > thread.deepseekMessageCount) {
+    mem.dominantMemoryOwner = "gemini";
+  } else if (thread.deepseekMessageCount > 0 && thread.geminiMessageCount > 0) {
+    mem.dominantMemoryOwner = "cross_agent";
+  }
+
+  // Last contributing agent
+  const lastAgentMsg = (thread.conversationMessages || []).slice().reverse().find(
+    (m) => m.speakerAgent === "deepseek" || m.speakerAgent === "gemini"
+  );
+  mem.lastContributingAgent = lastAgentMsg ? lastAgentMsg.speakerAgent : null;
+
+  // Memory contributors
+  const contributors = new Set();
+  for (const m of (thread.conversationMessages || [])) {
+    if (m.speakerAgent === "deepseek" || m.speakerAgent === "gemini") {
+      contributors.add(m.speakerAgent);
+    }
+  }
+  mem.memoryContributors = Array.from(contributors);
+
+  // Memory focus
+  if (mem.openQuestions.length > 0) {
+    mem.memoryFocus = "offene_klärung";
+  } else if (mem.agreedDirection) {
+    mem.memoryFocus = "vereinbarte_richtung";
+  } else if (mem.caseScope) {
+    mem.memoryFocus = "scope_definiert";
+  } else {
+    mem.memoryFocus = "exploration";
+  }
+
+  mem.lastMemorySource = triggerSource;
+
+  // Derive continuity status and freshness
+  mem.caseContinuityStatus = _deriveCaseContinuityStatus(mem, thread);
+  mem.memoryFreshness = _deriveMemoryFreshness(mem, thread);
+
+  // Build working summary
+  mem.workingSummary = _buildWorkingSummary(thread, agentCase, mem);
+  mem.workingSummaryReady = !!mem.workingSummary;
+
+  // Update metadata
+  mem.memoryUpdatedAt = now;
+  mem.memoryUpdateCount += 1;
+  mem.memoryVersion += 1;
+
+  logger.info("[agentBridge] Step 23 – Case Memory aktualisiert", {
+    threadId: thread.threadId,
+    triggerSource,
+    anchorCount: mem.memoryAnchors.length,
+    openQuestionCount: mem.openQuestions.length,
+    resolvedPointCount: mem.resolvedPoints.length,
+    continuityStatus: mem.caseContinuityStatus,
+    memoryFreshness: mem.memoryFreshness,
+    dominantMemoryOwner: mem.dominantMemoryOwner,
+    memoryFocus: mem.memoryFocus,
+    memoryVersion: mem.memoryVersion,
+  });
+
+  return mem;
+}
+
+/**
+ * Inject case memory context into an agent reply.
+ * Adds contextual references to the case history so replies feel continuous.
+ *
+ * @param {string} replyText - original agent reply
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {string} enriched reply text
+ */
+function _injectMemoryIntoReply(replyText, thread, agentCase) {
+  const mem = thread.caseMemory;
+  if (!mem || mem.caseContinuityStatus === "continuity_not_started") {
+    return replyText;
+  }
+
+  const contextParts = [];
+
+  // Reference scope if established
+  if (mem.caseScope && mem.caseContinuityStatus !== "continuity_not_started") {
+    const scopeLabels = {
+      backend: "den Backend-Bereich",
+      frontend: "den Frontend-Bereich",
+      api: "den API-Teil",
+      cross_agent: "beide Bereiche",
+    };
+    const scopeLabel = scopeLabels[mem.caseScope] || mem.caseScope;
+    contextParts.push(`Ich knüpfe an den bisherigen Stand an – der Scope liegt auf ${scopeLabel}.`);
+  }
+
+  // Reference agreed direction
+  if (mem.agreedDirection && !mem.caseScope) {
+    contextParts.push("Ich beziehe mich auf die bisherige Arbeitsrichtung.");
+  }
+
+  // Reference discarded directions
+  if (mem.discardedDirections && mem.discardedDirections.length > 0 && Math.random() < 0.3) {
+    contextParts.push("Wir hatten eine andere Richtung zuvor zurückgestellt.");
+  }
+
+  // Reference last open point
+  if (mem.nextOpenStep && mem.openQuestions.length > 0) {
+    contextParts.push(`Der letzte offene Punkt war: ${mem.openQuestions[mem.openQuestions.length - 1].question.substring(0, 60)}.`);
+  }
+
+  // Reference handoff state
+  if (thread.handoffStatus === "handoff_completed" && mem.lastContributingAgent) {
+    const otherAgent = mem.lastContributingAgent === "deepseek" ? "Gemini" : "DeepSeek";
+    contextParts.push(`Die Übergabe an ${otherAgent} wurde bereits abgeschlossen.`);
+  }
+
+  if (contextParts.length === 0) {
+    return replyText;
+  }
+
+  // Pick at most 2 context references to avoid overwhelming replies
+  const selected = contextParts.slice(0, 2);
+  return selected.join(" ") + " " + replyText;
+}
+
+/**
+ * Retrieve case memory for a specific thread.
+ *
+ * @param {Object} params
+ * @param {string} params.agentCaseId
+ * @returns {Object|null}
+ */
+function getCaseMemory({ agentCaseId } = {}) {
+  if (!agentCaseId) return null;
+
+  const thread = _conversationThreads.get(agentCaseId);
+  if (!thread) return null;
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId) || null;
+
+  // Refresh memory before returning
+  _updateCaseMemory(thread, agentCase, "memory_read");
+
+  return {
+    threadId: thread.threadId,
+    caseId: thread.caseId,
+    caseMemory: { ...thread.caseMemory },
+    threadStatus: thread.threadStatus,
+    conversationState: thread.conversationState,
+    dominantAgent: thread.dominantAgent,
+    messageCount: thread.messageCount,
+    handoffStatus: thread.handoffStatus,
+    crossAgentState: thread.crossAgentState,
+    updatedAt: thread.updatedAt,
+  };
+}
+
+/**
+ * Build analytics summary across all threads with case memory.
+ *
+ * @returns {Object}
+ */
+function getCaseMemorySummary() {
+  const threads = Array.from(_conversationThreads.values());
+
+  const byContinuityStatus = {};
+  const byMemoryFreshness = {};
+  const byDominantMemoryOwner = {};
+  const byMemoryFocus = {};
+  const byCaseScope = {};
+
+  let totalWithMemory = 0;
+  let totalWithWorkingSummary = 0;
+  let totalWithOpenQuestions = 0;
+  let totalWithAgreedDirection = 0;
+  let totalDeepseekDominated = 0;
+  let totalGeminiDominated = 0;
+  let totalCrossAgentDominated = 0;
+  let totalAnchors = 0;
+  let totalOpenQuestions = 0;
+  let totalResolvedPoints = 0;
+
+  for (const t of threads) {
+    const agentCase = _agentCaseRegistry.get(t.caseId) || null;
+    // Refresh memory
+    _updateCaseMemory(t, agentCase, "summary_read");
+
+    const mem = t.caseMemory;
+
+    byContinuityStatus[mem.caseContinuityStatus] = (byContinuityStatus[mem.caseContinuityStatus] || 0) + 1;
+    byMemoryFreshness[mem.memoryFreshness] = (byMemoryFreshness[mem.memoryFreshness] || 0) + 1;
+
+    if (mem.dominantMemoryOwner) {
+      byDominantMemoryOwner[mem.dominantMemoryOwner] = (byDominantMemoryOwner[mem.dominantMemoryOwner] || 0) + 1;
+    }
+    if (mem.memoryFocus) {
+      byMemoryFocus[mem.memoryFocus] = (byMemoryFocus[mem.memoryFocus] || 0) + 1;
+    }
+    if (mem.caseScope) {
+      byCaseScope[mem.caseScope] = (byCaseScope[mem.caseScope] || 0) + 1;
+    }
+
+    if (mem.memoryAnchors.length > 0) totalWithMemory += 1;
+    if (mem.workingSummaryReady) totalWithWorkingSummary += 1;
+    if (mem.openQuestions.length > 0) totalWithOpenQuestions += 1;
+    if (mem.agreedDirection) totalWithAgreedDirection += 1;
+
+    if (mem.dominantMemoryOwner === "deepseek") totalDeepseekDominated += 1;
+    if (mem.dominantMemoryOwner === "gemini") totalGeminiDominated += 1;
+    if (mem.dominantMemoryOwner === "cross_agent") totalCrossAgentDominated += 1;
+
+    totalAnchors += mem.memoryAnchors.length;
+    totalOpenQuestions += mem.openQuestions.length;
+    totalResolvedPoints += mem.resolvedPoints.length;
+  }
+
+  // Thread-level memory summaries (most recent first)
+  const memoryThreads = threads
+    .filter((t) => t.caseMemory.memoryAnchors.length > 0 || t.caseMemory.workingSummaryReady)
+    .sort((a, b) => (b.caseMemory.memoryUpdatedAt || "").localeCompare(a.caseMemory.memoryUpdatedAt || ""))
+    .slice(0, CONVERSATION_SUMMARY_MAX_THREADS)
+    .map((t) => ({
+      threadId: t.threadId,
+      caseContinuityStatus: t.caseMemory.caseContinuityStatus,
+      memoryFreshness: t.caseMemory.memoryFreshness,
+      dominantMemoryOwner: t.caseMemory.dominantMemoryOwner,
+      memoryFocus: t.caseMemory.memoryFocus,
+      anchorCount: t.caseMemory.memoryAnchors.length,
+      openQuestionCount: t.caseMemory.openQuestions.length,
+      resolvedPointCount: t.caseMemory.resolvedPoints.length,
+      hasAgreedDirection: !!t.caseMemory.agreedDirection,
+      hasWorkingSummary: t.caseMemory.workingSummaryReady,
+      workingSummary: t.caseMemory.workingSummary,
+      memoryUpdateCount: t.caseMemory.memoryUpdateCount,
+      memoryUpdatedAt: t.caseMemory.memoryUpdatedAt,
+    }));
+
+  logger.info("[agentBridge] Step 23 – Case-Memory-Zusammenfassung erzeugt", {
+    totalThreads: threads.length,
+    totalWithMemory,
+    totalWithWorkingSummary,
+    totalWithOpenQuestions,
+    totalWithAgreedDirection,
+    totalAnchors,
+  });
+
+  return {
+    totalThreads: threads.length,
+    totalWithMemory,
+    totalWithWorkingSummary,
+    totalWithOpenQuestions,
+    totalWithAgreedDirection,
+    totalDeepseekDominated,
+    totalGeminiDominated,
+    totalCrossAgentDominated,
+    totalAnchors,
+    totalOpenQuestions,
+    totalResolvedPoints,
+    byContinuityStatus,
+    byMemoryFreshness,
+    byDominantMemoryOwner,
+    byMemoryFocus,
+    byCaseScope,
+    memoryThreads,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * Derive thread status from current state.
  * @param {Object} thread
@@ -12069,6 +13083,18 @@ function _buildConversationSummaryLine(thread) {
   if (thread.handoffCount > 0) parts.push(`${thread.handoffCount} Übergabe(n)`);
   if (thread.handoffStatus === "handoff_in_progress") parts.push("Übergabe aktiv");
   if (thread.supportingAgent) parts.push(`Unterstützung: ${thread.supportingAgent}`);
+  // Step 23: memory info
+  if (thread.caseMemory) {
+    if (thread.caseMemory.caseContinuityStatus !== "continuity_not_started") {
+      parts.push(`Kontinuität: ${thread.caseMemory.caseContinuityStatus}`);
+    }
+    if (thread.caseMemory.openQuestions && thread.caseMemory.openQuestions.length > 0) {
+      parts.push(`${thread.caseMemory.openQuestions.length} offene Frage(n)`);
+    }
+    if (thread.caseMemory.memoryAnchors && thread.caseMemory.memoryAnchors.length > 0) {
+      parts.push(`${thread.caseMemory.memoryAnchors.length} Anker`);
+    }
+  }
   return parts.join(" · ");
 }
 
@@ -12153,13 +13179,16 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
   const routing = _routeToAgent(userMessage, agentCase);
 
   // --- 3. Generate agent reply ---
-  const agentReplyText = _generateAgentReply({
+  let agentReplyText = _generateAgentReply({
     speakerAgent: routing.speakerAgent,
     messageIntent,
     userMessage: userMessage.trim(),
     agentCase,
     thread,
   });
+
+  // Step 23: Inject case memory context into agent reply
+  agentReplyText = _injectMemoryIntoReply(agentReplyText, thread, agentCase);
 
   _conversationMsgCounter += 1;
   const agentMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
@@ -12280,6 +13309,11 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
   // --- 5. Update thread status and summary ---
   thread.threadStatus = _deriveThreadStatus(thread, agentCase);
   thread.conversationState = _deriveConversationPhase(thread, agentCase);
+
+  // --- Step 23: Update case memory after interaction ---
+  const memoryTrigger = handoffAssessment.needed ? "handoff" : "user_message";
+  _updateCaseMemory(thread, agentCase, memoryTrigger);
+
   thread.conversationSummary = _buildConversationSummaryLine(thread);
   thread.updatedAt = new Date().toISOString();
 
@@ -12288,7 +13322,7 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     thread.conversationMessages.shift();
   }
 
-  logger.info("[agentBridge] Step 21/22 – Agent-Antwort erzeugt", {
+  logger.info("[agentBridge] Step 21/22/23 – Agent-Antwort erzeugt", {
     threadId: agentCaseId,
     speakerAgent: routing.speakerAgent,
     messageIntent,
@@ -12296,6 +13330,8 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     messageCount: thread.messageCount,
     handoffTriggered: handoffAssessment.needed,
     handoffReason: handoffAssessment.reason,
+    caseContinuityStatus: thread.caseMemory.caseContinuityStatus,
+    memoryFreshness: thread.caseMemory.memoryFreshness,
   });
 
   return {
@@ -12325,6 +13361,13 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     lastSpeaker: thread.lastSpeaker,
     nextSuggestedSpeaker: thread.nextSuggestedSpeaker,
     messageCount: thread.messageCount,
+    // Step 23: Case Memory / Continuity state
+    caseContinuityStatus: thread.caseMemory.caseContinuityStatus,
+    memoryFreshness: thread.caseMemory.memoryFreshness,
+    workingSummary: thread.caseMemory.workingSummary,
+    nextOpenStep: thread.caseMemory.nextOpenStep,
+    dominantMemoryOwner: thread.caseMemory.dominantMemoryOwner,
+    memoryFocus: thread.caseMemory.memoryFocus,
   };
 }
 
@@ -12347,6 +13390,8 @@ function getConversationThread({ agentCaseId, limit = 50 } = {}) {
   // Refresh thread status
   thread.threadStatus = _deriveThreadStatus(thread, agentCase);
   thread.conversationState = _deriveConversationPhase(thread, agentCase);
+  // Step 23: Refresh case memory
+  _updateCaseMemory(thread, agentCase, "thread_read");
   thread.conversationSummary = _buildConversationSummaryLine(thread);
 
   const messages = thread.conversationMessages.slice(-limit);
@@ -12381,6 +13426,30 @@ function getConversationThread({ agentCaseId, limit = 50 } = {}) {
     supportingAgent: thread.supportingAgent,
     handoffCount: thread.handoffCount,
     lastHandoffAt: thread.lastHandoffAt,
+    // Step 23: Case Memory / Continuity fields
+    caseMemory: {
+      caseContinuityStatus: thread.caseMemory.caseContinuityStatus,
+      memoryFreshness: thread.caseMemory.memoryFreshness,
+      workingSummary: thread.caseMemory.workingSummary,
+      workingSummaryReady: thread.caseMemory.workingSummaryReady,
+      agreedDirection: thread.caseMemory.agreedDirection,
+      discardedDirections: thread.caseMemory.discardedDirections,
+      openQuestions: thread.caseMemory.openQuestions,
+      resolvedPoints: thread.caseMemory.resolvedPoints,
+      caseDecisions: thread.caseMemory.caseDecisions,
+      userPreferencesInCase: thread.caseMemory.userPreferencesInCase,
+      lastMeaningfulDecision: thread.caseMemory.lastMeaningfulDecision,
+      nextOpenStep: thread.caseMemory.nextOpenStep,
+      pendingClarifications: thread.caseMemory.pendingClarifications,
+      dominantMemoryOwner: thread.caseMemory.dominantMemoryOwner,
+      lastContributingAgent: thread.caseMemory.lastContributingAgent,
+      memoryContributors: thread.caseMemory.memoryContributors,
+      memoryFocus: thread.caseMemory.memoryFocus,
+      caseScope: thread.caseMemory.caseScope,
+      anchorCount: thread.caseMemory.memoryAnchors.length,
+      memoryUpdateCount: thread.caseMemory.memoryUpdateCount,
+      memoryUpdatedAt: thread.caseMemory.memoryUpdatedAt,
+    },
     messages,
     createdAt: thread.createdAt,
     updatedAt: thread.updatedAt,
@@ -12473,16 +13542,41 @@ function getConversationSummary() {
       handoffStatus: t.handoffStatus,
       crossAgentState: t.crossAgentState,
       handoffCount: t.handoffCount,
+      // Step 23: Memory fields
+      caseContinuityStatus: t.caseMemory ? t.caseMemory.caseContinuityStatus : "continuity_not_started",
+      memoryFreshness: t.caseMemory ? t.caseMemory.memoryFreshness : "memory_empty",
+      dominantMemoryOwner: t.caseMemory ? t.caseMemory.dominantMemoryOwner : null,
+      workingSummaryReady: t.caseMemory ? t.caseMemory.workingSummaryReady : false,
+      openQuestionCount: t.caseMemory ? (t.caseMemory.openQuestions || []).length : 0,
+      anchorCount: t.caseMemory ? (t.caseMemory.memoryAnchors || []).length : 0,
       updatedAt: t.updatedAt,
     }));
 
-  logger.info("[agentBridge] Step 21/22 – Conversation-Zusammenfassung erzeugt", {
+  // Step 23: Collect memory analytics
+  let totalWithMemory = 0;
+  let totalWithWorkingSummary = 0;
+  let totalWithOpenQuestions = 0;
+  let totalWithAgreedDirection = 0;
+
+  for (const t of threads) {
+    if (t.caseMemory) {
+      if ((t.caseMemory.memoryAnchors || []).length > 0) totalWithMemory += 1;
+      if (t.caseMemory.workingSummaryReady) totalWithWorkingSummary += 1;
+      if ((t.caseMemory.openQuestions || []).length > 0) totalWithOpenQuestions += 1;
+      if (t.caseMemory.agreedDirection) totalWithAgreedDirection += 1;
+    }
+  }
+
+  logger.info("[agentBridge] Step 21/22/23 – Conversation-Zusammenfassung erzeugt", {
     totalThreads: threads.length,
     totalOpen,
     totalMessages,
     totalWaitingForUser,
     totalWaitingForAgent,
     totalWithHandoffs,
+    totalWithMemory,
+    totalWithWorkingSummary,
+    totalWithOpenQuestions,
   });
 
   return {
@@ -12497,6 +13591,11 @@ function getConversationSummary() {
     // Step 22: Handoff analytics
     totalWithHandoffs,
     totalHandoffs: totalHandoffsAll,
+    // Step 23: Memory analytics
+    totalWithMemory,
+    totalWithWorkingSummary,
+    totalWithOpenQuestions,
+    totalWithAgreedDirection,
     byThreadStatus,
     byDominantAgent,
     byConversationState,
@@ -12615,4 +13714,10 @@ module.exports = {
   VALID_CROSS_AGENT_STATES,
   VALID_HANDOFF_REASONS,
   VALID_HANDOFF_MESSAGE_TYPES,
+  // Step 23: Conversation Memory / Case Continuity / Agent Memory Anchors
+  getCaseMemory,
+  getCaseMemorySummary,
+  VALID_CONTINUITY_STATUSES,
+  VALID_MEMORY_FRESHNESS,
+  VALID_MEMORY_ANCHOR_TYPES,
 };

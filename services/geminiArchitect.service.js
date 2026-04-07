@@ -1263,6 +1263,45 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 23: Inject case memory context when available ──
+  if (bridgeContext && bridgeContext.caseMemoryContext) {
+    const mc = bridgeContext.caseMemoryContext;
+    const mcParts = [];
+    if (mc.caseContinuityStatus && mc.caseContinuityStatus !== "continuity_not_started") {
+      mcParts.push(`Fallkontinuität: ${mc.caseContinuityStatus}`);
+    }
+    if (mc.workingSummary) {
+      mcParts.push(`Arbeitszusammenfassung: ${mc.workingSummary}`);
+    }
+    if (mc.agreedDirection) {
+      mcParts.push(`Vereinbarte Richtung: ${mc.agreedDirection}`);
+    }
+    if (mc.nextOpenStep) {
+      mcParts.push(`Nächster offener Schritt: ${mc.nextOpenStep}`);
+    }
+    if (mc.caseScope) {
+      mcParts.push(`Fallscope: ${mc.caseScope}`);
+    }
+    if (mc.dominantMemoryOwner) {
+      mcParts.push(`Prägender Agent: ${mc.dominantMemoryOwner}`);
+    }
+    if (mc.openQuestionCount > 0) {
+      mcParts.push(`Offene Fragen: ${mc.openQuestionCount}`);
+    }
+    if (mc.resolvedPointCount > 0) {
+      mcParts.push(`Geklärte Punkte: ${mc.resolvedPointCount}`);
+    }
+    if (mcParts.length) {
+      sections.push(`Fallgedächtnis (Step 23 – strukturierte Fallkontinuität, kein globales Memory):\n${mcParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 23 – Fallgedächtnis-Kontext eingebunden", {
+        caseContinuityStatus: mc.caseContinuityStatus,
+        memoryFreshness: mc.memoryFreshness,
+        openQuestionCount: mc.openQuestionCount,
+        anchorCount: mc.anchorCount,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }
