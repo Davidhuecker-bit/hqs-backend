@@ -3828,6 +3828,17 @@ function _confBuildModerationHint(messages, lastRouting) {
 /* ──────────────────────────────────────────────
    Phase closure / open-question detection
    ────────────────────────────────────────────── */
+
+/** How many turns between automatic phase-condensation cards (inserted mid-chat). */
+const CONF_CLOSURE_CARD_INTERVAL = 4;
+
+/** Keyword patterns for phase-state derivation (German cooperative language). */
+const CONF_PHASE_KEYWORDS = {
+  resolved: /ursache|gelöst|behoben|klar|abgeschlossen|verstanden|empfehlung|konkret/i,
+  openQ:    /unklar|offen|fehlt|brauche noch|frage|rückfrage|scope|entscheidung|klären/i,
+  needDec:  /entscheidung|option|wählen|abwägen|abwägung|vorschlag/i,
+};
+
 function _confDetectPhaseState(messages) {
   const agentMsgs = messages.filter(m => m.messageRole === 'agent');
   const result = {
@@ -3841,23 +3852,24 @@ function _confDetectPhaseState(messages) {
   const allContent = agentMsgs.map(m => (m.content || '').toLowerCase()).join(' ');
 
   // Detect resolution signals
-  const resolved = /ursache|gelöst|behoben|klar|abgeschlossen|verstanden|empfehlung|konkret/i.test(allContent);
-  const openQ    = /unklar|offen|fehlt|brauche noch|frage|rückfrage|scope|entscheidung|klären/i.test(allContent);
-  const needDec  = /entscheidung|option|wählen|abwägen|abwägung|vorschlag/i.test(allContent);
+  const resolved = CONF_PHASE_KEYWORDS.resolved.test(allContent);
+  const openQ    = CONF_PHASE_KEYWORDS.openQ.test(allContent);
+  const needDec  = CONF_PHASE_KEYWORDS.needDec.test(allContent);
 
   if (resolved) result.phaseChips.push({ label: '✅ Ursache klar', cls: 'done' });
   if (openQ)    result.phaseChips.push({ label: '❓ Offen', cls: 'open' });
   if (needDec)  result.phaseChips.push({ label: '⚖️ Entscheidung nötig', cls: 'decide' });
   if (!openQ && !needDec && resolved) result.phaseChips.push({ label: '✅ Phase abgeschlossen', cls: 'done' });
 
-  // Open question prompt
+  // Open question prompt – pick based on which signal is dominant, not message count
   if (openQ) {
-    const prompts = [
-      'Bevor wir weitergehen – was genau ist noch unklar?',
-      'Für die nächste Empfehlung fehlt noch eine Information.',
-      'Die Analyse ist fast klar. Offen ist noch die Scope-Frage.',
-    ];
-    result.openQuestionPrompt = prompts[agentMsgs.length % prompts.length];
+    if (needDec) {
+      result.openQuestionPrompt = 'Die Entscheidung ist fast klar. Offen ist noch die Scope-Frage.';
+    } else if (resolved) {
+      result.openQuestionPrompt = 'Für die nächste Empfehlung fehlt noch eine Information.';
+    } else {
+      result.openQuestionPrompt = 'Bevor wir weitergehen – was genau ist noch unklar?';
+    }
   }
 
   // Closure suggestion after ≥6 agent messages and resolved
@@ -4034,7 +4046,7 @@ function _confRenderChat(messages, lastRouting) {
 
       turnCount++;
       // Add closure card every 6 turns if conditions met
-      if (turnCount > 1 && turnCount % 4 === 0) {
+      if (turnCount > 1 && turnCount % CONF_CLOSURE_CARD_INTERVAL === 0) {
         const phaseState = _confDetectPhaseState(messages.slice(0, i));
         if (phaseState.phaseChips.length > 0) {
           html += _confBuildClosureCard(messages.slice(0, i), _conf.mode);
@@ -4218,7 +4230,7 @@ async function confResumeSession() {
     _confUpdateHeader(session);
     _confUpdateButtons();
   } catch (err) {
-    // Silently ignore resume errors – buttons will stay in current state
+    console.warn('[Konferenz] Session Resume fehlgeschlagen:', err.message);
   }
 }
 
@@ -4254,7 +4266,7 @@ async function confCloseSession() {
     _conf.sessionId = null;
     _confUpdateButtons();
   } catch (err) {
-    // Silently ignore close errors
+    console.warn('[Konferenz] Session Close fehlgeschlagen:', err.message);
   }
 }
 
@@ -4339,8 +4351,8 @@ async function loadConferenceWorkspace() {
     if (!_conf.sessionId && statusBadgeEl) {
       statusBadgeEl.textContent = `${active} aktiv · ${paused} pausiert`;
     }
-  } catch (_) {
-    // Silently ignore workspace load errors
+  } catch (err) {
+    console.warn('[Konferenz] Workspace-Übersicht nicht verfügbar:', err.message);
   }
 }
 
