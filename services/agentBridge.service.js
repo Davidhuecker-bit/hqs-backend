@@ -1375,6 +1375,82 @@ const CASE_MEMORY_MAX_OPEN_QUESTIONS = 15;
 /** Maximum resolved points per thread */
 const CASE_MEMORY_MAX_RESOLVED_POINTS = 30;
 
+/* ─────────────────────────────────────────────────────────────────────
+   Step 24: Action Negotiation / Option Comparison / Decision Framing
+
+   Constants for structured action options that allow DeepSeek and Gemini
+   to present 2–4 meaningful options per case, compare them along stable
+   dimensions, and frame the decision space for the user.
+   ───────────────────────────────────────────────────────────────────── */
+
+/** Decision frame status – lifecycle of the option/comparison set */
+const VALID_DECISION_FRAME_STATUSES = [
+  "options_not_ready",
+  "options_prepared",
+  "options_stable",
+  "decision_pending",
+  "decision_narrowed",
+  "decision_ready_for_user",
+];
+
+/** Option status – lifecycle of a single option */
+const VALID_OPTION_STATUSES = [
+  "option_draft",
+  "option_viable",
+  "option_preferred",
+  "option_discarded",
+  "option_needs_review",
+];
+
+/** Comparison dimensions – stable axes for option comparison */
+const VALID_COMPARISON_DIMENSIONS = [
+  "scopeWidth",
+  "riskLevel",
+  "safetyLevel",
+  "implementationBreadth",
+  "confidenceLevel",
+  "expectedImpact",
+  "reversibility",
+  "needsCrossAgentSupport",
+  "needsMoreDiagnosis",
+  "readinessHint",
+];
+
+/** Dimension rating values – human-friendly assessment scale */
+const VALID_DIMENSION_RATINGS = [
+  "low",
+  "moderate",
+  "high",
+  "very_high",
+];
+
+/** Decision modes – how the decision is framed */
+const VALID_DECISION_MODES = [
+  "conservative_vs_broad",
+  "fast_vs_thorough",
+  "scope_tradeoff",
+  "risk_tradeoff",
+  "diagnosis_vs_action",
+  "single_layer_vs_cross_layer",
+];
+
+/** Option owner types – which agent primarily drives an option */
+const VALID_OPTION_OWNER_TYPES = [
+  "deepseek",
+  "gemini",
+  "cross_agent",
+  "user_suggested",
+];
+
+/** Maximum action options per thread */
+const DECISION_FRAME_MAX_OPTIONS = 4;
+
+/** Maximum comparison dimensions per option */
+const DECISION_FRAME_MAX_DIMENSIONS = 10;
+
+/** Minimum open questions before preferring wait/clarify option */
+const DECISION_OPEN_QUESTIONS_THRESHOLD = 2;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -2935,6 +3011,23 @@ function buildBridgePackage(payload = {}) {
           resolvedPointCount:   (convThread.caseMemory.resolvedPoints || []).length,
           anchorCount:          (convThread.caseMemory.memoryAnchors || []).length,
           memoryUpdateCount:    convThread.caseMemory.memoryUpdateCount,
+        };
+      }
+
+      // ── Step 24: Attach decision frame context ──
+      if (convThread.decisionFrame && convThread.decisionFrame.decisionFrameStatus !== "options_not_ready") {
+        pkg.decisionFrameContext = {
+          decisionFrameStatus:     convThread.decisionFrame.decisionFrameStatus,
+          decisionMode:            convThread.decisionFrame.decisionMode,
+          optionCount:             convThread.decisionFrame.optionCount,
+          recommendedOptionId:     convThread.decisionFrame.recommendedOptionId,
+          preferredStrategy:       convThread.decisionFrame.preferredStrategy,
+          primaryDecisionAgent:    convThread.decisionFrame.primaryDecisionAgent,
+          crossAgentDecisionNeeded: convThread.decisionFrame.crossAgentDecisionNeeded,
+          userDecisionNeeded:      convThread.decisionFrame.userDecisionNeeded,
+          decisionTradeoff:        convThread.decisionFrame.decisionTradeoff,
+          nextDecisionQuestion:    convThread.decisionFrame.nextDecisionQuestion,
+          optionSummary:           convThread.decisionFrame.optionSummary,
         };
       }
     }
@@ -11278,6 +11371,34 @@ function getOrCreateConversationThread(agentCaseId) {
       memoryUpdatedAt: null,
       memoryUpdateCount: 0,
     },
+    // Step 24: Action Options / Decision Framing
+    decisionFrame: {
+      decisionFrameVersion: 1,
+      decisionFrameStatus: "options_not_ready",
+      decisionMode: null,
+      actionOptions: [],
+      optionCount: 0,
+      recommendedOptionId: null,
+      recommendedBecause: null,
+      conservativeOptionId: null,
+      fastestOptionId: null,
+      widestOptionId: null,
+      safestOptionId: null,
+      primaryDecisionAgent: null,
+      secondaryDecisionAgent: null,
+      crossAgentDecisionNeeded: false,
+      decisionTradeoff: null,
+      nextDecisionQuestion: null,
+      narrowingHint: null,
+      userDecisionNeeded: false,
+      optionContrast: null,
+      pendingDecisionReason: null,
+      optionSummary: null,
+      preferredStrategy: null,
+      decisionContext: null,
+      decisionFrameUpdatedAt: null,
+      decisionFrameUpdateCount: 0,
+    },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -13038,6 +13159,823 @@ function getCaseMemorySummary() {
   };
 }
 
+/* ─────────────────────────────────────────────────────────────────────
+   Step 24: Action Negotiation / Option Comparison / Decision Framing
+
+   Key functions:
+   - _deriveActionOptions()        – derives 2–4 options from case state
+   - _buildOptionText()            – human-readable option description
+   - _buildOptionComparison()      – comparison dimensions per option
+   - _deriveRecommendedOption()    – selects preferred option with reason
+   - _deriveDecisionRoles()        – DeepSeek/Gemini roles per option
+   - _deriveDecisionFrameStatus()  – lifecycle of the decision frame
+   - _deriveDecisionTradeoff()     – open tradeoff / narrowing hint
+   - _updateDecisionFrame()        – re-derives all decision frame fields
+   - _injectDecisionFrameIntoReply() – enriches agent replies with options
+   - getDecisionFrame()            – retrieves decision frame for a thread
+   - getDecisionFrameSummary()     – analytics across all threads
+   ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * Derive 2–4 meaningful action options from case state, memory, and thread.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {Array<Object>} array of option objects
+ */
+function _deriveActionOptions(thread, agentCase) {
+  const options = [];
+  const mem = thread.caseMemory || {};
+  const msgs = thread.conversationMessages || [];
+
+  // Determine problem type / domain
+  const agentRole = (agentCase && agentCase.agentRole) || null;
+  const hasHandoffs = (thread.handoffCount || 0) > 0;
+  const openQuestionCount = (mem.openQuestions || []).length;
+  const hasCandidate = !!(agentCase && agentCase.applyCandidate19);
+  const hasRuntime = !!(agentCase && agentCase.executionSession20);
+
+  /** Derive contributors based on handoff state and agent role */
+  const defaultAgent = agentRole === "gemini_frontend" ? "gemini" : "deepseek";
+  const singleContributors = [defaultAgent];
+  const crossContributors = ["deepseek", "gemini"];
+
+  let optionCounter = 0;
+
+  // --- Option A: Conservative / Diagnose deeper ---
+  const optionA = {
+    optionId: `opt-${thread.threadId}-${++optionCounter}`,
+    optionLabel: "A",
+    optionTitle: "Diagnose vertiefen, noch nichts vorbereiten",
+    optionText: _buildOptionText("diagnose_deeper", agentCase, mem),
+    optionStatus: "option_viable",
+    optionOwner: defaultAgent,
+    optionContributors: hasHandoffs ? crossContributors : singleContributors,
+    optionStrategy: "conservative",
+    comparison: _buildOptionComparison("diagnose_deeper", agentCase, mem, thread),
+    createdAt: new Date().toISOString(),
+  };
+  options.push(optionA);
+
+  // --- Option B: Targeted scope (backend or frontend only) ---
+  const isBackendCase = !agentRole || agentRole === "deepseek_backend";
+  const targetedScope = isBackendCase ? "backend" : "frontend";
+  const targetedLabel = isBackendCase ? "nur Backend eingrenzen und vorbereiten" : "nur Frontend-Teil eingrenzen und vorbereiten";
+  const optionB = {
+    optionId: `opt-${thread.threadId}-${++optionCounter}`,
+    optionLabel: "B",
+    optionTitle: targetedLabel,
+    optionText: _buildOptionText("targeted_scope", agentCase, mem),
+    optionStatus: "option_viable",
+    optionOwner: isBackendCase ? "deepseek" : "gemini",
+    optionContributors: singleContributors,
+    optionStrategy: "targeted",
+    comparison: _buildOptionComparison("targeted_scope", agentCase, mem, thread),
+    createdAt: new Date().toISOString(),
+  };
+  options.push(optionB);
+
+  // --- Option C: Broader preparation (backend + frontend follow-up) ---
+  // Only if cross-agent relevance or handoff history
+  const crossLayerRelevance = hasHandoffs ||
+    (agentCase && agentCase.needsCrossAgentReview) ||
+    msgs.some((m) => (m.content || "").toLowerCase().match(/frontend|backend|cross|übergreifend|api.*ui|schicht/));
+
+  if (crossLayerRelevance) {
+    const optionC = {
+      optionId: `opt-${thread.threadId}-${++optionCounter}`,
+      optionLabel: "C",
+      optionTitle: "Backend + kleine Frontend-Folge gemeinsam vorbereiten",
+      optionText: _buildOptionText("broad_scope", agentCase, mem),
+      optionStatus: "option_viable",
+      optionOwner: "cross_agent",
+      optionContributors: crossContributors,
+      optionStrategy: "broad",
+      comparison: _buildOptionComparison("broad_scope", agentCase, mem, thread),
+      createdAt: new Date().toISOString(),
+    };
+    options.push(optionC);
+  }
+
+  // --- Option D: Wait / clarify first ---
+  // Only if open questions exist or candidate not finalized
+  if (openQuestionCount > 0 || (hasCandidate && !hasRuntime)) {
+    const optionD = {
+      optionId: `opt-${thread.threadId}-${++optionCounter}`,
+      optionLabel: options.length === 2 ? "C" : "D",
+      optionTitle: openQuestionCount > 0
+        ? "Erst offene Punkte klären, dann entscheiden"
+        : "Kandidat noch nicht finalisieren, erst Scope bestätigen",
+      optionText: _buildOptionText("wait_clarify", agentCase, mem),
+      optionStatus: "option_viable",
+      optionOwner: "user_suggested",
+      optionContributors: hasHandoffs ? crossContributors : singleContributors,
+      optionStrategy: "wait",
+      comparison: _buildOptionComparison("wait_clarify", agentCase, mem, thread),
+      createdAt: new Date().toISOString(),
+    };
+    options.push(optionD);
+  }
+
+  // Ensure at least 2 options: if only A exists, add a generic targeted one
+  if (options.length < 2) {
+    const genericB = {
+      optionId: `opt-${thread.threadId}-${++optionCounter}`,
+      optionLabel: "B",
+      optionTitle: "Scope eng halten und gezielt vorbereiten",
+      optionText: _buildOptionText("targeted_scope", agentCase, mem),
+      optionStatus: "option_viable",
+      optionOwner: defaultAgent,
+      optionContributors: singleContributors,
+      optionStrategy: "targeted",
+      comparison: _buildOptionComparison("targeted_scope", agentCase, mem, thread),
+      createdAt: new Date().toISOString(),
+    };
+    options.push(genericB);
+  }
+
+  // Cap at DECISION_FRAME_MAX_OPTIONS
+  return options.slice(0, DECISION_FRAME_MAX_OPTIONS);
+}
+
+/**
+ * Build human-readable option text based on strategy type.
+ * Returns cooperative German text for the admin UI.
+ *
+ * @param {string} strategyType
+ * @param {Object|null} agentCase
+ * @param {Object} mem - case memory
+ * @returns {string} German option description
+ */
+function _buildOptionText(strategyType, agentCase, mem) {
+  const problemTitle = (agentCase && agentCase.problemTitle) || "den aktuellen Fall";
+  const scope = mem.caseScope || "den relevanten Bereich";
+  const scopeLabel = scope === "backend" ? "den Backend-Teil"
+    : scope === "frontend" ? "den Frontend-Teil"
+    : scope === "cross_layer" ? "beide Schichten"
+    : "den relevanten Bereich";
+
+  switch (strategyType) {
+    case "diagnose_deeper":
+      return `Diese Option hält den Scope bewusst eng und vertieft zuerst die Diagnose für ${problemTitle}. ` +
+        `Es werden noch keine Entwürfe vorbereitet – stattdessen wird geprüft, ob die bisherige Analyse ausreicht. ` +
+        `Das ist die konservativste Richtung.`;
+
+    case "targeted_scope":
+      return `Diese Option konzentriert sich gezielt auf ${scopeLabel} und bereitet dort einen konkreten Entwurf vor. ` +
+        `Der Scope bleibt eng, und andere Schichten werden bewusst nicht mitgenommen. ` +
+        `Das ist ein fokussierter, schneller Weg.`;
+
+    case "broad_scope":
+      return `Diese Option ergänzt zusätzlich eine kleine Folge für die andere Schicht. ` +
+        `Backend und Frontend werden gemeinsam betrachtet, was mehr Wirkung hat, aber auch etwas mehr Breite erfordert. ` +
+        `Das ist die vollständigere Richtung.`;
+
+    case "wait_clarify":
+      return `Diese Option wartet bewusst ab und klärt erst die offenen Punkte, bevor eine Richtung gewählt wird. ` +
+        `Das gibt mehr Sicherheit, braucht aber auch etwas mehr Zeit. ` +
+        `Das ist die vorsichtigste Richtung.`;
+
+    default:
+      return `Diese Option adressiert ${problemTitle} im Bereich ${scopeLabel}.`;
+  }
+}
+
+/**
+ * Build comparison dimensions for a single option.
+ *
+ * @param {string} strategyType
+ * @param {Object|null} agentCase
+ * @param {Object} mem
+ * @param {Object} thread
+ * @returns {Object} dimension ratings
+ */
+function _buildOptionComparison(strategyType, agentCase, mem, thread) {
+  const hasHandoffs = (thread.handoffCount || 0) > 0;
+  const openQs = (mem.openQuestions || []).length;
+
+  const base = {
+    scopeWidth: "low",
+    riskLevel: "low",
+    safetyLevel: "high",
+    implementationBreadth: "low",
+    confidenceLevel: "moderate",
+    expectedImpact: "moderate",
+    reversibility: "high",
+    needsCrossAgentSupport: hasHandoffs ? "moderate" : "low",
+    needsMoreDiagnosis: openQs > 0 ? "high" : "low",
+    readinessHint: "moderate",
+  };
+
+  switch (strategyType) {
+    case "diagnose_deeper":
+      return {
+        ...base,
+        scopeWidth: "low",
+        riskLevel: "low",
+        safetyLevel: "very_high",
+        implementationBreadth: "low",
+        confidenceLevel: openQs > 0 ? "low" : "moderate",
+        expectedImpact: "low",
+        reversibility: "very_high",
+        needsMoreDiagnosis: "high",
+        readinessHint: "low",
+      };
+
+    case "targeted_scope":
+      return {
+        ...base,
+        scopeWidth: "moderate",
+        riskLevel: "low",
+        safetyLevel: "high",
+        implementationBreadth: "moderate",
+        confidenceLevel: "moderate",
+        expectedImpact: "moderate",
+        reversibility: "high",
+        needsMoreDiagnosis: openQs > 0 ? "moderate" : "low",
+        readinessHint: "moderate",
+      };
+
+    case "broad_scope":
+      return {
+        ...base,
+        scopeWidth: "high",
+        riskLevel: "moderate",
+        safetyLevel: "moderate",
+        implementationBreadth: "high",
+        confidenceLevel: "moderate",
+        expectedImpact: "high",
+        reversibility: "moderate",
+        needsCrossAgentSupport: "high",
+        needsMoreDiagnosis: openQs > 0 ? "moderate" : "low",
+        readinessHint: hasHandoffs ? "moderate" : "low",
+      };
+
+    case "wait_clarify":
+      return {
+        ...base,
+        scopeWidth: "low",
+        riskLevel: "low",
+        safetyLevel: "very_high",
+        implementationBreadth: "low",
+        confidenceLevel: "low",
+        expectedImpact: "low",
+        reversibility: "very_high",
+        needsMoreDiagnosis: "very_high",
+        readinessHint: "low",
+      };
+
+    default:
+      return base;
+  }
+}
+
+/**
+ * Derive the recommended option and role-based labels.
+ *
+ * @param {Array<Object>} options
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @param {Object} mem
+ * @returns {Object} recommendation object
+ */
+function _deriveRecommendedOption(options, thread, agentCase, mem) {
+  if (!options || options.length === 0) {
+    return {
+      recommendedOptionId: null,
+      recommendedBecause: null,
+      conservativeOptionId: null,
+      fastestOptionId: null,
+      widestOptionId: null,
+      safestOptionId: null,
+      preferredStrategy: null,
+    };
+  }
+
+  const conservative = options.find((o) => o.optionStrategy === "conservative") || options[0];
+  const targeted = options.find((o) => o.optionStrategy === "targeted");
+  const broad = options.find((o) => o.optionStrategy === "broad");
+  const wait = options.find((o) => o.optionStrategy === "wait");
+
+  const openQs = (mem.openQuestions || []).length;
+  const hasAgreedDirection = !!mem.agreedDirection;
+  const hasDraft = !!(agentCase && agentCase.actionDraft16);
+
+  // Decision logic: prefer conservative when uncertain, targeted when direction is clear
+  let recommended;
+  let because;
+
+  if (openQs > DECISION_OPEN_QUESTIONS_THRESHOLD) {
+    recommended = wait || conservative;
+    because = "Es gibt noch mehrere offene Punkte. Eine vorsichtige Klärung ist aktuell sinnvoller als ein breiter Entwurf.";
+  } else if (!hasAgreedDirection && !hasDraft) {
+    recommended = conservative;
+    because = "Es gibt noch keine vereinbarte Richtung. Die Diagnose zuerst zu vertiefen gibt mehr Sicherheit.";
+  } else if (hasAgreedDirection && targeted) {
+    recommended = targeted;
+    because = "Es gibt bereits eine klare Richtung. Ein gezielter, enger Entwurf passt gut zum aktuellen Stand.";
+  } else {
+    recommended = targeted || conservative;
+    because = "Der aktuelle Stand spricht für einen fokussierten nächsten Schritt.";
+  }
+
+  // Mark recommended option
+  for (const opt of options) {
+    opt.optionStatus = opt.optionId === recommended.optionId ? "option_preferred" : "option_viable";
+  }
+
+  return {
+    recommendedOptionId: recommended.optionId,
+    recommendedBecause: because,
+    conservativeOptionId: conservative.optionId,
+    fastestOptionId: (targeted || conservative).optionId,
+    widestOptionId: broad ? broad.optionId : (targeted || conservative).optionId,
+    safestOptionId: (wait || conservative).optionId,
+    preferredStrategy: recommended.optionStrategy,
+  };
+}
+
+/**
+ * Derive DeepSeek / Gemini decision roles for the option set.
+ *
+ * @param {Array<Object>} options
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {Object} decision role info
+ */
+function _deriveDecisionRoles(options, thread, agentCase) {
+  const hasHandoffs = (thread.handoffCount || 0) > 0;
+  const agentRole = (agentCase && agentCase.agentRole) || null;
+
+  const ownerCounts = { deepseek: 0, gemini: 0, cross_agent: 0, user_suggested: 0 };
+  for (const opt of options) {
+    if (ownerCounts[opt.optionOwner] !== undefined) {
+      ownerCounts[opt.optionOwner] += 1;
+    }
+  }
+
+  let primaryAgent = "deepseek";
+  let secondaryAgent = null;
+
+  if (ownerCounts.gemini > ownerCounts.deepseek) {
+    primaryAgent = "gemini";
+    secondaryAgent = ownerCounts.deepseek > 0 ? "deepseek" : null;
+  } else if (ownerCounts.deepseek > 0) {
+    primaryAgent = "deepseek";
+    secondaryAgent = ownerCounts.gemini > 0 ? "gemini" : null;
+  }
+
+  if (ownerCounts.cross_agent > 0 || hasHandoffs) {
+    secondaryAgent = primaryAgent === "deepseek" ? "gemini" : "deepseek";
+  }
+
+  return {
+    primaryDecisionAgent: primaryAgent,
+    secondaryDecisionAgent: secondaryAgent,
+    crossAgentDecisionNeeded: ownerCounts.cross_agent > 0 || hasHandoffs,
+    decisionFocus: agentRole === "gemini_frontend" ? "frontend" : "backend",
+  };
+}
+
+/**
+ * Derive the decision frame status from the current option set.
+ *
+ * @param {Array<Object>} options
+ * @param {Object} recommendation
+ * @param {Object} mem
+ * @param {Object} thread
+ * @returns {string}
+ */
+function _deriveDecisionFrameStatus(options, recommendation, mem, thread) {
+  if (!options || options.length === 0) return "options_not_ready";
+
+  const openQs = (mem.openQuestions || []).length;
+  const hasRecommendation = !!recommendation.recommendedOptionId;
+  const viableCount = options.filter((o) => o.optionStatus !== "option_discarded").length;
+
+  if (viableCount <= 1 && hasRecommendation) return "decision_ready_for_user";
+  if (hasRecommendation && openQs === 0) return "decision_narrowed";
+  if (hasRecommendation && openQs > 0) return "decision_pending";
+  if (viableCount >= 2) return "options_stable";
+  return "options_prepared";
+}
+
+/**
+ * Derive the current decision tradeoff, narrowing hint and open question.
+ *
+ * @param {Array<Object>} options
+ * @param {Object} recommendation
+ * @param {Object} mem
+ * @param {Object|null} agentCase
+ * @returns {Object}
+ */
+function _deriveDecisionTradeoff(options, recommendation, mem, agentCase) {
+  const openQs = (mem.openQuestions || []).length;
+  const conservative = options.find((o) => o.optionStrategy === "conservative");
+  const targeted = options.find((o) => o.optionStrategy === "targeted");
+  const broad = options.find((o) => o.optionStrategy === "broad");
+
+  let tradeoff = null;
+  let narrowingHint = null;
+  let nextQuestion = null;
+  let optionContrast = null;
+  let pendingReason = null;
+  let mode = null;
+
+  if (conservative && broad) {
+    tradeoff = "Der Hauptunterschied liegt zwischen einem engen, sicheren Schritt und einer breiteren Lösung mit mehr Wirkung.";
+    optionContrast = `${conservative.optionLabel} (eng/sicher) vs. ${broad.optionLabel} (breit/wirkungsvoll)`;
+    mode = "conservative_vs_broad";
+  } else if (conservative && targeted) {
+    tradeoff = "Der Unterschied liegt zwischen weiterer Diagnose und einem gezielten Entwurf im engeren Scope.";
+    optionContrast = `${conservative.optionLabel} (Diagnose vertiefen) vs. ${targeted.optionLabel} (gezielt vorbereiten)`;
+    mode = "diagnosis_vs_action";
+  }
+
+  if (openQs > 0) {
+    nextQuestion = `Es gibt noch ${openQs} offene ${openQs === 1 ? "Frage" : "Fragen"}, die vor einer engeren Entscheidung geklärt werden sollten.`;
+    pendingReason = "Offene Punkte müssen erst geklärt werden.";
+    narrowingHint = "Wenn die offenen Fragen beantwortet sind, kann der Entscheidungsraum enger gefasst werden.";
+  } else if (!mem.agreedDirection) {
+    nextQuestion = "Es gibt noch keine vereinbarte Richtung. Welchen Scope möchtest du bevorzugen?";
+    pendingReason = "Noch keine klare Richtungsentscheidung.";
+    narrowingHint = "Sobald eine Richtung vereinbart ist, reduzieren sich die Optionen.";
+  } else {
+    nextQuestion = null;
+    pendingReason = null;
+    narrowingHint = "Der Entscheidungsraum ist bereits gut eingegrenzt.";
+  }
+
+  return {
+    decisionTradeoff: tradeoff,
+    narrowingHint,
+    nextDecisionQuestion: nextQuestion,
+    optionContrast,
+    pendingDecisionReason: pendingReason,
+    decisionMode: mode,
+    userDecisionNeeded: !!nextQuestion,
+  };
+}
+
+/**
+ * Build the human-readable option summary text.
+ *
+ * @param {Array<Object>} options
+ * @param {Object} recommendation
+ * @returns {string}
+ */
+function _buildOptionSummary(options, recommendation) {
+  if (!options || options.length === 0) return null;
+
+  const parts = [`Ich sehe aktuell ${options.length} sinnvolle Wege:`];
+
+  for (const opt of options) {
+    const prefix = opt.optionId === recommendation.recommendedOptionId
+      ? `▸ Option ${opt.optionLabel} (empfohlen)`
+      : `  Option ${opt.optionLabel}`;
+    parts.push(`${prefix}: ${opt.optionTitle}`);
+  }
+
+  if (recommendation.recommendedBecause) {
+    parts.push("");
+    parts.push(`Aktuell würde ich Option ${options.find((o) => o.optionId === recommendation.recommendedOptionId)?.optionLabel || "?"} bevorzugen, weil: ${recommendation.recommendedBecause}`);
+  }
+
+  return parts.join("\n");
+}
+
+/**
+ * Build the decision context summary.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @param {Object} mem
+ * @returns {string|null}
+ */
+function _buildDecisionContext(thread, agentCase, mem) {
+  const parts = [];
+
+  if (mem.caseScope) {
+    const scopeLabels = {
+      backend: "Backend",
+      frontend: "Frontend",
+      cross_layer: "Backend + Frontend",
+      data_layer: "Datenschicht",
+    };
+    parts.push(`Scope: ${scopeLabels[mem.caseScope] || mem.caseScope}`);
+  }
+
+  if (mem.agreedDirection) {
+    parts.push(`Vereinbarte Richtung: ${mem.agreedDirection}`);
+  }
+
+  if (thread.handoffCount > 0) {
+    parts.push(`${thread.handoffCount} Agent-Übergabe(n) bereits erfolgt`);
+  }
+
+  const openQs = (mem.openQuestions || []).length;
+  if (openQs > 0) {
+    parts.push(`${openQs} offene ${openQs === 1 ? "Frage" : "Fragen"}`);
+  }
+
+  if (parts.length === 0) return null;
+  return parts.join(" · ");
+}
+
+/**
+ * Re-derive all decision frame fields for a thread.
+ *
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @param {string} triggerSource - what triggered the update
+ */
+function _updateDecisionFrame(thread, agentCase, triggerSource) {
+  const df = thread.decisionFrame;
+  const mem = thread.caseMemory || {};
+  const now = new Date().toISOString();
+
+  // Only derive options when there's enough conversation context
+  const minMessages = 2;
+  if ((thread.messageCount || 0) < minMessages) {
+    df.decisionFrameStatus = "options_not_ready";
+    return df;
+  }
+
+  // Derive action options
+  const prevOptionCount = df.optionCount;
+  const prevRecommended = df.recommendedOptionId;
+
+  df.actionOptions = _deriveActionOptions(thread, agentCase);
+  df.optionCount = df.actionOptions.length;
+
+  // Derive recommendation
+  const recommendation = _deriveRecommendedOption(df.actionOptions, thread, agentCase, mem);
+  df.recommendedOptionId = recommendation.recommendedOptionId;
+  df.recommendedBecause = recommendation.recommendedBecause;
+  df.conservativeOptionId = recommendation.conservativeOptionId;
+  df.fastestOptionId = recommendation.fastestOptionId;
+  df.widestOptionId = recommendation.widestOptionId;
+  df.safestOptionId = recommendation.safestOptionId;
+  df.preferredStrategy = recommendation.preferredStrategy;
+
+  // Derive decision roles
+  const roles = _deriveDecisionRoles(df.actionOptions, thread, agentCase);
+  df.primaryDecisionAgent = roles.primaryDecisionAgent;
+  df.secondaryDecisionAgent = roles.secondaryDecisionAgent;
+  df.crossAgentDecisionNeeded = roles.crossAgentDecisionNeeded;
+
+  // Derive tradeoff / narrowing / open question
+  const tradeoff = _deriveDecisionTradeoff(df.actionOptions, recommendation, mem, agentCase);
+  df.decisionTradeoff = tradeoff.decisionTradeoff;
+  df.narrowingHint = tradeoff.narrowingHint;
+  df.nextDecisionQuestion = tradeoff.nextDecisionQuestion;
+  df.optionContrast = tradeoff.optionContrast;
+  df.pendingDecisionReason = tradeoff.pendingDecisionReason;
+  df.decisionMode = tradeoff.decisionMode;
+  df.userDecisionNeeded = tradeoff.userDecisionNeeded;
+
+  // Derive status
+  df.decisionFrameStatus = _deriveDecisionFrameStatus(df.actionOptions, recommendation, mem, thread);
+
+  // Build summaries
+  df.optionSummary = _buildOptionSummary(df.actionOptions, recommendation);
+  df.decisionContext = _buildDecisionContext(thread, agentCase, mem);
+
+  // Update metadata
+  df.decisionFrameUpdatedAt = now;
+  df.decisionFrameUpdateCount += 1;
+  df.decisionFrameVersion += 1;
+
+  // Logging
+  const recommendationChanged = prevRecommended !== null && prevRecommended !== df.recommendedOptionId;
+  logger.info("[agentBridge] Step 24 – Decision Frame aktualisiert", {
+    threadId: thread.threadId,
+    triggerSource,
+    optionCount: df.optionCount,
+    decisionFrameStatus: df.decisionFrameStatus,
+    recommendedOptionId: df.recommendedOptionId,
+    preferredStrategy: df.preferredStrategy,
+    decisionMode: df.decisionMode,
+    crossAgentDecisionNeeded: df.crossAgentDecisionNeeded,
+    userDecisionNeeded: df.userDecisionNeeded,
+    recommendationChanged,
+    frameVersion: df.decisionFrameVersion,
+  });
+
+  if (recommendationChanged) {
+    logger.info("[agentBridge] Step 24 – Empfohlene Option gewechselt", {
+      threadId: thread.threadId,
+      previousRecommended: prevRecommended,
+      newRecommended: df.recommendedOptionId,
+      reason: df.recommendedBecause,
+    });
+  }
+
+  return df;
+}
+
+/**
+ * Inject decision frame context into an agent reply.
+ * Adds brief option awareness so replies feel decision-oriented.
+ *
+ * @param {string} replyText
+ * @param {Object} thread
+ * @param {Object|null} agentCase
+ * @returns {string}
+ */
+function _injectDecisionFrameIntoReply(replyText, thread, agentCase) {
+  const df = thread.decisionFrame;
+  if (!df || df.decisionFrameStatus === "options_not_ready" || df.optionCount === 0) {
+    return replyText;
+  }
+
+  const injections = [];
+
+  // Reference the current decision framing lightly
+  if (df.optionCount >= 2 && df.decisionFrameStatus !== "options_not_ready") {
+    const recommendedOpt = df.actionOptions.find((o) => o.optionId === df.recommendedOptionId);
+    if (recommendedOpt) {
+      injections.push(
+        `\n\nDer eigentliche Entscheidungspunkt liegt gerade hier: Ich sehe ${df.optionCount} sinnvolle Wege. ` +
+        `Aktuell würde ich Option ${recommendedOpt.optionLabel} bevorzugen – ${recommendedOpt.optionTitle.toLowerCase()}.`
+      );
+    }
+
+    if (df.nextDecisionQuestion) {
+      injections.push(` ${df.nextDecisionQuestion}`);
+    }
+
+    if (df.narrowingHint && df.decisionFrameStatus !== "decision_ready_for_user") {
+      injections.push(` ${df.narrowingHint}`);
+    }
+  }
+
+  if (injections.length === 0) return replyText;
+  return replyText + injections.join("");
+}
+
+/**
+ * Retrieve the decision frame for a specific thread.
+ *
+ * @param {Object} params
+ * @param {string} params.agentCaseId
+ * @returns {Object|null}
+ */
+function getDecisionFrame({ agentCaseId } = {}) {
+  if (!agentCaseId) return null;
+
+  const thread = _conversationThreads.get(agentCaseId);
+  if (!thread) return null;
+
+  const agentCase = _agentCaseRegistry.get(agentCaseId) || null;
+
+  // Refresh decision frame
+  _updateDecisionFrame(thread, agentCase, "decision_frame_read");
+
+  const df = thread.decisionFrame;
+
+  logger.info("[agentBridge] Step 24 – Decision Frame abgerufen", {
+    threadId: agentCaseId,
+    decisionFrameStatus: df.decisionFrameStatus,
+    optionCount: df.optionCount,
+    recommendedOptionId: df.recommendedOptionId,
+  });
+
+  return {
+    threadId: agentCaseId,
+    decisionFrameStatus: df.decisionFrameStatus,
+    decisionMode: df.decisionMode,
+    optionCount: df.optionCount,
+    actionOptions: df.actionOptions,
+    recommendedOptionId: df.recommendedOptionId,
+    recommendedBecause: df.recommendedBecause,
+    conservativeOptionId: df.conservativeOptionId,
+    fastestOptionId: df.fastestOptionId,
+    widestOptionId: df.widestOptionId,
+    safestOptionId: df.safestOptionId,
+    primaryDecisionAgent: df.primaryDecisionAgent,
+    secondaryDecisionAgent: df.secondaryDecisionAgent,
+    crossAgentDecisionNeeded: df.crossAgentDecisionNeeded,
+    decisionTradeoff: df.decisionTradeoff,
+    nextDecisionQuestion: df.nextDecisionQuestion,
+    narrowingHint: df.narrowingHint,
+    userDecisionNeeded: df.userDecisionNeeded,
+    optionContrast: df.optionContrast,
+    pendingDecisionReason: df.pendingDecisionReason,
+    optionSummary: df.optionSummary,
+    preferredStrategy: df.preferredStrategy,
+    decisionContext: df.decisionContext,
+    decisionFrameUpdatedAt: df.decisionFrameUpdatedAt,
+    decisionFrameUpdateCount: df.decisionFrameUpdateCount,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Build analytics summary across all threads with decision frames.
+ *
+ * @returns {Object}
+ */
+function getDecisionFrameSummary() {
+  const threads = Array.from(_conversationThreads.values());
+
+  let totalWithOptions = 0;
+  let totalWithRecommendation = 0;
+  let totalWithTradeoff = 0;
+  let totalUserDecisionNeeded = 0;
+  let totalCrossAgentDecisions = 0;
+  let totalConservative = 0;
+  let totalTargeted = 0;
+  let totalBroad = 0;
+  let totalWait = 0;
+
+  const byDecisionFrameStatus = {};
+  const byDecisionMode = {};
+  const byPreferredStrategy = {};
+  const byPrimaryAgent = {};
+
+  for (const t of threads) {
+    const df = t.decisionFrame;
+    if (!df || df.decisionFrameStatus === "options_not_ready") continue;
+
+    totalWithOptions += 1;
+    if (df.recommendedOptionId) totalWithRecommendation += 1;
+    if (df.decisionTradeoff) totalWithTradeoff += 1;
+    if (df.userDecisionNeeded) totalUserDecisionNeeded += 1;
+    if (df.crossAgentDecisionNeeded) totalCrossAgentDecisions += 1;
+
+    // Count strategies
+    for (const opt of (df.actionOptions || [])) {
+      if (opt.optionStrategy === "conservative") totalConservative += 1;
+      if (opt.optionStrategy === "targeted") totalTargeted += 1;
+      if (opt.optionStrategy === "broad") totalBroad += 1;
+      if (opt.optionStrategy === "wait") totalWait += 1;
+    }
+
+    // Distribution by status
+    byDecisionFrameStatus[df.decisionFrameStatus] = (byDecisionFrameStatus[df.decisionFrameStatus] || 0) + 1;
+
+    // Distribution by mode
+    if (df.decisionMode) {
+      byDecisionMode[df.decisionMode] = (byDecisionMode[df.decisionMode] || 0) + 1;
+    }
+
+    // Distribution by preferred strategy
+    if (df.preferredStrategy) {
+      byPreferredStrategy[df.preferredStrategy] = (byPreferredStrategy[df.preferredStrategy] || 0) + 1;
+    }
+
+    // Distribution by primary agent
+    if (df.primaryDecisionAgent) {
+      byPrimaryAgent[df.primaryDecisionAgent] = (byPrimaryAgent[df.primaryDecisionAgent] || 0) + 1;
+    }
+  }
+
+  const decisionThreads = threads
+    .filter((t) => t.decisionFrame && t.decisionFrame.decisionFrameStatus !== "options_not_ready")
+    .slice(-20)
+    .map((t) => ({
+      threadId: t.threadId,
+      decisionFrameStatus: t.decisionFrame.decisionFrameStatus,
+      optionCount: t.decisionFrame.optionCount,
+      recommendedOptionId: t.decisionFrame.recommendedOptionId,
+      preferredStrategy: t.decisionFrame.preferredStrategy,
+      decisionMode: t.decisionFrame.decisionMode,
+      crossAgentDecisionNeeded: t.decisionFrame.crossAgentDecisionNeeded,
+      userDecisionNeeded: t.decisionFrame.userDecisionNeeded,
+      primaryDecisionAgent: t.decisionFrame.primaryDecisionAgent,
+      decisionFrameUpdateCount: t.decisionFrame.decisionFrameUpdateCount,
+      decisionFrameUpdatedAt: t.decisionFrame.decisionFrameUpdatedAt,
+    }));
+
+  logger.info("[agentBridge] Step 24 – Decision-Frame-Zusammenfassung erzeugt", {
+    totalThreads: threads.length,
+    totalWithOptions,
+    totalWithRecommendation,
+    totalUserDecisionNeeded,
+    totalCrossAgentDecisions,
+  });
+
+  return {
+    totalThreads: threads.length,
+    totalWithOptions,
+    totalWithRecommendation,
+    totalWithTradeoff,
+    totalUserDecisionNeeded,
+    totalCrossAgentDecisions,
+    totalConservative,
+    totalTargeted,
+    totalBroad,
+    totalWait,
+    byDecisionFrameStatus,
+    byDecisionMode,
+    byPreferredStrategy,
+    byPrimaryAgent,
+    decisionThreads,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 /**
  * Derive thread status from current state.
  * @param {Object} thread
@@ -13196,6 +14134,9 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
   // Step 23: Inject case memory context into agent reply
   agentReplyText = _injectMemoryIntoReply(agentReplyText, thread, agentCase);
 
+  // Step 24: Inject decision frame context into agent reply
+  agentReplyText = _injectDecisionFrameIntoReply(agentReplyText, thread, agentCase);
+
   _conversationMsgCounter += 1;
   const agentMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
   const agentNow = new Date().toISOString();
@@ -13320,6 +14261,9 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
   const memoryTrigger = handoffAssessment.needed ? "handoff" : "user_message";
   _updateCaseMemory(thread, agentCase, memoryTrigger);
 
+  // --- Step 24: Update decision frame after interaction ---
+  _updateDecisionFrame(thread, agentCase, memoryTrigger);
+
   thread.conversationSummary = _buildConversationSummaryLine(thread);
   thread.updatedAt = new Date().toISOString();
 
@@ -13328,7 +14272,7 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     thread.conversationMessages.shift();
   }
 
-  logger.info("[agentBridge] Step 21/22/23 – Agent-Antwort erzeugt", {
+  logger.info("[agentBridge] Step 21/22/23/24 – Agent-Antwort erzeugt", {
     threadId: agentCaseId,
     speakerAgent: routing.speakerAgent,
     messageIntent,
@@ -13338,6 +14282,9 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     handoffReason: handoffAssessment.reason,
     caseContinuityStatus: thread.caseMemory.caseContinuityStatus,
     memoryFreshness: thread.caseMemory.memoryFreshness,
+    decisionFrameStatus: thread.decisionFrame.decisionFrameStatus,
+    optionCount: thread.decisionFrame.optionCount,
+    recommendedOptionId: thread.decisionFrame.recommendedOptionId,
   });
 
   return {
@@ -13374,6 +14321,16 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
     nextOpenStep: thread.caseMemory.nextOpenStep,
     dominantMemoryOwner: thread.caseMemory.dominantMemoryOwner,
     memoryFocus: thread.caseMemory.memoryFocus,
+    // Step 24: Decision Frame / Option Comparison
+    decisionFrameStatus: thread.decisionFrame.decisionFrameStatus,
+    optionCount: thread.decisionFrame.optionCount,
+    recommendedOptionId: thread.decisionFrame.recommendedOptionId,
+    preferredStrategy: thread.decisionFrame.preferredStrategy,
+    decisionMode: thread.decisionFrame.decisionMode,
+    userDecisionNeeded: thread.decisionFrame.userDecisionNeeded,
+    optionSummary: thread.decisionFrame.optionSummary,
+    decisionTradeoff: thread.decisionFrame.decisionTradeoff,
+    nextDecisionQuestion: thread.decisionFrame.nextDecisionQuestion,
   };
 }
 
@@ -13398,6 +14355,8 @@ function getConversationThread({ agentCaseId, limit = 50 } = {}) {
   thread.conversationState = _deriveConversationPhase(thread, agentCase);
   // Step 23: Refresh case memory
   _updateCaseMemory(thread, agentCase, "thread_read");
+  // Step 24: Refresh decision frame
+  _updateDecisionFrame(thread, agentCase, "thread_read");
   thread.conversationSummary = _buildConversationSummaryLine(thread);
 
   const messages = thread.conversationMessages.slice(-limit);
@@ -13455,6 +14414,33 @@ function getConversationThread({ agentCaseId, limit = 50 } = {}) {
       anchorCount: thread.caseMemory.memoryAnchors.length,
       memoryUpdateCount: thread.caseMemory.memoryUpdateCount,
       memoryUpdatedAt: thread.caseMemory.memoryUpdatedAt,
+    },
+    // Step 24: Decision Frame / Option Comparison fields
+    decisionFrame: {
+      decisionFrameStatus: thread.decisionFrame.decisionFrameStatus,
+      decisionMode: thread.decisionFrame.decisionMode,
+      optionCount: thread.decisionFrame.optionCount,
+      actionOptions: thread.decisionFrame.actionOptions,
+      recommendedOptionId: thread.decisionFrame.recommendedOptionId,
+      recommendedBecause: thread.decisionFrame.recommendedBecause,
+      conservativeOptionId: thread.decisionFrame.conservativeOptionId,
+      fastestOptionId: thread.decisionFrame.fastestOptionId,
+      widestOptionId: thread.decisionFrame.widestOptionId,
+      safestOptionId: thread.decisionFrame.safestOptionId,
+      primaryDecisionAgent: thread.decisionFrame.primaryDecisionAgent,
+      secondaryDecisionAgent: thread.decisionFrame.secondaryDecisionAgent,
+      crossAgentDecisionNeeded: thread.decisionFrame.crossAgentDecisionNeeded,
+      decisionTradeoff: thread.decisionFrame.decisionTradeoff,
+      nextDecisionQuestion: thread.decisionFrame.nextDecisionQuestion,
+      narrowingHint: thread.decisionFrame.narrowingHint,
+      userDecisionNeeded: thread.decisionFrame.userDecisionNeeded,
+      optionContrast: thread.decisionFrame.optionContrast,
+      pendingDecisionReason: thread.decisionFrame.pendingDecisionReason,
+      optionSummary: thread.decisionFrame.optionSummary,
+      preferredStrategy: thread.decisionFrame.preferredStrategy,
+      decisionContext: thread.decisionFrame.decisionContext,
+      decisionFrameUpdateCount: thread.decisionFrame.decisionFrameUpdateCount,
+      decisionFrameUpdatedAt: thread.decisionFrame.decisionFrameUpdatedAt,
     },
     messages,
     createdAt: thread.createdAt,
@@ -13555,6 +14541,13 @@ function getConversationSummary() {
       workingSummaryReady: t.caseMemory ? t.caseMemory.workingSummaryReady : false,
       openQuestionCount: t.caseMemory ? (t.caseMemory.openQuestions || []).length : 0,
       anchorCount: t.caseMemory ? (t.caseMemory.memoryAnchors || []).length : 0,
+      // Step 24: Decision Frame fields
+      decisionFrameStatus: t.decisionFrame ? t.decisionFrame.decisionFrameStatus : "options_not_ready",
+      optionCount: t.decisionFrame ? t.decisionFrame.optionCount : 0,
+      recommendedOptionId: t.decisionFrame ? t.decisionFrame.recommendedOptionId : null,
+      preferredStrategy: t.decisionFrame ? t.decisionFrame.preferredStrategy : null,
+      userDecisionNeeded: t.decisionFrame ? t.decisionFrame.userDecisionNeeded : false,
+      crossAgentDecisionNeeded: t.decisionFrame ? t.decisionFrame.crossAgentDecisionNeeded : false,
       updatedAt: t.updatedAt,
     }));
 
@@ -13573,7 +14566,24 @@ function getConversationSummary() {
     }
   }
 
-  logger.info("[agentBridge] Step 21/22/23 – Conversation-Zusammenfassung erzeugt", {
+  // Step 24: Collect decision frame analytics
+  let totalWithOptions = 0;
+  let totalWithRecommendation = 0;
+  let totalDecisionNarrowed = 0;
+  let totalDecisionUserNeeded = 0;
+  let totalDecisionCrossAgent = 0;
+
+  for (const t of threads) {
+    if (t.decisionFrame && t.decisionFrame.decisionFrameStatus !== "options_not_ready") {
+      totalWithOptions += 1;
+      if (t.decisionFrame.recommendedOptionId) totalWithRecommendation += 1;
+      if (t.decisionFrame.decisionFrameStatus === "decision_narrowed" || t.decisionFrame.decisionFrameStatus === "decision_ready_for_user") totalDecisionNarrowed += 1;
+      if (t.decisionFrame.userDecisionNeeded) totalDecisionUserNeeded += 1;
+      if (t.decisionFrame.crossAgentDecisionNeeded) totalDecisionCrossAgent += 1;
+    }
+  }
+
+  logger.info("[agentBridge] Step 21/22/23/24 – Conversation-Zusammenfassung erzeugt", {
     totalThreads: threads.length,
     totalOpen,
     totalMessages,
@@ -13583,6 +14593,8 @@ function getConversationSummary() {
     totalWithMemory,
     totalWithWorkingSummary,
     totalWithOpenQuestions,
+    totalWithOptions,
+    totalWithRecommendation,
   });
 
   return {
@@ -13602,6 +14614,12 @@ function getConversationSummary() {
     totalWithWorkingSummary,
     totalWithOpenQuestions,
     totalWithAgreedDirection,
+    // Step 24: Decision Frame analytics
+    totalWithOptions,
+    totalWithRecommendation,
+    totalDecisionNarrowed,
+    totalDecisionUserNeeded,
+    totalDecisionCrossAgent,
     byThreadStatus,
     byDominantAgent,
     byConversationState,
@@ -13726,4 +14744,13 @@ module.exports = {
   VALID_CONTINUITY_STATUSES,
   VALID_MEMORY_FRESHNESS,
   VALID_MEMORY_ANCHOR_TYPES,
+  // Step 24: Action Negotiation / Option Comparison / Decision Framing
+  getDecisionFrame,
+  getDecisionFrameSummary,
+  VALID_DECISION_FRAME_STATUSES,
+  VALID_OPTION_STATUSES,
+  VALID_COMPARISON_DIMENSIONS,
+  VALID_DIMENSION_RATINGS,
+  VALID_DECISION_MODES,
+  VALID_OPTION_OWNER_TYPES,
 };
