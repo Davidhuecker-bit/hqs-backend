@@ -1493,6 +1493,71 @@ const CONFERENCE_SESSION_MAX_ENTRIES = 100;
 const CONFERENCE_SESSION_MAX_MESSAGES = 500;
 
 /* ─────────────────────────────────────────────
+   Konferenz Step B: Coordination / Moderation / Coordinated Reply Flow
+   ───────────────────────────────────────────── */
+
+/** Reply patterns – how an answer is produced within the conference */
+const VALID_CONFERENCE_REPLY_PATTERNS = [
+  "solo_reply",           // Single agent answers alone
+  "supporting_reply",     // Lead answers, support adds targeted supplement
+  "coordinated_reply",    // Both agents contribute, merged before delivery
+  "bundled_reply",        // Moderated summary combining both perspectives
+  "needs_user_clarification", // Agents defer – clarification request instead
+  "phase_closed",         // No new reply – phase is considered done
+  "cross_agent_followup", // One agent follows up on the other's point
+];
+
+/** Coordination states – where the conference coordination currently stands */
+const VALID_CONFERENCE_COORDINATION_STATES = [
+  "uncoordinated",        // No coordination active (legacy / simple mode)
+  "lead_assigned",        // One agent is clearly leading
+  "support_active",       // Supporting agent is supplementing the lead
+  "coordinated_active",   // Both agents actively coordinating
+  "bundling_needed",      // Answers should be bundled before delivery
+  "clarification_pending",// Waiting for user clarification
+  "phase_closing",        // Current phase is wrapping up
+  "phase_closed",         // Current phase is complete
+];
+
+/** Phase statuses – lifecycle of a discussion phase within a session */
+const VALID_CONFERENCE_PHASE_STATUSES = [
+  "phase_open",            // Discussion phase is open
+  "problem_scoped",        // Problem has been scoped/narrowed
+  "cause_identified",      // Root cause identified
+  "recommendation_ready",  // Recommendation prepared
+  "decision_pending",      // Decision awaiting user input
+  "clarification_open",    // Open clarification needed
+  "phase_concluded",       // Phase concluded with summary
+];
+
+/** Coordinator message types – quiet, value-adding moderation hints */
+const VALID_COORDINATOR_MESSAGE_TYPES = [
+  "lead_assigned",          // Agent X leads this point
+  "supplement_added",       // Agent Y supplemented
+  "reply_bundled",          // Replies were bundled into coordinated answer
+  "clarification_needed",   // Clarification from user is needed
+  "point_concluded",        // Point/topic concluded
+  "phase_summary",          // Phase summary available
+  "next_step_suggested",    // Suggested next step
+  "leadership_changed",     // Lead agent changed
+];
+
+/** Keywords used to detect backend domain relevance (Step B lead derivation) */
+const CONFERENCE_BACKEND_KEYWORDS = ["backend", "api", "server", "datenbank", "logik", "route", "endpoint", "service", "middleware"];
+
+/** Keywords used to detect frontend domain relevance (Step B lead derivation) */
+const CONFERENCE_FRONTEND_KEYWORDS = ["frontend", "ui", "ux", "design", "component", "darstellung", "layout", "css", "animation"];
+
+/** Signals that indicate clarification is needed rather than expansion */
+const CONFERENCE_CLARIFICATION_SIGNALS = ["was meinst du", "unklar", "könntest du", "nicht verstanden", "genauer", "was genau", "worum geht es", "bitte erkläre"];
+
+/** Keywords indicating discussion convergence / phase closure */
+const CONFERENCE_CONVERGENCE_KEYWORDS = ["einverstanden", "klar", "abgeschlossen", "verstanden", "passt", "reicht", "nächster punkt", "weiter", "gut so", "erledigt", "zusammengefasst"];
+
+/** Signals indicating a user message covers multiple topics */
+const CONFERENCE_TOPIC_SPLITTERS = ["und auch", "außerdem", "zusätzlich", "und dann noch", "plus"];
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -14758,6 +14823,24 @@ function openConferenceSession({
     sessionOpenedAt: now,
     sessionClosedAt: null,
     conferenceSummary: null,
+    // Konferenz Step B: Coordination fields
+    coordinationState: "uncoordinated",
+    currentReplyPattern: "solo_reply",
+    leadAgent: null,
+    supportAgent: null,
+    currentPhaseStatus: "phase_open",
+    phaseCount: 0,
+    phases: [],
+    coordinatedReplyCount: 0,
+    soloReplyCount: 0,
+    supportingReplyCount: 0,
+    bundledReplyCount: 0,
+    clarificationRequestCount: 0,
+    leadershipChangeCount: 0,
+    phasesClosedCount: 0,
+    lastCoordinatorMessage: null,
+    openPoints: [],
+    phaseDigest: null,
     modeHistory: [{ mode, changedAt: now }],
     statusHistory: [{ status: "session_active", changedAt: now }],
     createdAt: now,
@@ -15400,6 +15483,21 @@ function _formatConferenceSession(session) {
     lastActivity: session.lastActivity,
     sessionOpenedAt: session.sessionOpenedAt,
     sessionClosedAt: session.sessionClosedAt,
+    // Konferenz Step B coordination fields
+    coordinationState: session.coordinationState || "uncoordinated",
+    currentReplyPattern: session.currentReplyPattern || "solo_reply",
+    leadAgent: session.leadAgent || null,
+    supportAgent: session.supportAgent || null,
+    currentPhaseStatus: session.currentPhaseStatus || "phase_open",
+    phaseCount: session.phaseCount || 0,
+    coordinatedReplyCount: session.coordinatedReplyCount || 0,
+    soloReplyCount: session.soloReplyCount || 0,
+    supportingReplyCount: session.supportingReplyCount || 0,
+    bundledReplyCount: session.bundledReplyCount || 0,
+    clarificationRequestCount: session.clarificationRequestCount || 0,
+    leadershipChangeCount: session.leadershipChangeCount || 0,
+    phasesClosedCount: session.phasesClosedCount || 0,
+    openPointCount: (session.openPoints || []).length,
   };
 }
 
@@ -15419,6 +15517,798 @@ function _formatDuration(startIso, endIso) {
   } catch {
     return "—";
   }
+}
+
+/* ─────────────────────────────────────────────
+   Konferenz Step B: Coordination / Moderation / Coordinated Reply Flow
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive which agent should lead based on message content, session history, and mode.
+ * @private
+ */
+function _deriveLeadAgent(userMessage, session) {
+  const lowerMsg = (userMessage || "").toLowerCase();
+  
+  // Check explicit domain references
+  let dsScore = 0;
+  let gmScore = 0;
+  
+  for (const kw of CONFERENCE_BACKEND_KEYWORDS) {
+    if (lowerMsg.includes(kw)) dsScore += 1;
+  }
+  for (const kw of CONFERENCE_FRONTEND_KEYWORDS) {
+    if (lowerMsg.includes(kw)) gmScore += 1;
+  }
+
+  // Factor in session history
+  if (session.deepseekMessageCount > session.geminiMessageCount + 3) {
+    dsScore += 1; // DeepSeek has been more active
+  } else if (session.geminiMessageCount > session.deepseekMessageCount + 3) {
+    gmScore += 1; // Gemini has been more active
+  }
+
+  // Decision mode: keep current lead or default to deepseek
+  if (session.conferenceMode === "decision_mode") {
+    if (dsScore === gmScore && session.leadAgent) return session.leadAgent;
+  }
+
+  if (dsScore > gmScore) return "deepseek";
+  if (gmScore > dsScore) return "gemini";
+  
+  // Keep current lead if exists, otherwise deepseek as default
+  return session.leadAgent || "deepseek";
+}
+
+/**
+ * Assess which reply pattern should be used for this interaction.
+ * @private
+ */
+function _assessReplyPattern(userMessage, session, resolvedTarget) {
+  const lowerMsg = (userMessage || "").toLowerCase();
+  const recentMessages = session.messages.slice(-6);
+  
+  // Check for clarification signals
+  const needsClarification = CONFERENCE_CLARIFICATION_SIGNALS.some(s => lowerMsg.includes(s));
+  if (needsClarification) return "needs_user_clarification";
+  
+  // If phase was just concluded, signal it
+  if (session.currentPhaseStatus === "phase_concluded") return "phase_closed";
+  
+  // If target is single agent, solo reply
+  if (resolvedTarget === "deepseek" || resolvedTarget === "gemini") {
+    // Check if the other agent recently contributed something relevant
+    const otherAgent = resolvedTarget === "deepseek" ? "gemini" : "deepseek";
+    const recentOtherReply = recentMessages.some(m => m.speakerAgent === otherAgent && m.messageRole === "agent");
+    
+    if (recentOtherReply && session.conferenceMode === "problem_solving") {
+      return "cross_agent_followup";
+    }
+    return "solo_reply";
+  }
+  
+  // Target is "both" – decide between coordinated, supporting, or bundled
+  if (resolvedTarget === "both") {
+    // Decision mode → bundled reply preferred
+    if (session.conferenceMode === "decision_mode") return "bundled_reply";
+    
+    // Problem solving with established lead → supporting reply
+    if (session.conferenceMode === "problem_solving" && session.leadAgent) {
+      return "supporting_reply";
+    }
+    
+    // Default for both: coordinated
+    return "coordinated_reply";
+  }
+  
+  // System target
+  return "solo_reply";
+}
+
+/**
+ * Derive the coordination state based on session state and reply pattern.
+ * @private
+ */
+function _deriveCoordinationState(session, replyPattern) {
+  if (replyPattern === "needs_user_clarification") return "clarification_pending";
+  if (replyPattern === "phase_closed") return "phase_closed";
+  if (replyPattern === "bundled_reply") return "bundling_needed";
+  if (replyPattern === "coordinated_reply") return "coordinated_active";
+  if (replyPattern === "supporting_reply") return "support_active";
+  if (replyPattern === "cross_agent_followup") return "coordinated_active";
+  if (session.leadAgent) return "lead_assigned";
+  return "uncoordinated";
+}
+
+/**
+ * Assess whether the current discussion phase should be closed.
+ * @private
+ */
+function _assessPhaseClosure(session) {
+  const recentMessages = session.messages.slice(-8);
+  if (recentMessages.length < 3) return { shouldClose: false, reason: null };
+  
+  // Check for convergence signals
+  const recentTexts = recentMessages.map(m => (m.content || "").toLowerCase());
+  
+  let convergenceScore = 0;
+  for (const text of recentTexts) {
+    for (const kw of CONFERENCE_CONVERGENCE_KEYWORDS) {
+      if (text.includes(kw)) convergenceScore += 1;
+    }
+  }
+  
+  // Both agents have replied and convergence signals present
+  const hasDeepseekReply = recentMessages.some(m => m.speakerAgent === "deepseek");
+  const hasGeminiReply = recentMessages.some(m => m.speakerAgent === "gemini");
+  const bothContributed = hasDeepseekReply && hasGeminiReply;
+  
+  if (convergenceScore >= 2 && bothContributed) {
+    return { shouldClose: true, reason: "Konvergenz erkannt – beide Agenten haben beigetragen und Einigkeit signalisiert" };
+  }
+  
+  if (convergenceScore >= 3) {
+    return { shouldClose: true, reason: "Mehrfache Konvergenz-Signale in der letzten Diskussion" };
+  }
+  
+  return { shouldClose: false, reason: null };
+}
+
+/**
+ * Derive the phase status based on messages and session state.
+ * @private
+ */
+function _derivePhaseStatus(session) {
+  const recentMessages = session.messages.slice(-10);
+  if (recentMessages.length === 0) return "phase_open";
+  
+  const recentTexts = recentMessages.map(m => (m.content || "").toLowerCase()).join(" ");
+  
+  // Check for specific phase indicators
+  if (recentTexts.includes("empfehlung") || recentTexts.includes("vorschlag") || recentTexts.includes("empfehle")) {
+    return "recommendation_ready";
+  }
+  if (recentTexts.includes("ursache") || recentTexts.includes("root cause") || recentTexts.includes("grund dafür")) {
+    return "cause_identified";
+  }
+  if (recentTexts.includes("eingegrenzt") || recentTexts.includes("scope") || recentTexts.includes("fokussier")) {
+    return "problem_scoped";
+  }
+  if (recentTexts.includes("entscheidung") || recentTexts.includes("entscheid") || recentTexts.includes("wähle")) {
+    return "decision_pending";
+  }
+  if (recentTexts.includes("unklar") || recentTexts.includes("rückfrage") || recentTexts.includes("klärung")) {
+    return "clarification_open";
+  }
+  
+  return "phase_open";
+}
+
+/**
+ * Derive open points and pending clarifications from the session.
+ * @private
+ */
+function _deriveConferenceOpenPoints(session) {
+  const recentMessages = session.messages.slice(-12);
+  const openPoints = [];
+  
+  // Check for unanswered questions (user question without subsequent agent answer)
+  for (let i = 0; i < recentMessages.length; i++) {
+    const msg = recentMessages[i];
+    if (msg.messageRole === "user" && (msg.messageIntent === "question" || msg.messageIntent === "clarification")) {
+      const subsequentAgentReply = recentMessages.slice(i + 1).some(m => m.messageRole === "agent");
+      if (!subsequentAgentReply) {
+        openPoints.push({
+          type: "unanswered_question",
+          label: "Offene Frage ohne Agentenantwort",
+          messageId: msg.messageId,
+        });
+      }
+    }
+  }
+  
+  // Check for pending decisions
+  if (session.conferenceMode === "decision_mode") {
+    const recentTexts = recentMessages.map(m => (m.content || "").toLowerCase()).join(" ");
+    if (recentTexts.includes("entscheidung") || recentTexts.includes("option")) {
+      const hasResolution = recentTexts.includes("entschieden") || recentTexts.includes("gewählt") || recentTexts.includes("beschlossen");
+      if (!hasResolution) {
+        openPoints.push({
+          type: "pending_decision",
+          label: "Ausstehende Entscheidung im Entscheidungsmodus",
+        });
+      }
+    }
+  }
+  
+  // Check for scope gaps
+  const allTexts = recentMessages.map(m => (m.content || "").toLowerCase()).join(" ");
+  if (allTexts.includes("fehlt noch") || allTexts.includes("nicht geklärt") || allTexts.includes("offen bleibt")) {
+    openPoints.push({
+      type: "missing_scope_point",
+      label: "Fehlender Scope-Punkt oder offene Klärung erkannt",
+    });
+  }
+  
+  // Check for near-ready decisions
+  if (session.currentPhaseStatus === "recommendation_ready" || session.currentPhaseStatus === "cause_identified") {
+    const hasUserConfirmation = recentMessages.some(m => m.messageRole === "user" && 
+      (m.content || "").toLowerCase().match(/(ok|ja|passt|einverstanden|machen wir)/));
+    if (!hasUserConfirmation) {
+      openPoints.push({
+        type: "awaiting_user_confirmation",
+        label: "Empfehlung/Erkenntnis liegt vor – User-Bestätigung ausstehend",
+      });
+    }
+  }
+  
+  return openPoints;
+}
+
+/**
+ * Assess whether clarification should be requested instead of expanding.
+ * @private
+ */
+function _assessClarificationNeed(userMessage, session) {
+  const lowerMsg = (userMessage || "").toLowerCase();
+  
+  // Vague or very short messages in a complex context
+  if (lowerMsg.length < 15 && session.messageCount > 5) {
+    return { needsClarification: true, reason: "Sehr kurze Nachricht in fortgeschrittener Konferenz – Rückfrage sinnvoller als Ausweitung" };
+  }
+  
+  // Multiple topics in one message
+  const multiTopicCount = CONFERENCE_TOPIC_SPLITTERS.filter(s => lowerMsg.includes(s)).length;
+  if (multiTopicCount >= 2) {
+    return { needsClarification: true, reason: "Mehrere Themen in einer Nachricht – Priorisierung klären" };
+  }
+  
+  // Contradictory signals
+  if (lowerMsg.includes("aber") && lowerMsg.includes("oder") && lowerMsg.length > 50) {
+    return { needsClarification: true, reason: "Widersprüchliche Signale erkannt – Rückfrage bevorzugt" };
+  }
+  
+  return { needsClarification: false, reason: null };
+}
+
+/**
+ * Build a phase digest (Ergebnisverdichtung) for the current or most recent phase.
+ * @private
+ */
+function _buildPhaseDigest(session) {
+  const messages = session.messages;
+  if (messages.length === 0) return null;
+  
+  const recentMessages = messages.slice(-15);
+  const dsMessages = recentMessages.filter(m => m.speakerAgent === "deepseek" && m.messageRole === "agent");
+  const gmMessages = recentMessages.filter(m => m.speakerAgent === "gemini" && m.messageRole === "agent");
+  
+  // What was understood
+  let understood = "Noch keine klare Einordnung.";
+  if (dsMessages.length > 0 && gmMessages.length > 0) {
+    understood = "Beide Agenten haben Beiträge geliefert. Backend- und Frontend-Sicht liegen vor.";
+  } else if (dsMessages.length > 0) {
+    understood = "DeepSeek hat eine Backend-Einordnung geliefert.";
+  } else if (gmMessages.length > 0) {
+    understood = "Gemini hat eine Frontend-/UX-Einordnung geliefert.";
+  }
+  
+  // Where is this heading
+  const phaseStatusLabels = {
+    phase_open: "Die Diskussion ist offen – noch keine klare Richtung.",
+    problem_scoped: "Das Problem wurde eingegrenzt.",
+    cause_identified: "Eine Ursache wurde identifiziert.",
+    recommendation_ready: "Eine Empfehlung liegt vor.",
+    decision_pending: "Eine Entscheidung steht an.",
+    clarification_open: "Eine Klärung ist offen.",
+    phase_concluded: "Die Phase ist abgeschlossen.",
+  };
+  const direction = phaseStatusLabels[session.currentPhaseStatus] || "Kein klarer Phasenstatus.";
+  
+  // Differences remaining
+  let differences = "Keine erkennbaren Unterschiede.";
+  if (dsMessages.length > 0 && gmMessages.length > 0) {
+    const dsLast = (dsMessages[dsMessages.length - 1].content || "").substring(0, 100);
+    const gmLast = (gmMessages[gmMessages.length - 1].content || "").substring(0, 100);
+    if (dsLast !== gmLast) {
+      differences = "Die Agenten haben unterschiedliche Schwerpunkte gesetzt – Backend vs. Frontend/UX.";
+    }
+  }
+  
+  // Decision pending
+  const decisionPending = session.currentPhaseStatus === "decision_pending" || 
+    session.currentPhaseStatus === "recommendation_ready";
+  
+  // Next controlled step
+  let nextStep = "Das Thema weiter vertiefen oder den Fokus eingrenzen.";
+  if (session.currentPhaseStatus === "recommendation_ready") {
+    nextStep = "Empfehlung prüfen und bestätigen oder anpassen.";
+  } else if (session.currentPhaseStatus === "decision_pending") {
+    nextStep = "Entscheidung treffen oder weiteren Input einholen.";
+  } else if (session.currentPhaseStatus === "clarification_open") {
+    nextStep = "Offene Klärung beantworten, bevor weitergearbeitet wird.";
+  } else if (session.currentPhaseStatus === "cause_identified") {
+    nextStep = "Ursache bestätigen und nächsten Lösungsschritt planen.";
+  } else if (session.currentPhaseStatus === "phase_concluded") {
+    nextStep = "Neues Thema starten oder Konferenz abschließen.";
+  }
+  
+  const openPoints = _deriveConferenceOpenPoints(session);
+  
+  const digest = {
+    conferenceId: session.conferenceId,
+    phaseStatus: session.currentPhaseStatus,
+    understood,
+    direction,
+    differences,
+    decisionPending,
+    openPoints: openPoints.map(p => p.label),
+    openPointCount: openPoints.length,
+    nextStep,
+    leadAgent: session.leadAgent,
+    supportAgent: session.supportAgent,
+    currentReplyPattern: session.currentReplyPattern,
+    coordinationState: session.coordinationState,
+    messageCount: session.messageCount,
+    generatedAt: new Date().toISOString(),
+  };
+  
+  // Cache on session
+  session.phaseDigest = digest;
+  
+  return digest;
+}
+
+/**
+ * Generate a quiet, value-adding coordinator message.
+ * Not log-spam – real moderation hints.
+ * @private
+ */
+function _generateCoordinatorMessage(type, session, context = {}) {
+  const templates = {
+    lead_assigned: `Koordination: ${context.leadAgent === "deepseek" ? "DeepSeek (Backend)" : "Gemini (Frontend/UX)"} führt diesen Punkt.`,
+    supplement_added: `Koordination: ${context.supportAgent === "deepseek" ? "DeepSeek" : "Gemini"} ergänzt gezielt.`,
+    reply_bundled: "Koordination: Die Antworten beider Agenten wurden gebündelt zusammengeführt.",
+    clarification_needed: "Koordination: Rückfrage empfohlen – eine Klärung wäre hilfreicher als weitere Ausweitung.",
+    point_concluded: "Koordination: Dieser Punkt ist abgeschlossen. Zusammenfassung wurde erstellt.",
+    phase_summary: "Koordination: Eine Phasenzusammenfassung ist verfügbar.",
+    next_step_suggested: `Koordination: Nächster Schritt – ${context.nextStep || "weiteres Thema vertiefen oder Fokus eingrenzen"}.`,
+    leadership_changed: `Koordination: Führungswechsel – ${context.newLead === "deepseek" ? "DeepSeek" : "Gemini"} übernimmt.`,
+  };
+  
+  return templates[type] || "Koordination: Moderationshinweis.";
+}
+
+/**
+ * Record a coordinator message in the session.
+ * @private
+ */
+function _recordCoordinatorMessage(session, type, context = {}) {
+  _conferenceMsgCounter += 1;
+  const msgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
+  const now = new Date().toISOString();
+  const content = _generateCoordinatorMessage(type, session, context);
+  
+  const record = {
+    messageId: msgId,
+    conferenceId: session.conferenceId,
+    messageRole: "coordinator",
+    speakerAgent: "system",
+    speakerRole: "coordinator",
+    coordinatorMessageType: type,
+    content,
+    conferenceMode: session.conferenceMode,
+    replyPattern: session.currentReplyPattern,
+    coordinationState: session.coordinationState,
+    createdAt: now,
+  };
+  
+  session.messages.push(record);
+  session.messageCount += 1;
+  session.systemMessageCount += 1;
+  session.lastCoordinatorMessage = record;
+  session.lastActivity = now;
+  
+  return record;
+}
+
+/**
+ * Generate a supporting/supplemental reply for the support agent.
+ * Different from the lead reply – shorter, targeted, complementary.
+ * @private
+ */
+function _generateSupportingReply(supportAgent, leadAgent, messageIntent, userMessage, session) {
+  const isBackend = supportAgent === "deepseek";
+  const perspective = isBackend ? "Backend-Ergänzung" : "Frontend-/UX-Ergänzung";
+  const leadPerspective = leadAgent === "deepseek" ? "Backend-Sicht" : "Frontend-/UX-Sicht";
+  const focus = session.conferenceFocus || "das aktuelle Thema";
+  
+  const replies = {
+    question: [
+      `${perspective}: Zum Punkt von ${leadPerspective} ergänze ich, dass ${focus} auch aus meiner Sicht relevant ist.`,
+      `Kurze Ergänzung aus ${perspective}: Dieser Aspekt berührt auch meinen Bereich.`,
+    ],
+    clarification: [
+      `${perspective}: Ich stütze die Einordnung und füge einen Aspekt hinzu.`,
+    ],
+    diagnosis_request: [
+      `${perspective}: Aus meinem Bereich sehe ich einen zusätzlichen Hinweis zu ${focus}.`,
+    ],
+    recommendation: [
+      `${perspective}: Zur Empfehlung ergänze ich einen weiteren Gesichtspunkt.`,
+    ],
+    freeform: [
+      `Ergänzung aus ${perspective}: Zum letzten Punkt von ${leadPerspective}.`,
+      `${perspective}: Kurze Ergänzung – aus meiner Domäne heraus.`,
+    ],
+  };
+  
+  const candidates = replies[messageIntent] || replies.freeform;
+  const idx = (session.messageCount || 0) % candidates.length;
+  return candidates[idx];
+}
+
+/**
+ * Generate a bundled/coordinated reply combining both agent perspectives.
+ * @private
+ */
+function _generateBundledReply(messageIntent, userMessage, session) {
+  const focus = session.conferenceFocus || "das aktuelle Thema";
+  const modeLabel = {
+    work_chat: "Arbeitschat",
+    problem_solving: "Problemlösung",
+    decision_mode: "Entscheidungsmodus",
+  }[session.conferenceMode] || "Arbeitschat";
+  
+  const replies = {
+    question: [
+      `Gebündelte Antwort (${modeLabel}): Zu ${focus} – aus Backend-Sicht ist der technische Zustand relevant, aus Frontend-/UX-Sicht die Darstellung. Beide Aspekte wurden berücksichtigt.`,
+    ],
+    clarification: [
+      `Gebündelte Einordnung: Backend und Frontend haben ihre Sicht zusammengeführt. ${focus} ist klarer eingegrenzt.`,
+    ],
+    diagnosis_request: [
+      `Koordinierte Diagnose: Die Backend-Analyse und Frontend-Prüfung wurden zusammengeführt. Fokus: ${focus}.`,
+    ],
+    recommendation: [
+      `Gebündelte Empfehlung (${modeLabel}): Backend und Frontend empfehlen gemeinsam den nächsten Schritt zu ${focus}.`,
+    ],
+    freeform: [
+      `Zusammengeführte Antwort: Backend und Frontend haben zu ${focus} beigetragen. Die Einordnung wurde gebündelt.`,
+      `Koordinierte Antwort (${modeLabel}): Beide Perspektiven zu ${focus} wurden berücksichtigt.`,
+    ],
+  };
+  
+  const candidates = replies[messageIntent] || replies.freeform;
+  const idx = (session.messageCount || 0) % candidates.length;
+  return candidates[idx];
+}
+
+/**
+ * Generate a clarification request instead of expanding.
+ * @private
+ */
+function _generateClarificationReply(session, clarificationContext = {}) {
+  const focus = session.conferenceFocus || "das aktuelle Thema";
+  const reason = clarificationContext.reason || "Rückfrage vor weiterer Ausweitung empfohlen";
+  
+  return `Rückfrage an den Nutzer: Bevor wir bei ${focus} weitermachen – ${reason}. Bitte kurz klären, damit die Konferenz gezielt weiterarbeiten kann.`;
+}
+
+/**
+ * Send a coordinated conference message – Step B enhanced version.
+ * Handles reply patterns, coordination state, lead/support agents,
+ * phase tracking, and coordinator messages.
+ * @param {Object} params
+ * @returns {Object}
+ */
+function sendCoordinatedConferenceMessage({
+  conferenceId,
+  userMessage,
+  targetAgent = null,
+  replyToMessageId = null,
+  requestedReplyPattern = null,
+} = {}) {
+  if (!conferenceId) {
+    logger.warn("[agentBridge] Konferenz Step B – sendCoordinatedConferenceMessage ohne conferenceId");
+    return { success: false, error: "conferenceId is required" };
+  }
+  if (!userMessage || typeof userMessage !== "string" || userMessage.trim().length === 0) {
+    logger.warn("[agentBridge] Konferenz Step B – sendCoordinatedConferenceMessage ohne userMessage");
+    return { success: false, error: "userMessage is required and must be a non-empty string" };
+  }
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) {
+    return { success: false, error: "Conference session not found" };
+  }
+
+  if (session.conferenceStatus === "session_closed" || session.conferenceStatus === "session_archived") {
+    return { success: false, error: "Conference session is closed or archived" };
+  }
+
+  // Ensure session is active
+  if (session.conferenceStatus === "session_paused") {
+    session.conferenceStatus = "session_active";
+    session.statusHistory.push({ status: "session_active", changedAt: new Date().toISOString() });
+  }
+
+  // Resolve target agent (reuse Step A logic)
+  const resolvedTarget = _resolveConferenceTarget(targetAgent, userMessage, session);
+  const messageIntent = _deriveMessageIntent(userMessage);
+  const now = new Date().toISOString();
+
+  // Step B: Derive lead agent
+  const previousLead = session.leadAgent;
+  const newLead = _deriveLeadAgent(userMessage, session);
+  const leadChanged = previousLead && previousLead !== newLead;
+  session.leadAgent = newLead;
+  session.supportAgent = newLead === "deepseek" ? "gemini" : "deepseek";
+
+  // Step B: Assess clarification need
+  const clarificationAssessment = _assessClarificationNeed(userMessage, session);
+  
+  // Step B: Determine reply pattern
+  let replyPattern = requestedReplyPattern && VALID_CONFERENCE_REPLY_PATTERNS.includes(requestedReplyPattern)
+    ? requestedReplyPattern
+    : _assessReplyPattern(userMessage, session, resolvedTarget.target);
+  
+  // Override with clarification if assessed
+  if (clarificationAssessment.needsClarification && replyPattern !== "phase_closed") {
+    replyPattern = "needs_user_clarification";
+  }
+
+  // Step B: Update coordination state
+  session.currentReplyPattern = replyPattern;
+  session.coordinationState = _deriveCoordinationState(session, replyPattern);
+
+  // Step B: Update phase status
+  session.currentPhaseStatus = _derivePhaseStatus(session);
+
+  // Record user message (same as Step A)
+  _conferenceMsgCounter += 1;
+  const userMsgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
+
+  const userMsgRecord = {
+    messageId: userMsgId,
+    conferenceId,
+    messageRole: "user",
+    speakerAgent: "user",
+    messageIntent,
+    targetAgent: resolvedTarget.target,
+    content: userMessage.trim(),
+    replyToMessageId: replyToMessageId || null,
+    conferenceMode: session.conferenceMode,
+    replyPattern,
+    createdAt: now,
+  };
+
+  session.messages.push(userMsgRecord);
+  session.messageCount += 1;
+  session.userMessageCount += 1;
+  session.lastSpeaker = "user";
+  session.lastActivity = now;
+
+  // Trim messages if over limit
+  if (session.messages.length > CONFERENCE_SESSION_MAX_MESSAGES) {
+    session.messages = session.messages.slice(-CONFERENCE_SESSION_MAX_MESSAGES);
+  }
+
+  // Generate replies based on reply pattern
+  const agentReplies = [];
+  const coordinatorMessages = [];
+
+  switch (replyPattern) {
+    case "solo_reply": {
+      const agent = resolvedTarget.target === "both" ? session.leadAgent : resolvedTarget.target;
+      const reply = _generateConferenceReply(agent, messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, agent, reply, userMsgId));
+      session.soloReplyCount += 1;
+      break;
+    }
+
+    case "supporting_reply": {
+      // Lead answers first, then support supplements
+      const leadReply = _generateConferenceReply(session.leadAgent, messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, session.leadAgent, leadReply, userMsgId));
+      
+      const supportReply = _generateSupportingReply(session.supportAgent, session.leadAgent, messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, session.supportAgent, supportReply, userMsgId));
+      
+      coordinatorMessages.push(_recordCoordinatorMessage(session, "supplement_added", { supportAgent: session.supportAgent }));
+      session.supportingReplyCount += 1;
+      break;
+    }
+
+    case "coordinated_reply": {
+      // Both agents contribute
+      const dsReply = _generateConferenceReply("deepseek", messageIntent, userMessage, session);
+      const gmReply = _generateConferenceReply("gemini", messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId));
+      agentReplies.push(_recordConferenceAgentReply(session, "gemini", gmReply, userMsgId));
+      session.coordinatedReplyCount += 1;
+      break;
+    }
+
+    case "bundled_reply": {
+      // Bundled answer combining both perspectives
+      const bundled = _generateBundledReply(messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, "system", bundled, userMsgId));
+      coordinatorMessages.push(_recordCoordinatorMessage(session, "reply_bundled", {}));
+      session.bundledReplyCount += 1;
+      break;
+    }
+
+    case "needs_user_clarification": {
+      // Clarification request instead of expanding
+      const clarReply = _generateClarificationReply(session, clarificationAssessment);
+      agentReplies.push(_recordConferenceAgentReply(session, "system", clarReply, userMsgId));
+      coordinatorMessages.push(_recordCoordinatorMessage(session, "clarification_needed", {}));
+      session.clarificationRequestCount += 1;
+      break;
+    }
+
+    case "cross_agent_followup": {
+      // One agent follows up on the other's point
+      const agent = resolvedTarget.target === "both" ? session.leadAgent : resolvedTarget.target;
+      const reply = _generateConferenceReply(agent, messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, agent, reply, userMsgId));
+      session.soloReplyCount += 1;
+      break;
+    }
+
+    case "phase_closed": {
+      coordinatorMessages.push(_recordCoordinatorMessage(session, "point_concluded", {}));
+      session.phasesClosedCount += 1;
+      break;
+    }
+
+    default: {
+      // Fallback to solo reply
+      const fallbackAgent = resolvedTarget.target === "both" ? session.leadAgent : (resolvedTarget.target || "deepseek");
+      const reply = _generateConferenceReply(fallbackAgent, messageIntent, userMessage, session);
+      agentReplies.push(_recordConferenceAgentReply(session, fallbackAgent, reply, userMsgId));
+      session.soloReplyCount += 1;
+    }
+  }
+
+  // Leadership change coordinator message
+  if (leadChanged) {
+    coordinatorMessages.push(_recordCoordinatorMessage(session, "leadership_changed", { newLead: newLead }));
+    session.leadershipChangeCount += 1;
+  } else if (replyPattern === "supporting_reply" || replyPattern === "coordinated_reply") {
+    coordinatorMessages.push(_recordCoordinatorMessage(session, "lead_assigned", { leadAgent: session.leadAgent }));
+  }
+
+  // Assess phase closure
+  const closureAssessment = _assessPhaseClosure(session);
+  if (closureAssessment.shouldClose && session.currentPhaseStatus !== "phase_concluded") {
+    session.currentPhaseStatus = "phase_concluded";
+    session.coordinationState = "phase_closed";
+    session.phasesClosedCount += 1;
+    session.phaseCount += 1;
+    
+    const digest = _buildPhaseDigest(session);
+    session.phases.push({
+      phaseNumber: session.phaseCount,
+      phaseStatus: "phase_concluded",
+      closureReason: closureAssessment.reason,
+      digest,
+      closedAt: now,
+    });
+    
+    coordinatorMessages.push(_recordCoordinatorMessage(session, "point_concluded", {}));
+    coordinatorMessages.push(_recordCoordinatorMessage(session, "phase_summary", {}));
+  }
+
+  // Update open points
+  session.openPoints = _deriveConferenceOpenPoints(session);
+
+  session.lastTargetAgent = resolvedTarget.target;
+  session.updatedAt = now;
+
+  logger.info("[agentBridge] Konferenz Step B – Koordinierte Nachricht verarbeitet", {
+    conferenceId,
+    replyPattern,
+    coordinationState: session.coordinationState,
+    leadAgent: session.leadAgent,
+    supportAgent: session.supportAgent,
+    phaseStatus: session.currentPhaseStatus,
+    agentReplyCount: agentReplies.length,
+    coordinatorMessageCount: coordinatorMessages.length,
+  });
+
+  return {
+    success: true,
+    conferenceId,
+    conferenceStatus: session.conferenceStatus,
+    conferenceMode: session.conferenceMode,
+    userMessage: userMsgRecord,
+    agentReplies,
+    coordinatorMessages,
+    coordination: {
+      replyPattern,
+      coordinationState: session.coordinationState,
+      leadAgent: session.leadAgent,
+      supportAgent: session.supportAgent,
+      phaseStatus: session.currentPhaseStatus,
+      openPointCount: session.openPoints.length,
+    },
+    routing: {
+      targetAgent: resolvedTarget.target,
+      routingReason: resolvedTarget.routingReason,
+    },
+    messageCount: session.messageCount,
+  };
+}
+
+/**
+ * Get a coordination summary across all conference sessions.
+ * Admin/operator-suitable – counts, distributions, highlights.
+ * @returns {Object}
+ */
+function getConferenceCoordinationSummary() {
+  const sessions = Array.from(_conferenceSessions.values());
+  const total = sessions.length;
+
+  const byCoordinationState = {};
+  const byReplyPattern = {};
+  const byPhaseStatus = {};
+  let totalCoordinatedReplies = 0;
+  let totalSoloReplies = 0;
+  let totalSupportingReplies = 0;
+  let totalBundledReplies = 0;
+  let totalClarificationRequests = 0;
+  let totalLeadershipChanges = 0;
+  let totalPhasesClosed = 0;
+  let sessionsWithOpenPoints = 0;
+
+  for (const s of sessions) {
+    byCoordinationState[s.coordinationState || "uncoordinated"] = (byCoordinationState[s.coordinationState || "uncoordinated"] || 0) + 1;
+    byReplyPattern[s.currentReplyPattern || "solo_reply"] = (byReplyPattern[s.currentReplyPattern || "solo_reply"] || 0) + 1;
+    byPhaseStatus[s.currentPhaseStatus || "phase_open"] = (byPhaseStatus[s.currentPhaseStatus || "phase_open"] || 0) + 1;
+    totalCoordinatedReplies += s.coordinatedReplyCount || 0;
+    totalSoloReplies += s.soloReplyCount || 0;
+    totalSupportingReplies += s.supportingReplyCount || 0;
+    totalBundledReplies += s.bundledReplyCount || 0;
+    totalClarificationRequests += s.clarificationRequestCount || 0;
+    totalLeadershipChanges += s.leadershipChangeCount || 0;
+    totalPhasesClosed += s.phasesClosedCount || 0;
+    if ((s.openPoints || []).length > 0) sessionsWithOpenPoints += 1;
+  }
+
+  return {
+    totalSessions: total,
+    byCoordinationState,
+    byReplyPattern,
+    byPhaseStatus,
+    replyStats: {
+      totalCoordinatedReplies,
+      totalSoloReplies,
+      totalSupportingReplies,
+      totalBundledReplies,
+      totalClarificationRequests,
+    },
+    coordinationStats: {
+      totalLeadershipChanges,
+      totalPhasesClosed,
+      sessionsWithOpenPoints,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Get the phase digest for a specific conference session.
+ * Human-readable Ergebnisverdichtung.
+ * @param {Object} params
+ * @returns {Object|null}
+ */
+function getConferencePhaseDigest({ conferenceId } = {}) {
+  if (!conferenceId) return null;
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+  return _buildPhaseDigest(session);
 }
 
 module.exports = {
@@ -15557,4 +16447,12 @@ module.exports = {
   VALID_CONFERENCE_SESSION_STATUSES,
   VALID_CONFERENCE_MODES,
   VALID_CONFERENCE_TARGET_AGENTS,
+  // Konferenz Step B: Coordination / Moderation / Coordinated Reply Flow
+  sendCoordinatedConferenceMessage,
+  getConferenceCoordinationSummary,
+  getConferencePhaseDigest,
+  VALID_CONFERENCE_REPLY_PATTERNS,
+  VALID_CONFERENCE_COORDINATION_STATES,
+  VALID_CONFERENCE_PHASE_STATUSES,
+  VALID_COORDINATOR_MESSAGE_TYPES,
 };

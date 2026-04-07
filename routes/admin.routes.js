@@ -4161,6 +4161,10 @@ const {
   getConferenceSummary,
   getConferenceWorkspace,
   getConferenceAdminSummary,
+  // Konferenz Step B: Coordination / Moderation / Coordinated Reply Flow
+  sendCoordinatedConferenceMessage,
+  getConferenceCoordinationSummary,
+  getConferencePhaseDigest,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -6385,6 +6389,150 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading conference admin summary",
+    });
+  }
+});
+
+/* =========================================================
+   Konferenz Step B: Coordination / Moderation / Coordinated Reply Flow
+   ========================================================= */
+
+/* =========================================================
+   POST /api/admin/deepseek/agent-bridge/conference-coordinated-message
+   Send a coordinated conference message with reply pattern support.
+
+   Request body:
+   {
+     "conferenceId":          "conf-1234",     // required
+     "userMessage":           "...",            // required
+     "targetAgent":           "both",           // optional
+     "replyToMessageId":      "cfm-...",        // optional
+     "requestedReplyPattern": "bundled_reply"   // optional – override
+   }
+
+   Response:
+   {
+     "success": true,
+     "conferenceId": "conf-1234",
+     "conferenceStatus": "session_active",
+     "conferenceMode": "problem_solving",
+     "userMessage": { ... },
+     "agentReplies": [ ... ],
+     "coordinatorMessages": [ ... ],
+     "coordination": {
+       "replyPattern": "supporting_reply",
+       "coordinationState": "support_active",
+       "leadAgent": "deepseek",
+       "supportAgent": "gemini",
+       "phaseStatus": "phase_open",
+       "openPointCount": 0
+     },
+     "routing": { ... },
+     "messageCount": 5
+   }
+========================================================= */
+router.post("/deepseek/agent-bridge/conference-coordinated-message", (req, res) => {
+  try {
+    const {
+      conferenceId,
+      userMessage,
+      targetAgent = null,
+      replyToMessageId = null,
+      requestedReplyPattern = null,
+    } = req.body || {};
+
+    const result = sendCoordinatedConferenceMessage({
+      conferenceId,
+      userMessage,
+      targetAgent,
+      replyToMessageId,
+      requestedReplyPattern,
+    });
+
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-coordinated-message error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error sending coordinated conference message",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conference-coordination-summary
+   Coordination analytics across all conference sessions.
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "coordinationSummary": {
+       "totalSessions": 5,
+       "byCoordinationState": { ... },
+       "byReplyPattern": { ... },
+       "byPhaseStatus": { ... },
+       "replyStats": { ... },
+       "coordinationStats": { ... }
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conference-coordination-summary", (_req, res) => {
+  try {
+    const coordinationSummary = getConferenceCoordinationSummary();
+    return res.json({ success: true, version: "v1", coordinationSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-coordination-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference coordination summary",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/conference-phase-digest/:conferenceId
+   Phase digest (Ergebnisverdichtung) for a specific conference session.
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "phaseDigest": {
+       "conferenceId": "conf-1234",
+       "phaseStatus": "recommendation_ready",
+       "understood": "...",
+       "direction": "...",
+       "differences": "...",
+       "decisionPending": false,
+       "openPoints": [...],
+       "nextStep": "...",
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/conference-phase-digest/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    const phaseDigest = getConferencePhaseDigest({ conferenceId });
+    if (!phaseDigest) {
+      return res.status(404).json({ success: false, error: "Conference session not found or no digest available" });
+    }
+    return res.json({ success: true, version: "v1", phaseDigest });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-phase-digest error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference phase digest",
     });
   }
 });
