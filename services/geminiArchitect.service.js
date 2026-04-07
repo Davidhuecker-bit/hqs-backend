@@ -1302,6 +1302,42 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Step 24: Inject decision frame context when available ──
+  if (bridgeContext && bridgeContext.decisionFrameContext) {
+    const dc = bridgeContext.decisionFrameContext;
+    const dcParts = [];
+    if (dc.decisionFrameStatus && dc.decisionFrameStatus !== "options_not_ready") {
+      dcParts.push(`Entscheidungsrahmen: ${dc.decisionFrameStatus}`);
+    }
+    if (dc.optionCount > 0) {
+      dcParts.push(`Optionen: ${dc.optionCount}`);
+    }
+    if (dc.preferredStrategy) {
+      dcParts.push(`Bevorzugte Strategie: ${dc.preferredStrategy}`);
+    }
+    if (dc.decisionTradeoff) {
+      dcParts.push(`Tradeoff: ${dc.decisionTradeoff}`);
+    }
+    if (dc.nextDecisionQuestion) {
+      dcParts.push(`Nächste Entscheidungsfrage: ${dc.nextDecisionQuestion}`);
+    }
+    if (dc.primaryDecisionAgent) {
+      dcParts.push(`Primärer Entscheidungsagent: ${dc.primaryDecisionAgent}`);
+    }
+    if (dc.crossAgentDecisionNeeded) {
+      dcParts.push("Cross-Agent-Entscheidung erforderlich");
+    }
+    if (dcParts.length) {
+      sections.push(`Entscheidungsraum (Step 24 – strukturierte Optionen/Vergleich, keine autonome Entscheidung):\n${dcParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Step 24 – Entscheidungsrahmen-Kontext eingebunden", {
+        decisionFrameStatus: dc.decisionFrameStatus,
+        optionCount: dc.optionCount,
+        preferredStrategy: dc.preferredStrategy,
+        userDecisionNeeded: dc.userDecisionNeeded,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

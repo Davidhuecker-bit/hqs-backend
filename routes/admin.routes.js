@@ -4149,6 +4149,9 @@ const {
   // Step 23: Conversation Memory / Case Continuity / Agent Memory Anchors
   getCaseMemory,
   getCaseMemorySummary,
+  // Step 24: Action Negotiation / Option Comparison / Decision Framing
+  getDecisionFrame,
+  getDecisionFrameSummary,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -5918,6 +5921,94 @@ router.get("/deepseek/agent-bridge/case-memory-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading case memory summary",
+    });
+  }
+});
+
+/* =========================================================
+   Step 24: Action Negotiation / Option Comparison / Decision Framing
+   Endpoints:
+     GET  /api/admin/deepseek/agent-bridge/decision-frame/:agentCaseId
+     GET  /api/admin/deepseek/agent-bridge/decision-frame-summary
+   ========================================================= */
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/decision-frame/:agentCaseId
+
+   Retrieves the decision frame (action options, comparison,
+   recommendation, tradeoff) for a specific case thread.
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "decisionFrame": {
+       "threadId": "case-abc",
+       "decisionFrameStatus": "options_stable",
+       "optionCount": 3,
+       "actionOptions": [...],
+       "recommendedOptionId": "opt-case-abc-2",
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/decision-frame/:agentCaseId", (req, res) => {
+  try {
+    const { agentCaseId } = req.params;
+    if (!agentCaseId) {
+      return res.status(400).json({ success: false, error: "agentCaseId parameter required" });
+    }
+
+    const result = getDecisionFrame({ agentCaseId });
+    if (!result) {
+      return res.status(404).json({ success: false, error: "No decision frame found for this case" });
+    }
+
+    return res.json({ success: true, version: "v1", decisionFrame: result });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/decision-frame error", {
+      message: error.message,
+      stack: error.stack,
+      agentCaseId: req.params.agentCaseId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading decision frame",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent-bridge/decision-frame-summary
+
+   Returns analytics across all threads with decision frames:
+   how many have stable options, recommendations, tradeoffs,
+   user decisions needed, cross-agent decisions, etc.
+
+   Response:
+   {
+     "success": true,
+     "version": "v1",
+     "decisionFrameSummary": {
+       "totalThreads": 10,
+       "totalWithOptions": 7,
+       "totalWithRecommendation": 5,
+       ...
+     }
+   }
+========================================================= */
+router.get("/deepseek/agent-bridge/decision-frame-summary", (_req, res) => {
+  try {
+    const decisionFrameSummary = getDecisionFrameSummary();
+    return res.json({ success: true, version: "v1", decisionFrameSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/decision-frame-summary error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading decision frame summary",
     });
   }
 });
