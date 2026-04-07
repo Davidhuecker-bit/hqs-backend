@@ -1558,6 +1558,74 @@ const CONFERENCE_CONVERGENCE_KEYWORDS = ["einverstanden", "klar", "abgeschlossen
 const CONFERENCE_TOPIC_SPLITTERS = ["und auch", "außerdem", "zusätzlich", "und dann noch", "plus"];
 
 /* ─────────────────────────────────────────────
+   Konferenz Step C: Conference Phases / Decision Room / Result Cards / Strategic Expansion
+   ───────────────────────────────────────────── */
+
+/** Work phases – structured lifecycle stages of a conference session */
+const VALID_CONFERENCE_WORK_PHASES = [
+  "intake",               // Topic and participants established
+  "problem_clarification",// Problem or question being scoped/clarified
+  "analysis",             // Deeper analysis of causes or dimensions
+  "option_room",          // Options/alternatives actively being evaluated
+  "tradeoff",             // Active tradeoff discussion, no clear winner yet
+  "decision_preparation", // Direction converging, decision being prepared
+  "result_transition",    // Result ready, preparing for handoff or next step
+];
+
+/** Decision room states – what is happening in the decision space */
+const VALID_CONFERENCE_DECISION_ROOM_STATES = [
+  "not_active",             // No decision room open
+  "options_collected",      // Options gathered, not yet compared
+  "options_compared",       // Options compared across dimensions
+  "direction_emerging",     // One direction becoming preferred
+  "direction_split",        // Agents disagree – split recommendation
+  "tradeoff_open",          // Tradeoff explicitly unresolved
+  "decision_ready",         // Decision crystallised, ready for user
+];
+
+/** Consensus states – where agreement / disagreement stands */
+const VALID_CONFERENCE_CONSENSUS_STATES = [
+  "neutral",              // No clear consensus or dissent signal yet
+  "converging",           // Moving toward agreement
+  "consensus_reached",    // Both agents and/or user agree on direction
+  "partial_consensus",    // Agreement on some points, open on others
+  "dissent_active",       // Clear disagreement between agents/perspectives
+  "clarification_needed", // Consensus blocked by unresolved question
+];
+
+/** Controlled handoff directions – where the conference result could go next */
+const VALID_CONFERENCE_HANDOFF_DIRECTIONS = [
+  "continue_session",         // More work needed in this session
+  "further_clarification",    // Clarification required before proceeding
+  "prepare_draft",            // Start preparing a draft/proposal
+  "prepare_candidate",        // Elevate to candidate / approval preparation
+  "further_review",           // Send for broader review
+  "pause_session",            // Pause for now, resume later
+  "close_session",            // Session complete, no further step needed
+];
+
+/** Moderation signals – working hints from the moderator about session flow */
+const VALID_CONFERENCE_MODERATION_SIGNALS = [
+  "phase_stable",              // Current phase is still active and productive
+  "ready_for_phase_advance",   // Enough material to move to the next phase
+  "consensus_possible",        // Signals suggest convergence is achievable
+  "dissent_requires_attention",// Disagreement needs to be addressed
+  "clarification_blocking",    // A question is blocking progress
+  "result_ready",              // A result or result card can be generated
+  "handoff_ready",             // Session ready for controlled handoff
+  "session_closing",           // Natural closing point reached
+];
+
+/** Keywords that signal entry into option evaluation / tradeoff territory */
+const CONFERENCE_OPTION_KEYWORDS = ["option", "variante", "alternative", "möglichkeit", "entweder", "oder", "vergleich", "abwägung", "vor- und nachteile", "tradeoff"];
+
+/** Keywords that signal a decision is being prepared */
+const CONFERENCE_DECISION_KEYWORDS = ["entscheidung", "entscheiden", "beschluss", "festlegen", "wählen", "empfehle", "würde empfehlen", "bevorzuge", "beste wahl", "gehe mit"];
+
+/** Keywords indicating a result/conclusion is forming */
+const CONFERENCE_RESULT_KEYWORDS = ["ergebnis", "fazit", "zusammenfassung", "abschluss", "outcome", "ergibt sich", "im ergebnis", "abschließend", "final"];
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -14845,6 +14913,30 @@ function openConferenceSession({
     phaseDigest: null,
     modeHistory: [{ mode, changedAt: now }],
     statusHistory: [{ status: "session_active", changedAt: now }],
+    // Konferenz Step C: Work phases, decision room, result cards, history
+    workPhase: "intake",
+    workPhaseHistory: [{ phase: "intake", enteredAt: now }],
+    decisionRoomActive: false,
+    decisionRoomState: "not_active",
+    optionRoomOptions: [],
+    recommendedDirection: null,
+    conservativeAlternative: null,
+    broadAlternative: null,
+    openTradeoff: null,
+    nextDecisionNeed: null,
+    consensusState: "neutral",
+    resultCards: [],
+    currentResultCard: null,
+    handoffDirection: "continue_session",
+    handoffDirectionReason: null,
+    moderationSignal: "phase_stable",
+    discardedDirections: [],
+    lastKnownDecision: null,
+    previousPhaseResult: null,
+    perspectiveComparison: null,
+    phaseTransitionCount: 0,
+    resultCardCount: 0,
+    decisionRoomActivationCount: 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -14968,6 +15060,9 @@ function sendConferenceMessage({
   session.lastTargetAgent = resolvedTarget.target;
   session.updatedAt = now;
 
+  // Konferenz Step C: update phases, decision room, result cards
+  _updateConferenceStepC(session);
+
   return {
     success: true,
     conferenceId,
@@ -14980,6 +15075,10 @@ function sendConferenceMessage({
       routingReason: resolvedTarget.routingReason,
     },
     messageCount: session.messageCount,
+    // Konferenz Step C: expose current phase and moderation signal
+    workPhase: session.workPhase,
+    moderationSignal: session.moderationSignal,
+    handoffDirection: session.handoffDirection,
   };
 }
 
@@ -15500,6 +15599,17 @@ function _formatConferenceSession(session) {
     leadershipChangeCount: session.leadershipChangeCount || 0,
     phasesClosedCount: session.phasesClosedCount || 0,
     openPointCount: (session.openPoints || []).length,
+    // Konferenz Step C: Work phases, decision room, result cards
+    workPhase: session.workPhase || "intake",
+    decisionRoomActive: session.decisionRoomActive || false,
+    decisionRoomState: session.decisionRoomState || "not_active",
+    consensusState: session.consensusState || "neutral",
+    handoffDirection: session.handoffDirection || "continue_session",
+    moderationSignal: session.moderationSignal || "phase_stable",
+    resultCardCount: session.resultCardCount || 0,
+    phaseTransitionCount: session.phaseTransitionCount || 0,
+    decisionRoomActivationCount: session.decisionRoomActivationCount || 0,
+    currentResultCard: session.currentResultCard || null,
   };
 }
 
@@ -15519,6 +15629,700 @@ function _formatDuration(startIso, endIso) {
   } catch {
     return "—";
   }
+}
+
+/* ─────────────────────────────────────────────
+   Konferenz Step C: Conference Phases / Decision Room / Result Cards / Strategic Expansion
+   ───────────────────────────────────────────── */
+
+/**
+ * Derive the current work phase of a conference session based on message
+ * content, phase status, and session dynamics.
+ * @param {Object} session
+ * @returns {string} one of VALID_CONFERENCE_WORK_PHASES
+ * @private
+ */
+function _deriveConferenceWorkPhase(session) {
+  const msgCount = session.messageCount || 0;
+  const phaseStatus = session.currentPhaseStatus || "phase_open";
+  const mode = session.conferenceMode || "work_chat";
+
+  // Check recent messages for content signals
+  const recentMessages = (session.messages || []).slice(-8);
+  const recentText = recentMessages.map((m) => (m.content || "").toLowerCase()).join(" ");
+
+  // Result/conclusion signals → result_transition
+  if (CONFERENCE_RESULT_KEYWORDS.some((kw) => recentText.includes(kw))) {
+    if (phaseStatus === "phase_concluded" || phaseStatus === "recommendation_ready") {
+      return "result_transition";
+    }
+  }
+
+  // Decision keywords + decision mode → decision_preparation
+  if (CONFERENCE_DECISION_KEYWORDS.some((kw) => recentText.includes(kw)) ||
+      phaseStatus === "decision_pending" || phaseStatus === "recommendation_ready") {
+    if (mode === "decision_mode" || msgCount > 6) {
+      return "decision_preparation";
+    }
+  }
+
+  // Option/tradeoff keywords → option_room or tradeoff
+  if (CONFERENCE_OPTION_KEYWORDS.some((kw) => recentText.includes(kw))) {
+    const tradeoffWords = ["abwägung", "tradeoff", "vor- und nachteile", "nachteil", "kompromiss"];
+    if (tradeoffWords.some((kw) => recentText.includes(kw))) {
+      return "tradeoff";
+    }
+    return "option_room";
+  }
+
+  // Cause identified / analysis in progress → analysis
+  if (phaseStatus === "cause_identified" || (phaseStatus === "problem_scoped" && msgCount > 4)) {
+    return "analysis";
+  }
+
+  // Problem scoped / clarification open → problem_clarification
+  if (phaseStatus === "problem_scoped" || phaseStatus === "clarification_open" || msgCount > 2) {
+    return "problem_clarification";
+  }
+
+  // Default: intake for fresh sessions
+  return "intake";
+}
+
+/**
+ * Derive the decision room state for the current conference session.
+ * Activated when the session moves into option_room, tradeoff, or decision_preparation.
+ * @param {Object} session
+ * @returns {string} one of VALID_CONFERENCE_DECISION_ROOM_STATES
+ * @private
+ */
+function _deriveDecisionRoomState(session) {
+  const workPhase = session.workPhase || "intake";
+
+  if (workPhase === "intake" || workPhase === "problem_clarification" || workPhase === "analysis") {
+    return "not_active";
+  }
+
+  const options = session.optionRoomOptions || [];
+  const optionCount = options.length;
+
+  // result_transition → decision ready
+  if (workPhase === "result_transition") {
+    return "decision_ready";
+  }
+
+  // decision_preparation
+  if (workPhase === "decision_preparation") {
+    const hasConsensus = session.consensusState === "consensus_reached" || session.consensusState === "converging";
+    if (hasConsensus) return "direction_emerging";
+    if (optionCount >= 2) return "options_compared";
+    return "options_collected";
+  }
+
+  // tradeoff
+  if (workPhase === "tradeoff") {
+    return "tradeoff_open";
+  }
+
+  // option_room
+  if (workPhase === "option_room") {
+    if (optionCount >= 2) return "options_compared";
+    if (optionCount === 1) return "options_collected";
+    return "options_collected";
+  }
+
+  return "not_active";
+}
+
+/**
+ * Derive the consensus state from recent messages and agent reply patterns.
+ * @param {Object} session
+ * @returns {string} one of VALID_CONFERENCE_CONSENSUS_STATES
+ * @private
+ */
+function _deriveConsensusState(session) {
+  const recentMessages = (session.messages || []).slice(-10);
+  const recentText = recentMessages.map((m) => (m.content || "").toLowerCase()).join(" ");
+
+  const clarificationSignals = CONFERENCE_CLARIFICATION_SIGNALS;
+  const convergenceSignals = CONFERENCE_CONVERGENCE_KEYWORDS;
+
+  // Clarification blocking
+  if (session.currentPhaseStatus === "clarification_open" ||
+      clarificationSignals.some((kw) => recentText.includes(kw))) {
+    return "clarification_needed";
+  }
+
+  // Phase concluded → likely consensus reached
+  if (session.currentPhaseStatus === "phase_concluded") {
+    return "consensus_reached";
+  }
+
+  // Recommendation ready → converging
+  if (session.currentPhaseStatus === "recommendation_ready") {
+    return "converging";
+  }
+
+  // Convergence keywords
+  if (convergenceSignals.some((kw) => recentText.includes(kw))) {
+    const dsReplies = recentMessages.filter((m) => m.speakerAgent === "deepseek");
+    const gmReplies = recentMessages.filter((m) => m.speakerAgent === "gemini");
+    if (dsReplies.length > 0 && gmReplies.length > 0) return "consensus_reached";
+    return "converging";
+  }
+
+  // Dissent: tradeoff active and no convergence
+  if (session.workPhase === "tradeoff") {
+    return "dissent_active";
+  }
+
+  // Multiple open points suggest partial consensus
+  if ((session.openPoints || []).length >= 2) {
+    return "partial_consensus";
+  }
+
+  return "neutral";
+}
+
+/**
+ * Derive the recommended handoff direction for a conference session.
+ * Does NOT trigger any automatic action – purely informational recommendation.
+ * @param {Object} session
+ * @returns {{ direction: string, reason: string }}
+ * @private
+ */
+function _deriveHandoffDirection(session) {
+  const workPhase = session.workPhase || "intake";
+  const consensusState = session.consensusState || "neutral";
+  const phaseStatus = session.currentPhaseStatus || "phase_open";
+
+  if (phaseStatus === "phase_concluded" || workPhase === "result_transition") {
+    if (consensusState === "consensus_reached" || consensusState === "converging") {
+      return { direction: "prepare_candidate", reason: "Ergebnis konvergiert – Kandidat oder Genehmigungsschritt vorbereiten." };
+    }
+    return { direction: "prepare_draft", reason: "Phase abgeschlossen – Entwurf als nächsten Schritt vorbereiten." };
+  }
+
+  if (workPhase === "decision_preparation") {
+    return { direction: "prepare_candidate", reason: "Entscheidungsvorbereitung läuft – Kandidatenschritt einleiten." };
+  }
+
+  if (consensusState === "clarification_needed") {
+    return { direction: "further_clarification", reason: "Offene Klärung blockiert den Fortschritt – zuerst klären." };
+  }
+
+  if (consensusState === "dissent_active" || workPhase === "tradeoff") {
+    return { direction: "further_review", reason: "Offener Zielkonflikt – weitere Prüfung oder Moderation nötig." };
+  }
+
+  if (session.conferenceStatus === "session_paused") {
+    return { direction: "pause_session", reason: "Session pausiert – kann wiederaufgenommen werden." };
+  }
+
+  if (session.conferenceStatus === "session_closed") {
+    return { direction: "close_session", reason: "Session abgeschlossen." };
+  }
+
+  return { direction: "continue_session", reason: "Session läuft – weitere Arbeit in dieser Sitzung." };
+}
+
+/**
+ * Derive the moderation signal – a quiet workflow hint for the operator/frontend.
+ * @param {Object} session
+ * @returns {string} one of VALID_CONFERENCE_MODERATION_SIGNALS
+ * @private
+ */
+function _deriveModerationSignal(session) {
+  const workPhase = session.workPhase || "intake";
+  const consensusState = session.consensusState || "neutral";
+  const phaseStatus = session.currentPhaseStatus || "phase_open";
+  const msgCount = session.messageCount || 0;
+
+  if (phaseStatus === "phase_concluded" || workPhase === "result_transition") {
+    if (session.handoffDirection === "close_session") return "session_closing";
+    return "result_ready";
+  }
+
+  if (session.handoffDirection === "prepare_candidate" || session.handoffDirection === "prepare_draft") {
+    return "handoff_ready";
+  }
+
+  if (consensusState === "clarification_needed") {
+    return "clarification_blocking";
+  }
+
+  if (consensusState === "dissent_active") {
+    return "dissent_requires_attention";
+  }
+
+  if (consensusState === "consensus_reached" || consensusState === "converging") {
+    return "consensus_possible";
+  }
+
+  // Enough material to advance phase
+  if (msgCount >= 4 && (workPhase === "intake" || workPhase === "problem_clarification")) {
+    return "ready_for_phase_advance";
+  }
+
+  return "phase_stable";
+}
+
+/**
+ * Build a structured result card for the current phase of the conference.
+ * This is the per-phase result object: what was understood, where consensus stands,
+ * remaining differences, open points, next step, handoff need.
+ * @param {Object} session
+ * @returns {Object} result card
+ * @private
+ */
+function _buildConferenceResultCard(session) {
+  const workPhase = session.workPhase || "intake";
+  const consensusState = session.consensusState || "neutral";
+  const openPoints = (session.openPoints || []).map((p) => p.label || p);
+
+  // What was understood in this phase
+  const phaseUnderstood = {
+    intake: "Thema und Kontext wurden aufgenommen.",
+    problem_clarification: "Das Problem wurde eingegrenzt und präzisiert.",
+    analysis: "Ursachen und Dimensionen wurden analysiert.",
+    option_room: "Optionen und Alternativen wurden gesammelt und verglichen.",
+    tradeoff: "Zielkonflikte wurden identifiziert und diskutiert.",
+    decision_preparation: "Eine Entscheidungsrichtung wurde vorbereitet.",
+    result_transition: "Ein verwertbares Ergebnis liegt vor – bereit für den nächsten Schritt.",
+  }[workPhase] || "Phase läuft.";
+
+  // Where is it heading
+  const directionLabel = {
+    neutral: "Noch keine klare Richtung.",
+    converging: "Richtung konvergiert.",
+    consensus_reached: "Einigkeit erreicht.",
+    partial_consensus: "Teilweise Einigkeit – einige Punkte noch offen.",
+    dissent_active: "Offener Zielkonflikt – keine einheitliche Richtung.",
+    clarification_needed: "Klärungsbedarf – Richtung noch nicht bestimmbar.",
+  }[consensusState] || "Richtung unklar.";
+
+  // Remaining differences (simple derivation from agent perspective signals)
+  const dsMessages = (session.messages || []).filter((m) => m.speakerAgent === "deepseek").slice(-3);
+  const gmMessages = (session.messages || []).filter((m) => m.speakerAgent === "gemini").slice(-3);
+  let remainingDifferences = "Keine erkennbaren Unterschiede.";
+  if (consensusState === "dissent_active" || consensusState === "partial_consensus") {
+    if (dsMessages.length > 0 && gmMessages.length > 0) {
+      remainingDifferences = "Backend- und Frontend-Perspektiven haben unterschiedliche Schwerpunkte gesetzt.";
+    } else {
+      remainingDifferences = "Offene Punkte wurden noch nicht vollständig abgeglichen.";
+    }
+  }
+
+  // Next controlled step
+  const handoffResult = session.handoffDirection
+    ? { direction: session.handoffDirection, reason: session.handoffDirectionReason || "" }
+    : _deriveHandoffDirection(session);
+
+  const nextStepLabel = {
+    continue_session: "Weitere Arbeit in dieser Sitzung.",
+    further_clarification: "Offene Klärung zuerst beantworten.",
+    prepare_draft: "Entwurf vorbereiten.",
+    prepare_candidate: "Kandidaten- oder Genehmigungsschritt einleiten.",
+    further_review: "Weitere Prüfung oder Moderation einschalten.",
+    pause_session: "Session pausieren und zu gegebenem Zeitpunkt fortsetzen.",
+    close_session: "Konferenz abschließen.",
+  }[handoffResult.direction] || "Weiter in der Konferenz.";
+
+  const handoffNeeded = !["continue_session", "pause_session"].includes(handoffResult.direction);
+
+  const cardId = `rc-${session.conferenceId}-${Date.now()}`;
+  const now = new Date().toISOString();
+
+  return {
+    resultCardId: cardId,
+    conferenceId: session.conferenceId,
+    workPhase,
+    phaseStatus: session.currentPhaseStatus || "phase_open",
+    generatedAt: now,
+    // Core result fields
+    understood: phaseUnderstood,
+    direction: directionLabel,
+    consensusState,
+    remainingDifferences,
+    openPoints,
+    openPointCount: openPoints.length,
+    nextStep: nextStepLabel,
+    handoffNeeded,
+    handoffDirection: handoffResult.direction,
+    handoffDirectionReason: handoffResult.reason,
+    // Recommended and alternative directions (light decision framing)
+    recommendedDirection: session.recommendedDirection || null,
+    conservativeAlternative: session.conservativeAlternative || null,
+    broadAlternative: session.broadAlternative || null,
+    openTradeoff: session.openTradeoff || null,
+  };
+}
+
+/**
+ * Build a lightweight perspective comparison between DeepSeek and Gemini perspectives.
+ * Not a model battle – just a structured view of where they agree and differ.
+ * @param {Object} session
+ * @returns {Object|null}
+ * @private
+ */
+function _buildPerspectiveComparison(session) {
+  const dsMessages = (session.messages || []).filter((m) => m.speakerAgent === "deepseek");
+  const gmMessages = (session.messages || []).filter((m) => m.speakerAgent === "gemini");
+
+  if (dsMessages.length === 0 || gmMessages.length === 0) return null;
+
+  const dsLast = dsMessages[dsMessages.length - 1];
+  const gmLast = gmMessages[gmMessages.length - 1];
+
+  const dsFocus = session.conferenceFocus
+    ? `Backend-/API-Perspektive zu: ${session.conferenceFocus}`
+    : "Backend-/API-Perspektive";
+  const gmFocus = session.conferenceFocus
+    ? `Frontend-/UX-Perspektive zu: ${session.conferenceFocus}`
+    : "Frontend-/UX-Perspektive";
+
+  // Determine common ground and dissent
+  const consensusState = session.consensusState || "neutral";
+  let commonLine = "Beide Agenten haben zum Thema beigetragen.";
+  let dissent = "Kein offensichtlicher Dissens.";
+
+  if (consensusState === "consensus_reached") {
+    commonLine = "Beide Agenten konvergieren auf eine gemeinsame Richtung.";
+    dissent = "Kein offener Dissens.";
+  } else if (consensusState === "partial_consensus") {
+    commonLine = "Grundlegendes Verständnis geteilt.";
+    dissent = "Einige Punkte werden noch unterschiedlich bewertet.";
+  } else if (consensusState === "dissent_active") {
+    commonLine = "Thema ist von beiden Perspektiven aufgenommen worden.";
+    dissent = "Unterschiedliche Schwerpunkte: Backend-Logik vs. Frontend-/UX-Anforderungen.";
+  }
+
+  return {
+    conferenceId: session.conferenceId,
+    workPhase: session.workPhase || "intake",
+    generatedAt: new Date().toISOString(),
+    deepseekView: {
+      agent: "deepseek",
+      perspective: dsFocus,
+      messageCount: dsMessages.length,
+      lastContribution: (dsLast.content || "").substring(0, 150),
+    },
+    geminiView: {
+      agent: "gemini",
+      perspective: gmFocus,
+      messageCount: gmMessages.length,
+      lastContribution: (gmLast.content || "").substring(0, 150),
+    },
+    commonLine,
+    dissent,
+    consensusState,
+  };
+}
+
+/**
+ * Advance a conference session's work phase, recording the transition.
+ * Validates that the requested phase is valid and not a step backward.
+ * @param {Object} session
+ * @param {string} targetPhase
+ * @returns {{ advanced: boolean, from: string, to: string, reason: string }}
+ * @private
+ */
+function _advanceConferenceWorkPhase(session, targetPhase) {
+  const currentPhase = session.workPhase || "intake";
+  const phaseOrder = VALID_CONFERENCE_WORK_PHASES;
+  const currentIdx = phaseOrder.indexOf(currentPhase);
+  const targetIdx = phaseOrder.indexOf(targetPhase);
+
+  if (targetIdx < 0) {
+    return { advanced: false, from: currentPhase, to: currentPhase, reason: "Ungültige Zielphase." };
+  }
+  if (targetIdx <= currentIdx) {
+    return { advanced: false, from: currentPhase, to: currentPhase, reason: "Zielphase ist gleich oder früher als aktuelle Phase." };
+  }
+
+  const previousPhase = currentPhase;
+  session.previousPhaseResult = session.currentResultCard;
+  session.workPhase = targetPhase;
+  const now = new Date().toISOString();
+  session.workPhaseHistory.push({ phase: targetPhase, enteredAt: now, previousPhase });
+  session.phaseTransitionCount = (session.phaseTransitionCount || 0) + 1;
+  session.updatedAt = now;
+
+  logger.info("[agentBridge] Konferenz Step C – Phasenwechsel", {
+    conferenceId: session.conferenceId,
+    from: previousPhase,
+    to: targetPhase,
+    phaseTransitionCount: session.phaseTransitionCount,
+  });
+
+  return { advanced: true, from: previousPhase, to: targetPhase, reason: `Phase gewechselt von ${previousPhase} zu ${targetPhase}.` };
+}
+
+/**
+ * Update all Step C fields on a conference session after an interaction.
+ * Called at the end of sendConferenceMessage and sendCoordinatedConferenceMessage.
+ * @param {Object} session
+ * @private
+ */
+function _updateConferenceStepC(session) {
+  const prevWorkPhase = session.workPhase;
+  const prevDecisionRoomActive = session.decisionRoomActive;
+
+  // Derive new work phase
+  const newWorkPhase = _deriveConferenceWorkPhase(session);
+  if (newWorkPhase !== prevWorkPhase) {
+    _advanceConferenceWorkPhase(session, newWorkPhase);
+  }
+
+  // Derive consensus state
+  session.consensusState = _deriveConsensusState(session);
+
+  // Derive decision room state
+  const newDRState = _deriveDecisionRoomState(session);
+  const wasInactive = prevDecisionRoomActive === false;
+  const nowActive = newDRState !== "not_active";
+
+  if (wasInactive && nowActive) {
+    session.decisionRoomActivationCount = (session.decisionRoomActivationCount || 0) + 1;
+    logger.info("[agentBridge] Konferenz Step C – Decision Room aktiviert", {
+      conferenceId: session.conferenceId,
+      workPhase: session.workPhase,
+      decisionRoomState: newDRState,
+      activationCount: session.decisionRoomActivationCount,
+    });
+  }
+  session.decisionRoomActive = nowActive;
+  session.decisionRoomState = newDRState;
+
+  // Derive handoff direction
+  const handoffResult = _deriveHandoffDirection(session);
+  session.handoffDirection = handoffResult.direction;
+  session.handoffDirectionReason = handoffResult.reason;
+
+  // Derive moderation signal
+  session.moderationSignal = _deriveModerationSignal(session);
+
+  // Update perspective comparison if both agents have contributed
+  const dsCount = session.deepseekMessageCount || 0;
+  const gmCount = session.geminiMessageCount || 0;
+  if (dsCount > 0 && gmCount > 0) {
+    session.perspectiveComparison = _buildPerspectiveComparison(session);
+  }
+
+  // Build result card when result_ready or result_transition
+  if (session.moderationSignal === "result_ready" || session.workPhase === "result_transition") {
+    const card = _buildConferenceResultCard(session);
+    session.currentResultCard = card;
+    session.resultCards.push(card);
+    session.resultCardCount = (session.resultCardCount || 0) + 1;
+    logger.info("[agentBridge] Konferenz Step C – Result Card erzeugt", {
+      conferenceId: session.conferenceId,
+      workPhase: session.workPhase,
+      resultCardId: card.resultCardId,
+      resultCardCount: session.resultCardCount,
+    });
+  }
+
+  // Log consensus/dissent changes
+  if (session.consensusState === "consensus_reached") {
+    logger.info("[agentBridge] Konferenz Step C – Einigkeit erreicht", {
+      conferenceId: session.conferenceId,
+      workPhase: session.workPhase,
+    });
+  } else if (session.consensusState === "dissent_active") {
+    logger.info("[agentBridge] Konferenz Step C – Offener Dissens", {
+      conferenceId: session.conferenceId,
+      workPhase: session.workPhase,
+    });
+  }
+
+  // Log handoff readiness
+  if (session.moderationSignal === "handoff_ready") {
+    logger.info("[agentBridge] Konferenz Step C – Übergaberichtung bereit", {
+      conferenceId: session.conferenceId,
+      handoffDirection: session.handoffDirection,
+      handoffDirectionReason: session.handoffDirectionReason,
+    });
+  }
+}
+
+/* ─────────────────────────────────────────────
+   Konferenz Step C: Public functions
+   ───────────────────────────────────────────── */
+
+/**
+ * Get the current result card for a specific conference session.
+ * @param {Object} params
+ * @param {string} params.conferenceId
+ * @returns {Object|null}
+ */
+function getConferenceResultCard({ conferenceId } = {}) {
+  if (!conferenceId) return null;
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+  // Build a fresh card (always current)
+  return _buildConferenceResultCard(session);
+}
+
+/**
+ * Get the decision room state for a specific conference session.
+ * Includes: active options, recommended direction, conservative/broad alternatives,
+ * open tradeoff, consensus state, next decision need.
+ * @param {Object} params
+ * @param {string} params.conferenceId
+ * @returns {Object|null}
+ */
+function getConferenceDecisionRoom({ conferenceId } = {}) {
+  if (!conferenceId) return null;
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+
+  return {
+    conferenceId: session.conferenceId,
+    workPhase: session.workPhase || "intake",
+    decisionRoomActive: session.decisionRoomActive || false,
+    decisionRoomState: session.decisionRoomState || "not_active",
+    optionRoomOptions: session.optionRoomOptions || [],
+    optionCount: (session.optionRoomOptions || []).length,
+    recommendedDirection: session.recommendedDirection || null,
+    conservativeAlternative: session.conservativeAlternative || null,
+    broadAlternative: session.broadAlternative || null,
+    openTradeoff: session.openTradeoff || null,
+    nextDecisionNeed: session.nextDecisionNeed || null,
+    consensusState: session.consensusState || "neutral",
+    handoffDirection: session.handoffDirection || "continue_session",
+    handoffDirectionReason: session.handoffDirectionReason || null,
+    moderationSignal: session.moderationSignal || "phase_stable",
+    discardedDirections: session.discardedDirections || [],
+    lastKnownDecision: session.lastKnownDecision || null,
+    decisionRoomActivationCount: session.decisionRoomActivationCount || 0,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Get the lightweight perspective comparison for a specific conference session.
+ * @param {Object} params
+ * @param {string} params.conferenceId
+ * @returns {Object|null}
+ */
+function getConferencePerspectiveComparison({ conferenceId } = {}) {
+  if (!conferenceId) return null;
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+  return _buildPerspectiveComparison(session);
+}
+
+/**
+ * Admin summary across all conference sessions – Step C extension.
+ * Adds phase distribution, decision room stats, consensus/dissent, handoff stats.
+ * @returns {Object}
+ */
+function getConferenceStepCSummary() {
+  const sessions = Array.from(_conferenceSessions.values());
+  const total = sessions.length;
+
+  const byWorkPhase = {};
+  const byDecisionRoomState = {};
+  const byConsensusState = {};
+  const byHandoffDirection = {};
+  const byModerationSignal = {};
+
+  let totalDecisionRoomActive = 0;
+  let totalWithConsensus = 0;
+  let totalWithDissent = 0;
+  let totalWithHandoffReady = 0;
+  let totalWithResultCard = 0;
+  let totalWithOpenClarification = 0;
+  let totalPhaseTransitions = 0;
+  let totalResultCards = 0;
+  let totalDecisionRoomActivations = 0;
+
+  for (const s of sessions) {
+    const wp = s.workPhase || "intake";
+    byWorkPhase[wp] = (byWorkPhase[wp] || 0) + 1;
+
+    const drs = s.decisionRoomState || "not_active";
+    byDecisionRoomState[drs] = (byDecisionRoomState[drs] || 0) + 1;
+
+    const cs = s.consensusState || "neutral";
+    byConsensusState[cs] = (byConsensusState[cs] || 0) + 1;
+
+    const hd = s.handoffDirection || "continue_session";
+    byHandoffDirection[hd] = (byHandoffDirection[hd] || 0) + 1;
+
+    const ms = s.moderationSignal || "phase_stable";
+    byModerationSignal[ms] = (byModerationSignal[ms] || 0) + 1;
+
+    if (s.decisionRoomActive) totalDecisionRoomActive += 1;
+    if (cs === "consensus_reached" || cs === "converging") totalWithConsensus += 1;
+    if (cs === "dissent_active") totalWithDissent += 1;
+    if (ms === "handoff_ready") totalWithHandoffReady += 1;
+    if ((s.resultCards || []).length > 0) totalWithResultCard += 1;
+    if (cs === "clarification_needed") totalWithOpenClarification += 1;
+    totalPhaseTransitions += s.phaseTransitionCount || 0;
+    totalResultCards += s.resultCardCount || 0;
+    totalDecisionRoomActivations += s.decisionRoomActivationCount || 0;
+  }
+
+  return {
+    totalSessions: total,
+    byWorkPhase,
+    byDecisionRoomState,
+    byConsensusState,
+    byHandoffDirection,
+    byModerationSignal,
+    highlights: {
+      totalDecisionRoomActive,
+      totalWithConsensus,
+      totalWithDissent,
+      totalWithHandoffReady,
+      totalWithResultCard,
+      totalWithOpenClarification,
+      totalPhaseTransitions,
+      totalResultCards,
+      totalDecisionRoomActivations,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Manually advance a conference session's work phase.
+ * Does not auto-execute anything – operator/admin-controlled.
+ * @param {Object} params
+ * @param {string} params.conferenceId
+ * @param {string} params.targetPhase - target phase from VALID_CONFERENCE_WORK_PHASES
+ * @returns {Object}
+ */
+function advanceConferencePhase({ conferenceId, targetPhase } = {}) {
+  if (!conferenceId) return { success: false, error: "conferenceId is required" };
+  if (!targetPhase) return { success: false, error: "targetPhase is required" };
+  if (!VALID_CONFERENCE_WORK_PHASES.includes(targetPhase)) {
+    return { success: false, error: `Invalid targetPhase. Valid values: ${VALID_CONFERENCE_WORK_PHASES.join(", ")}` };
+  }
+
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return { success: false, error: "Conference session not found" };
+
+  const result = _advanceConferenceWorkPhase(session, targetPhase);
+  if (!result.advanced) {
+    return { success: false, error: result.reason };
+  }
+
+  // Re-derive Step C fields after phase advance
+  _updateConferenceStepC(session);
+
+  return {
+    success: true,
+    conferenceId,
+    from: result.from,
+    to: result.to,
+    reason: result.reason,
+    workPhase: session.workPhase,
+    moderationSignal: session.moderationSignal,
+    handoffDirection: session.handoffDirection,
+  };
 }
 
 /* ─────────────────────────────────────────────
@@ -16209,6 +17013,9 @@ function sendCoordinatedConferenceMessage({
   session.lastTargetAgent = resolvedTarget.target;
   session.updatedAt = now;
 
+  // Konferenz Step C: update phases, decision room, result cards
+  _updateConferenceStepC(session);
+
   logger.info("[agentBridge] Konferenz Step B – Koordinierte Nachricht verarbeitet", {
     conferenceId,
     replyPattern,
@@ -16241,6 +17048,10 @@ function sendCoordinatedConferenceMessage({
       routingReason: resolvedTarget.routingReason,
     },
     messageCount: session.messageCount,
+    // Konferenz Step C: expose current phase and moderation signal
+    workPhase: session.workPhase,
+    moderationSignal: session.moderationSignal,
+    handoffDirection: session.handoffDirection,
   };
 }
 
@@ -16457,4 +17268,15 @@ module.exports = {
   VALID_CONFERENCE_COORDINATION_STATES,
   VALID_CONFERENCE_PHASE_STATUSES,
   VALID_COORDINATOR_MESSAGE_TYPES,
+  // Konferenz Step C: Conference Phases / Decision Room / Result Cards / Strategic Expansion
+  advanceConferencePhase,
+  getConferenceResultCard,
+  getConferenceDecisionRoom,
+  getConferencePerspectiveComparison,
+  getConferenceStepCSummary,
+  VALID_CONFERENCE_WORK_PHASES,
+  VALID_CONFERENCE_DECISION_ROOM_STATES,
+  VALID_CONFERENCE_CONSENSUS_STATES,
+  VALID_CONFERENCE_HANDOFF_DIRECTIONS,
+  VALID_CONFERENCE_MODERATION_SIGNALS,
 };

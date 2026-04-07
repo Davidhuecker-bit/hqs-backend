@@ -1414,6 +1414,76 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Konferenz Step C: Inject work phase, decision room, consensus, handoff context ──
+  if (bridgeContext && bridgeContext.conferenceStepCContext) {
+    const csc = bridgeContext.conferenceStepCContext;
+    const cscParts = [];
+    if (csc.workPhase && csc.workPhase !== "intake") {
+      const phaseLabels = {
+        problem_clarification: "Problemklärung",
+        analysis: "Analyse",
+        option_room: "Optionenraum",
+        tradeoff: "Zielkonflikt",
+        decision_preparation: "Entscheidungsvorbereitung",
+        result_transition: "Ergebnisübergabe",
+      };
+      cscParts.push(`Arbeitsphase: ${phaseLabels[csc.workPhase] || csc.workPhase}`);
+    }
+    if (csc.decisionRoomActive) {
+      const stateLabels = {
+        options_collected: "Optionen gesammelt",
+        options_compared: "Optionen verglichen",
+        direction_emerging: "Richtung zeichnet sich ab",
+        direction_split: "Geteilte Empfehlung",
+        tradeoff_open: "Offener Zielkonflikt",
+        decision_ready: "Entscheidung bereit",
+      };
+      cscParts.push(`Decision Room: aktiv (${stateLabels[csc.decisionRoomState] || csc.decisionRoomState})`);
+    }
+    if (csc.consensusState && csc.consensusState !== "neutral") {
+      const consensusLabels = {
+        converging: "Konvergenz",
+        consensus_reached: "Einigkeit erreicht",
+        partial_consensus: "Teilweise Einigkeit",
+        dissent_active: "Offener Dissens",
+        clarification_needed: "Klärung nötig",
+      };
+      cscParts.push(`Konsensus-Stand: ${consensusLabels[csc.consensusState] || csc.consensusState}`);
+    }
+    if (csc.handoffDirection && csc.handoffDirection !== "continue_session") {
+      const handoffLabels = {
+        further_clarification: "Klärung erforderlich",
+        prepare_draft: "Entwurf vorbereiten",
+        prepare_candidate: "Kandidatenschritt vorbereiten",
+        further_review: "Weitere Prüfung nötig",
+        pause_session: "Session pausieren",
+        close_session: "Konferenz abschließen",
+      };
+      cscParts.push(`Empfohlene Übergabe: ${handoffLabels[csc.handoffDirection] || csc.handoffDirection}`);
+    }
+    if (csc.moderationSignal && csc.moderationSignal !== "phase_stable") {
+      const signalLabels = {
+        ready_for_phase_advance: "Bereit für Phasenwechsel",
+        consensus_possible: "Einigung möglich",
+        dissent_requires_attention: "Dissens erfordert Aufmerksamkeit",
+        clarification_blocking: "Klärung blockiert Fortschritt",
+        result_ready: "Ergebnis bereit",
+        handoff_ready: "Übergabe bereit",
+        session_closing: "Session schließt",
+      };
+      cscParts.push(`Moderationssignal: ${signalLabels[csc.moderationSignal] || csc.moderationSignal}`);
+    }
+    if (cscParts.length) {
+      sections.push(`Konferenz-Arbeitsraum (Step C – Phasen, Decision Room, Ergebnisverdichtung):\n${cscParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Konferenz Step C – Arbeitsraumkontext eingebunden", {
+        workPhase: csc.workPhase,
+        decisionRoomActive: csc.decisionRoomActive,
+        consensusState: csc.consensusState,
+        handoffDirection: csc.handoffDirection,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

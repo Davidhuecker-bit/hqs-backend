@@ -4165,6 +4165,17 @@ const {
   sendCoordinatedConferenceMessage,
   getConferenceCoordinationSummary,
   getConferencePhaseDigest,
+  // Konferenz Step C: Conference Phases / Decision Room / Result Cards / Strategic Expansion
+  advanceConferencePhase,
+  getConferenceResultCard,
+  getConferenceDecisionRoom,
+  getConferencePerspectiveComparison,
+  getConferenceStepCSummary,
+  VALID_CONFERENCE_WORK_PHASES,
+  VALID_CONFERENCE_DECISION_ROOM_STATES,
+  VALID_CONFERENCE_CONSENSUS_STATES,
+  VALID_CONFERENCE_HANDOFF_DIRECTIONS,
+  VALID_CONFERENCE_MODERATION_SIGNALS,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -6533,6 +6544,183 @@ router.get("/deepseek/agent-bridge/conference-phase-digest/:conferenceId", (req,
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading conference phase digest",
+    });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Konferenz Step C: Conference Phases / Decision Room / Result Cards / Strategic Expansion
+   ─────────────────────────────────────────────────────────────────────────
+   Endpoints:
+     POST /api/admin/deepseek/agent-bridge/conference-advance-phase
+     GET  /api/admin/deepseek/agent-bridge/conference-result-card/:conferenceId
+     GET  /api/admin/deepseek/agent-bridge/conference-decision-room/:conferenceId
+     GET  /api/admin/deepseek/agent-bridge/conference-perspective-comparison/:conferenceId
+     GET  /api/admin/deepseek/agent-bridge/conference-step-c-summary
+   ───────────────────────────────────────────────────────────────────────── */
+
+/**
+ * POST /api/admin/deepseek/agent-bridge/conference-advance-phase
+ *
+ * Manually advance a conference session to a specific work phase.
+ * Operator/admin-controlled – no automatic execution.
+ *
+ * Body:
+ *   "conferenceId":  "conf-...",     // required
+ *   "targetPhase":   "option_room",  // required – one of VALID_CONFERENCE_WORK_PHASES
+ *
+ * Returns:
+ *   { success, conferenceId, from, to, reason, workPhase, moderationSignal, handoffDirection }
+ */
+router.post("/deepseek/agent-bridge/conference-advance-phase", (req, res) => {
+  try {
+    const { conferenceId, targetPhase } = req.body || {};
+    if (!conferenceId || !targetPhase) {
+      return res.status(400).json({
+        success: false,
+        error: "conferenceId and targetPhase are required",
+        validPhases: VALID_CONFERENCE_WORK_PHASES,
+      });
+    }
+    const result = advanceConferencePhase({ conferenceId, targetPhase });
+    if (!result.success) {
+      return res.status(result.error === "Conference session not found" ? 404 : 400).json(result);
+    }
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-advance-phase error", {
+      error: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error advancing conference phase",
+    });
+  }
+});
+
+/**
+ * GET /api/admin/deepseek/agent-bridge/conference-result-card/:conferenceId
+ *
+ * Get the current result card for a specific conference session.
+ * Structured per-phase result: what was understood, consensus, differences, next step.
+ *
+ * Returns:
+ *   { success, resultCard: { resultCardId, workPhase, understood, direction, consensusState,
+ *     remainingDifferences, openPoints, nextStep, handoffNeeded, handoffDirection, ... } }
+ */
+router.get("/deepseek/agent-bridge/conference-result-card/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId parameter required" });
+    }
+    const resultCard = getConferenceResultCard({ conferenceId });
+    if (!resultCard) {
+      return res.status(404).json({ success: false, error: "Conference session not found" });
+    }
+    return res.json({ success: true, version: "v1", resultCard });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-result-card error", {
+      error: error.message,
+      conferenceId: req.params.conferenceId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference result card",
+    });
+  }
+});
+
+/**
+ * GET /api/admin/deepseek/agent-bridge/conference-decision-room/:conferenceId
+ *
+ * Get the decision room state for a specific conference session.
+ * Includes: active options, recommended direction, tradeoff, consensus state, handoff direction.
+ *
+ * Returns:
+ *   { success, decisionRoom: { decisionRoomActive, decisionRoomState, consensusState,
+ *     handoffDirection, moderationSignal, optionRoomOptions, ... } }
+ */
+router.get("/deepseek/agent-bridge/conference-decision-room/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId parameter required" });
+    }
+    const decisionRoom = getConferenceDecisionRoom({ conferenceId });
+    if (!decisionRoom) {
+      return res.status(404).json({ success: false, error: "Conference session not found" });
+    }
+    return res.json({ success: true, version: "v1", decisionRoom });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-decision-room error", {
+      error: error.message,
+      conferenceId: req.params.conferenceId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference decision room",
+    });
+  }
+});
+
+/**
+ * GET /api/admin/deepseek/agent-bridge/conference-perspective-comparison/:conferenceId
+ *
+ * Get the lightweight perspective comparison between DeepSeek and Gemini for a conference session.
+ * Not a model battle – a structured view of agreement and remaining differences.
+ *
+ * Returns:
+ *   { success, perspectiveComparison: { deepseekView, geminiView, commonLine, dissent, consensusState } }
+ */
+router.get("/deepseek/agent-bridge/conference-perspective-comparison/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId parameter required" });
+    }
+    const perspectiveComparison = getConferencePerspectiveComparison({ conferenceId });
+    if (!perspectiveComparison) {
+      return res.status(404).json({
+        success: false,
+        error: "Conference session not found or no perspective comparison available yet (both agents need at least one message each)",
+      });
+    }
+    return res.json({ success: true, version: "v1", perspectiveComparison });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-perspective-comparison error", {
+      error: error.message,
+      conferenceId: req.params.conferenceId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference perspective comparison",
+    });
+  }
+});
+
+/**
+ * GET /api/admin/deepseek/agent-bridge/conference-step-c-summary
+ *
+ * Admin analytics across all conference sessions – Step C extension.
+ * Aggregates: work phase distribution, decision room stats, consensus/dissent,
+ * handoff directions, moderation signals, result card counts.
+ *
+ * Returns:
+ *   { success, stepCSummary: { totalSessions, byWorkPhase, byDecisionRoomState,
+ *     byConsensusState, byHandoffDirection, byModerationSignal, highlights, ... } }
+ */
+router.get("/deepseek/agent-bridge/conference-step-c-summary", (_req, res) => {
+  try {
+    const stepCSummary = getConferenceStepCSummary();
+    return res.json({ success: true, version: "v1", stepCSummary });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-step-c-summary error", {
+      error: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference Step C summary",
     });
   }
 });
