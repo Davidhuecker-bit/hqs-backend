@@ -6593,12 +6593,10 @@ function submitAgentCaseFeedback({
   }
 
   // Use the best available cooperative response message
-  // Step 17 proposal > Step 16 draft > Step 15 plan
-  const responseText = applyReadiness
-    ? applyReadiness.executionProposalMessage
-    : actionDraft
-      ? actionDraft.draftMessage
-      : refinedPlan.refinedPlanMessage;
+  // Step 16 draft > Step 15 plan (Step 17 data is provided as separate fields)
+  const responseText = actionDraft
+    ? actionDraft.draftMessage
+    : refinedPlan.refinedPlanMessage;
 
   _agentCaseRegistry.set(agentCaseId, agentCase);
 
@@ -6614,29 +6612,29 @@ function submitAgentCaseFeedback({
     planPhase: refinedPlan.planPhase,
   });
 
-  // Record agent response (Step 17: execution_proposal_ready when readiness assessed)
+  // Record agent response using Step 16 draft type when available, Step 15 type otherwise
   _recordAgentChatMessage({
     agentCaseId,
     agentRole: agentCase.agentRole,
-    messageType: applyReadiness ? "execution_proposal_ready" : actionDraft ? "draft_prepared" : (refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined"),
-    messageIntent: applyReadiness ? "proposal" : actionDraft ? "draft" : (refinedPlan.canPrepareNow ? "confirm" : "refine"),
+    messageType: actionDraft ? "draft_prepared" : (refinedPlan.canPrepareNow ? "preparation_started" : "plan_refined"),
+    messageIntent: actionDraft ? "draft" : (refinedPlan.canPrepareNow ? "confirm" : "refine"),
     messagePriority: applyReadiness && applyReadiness.readinessBand === "final_approval_ready" ? "high" : "normal",
     requiresUserDecision: applyReadiness ? applyReadiness.requiresFinalApproval : actionDraft ? actionDraft.requiresFurtherApproval : !refinedPlan.canPrepareNow,
     message: responseText,
-    planPhase: applyReadiness ? "approval_phase" : actionDraft ? "draft_phase" : refinedPlan.planPhase,
+    planPhase: actionDraft ? "draft_phase" : applyReadiness ? "approval_phase" : refinedPlan.planPhase,
     controlledPreparationType: refinedPlan.controlledPreparationType,
     // Step 16 additions
     draftType: actionDraft ? actionDraft.draftType : null,
     draftStatus: actionDraft ? actionDraft.draftStatus : null,
     bundleType: actionDraft ? actionDraft.changeCategory : null,
-    actionIntent: applyReadiness ? "execution_proposal" : actionDraft ? "prepare_draft" : null,
+    actionIntent: actionDraft ? "prepare_draft" : applyReadiness ? "execution_proposal" : null,
     nextActionAvailable: applyReadiness ? applyReadiness.eligibleForApply : actionDraft ? !actionDraft.executionBlocked : false,
-    // Step 17 additions
-    readinessBand: applyReadiness ? applyReadiness.readinessBand : null,
-    executionIntent: applyReadiness ? applyReadiness.executionIntent : null,
-    applyBlocked: applyReadiness ? applyReadiness.applyBlocked : null,
-    recommendedApplyMode: applyReadiness ? applyReadiness.recommendedApplyMode : null,
-    nextApprovalAvailable: applyReadiness ? applyReadiness.requiresFinalApproval && applyReadiness.eligibleForApply : false,
+    // Step 17 additions (only when no draft is available, to preserve draft_phase messagePhase)
+    readinessBand: (applyReadiness && !actionDraft) ? applyReadiness.readinessBand : null,
+    executionIntent: (applyReadiness && !actionDraft) ? applyReadiness.executionIntent : null,
+    applyBlocked: (applyReadiness && !actionDraft) ? applyReadiness.applyBlocked : null,
+    recommendedApplyMode: (applyReadiness && !actionDraft) ? applyReadiness.recommendedApplyMode : null,
+    nextApprovalAvailable: (applyReadiness && !actionDraft) ? applyReadiness.requiresFinalApproval && applyReadiness.eligibleForApply : false,
   });
 
   // Step 16 logging
