@@ -5638,7 +5638,7 @@ router.get("/deepseek/agent-bridge/execution-runtime-summary", (_req, res) => {
    Cooperative, not autonomous.  The system answers –
    the user decides the next step.
 ========================================================= */
-router.post("/deepseek/agent-bridge/conversation-message", (req, res) => {
+router.post("/deepseek/agent-bridge/conversation-message", async (req, res) => {
   try {
     const { agentCaseId, userMessage, replyToMessageId, quotedMessageId } = req.body || {};
     if (!agentCaseId || !userMessage) {
@@ -5647,7 +5647,7 @@ router.post("/deepseek/agent-bridge/conversation-message", (req, res) => {
         error: "agentCaseId and userMessage are required",
       });
     }
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId,
       userMessage,
       replyToMessageId: replyToMessageId || null,
@@ -5788,7 +5788,7 @@ router.get("/deepseek/agent-bridge/conversation-summary", (_req, res) => {
    Cooperative, not autonomous.  The system executes
    the handoff – the user retains control.
 ========================================================= */
-router.post("/deepseek/agent-bridge/trigger-handoff", (req, res) => {
+router.post("/deepseek/agent-bridge/trigger-handoff", async (req, res) => {
   try {
     const { agentCaseId, targetAgent, reason } = req.body || {};
     if (!agentCaseId) {
@@ -5797,7 +5797,7 @@ router.post("/deepseek/agent-bridge/trigger-handoff", (req, res) => {
         error: "agentCaseId is required",
       });
     }
-    const result = triggerHandoff({ agentCaseId, targetAgent, reason });
+    const result = await triggerHandoff({ agentCaseId, targetAgent, reason });
     return res.json({ success: result.success, version: "v1", ...result });
   } catch (error) {
     logger.error("[admin] deepseek/agent-bridge/trigger-handoff error", {
