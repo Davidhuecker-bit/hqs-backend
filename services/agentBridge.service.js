@@ -15278,6 +15278,16 @@ async function sendConferenceMessage({
 
   // Resolve target agent
   const resolvedTarget = _resolveConferenceTarget(targetAgent, userMessage, session);
+
+  // Entry log – used for diagnostics / debugging the conference reply flow
+  logger.info("[agentBridge] Konferenz – Nachricht eingegangen", {
+    conferenceId,
+    conferenceMode: session.conferenceMode,
+    targetAgent: resolvedTarget.target,
+    routingReason: resolvedTarget.routingReason,
+    deepseekApiReady: isDeepSeekConfigured(),
+    geminiApiReady: isGeminiConfigured(),
+  });
   const messageIntent = _deriveMessageIntent(userMessage);
   const now = new Date().toISOString();
 
@@ -15471,33 +15481,70 @@ async function sendConferenceMessage({
   // Konferenz Step C: update phases, decision room, result cards
   _updateConferenceStepC(session);
 
+  // Aggregate fallback / error status across all agent replies
+  const anyFallback = agentReplies.some((r) => r.usedFallback);
+  const firstApiError = agentReplies.find((r) => r.apiError)?.apiError ?? null;
+  const replyCycleComplete = session.dialogState === "reply_cycle_complete";
+
+  // Final diagnostic log – single line to confirm full reply flow completed
+  logger.info("[agentBridge] Konferenz – Antwortzyklus abgeschlossen", {
+    conferenceId,
+    conferenceMode: session.conferenceMode,
+    targetAgent: resolvedTarget.target,
+    agentReplyCount: agentReplies.length,
+    usedFallback: anyFallback,
+    apiError: firstApiError,
+    replyCycleComplete,
+    deepseekReplied: agentReplies.some((r) => r.speakerAgent === "deepseek"),
+    geminiReplied: agentReplies.some((r) => r.speakerAgent === "gemini"),
+  });
+
   return {
+    // ── Core status ──────────────────────────────────────
     success: true,
+    version: "conference_reply_v1",
     conferenceId,
     conferenceStatus: session.conferenceStatus,
     conferenceMode: session.conferenceMode,
-    userMessage: userMsgRecord,
+    // ── Message records ──────────────────────────────────
+    userMessage: userMsgRecord,        // kept for backward compat
+    userMessageRecord: userMsgRecord,  // canonical field name
     agentReplies,
+    // ── Target / routing (top-level for quick access) ────
+    targetAgent: resolvedTarget.target,
     routing: {
       targetAgent: resolvedTarget.target,
       routingReason: resolvedTarget.routingReason,
     },
+    // ── Reply-cycle status (frontend can determine what arrived) ──
+    replyCycleComplete,
+    usedFallback: anyFallback,
+    apiError: firstApiError,
+    // ── Session snapshot ─────────────────────────────────
+    conferenceSession: {
+      conferenceId,
+      conferenceStatus: session.conferenceStatus,
+      conferenceMode: session.conferenceMode,
+      messageCount: session.messageCount,
+      lastActivity: session.lastActivity,
+      workPhase: session.workPhase,
+      dialogState: session.dialogState,
+    },
     messageCount: session.messageCount,
-    // Konferenz Step C: expose current phase and moderation signal
+    // ── Phase / dialog state ──────────────────────────────
     workPhase: session.workPhase,
     moderationSignal: session.moderationSignal,
     handoffDirection: session.handoffDirection,
-    // Konferenz Step D: dialog state
     dialogState: session.dialogState,
     openClarification: session.openClarification,
     replyCycleCount: session.replyCycleCount,
     followUpCount: session.followUpCount,
-    // Konferenz Step E: both-mode summary
+    // ── Both-mode summary ─────────────────────────────────
     bothMode: resolvedTarget.target === "both",
     bothModeMessageCount: session.bothModeMessageCount || 0,
     completedBothReplyCycles: session.completedBothReplyCycles || 0,
     partialBothReplyCycles: session.partialBothReplyCycles || 0,
-    // API status: whether the agent APIs are configured (helps frontend show live vs fallback state)
+    // ── API availability ──────────────────────────────────
     agentApiConfigured: {
       deepseek: isDeepSeekConfigured(),
       gemini: isGeminiConfigured(),
@@ -17867,14 +17914,24 @@ async function sendCoordinatedConferenceMessage({
     coordinatorMessageCount: coordinatorMessages.length,
   });
 
+  // Aggregate fallback / error status across all agent replies
+  const coordAnyFallback = agentReplies.some((r) => r.usedFallback);
+  const coordFirstApiError = agentReplies.find((r) => r.apiError)?.apiError ?? null;
+
   return {
+    // ── Core status ───────────────────────────────────────
     success: true,
+    version: "conference_reply_v1",
     conferenceId,
     conferenceStatus: session.conferenceStatus,
     conferenceMode: session.conferenceMode,
-    userMessage: userMsgRecord,
+    // ── Message records ───────────────────────────────────
+    userMessage: userMsgRecord,        // kept for backward compat
+    userMessageRecord: userMsgRecord,  // canonical field name
     agentReplies,
     coordinatorMessages,
+    // ── Target / routing (top-level for quick access) ────
+    targetAgent: resolvedTarget.target,
     coordination: {
       replyPattern,
       coordinationState: session.coordinationState,
@@ -17887,11 +17944,29 @@ async function sendCoordinatedConferenceMessage({
       targetAgent: resolvedTarget.target,
       routingReason: resolvedTarget.routingReason,
     },
+    // ── Reply-cycle status ────────────────────────────────
+    replyCycleComplete: true,
+    usedFallback: coordAnyFallback,
+    apiError: coordFirstApiError,
+    // ── Session snapshot ──────────────────────────────────
+    conferenceSession: {
+      conferenceId,
+      conferenceStatus: session.conferenceStatus,
+      conferenceMode: session.conferenceMode,
+      messageCount: session.messageCount,
+      lastActivity: session.lastActivity,
+      workPhase: session.workPhase,
+    },
     messageCount: session.messageCount,
-    // Konferenz Step C: expose current phase and moderation signal
+    // ── Phase / moderation signal ─────────────────────────
     workPhase: session.workPhase,
     moderationSignal: session.moderationSignal,
     handoffDirection: session.handoffDirection,
+    // ── API availability ──────────────────────────────────
+    agentApiConfigured: {
+      deepseek: isDeepSeekConfigured(),
+      gemini: isGeminiConfigured(),
+    },
   };
 }
 
