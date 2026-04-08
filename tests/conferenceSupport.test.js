@@ -187,9 +187,9 @@ describe("Konferenz Step A – Session Update", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step A – Messaging & Targeting", () => {
-  test("sendConferenceMessage routes to deepseek explicitly", () => {
+  test("sendConferenceMessage routes to deepseek explicitly", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Was passiert im Backend?",
       targetAgent: "deepseek",
@@ -200,9 +200,9 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("deepseek");
   });
 
-  test("sendConferenceMessage routes to gemini explicitly", () => {
+  test("sendConferenceMessage routes to gemini explicitly", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Wie sieht das UI aus?",
       targetAgent: "gemini",
@@ -213,9 +213,9 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("gemini");
   });
 
-  test("sendConferenceMessage routes to both agents explicitly", () => {
+  test("sendConferenceMessage routes to both agents explicitly", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Was denkt ihr beide?",
       targetAgent: "both",
@@ -228,9 +228,9 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(agents).toContain("gemini");
   });
 
-  test("sendConferenceMessage routes to system explicitly", () => {
+  test("sendConferenceMessage routes to system explicitly", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Status?",
       targetAgent: "system",
@@ -240,9 +240,9 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("system");
   });
 
-  test("sendConferenceMessage uses keyword routing when no target specified", () => {
+  test("sendConferenceMessage uses keyword routing when no target specified", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Bitte prüfe den API-Endpunkt",
     });
@@ -250,9 +250,9 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(result.routing.targetAgent).toBeDefined();
   });
 
-  test("sendConferenceMessage in decision_mode defaults to both when neutral", () => {
+  test("sendConferenceMessage in decision_mode defaults to both when neutral", async () => {
     const session = openConferenceSession({ conferenceMode: "decision_mode" });
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Was meint ihr dazu?",
     });
@@ -260,36 +260,36 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(result.routing.targetAgent).toBe("both");
   });
 
-  test("sendConferenceMessage fails without conferenceId", () => {
-    const result = sendConferenceMessage({ userMessage: "test" });
+  test("sendConferenceMessage fails without conferenceId", async () => {
+    const result = await sendConferenceMessage({ userMessage: "test" });
     expect(result.success).toBe(false);
   });
 
-  test("sendConferenceMessage fails without userMessage", () => {
+  test("sendConferenceMessage fails without userMessage", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({ conferenceId: session.conferenceId });
+    const result = await sendConferenceMessage({ conferenceId: session.conferenceId });
     expect(result.success).toBe(false);
   });
 
-  test("sendConferenceMessage fails for nonexistent session", () => {
-    const result = sendConferenceMessage({ conferenceId: "nonexistent", userMessage: "test" });
+  test("sendConferenceMessage fails for nonexistent session", async () => {
+    const result = await sendConferenceMessage({ conferenceId: "nonexistent", userMessage: "test" });
     expect(result.success).toBe(false);
   });
 
-  test("sendConferenceMessage fails for closed session", () => {
+  test("sendConferenceMessage fails for closed session", async () => {
     const session = openConferenceSession();
     closeConferenceSession({ conferenceId: session.conferenceId });
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Noch eine Frage",
     });
     expect(result.success).toBe(false);
   });
 
-  test("sendConferenceMessage resumes a paused session automatically", () => {
+  test("sendConferenceMessage resumes a paused session automatically", async () => {
     const session = openConferenceSession();
     updateConferenceSession({ conferenceId: session.conferenceId, conferenceStatus: "session_paused" });
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Weiter geht es",
     });
@@ -297,14 +297,14 @@ describe("Konferenz Step A – Messaging & Targeting", () => {
     expect(result.conferenceStatus).toBe("session_active");
   });
 
-  test("sendConferenceMessage increments message counts", () => {
+  test("sendConferenceMessage increments message counts", async () => {
     const session = openConferenceSession();
-    sendConferenceMessage({
+    await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Erste Nachricht",
       targetAgent: "deepseek",
     });
-    sendConferenceMessage({
+    await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Zweite Nachricht",
       targetAgent: "gemini",
@@ -330,9 +330,9 @@ describe("Konferenz Step A – Session Retrieval", () => {
     expect(getConferenceSession({})).toBeNull();
   });
 
-  test("getConferenceSession returns session with messages", () => {
+  test("getConferenceSession returns session with messages", async () => {
     const session = openConferenceSession();
-    sendConferenceMessage({
+    await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Hallo",
       targetAgent: "deepseek",
@@ -343,10 +343,10 @@ describe("Konferenz Step A – Session Retrieval", () => {
     expect(loaded.messages.length).toBeGreaterThan(0);
   });
 
-  test("getConferenceSession respects limit parameter", () => {
+  test("getConferenceSession respects limit parameter", async () => {
     const session = openConferenceSession();
     for (let i = 0; i < 5; i++) {
-      sendConferenceMessage({
+      await sendConferenceMessage({
         conferenceId: session.conferenceId,
         userMessage: `Nachricht ${i}`,
         targetAgent: "deepseek",
@@ -370,9 +370,9 @@ describe("Konferenz Step A – Summary", () => {
     expect(getConferenceSummary({})).toBeNull();
   });
 
-  test("getConferenceSummary returns structured summary", () => {
+  test("getConferenceSummary returns structured summary", async () => {
     const session = openConferenceSession({ conferenceFocus: "API-Review" });
-    sendConferenceMessage({
+    await sendConferenceMessage({
       conferenceId: session.conferenceId,
       userMessage: "Was ist der aktuelle Stand?",
       targetAgent: "deepseek",

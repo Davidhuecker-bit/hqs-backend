@@ -1,6 +1,14 @@
 "use strict";
 
 const logger = require("../utils/logger");
+const {
+  createDeepSeekChatCompletion,
+  isDeepSeekConfigured,
+} = require("./deepseek.service");
+const {
+  isGeminiConfigured,
+  runGeminiChat,
+} = require("./geminiArchitect.service");
 
 /* ─────────────────────────────────────────────
    Constants
@@ -15093,7 +15101,7 @@ function openConferenceSession({
  * @param {string} [params.replyToMessageId] – optional reply reference
  * @returns {Object} message result with agent reply/replies
  */
-function sendConferenceMessage({
+async function sendConferenceMessage({
   conferenceId,
   userMessage,
   targetAgent = null,
@@ -15204,8 +15212,8 @@ function sendConferenceMessage({
     // Track both-mode message count
     session.bothModeMessageCount = (session.bothModeMessageCount || 0) + 1;
 
-    // Generate DeepSeek reply (primary)
-    const dsReply = _generateConferenceReply("deepseek", messageIntent, userMessage, session);
+    // Generate DeepSeek reply (primary) – real API call
+    const dsReply = await _generateConferenceReply("deepseek", messageIntent, userMessage, session);
 
     // Set intermediate dialog state: first agent replied, second still pending
     session.dialogState = "additional_agent_pending";
@@ -15224,8 +15232,8 @@ function sendConferenceMessage({
       responseType: dsRecord.responseType,
     });
 
-    // Generate Gemini reply (secondary) – knows about DeepSeek's reply
-    const gmReply = _generateConferenceReply("gemini", messageIntent, userMessage, session);
+    // Generate Gemini reply (secondary) – knows about DeepSeek's reply via context
+    const gmReply = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { deepseekReply: dsReply });
     const cooperationType = _deriveCooperationType(gmReply, dsReply);
 
     const gmRecord = _recordConferenceAgentReply(session, "gemini", gmReply, userMsgId, dsRecord.messageId, {
@@ -15264,8 +15272,8 @@ function sendConferenceMessage({
     agentReplies.push(sysRecord);
     session.lastReplyAgents = ["system"];
   } else {
-    // Single agent reply
-    const reply = _generateConferenceReply(resolvedTarget.target, messageIntent, userMessage, session);
+    // Single agent reply – real API call
+    const reply = await _generateConferenceReply(resolvedTarget.target, messageIntent, userMessage, session);
     const record = _recordConferenceAgentReply(session, resolvedTarget.target, reply, userMsgId, null);
     agentReplies.push(record);
     session.lastReplyAgents = [resolvedTarget.target];
@@ -15535,9 +15543,89 @@ function _deriveCooperationType(secondContent, firstContent) {
 
 /**
  * Generate a cooperative conference reply for an agent.
+ * Falls back to static templates if the AI API is not configured or the call fails.
  * @private
  */
-function _generateConferenceReply(agent, messageIntent, userMessage, session) {
+async function _generateConferenceReply(agent, messageIntent, userMessage, session, context = {}) {
+  // ── Build conversation history for context ──
+  const recentMessages = (session.messages || [])
+    .slice(-10)
+    .filter((m) => m.messageRole === "user" || (m.messageRole === "agent" && m.speakerAgent !== "system"))
+    .map((m) => {
+      const role = m.messageRole === "user" ? "user" : m.speakerAgent === agent ? "assistant" : "user";
+      return `${role === "assistant" ? (agent === "deepseek" ? "DeepSeek" : "Gemini") : "Nutzer"}: ${m.content}`;
+    })
+    .join("\n");
+
+  const focus = session.conferenceFocus ? `Aktueller Fokus: ${session.conferenceFocus}\n` : "";
+  const modeLabel = {
+    work_chat: "Arbeitschat",
+    problem_solving: "Problemlösung",
+    decision_mode: "Entscheidungsmodus",
+  }[session.conferenceMode] || "Arbeitschat";
+
+  if (agent === "deepseek") {
+    if (!isDeepSeekConfigured()) {
+      return _generateConferenceReplyFallback(agent, messageIntent, session);
+    }
+    const systemPrompt = `Du bist DeepSeek, ein spezialisierter KI-Assistent für Backend-Entwicklung, APIs und Systemlogik.
+Du nimmst an einer technischen Konferenz teil (Modus: ${modeLabel}).
+${focus}Antworte immer auf Deutsch. Sei klar, präzise und hilfreich. Beantworte die Frage direkt.
+Halte deine Antwort fokussiert (2-5 Sätze). Wenn Gemini auch antwortet, wirst du als Primärantwort angezeigt.`.trim();
+
+    const historyContext = recentMessages ? `\nBisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
+    const fullMessage = `${historyContext}${userMessage}`;
+
+    try {
+      const completion = await createDeepSeekChatCompletion({
+        tier: "fast",
+        timeoutMs: 20000,
+        temperature: 0.5,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: fullMessage },
+        ],
+      });
+      const text = completion?.choices?.[0]?.message?.content || "";
+      if (text.trim()) return text.trim();
+    } catch (err) {
+      logger.warn("[agentBridge] Konferenz DeepSeek API Fehler – Fallback aktiviert", { message: err.message });
+    }
+    return _generateConferenceReplyFallback(agent, messageIntent, session);
+  }
+
+  if (agent === "gemini") {
+    if (!isGeminiConfigured()) {
+      return _generateConferenceReplyFallback(agent, messageIntent, session);
+    }
+    const deepseekReplyNote = context.deepseekReply
+      ? `\nDeepSeek hat bereits geantwortet: "${context.deepseekReply.slice(0, 300)}"\nDeine Antwort soll ergänzen, nicht wiederholen.`
+      : "";
+
+    const systemPrompt = `Du bist Gemini, ein spezialisierter KI-Assistent für Frontend-Entwicklung, UX und Systemarchitektur.
+Du nimmst an einer technischen Konferenz teil (Modus: ${modeLabel}).
+${focus}Antworte immer auf Deutsch. Sei klar, präzise und hilfreich. Beantworte die Frage direkt.
+Halte deine Antwort fokussiert (2-5 Sätze).${deepseekReplyNote}`.trim();
+
+    const historyContext = recentMessages ? `Bisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
+    const fullMessage = `${historyContext}${userMessage}`;
+
+    const gemResult = await runGeminiChat({ systemPrompt, userMessage: fullMessage, maxTokens: 512, timeoutMs: 22000 });
+    if (gemResult.success && gemResult.text.trim()) {
+      return gemResult.text.trim();
+    }
+    logger.warn("[agentBridge] Konferenz Gemini API Fehler – Fallback aktiviert", { error: gemResult.error });
+    return _generateConferenceReplyFallback(agent, messageIntent, session);
+  }
+
+  return _generateConferenceReplyFallback(agent, messageIntent, session);
+}
+
+/**
+ * Static template fallback – used when the AI API is unavailable.
+ * @private
+ */
+function _generateConferenceReplyFallback(agent, messageIntent, session) {
   const isBackend = agent === "deepseek";
   const perspective = isBackend ? "Backend-Sicht" : "Frontend-Sicht";
   const domain = isBackend ? "Backend / API / Logik" : "Frontend / UX / Darstellung";
@@ -17366,7 +17454,7 @@ function _generateClarificationReply(session, clarificationContext = {}) {
  * @param {Object} params
  * @returns {Object}
  */
-function sendCoordinatedConferenceMessage({
+async function sendCoordinatedConferenceMessage({
   conferenceId,
   userMessage,
   targetAgent = null,
@@ -17465,7 +17553,7 @@ function sendCoordinatedConferenceMessage({
   switch (replyPattern) {
     case "solo_reply": {
       const agent = resolvedTarget.target === "both" ? session.leadAgent : resolvedTarget.target;
-      const reply = _generateConferenceReply(agent, messageIntent, userMessage, session);
+      const reply = await _generateConferenceReply(agent, messageIntent, userMessage, session);
       agentReplies.push(_recordConferenceAgentReply(session, agent, reply, userMsgId));
       session.soloReplyCount += 1;
       break;
@@ -17473,7 +17561,7 @@ function sendCoordinatedConferenceMessage({
 
     case "supporting_reply": {
       // Lead answers first, then support supplements
-      const leadReply = _generateConferenceReply(session.leadAgent, messageIntent, userMessage, session);
+      const leadReply = await _generateConferenceReply(session.leadAgent, messageIntent, userMessage, session);
       agentReplies.push(_recordConferenceAgentReply(session, session.leadAgent, leadReply, userMsgId));
       
       const supportReply = _generateSupportingReply(session.supportAgent, session.leadAgent, messageIntent, userMessage, session);
@@ -17486,8 +17574,8 @@ function sendCoordinatedConferenceMessage({
 
     case "coordinated_reply": {
       // Both agents contribute
-      const dsReply = _generateConferenceReply("deepseek", messageIntent, userMessage, session);
-      const gmReply = _generateConferenceReply("gemini", messageIntent, userMessage, session);
+      const dsReply = await _generateConferenceReply("deepseek", messageIntent, userMessage, session);
+      const gmReply = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { deepseekReply: dsReply });
       agentReplies.push(_recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId));
       agentReplies.push(_recordConferenceAgentReply(session, "gemini", gmReply, userMsgId));
       session.coordinatedReplyCount += 1;
@@ -17515,7 +17603,7 @@ function sendCoordinatedConferenceMessage({
     case "cross_agent_followup": {
       // One agent follows up on the other's point
       const agent = resolvedTarget.target === "both" ? session.leadAgent : resolvedTarget.target;
-      const reply = _generateConferenceReply(agent, messageIntent, userMessage, session);
+      const reply = await _generateConferenceReply(agent, messageIntent, userMessage, session);
       agentReplies.push(_recordConferenceAgentReply(session, agent, reply, userMsgId));
       session.soloReplyCount += 1;
       break;
@@ -17530,7 +17618,7 @@ function sendCoordinatedConferenceMessage({
     default: {
       // Fallback to solo reply
       const fallbackAgent = resolvedTarget.target === "both" ? session.leadAgent : (resolvedTarget.target || "deepseek");
-      const reply = _generateConferenceReply(fallbackAgent, messageIntent, userMessage, session);
+      const reply = await _generateConferenceReply(fallbackAgent, messageIntent, userMessage, session);
       agentReplies.push(_recordConferenceAgentReply(session, fallbackAgent, reply, userMsgId));
       session.soloReplyCount += 1;
     }

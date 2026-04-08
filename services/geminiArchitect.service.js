@@ -1875,12 +1875,70 @@ async function runGeminiArchitectReview(payload = {}) {
 }
 
 /* ─────────────────────────────────────────────
+   Plain-text chat helper (used by conference)
+   ───────────────────────────────────────────── */
+
+/**
+ * Simple plain-text chat with Gemini – no JSON schema, no structured output.
+ * Used by the conference system to get natural language responses.
+ *
+ * @param {Object}  opts
+ * @param {string}  opts.systemPrompt   – instruction for the model
+ * @param {string}  opts.userMessage    – the user's message
+ * @param {number}  [opts.maxTokens]    – max output tokens (default 1024)
+ * @param {number}  [opts.timeoutMs]    – timeout in ms (default 25000)
+ * @returns {Promise<{ success: boolean, text: string, error?: string }>}
+ */
+async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, timeoutMs = 25000 } = {}) {
+  if (!isGeminiConfigured()) {
+    return { success: false, text: "", error: "GEMINI_NOT_CONFIGURED" };
+  }
+  if (!userMessage || !userMessage.trim()) {
+    return { success: false, text: "", error: "NO_INPUT" };
+  }
+  try {
+    const client = getGeminiClient();
+    const modelName = getModelName();
+    const model = client.getGenerativeModel({
+      model: modelName,
+      systemInstruction: systemPrompt || "",
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: maxTokens,
+      },
+    });
+
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
+    });
+
+    let response;
+    try {
+      response = await Promise.race([model.generateContent(userMessage), timeoutPromise]);
+    } finally {
+      clearTimeout(timerId);
+    }
+
+    const text = getResponseText(response) || "";
+    if (!text) {
+      return { success: false, text: "", error: "EMPTY_RESPONSE" };
+    }
+    return { success: true, text };
+  } catch (err) {
+    logger.warn("[geminiArchitect] runGeminiChat error", { message: err.message });
+    return { success: false, text: "", error: String(err.message || "UNKNOWN").slice(0, 120) };
+  }
+}
+
+/* ─────────────────────────────────────────────
    Exports
    ───────────────────────────────────────────── */
 
 module.exports = {
   isGeminiConfigured,
   runGeminiArchitectReview,
+  runGeminiChat,
   VALID_MODES,
   RESULT_TYPES,
   FALLBACK_LABELS,

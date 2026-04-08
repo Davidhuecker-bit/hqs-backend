@@ -146,9 +146,9 @@ describe("Konferenz Step C – Session Model Extension", () => {
     expect(session.decisionRoomActivationCount).toBe(0);
   });
 
-  test("workPhase advances after receiving messages with option keywords", () => {
+  test("workPhase advances after receiving messages with option keywords", async () => {
     const id = createSession({ conferenceMode: "problem_solving" });
-    sendConferenceMessage({ conferenceId: id, userMessage: "Welche Option ist besser?" });
+    await sendConferenceMessage({ conferenceId: id, userMessage: "Welche Option ist besser?" });
     const session = getConferenceSession({ conferenceId: id });
     // After a message with option keywords, phase should advance beyond intake
     expect(VALID_CONFERENCE_WORK_PHASES).toContain(session.workPhase);
@@ -345,10 +345,10 @@ describe("Konferenz Step C – getConferencePerspectiveComparison", () => {
     expect(comp).toBeNull();
   });
 
-  test("returns perspective comparison after both agents have replied", () => {
+  test("returns perspective comparison after both agents have replied", async () => {
     const id = createSession();
     // Send to both agents to generate replies from each
-    sendConferenceMessage({ conferenceId: id, userMessage: "Bitte beide Agenten antworten.", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId: id, userMessage: "Bitte beide Agenten antworten.", targetAgent: "both" });
     const comp = getConferencePerspectiveComparison({ conferenceId: id });
     expect(comp).toBeTruthy();
     expect(comp.conferenceId).toBe(id);
@@ -410,9 +410,9 @@ describe("Konferenz Step C – getConferenceStepCSummary", () => {
    8. sendConferenceMessage – Step C integration
    ───────────────────────────────────────────── */
 describe("Konferenz Step C – sendConferenceMessage integration", () => {
-  test("response includes workPhase, moderationSignal, handoffDirection", () => {
+  test("response includes workPhase, moderationSignal, handoffDirection", async () => {
     const id = createSession();
-    const result = sendConferenceMessage({ conferenceId: id, userMessage: "Erste Frage zur Konferenz." });
+    const result = await sendConferenceMessage({ conferenceId: id, userMessage: "Erste Frage zur Konferenz." });
     expect(result.success).toBe(true);
     expect(result.workPhase).toBeTruthy();
     expect(VALID_CONFERENCE_WORK_PHASES).toContain(result.workPhase);
@@ -420,9 +420,9 @@ describe("Konferenz Step C – sendConferenceMessage integration", () => {
     expect(VALID_CONFERENCE_HANDOFF_DIRECTIONS).toContain(result.handoffDirection);
   });
 
-  test("session has Step C fields updated after message", () => {
+  test("session has Step C fields updated after message", async () => {
     const id = createSession();
-    sendConferenceMessage({ conferenceId: id, userMessage: "Frage zur Konferenz." });
+    await sendConferenceMessage({ conferenceId: id, userMessage: "Frage zur Konferenz." });
     const session = getConferenceSession({ conferenceId: id });
     expect(VALID_CONFERENCE_WORK_PHASES).toContain(session.workPhase);
     expect(VALID_CONFERENCE_CONSENSUS_STATES).toContain(session.consensusState);
@@ -435,9 +435,9 @@ describe("Konferenz Step C – sendConferenceMessage integration", () => {
    9. sendCoordinatedConferenceMessage – Step C integration
    ───────────────────────────────────────────── */
 describe("Konferenz Step C – sendCoordinatedConferenceMessage integration", () => {
-  test("response includes workPhase, moderationSignal, handoffDirection", () => {
+  test("response includes workPhase, moderationSignal, handoffDirection", async () => {
     const id = createSession({ conferenceMode: "problem_solving" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: id,
       userMessage: "Bitte koordinierte Antwort.",
       requestedReplyPattern: "solo_reply",
@@ -545,18 +545,18 @@ describe("Konferenz Step C – Decision Room Activation", () => {
    14. Backward Compatibility
    ───────────────────────────────────────────── */
 describe("Konferenz Step C – Backward Compatibility", () => {
-  test("Step A sendConferenceMessage still works after Step C integration", () => {
+  test("Step A sendConferenceMessage still works after Step C integration", async () => {
     const id = createSession();
-    const result = sendConferenceMessage({ conferenceId: id, userMessage: "Hallo." });
+    const result = await sendConferenceMessage({ conferenceId: id, userMessage: "Hallo." });
     expect(result.success).toBe(true);
     expect(result.conferenceId).toBe(id);
     expect(Array.isArray(result.agentReplies)).toBe(true);
     expect(result.messageCount).toBeGreaterThanOrEqual(1);
   });
 
-  test("Step B sendCoordinatedConferenceMessage still works after Step C integration", () => {
+  test("Step B sendCoordinatedConferenceMessage still works after Step C integration", async () => {
     const id = createSession({ conferenceMode: "decision_mode" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: id,
       userMessage: "Bitte beide Agenten.",
     });
