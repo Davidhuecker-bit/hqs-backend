@@ -15801,8 +15801,10 @@ function _formatDuration(startIso, endIso) {
  */
 function _isFollowUpMessage(userMessage, session) {
   if (!session.lastUserMessageId) return false; // first message in session
-  const lower = userMessage.toLowerCase();
-  return CONFERENCE_FOLLOWUP_KEYWORDS.some((kw) => lower.includes(kw));
+  // Pad with spaces so we can match whole words without triggering false positives
+  // (e.g. "nochmal" should not match inside "nochmalig")
+  const padded = ` ${userMessage.toLowerCase()} `;
+  return CONFERENCE_FOLLOWUP_KEYWORDS.some((kw) => padded.includes(` ${kw} `) || padded.includes(` ${kw},`) || padded.includes(` ${kw}.`) || padded.includes(` ${kw}?`) || padded.includes(` ${kw}!`));
 }
 
 /**
@@ -15816,6 +15818,8 @@ function _isFollowUpMessage(userMessage, session) {
  * @private
  */
 function _deriveResponseType(agent, content, session, followUpOf) {
+  // System agents always provide a summary-style reply; they do not ask counter-questions.
+  // This is intentional: system is a coordinator/status agent, not a dialogue partner.
   if (agent === "system") return "summary";
   const lower = (content || "").toLowerCase();
 

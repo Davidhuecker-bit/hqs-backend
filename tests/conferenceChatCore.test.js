@@ -345,6 +345,18 @@ describe("Konferenz Step D – Follow-up detection", () => {
     expect(result.userMessage.followUpOf).toBeNull();
   });
 
+  test("First message in a new session is not a follow-up even when other sessions have messages", () => {
+    // Populate one session first
+    const s1 = openConferenceSession();
+    sendConferenceMessage({ conferenceId: s1.conferenceId, userMessage: "Erste Frage." });
+
+    // New session: first message should NOT be a follow-up regardless of other sessions
+    const s2 = openConferenceSession();
+    const result = sendConferenceMessage({ conferenceId: s2.conferenceId, userMessage: "Nochmal – was ist das?" });
+    expect(result.userMessage.isFollowUp).toBe(false);
+    expect(result.userMessage.followUpOf).toBeNull();
+  });
+
   test("Message with follow-up keyword detected as follow-up", () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
