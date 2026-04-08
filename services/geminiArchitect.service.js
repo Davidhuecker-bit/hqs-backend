@@ -8,6 +8,10 @@ const logger = require("../utils/logger");
    Gemini configuration helpers
    ───────────────────────────────────────────── */
 
+// Stable production API version for all standard text-chat and review calls.
+// v1beta is the SDK default but is not recommended for production workloads.
+const GEMINI_API_VERSION = "v1";
+
 function isGeminiConfigured() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
@@ -19,7 +23,14 @@ function getGeminiClient() {
     throw new Error("Missing GEMINI_API_KEY – Gemini Architect is not configured");
   }
   if (!_client) {
-    _client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    logger.info("[geminiArchitect] initializing Gemini client", {
+      apiVersion: GEMINI_API_VERSION,
+      model: getModelName(),
+    });
+    _client = new GoogleGenAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      httpOptions: { apiVersion: GEMINI_API_VERSION },
+    });
   }
   return _client;
 }
@@ -1824,11 +1835,13 @@ async function runGeminiArchitectReview(payload = {}) {
     const errType = isTimeout ? RESULT_TYPES.TIMEOUT : RESULT_TYPES.API_ERROR;
     logger.warn("[geminiArchitect] Gemini API call failed", {
       codepath: "runGeminiArchitectReview",
+      apiVersion: GEMINI_API_VERSION,
       mode: normalised.mode,
       model: modelName,
       resultType: errType,
       isTimeout,
       httpStatus: apiErr.status || apiErr.statusCode || null,
+      errorCode: apiErr.code || null,
       reason: safeMsg,
     });
     return {
@@ -1961,14 +1974,22 @@ async function runGeminiArchitectReview(payload = {}) {
  */
 async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, timeoutMs = 25000 } = {}) {
   if (!isGeminiConfigured()) {
+    logger.warn("[geminiArchitect] runGeminiChat – GEMINI_API_KEY not set");
     return { success: false, text: "", error: "GEMINI_NOT_CONFIGURED" };
   }
   if (!userMessage || !userMessage.trim()) {
     return { success: false, text: "", error: "NO_INPUT" };
   }
+  const modelName = getModelName();
+  logger.info("[geminiArchitect] runGeminiChat start", {
+    codepath: "runGeminiChat",
+    apiVersion: GEMINI_API_VERSION,
+    model: modelName,
+    maxTokens,
+    timeoutMs,
+  });
   try {
     const client = getGeminiClient();
-    const modelName = getModelName();
 
     const response = await _withGeminiRetry(async () => {
       let timerId;
@@ -2001,8 +2022,10 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
   } catch (err) {
     logger.warn("[geminiArchitect] runGeminiChat error", {
       codepath: "runGeminiChat",
-      model: getModelName(),
+      apiVersion: GEMINI_API_VERSION,
+      model: modelName,
       httpStatus: err.status || err.statusCode || null,
+      errorCode: err.code || null,
       message: String(err.message || "").slice(0, 120),
     });
     return { success: false, text: "", error: String(err.message || "UNKNOWN").slice(0, 120) };
