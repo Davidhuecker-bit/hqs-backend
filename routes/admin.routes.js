@@ -4176,6 +4176,10 @@ const {
   VALID_CONFERENCE_CONSENSUS_STATES,
   VALID_CONFERENCE_HANDOFF_DIRECTIONS,
   VALID_CONFERENCE_MODERATION_SIGNALS,
+  // Konferenz Step D: Live Dialog / User Message Handling / Agent Reply Routing / Dialogue Reliability
+  getConferenceDialogState,
+  VALID_CONFERENCE_RESPONSE_TYPES,
+  VALID_CONFERENCE_DIALOG_STATES,
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
@@ -6721,6 +6725,48 @@ router.get("/deepseek/agent-bridge/conference-step-c-summary", (_req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading conference Step C summary",
+    });
+  }
+});
+
+/* ─────────────────────────────────────────────
+   Konferenz Step D: Live Dialog / User Message Handling /
+   Agent Reply Routing / Dialogue Reliability
+
+     GET /api/admin/deepseek/agent-bridge/conference-dialog-state/:conferenceId
+   ───────────────────────────────────────────── */
+
+/**
+ * GET /api/admin/deepseek/agent-bridge/conference-dialog-state/:conferenceId
+ *
+ * Returns the live dialog state of a conference session:
+ * pending state, open clarification, follow-up count, reply cycle count,
+ * last user message, last reply agents, and a recent message excerpt.
+ *
+ * @returns {Object}
+ *   { success, dialogState, dialogStateLabel, openClarification,
+ *     followUpCount, replyCycleCount, lastUserMessage, lastReplyAgents,
+ *     recentMessages, ... }
+ */
+router.get("/deepseek/agent-bridge/conference-dialog-state/:conferenceId", (req, res) => {
+  try {
+    const { conferenceId } = req.params;
+    if (!conferenceId) {
+      return res.status(400).json({ success: false, error: "conferenceId parameter required" });
+    }
+    const dialogState = getConferenceDialogState({ conferenceId });
+    if (!dialogState) {
+      return res.status(404).json({ success: false, error: "Conference session not found" });
+    }
+    return res.json({ success: true, version: "v1", ...dialogState });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/conference-dialog-state error", {
+      error: error.message,
+      conferenceId: req.params.conferenceId,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error reading conference dialog state",
     });
   }
 });
