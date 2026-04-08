@@ -1760,7 +1760,6 @@ async function runGeminiArchitectReview(payload = {}) {
     codepath: "runGeminiArchitectReview",
     mode: normalised.mode,
     model: modelName,
-    apiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
     maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
     promptLengthChars: userPrompt.length,
     hasMessage: Boolean(normalised.message),
@@ -1827,7 +1826,6 @@ async function runGeminiArchitectReview(payload = {}) {
       codepath: "runGeminiArchitectReview",
       mode: normalised.mode,
       model: modelName,
-      apiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
       resultType: errType,
       isTimeout,
       httpStatus: apiErr.status || apiErr.statusCode || null,
@@ -2004,7 +2002,6 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
     logger.warn("[geminiArchitect] runGeminiChat error", {
       codepath: "runGeminiChat",
       model: getModelName(),
-      apiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
       httpStatus: err.status || err.statusCode || null,
       message: String(err.message || "").slice(0, 120),
     });
