@@ -286,8 +286,8 @@ const RESULT_TYPES = {
    Retry configuration for transient API errors
    ───────────────────────────────────────────── */
 
-const GEMINI_MAX_RETRIES    = 2;          // up to 2 retries (3 attempts total)
-const GEMINI_RETRY_DELAY_MS = [1000, 2000]; // wait 1 s, then 2 s before each retry
+const GEMINI_MAX_RETRIES         = 2;    // up to 2 retries (3 attempts total)
+const GEMINI_RETRY_BASE_DELAY_MS = 1000; // base delay; attempt n waits base * 2^n ms
 
 /**
  * Returns true when the error is a transient server-side failure that is
@@ -332,7 +332,7 @@ async function _withGeminiRetry(callFn) {
       if (isLast || !_isRetryableGeminiError(err)) {
         throw err;
       }
-      const delayMs = GEMINI_RETRY_DELAY_MS[attempt] ?? 2000;
+      const delayMs = GEMINI_RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
       logger.warn("[geminiArchitect] Retryable error – will retry", {
         attempt: attempt + 1,
         maxRetries: GEMINI_MAX_RETRIES,
