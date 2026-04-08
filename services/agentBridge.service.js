@@ -14962,11 +14962,13 @@ function openConferenceSession({
   if (conferenceId && _conferenceSessions.has(conferenceId)) {
     const existing = _conferenceSessions.get(conferenceId);
     if (existing.conferenceStatus === "session_paused" || existing.conferenceStatus === "session_closed") {
+      const previousStatus = existing.conferenceStatus;
       existing.conferenceStatus = "session_active";
       existing.updatedAt = new Date().toISOString();
+      existing.statusHistory.push({ status: "session_active", changedAt: existing.updatedAt });
       logger.info("[agentBridge] Konferenz Step A – Session wiederaufgenommen", {
         conferenceId,
-        previousStatus: existing.conferenceStatus,
+        previousStatus,
       });
     }
     return { success: true, conferenceId, session: _formatConferenceSession(existing), resumed: true };
@@ -15332,6 +15334,7 @@ function sendConferenceMessage({
     bothMode: resolvedTarget.target === "both",
     bothModeMessageCount: session.bothModeMessageCount || 0,
     completedBothReplyCycles: session.completedBothReplyCycles || 0,
+    partialBothReplyCycles: session.partialBothReplyCycles || 0,
   };
 }
 
@@ -15835,10 +15838,12 @@ function getConferenceWorkspace() {
 
   const activeSessions = sessions
     .filter((s) => s.conferenceStatus === "session_active" || s.conferenceStatus === "session_open")
+    .sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""))
     .map(_formatConferenceSession);
 
   const pausedSessions = sessions
     .filter((s) => s.conferenceStatus === "session_paused")
+    .sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""))
     .map(_formatConferenceSession);
 
   const recentClosed = sessions
@@ -15857,6 +15862,8 @@ function getConferenceWorkspace() {
     pausedCount: pausedSessions.length,
     closedCount: sessions.filter((s) => s.conferenceStatus === "session_closed").length,
     archivedCount: sessions.filter((s) => s.conferenceStatus === "session_archived").length,
+    // Convenience field: conferenceId of the most recently active session
+    currentActiveConferenceId: activeSessions.length > 0 ? activeSessions[0].conferenceId : null,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -16029,6 +16036,14 @@ function _formatConferenceSession(session) {
     lastUserMessageId: session.lastUserMessageId || null,
     lastUserMessage: session.lastUserMessage || null,
     lastReplyAgents: session.lastReplyAgents || [],
+    // Konferenz Step E: Both-Mode tracking fields
+    bothModeMessageCount: session.bothModeMessageCount || 0,
+    completedBothReplyCycles: session.completedBothReplyCycles || 0,
+    partialBothReplyCycles: session.partialBothReplyCycles || 0,
+    deepseekOnlyCount: session.deepseekOnlyCount || 0,
+    geminiOnlyCount: session.geminiOnlyCount || 0,
+    bothModeCooperationTypes: session.bothModeCooperationTypes || {},
+    createdAt: session.createdAt || session.sessionOpenedAt,
   };
 }
 

@@ -6087,7 +6087,7 @@ router.post("/deepseek/agent-bridge/conference-session", (req, res) => {
       conferenceFocus: conferenceFocus || null,
       conferenceOwner: conferenceOwner || "admin",
     });
-    return res.json(result);
+    return res.json({ version: "v1", ...result });
   } catch (error) {
     logger.error("[admin] deepseek/agent-bridge/conference-session POST error", {
       message: error.message,
