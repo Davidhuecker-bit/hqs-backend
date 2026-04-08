@@ -1484,6 +1484,51 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Konferenz Step D: Inject live dialog context when available ──
+  if (bridgeContext && bridgeContext.conferenceDialogContext) {
+    const cdc = bridgeContext.conferenceDialogContext;
+    const cdcParts = [];
+    if (cdc.dialogState && cdc.dialogState !== "dialog_idle") {
+      const stateLabels = {
+        message_received: "Nachricht empfangen",
+        agent_reply_pending: "Agentenantwort ausstehend",
+        reply_delivered: "Antwort zugestellt",
+        additional_agent_pending: "Zweite Agentenantwort ausstehend",
+        reply_cycle_complete: "Antwortzyklus abgeschlossen",
+        clarification_open: "Rückfrage offen",
+        follow_up_pending: "Folgefrage offen",
+      };
+      cdcParts.push(`Dialog-Status: ${stateLabels[cdc.dialogState] || cdc.dialogState}`);
+    }
+    if (cdc.targetAgent) {
+      const agentLabels = { deepseek: "DeepSeek (Backend)", gemini: "Gemini (Frontend/UX)", both: "Beide Agenten", system: "System" };
+      cdcParts.push(`Ziel-Agent: ${agentLabels[cdc.targetAgent] || cdc.targetAgent}`);
+    }
+    if (cdc.lastUserMessage) {
+      cdcParts.push(`Letzte User-Frage: ${cdc.lastUserMessage}`);
+    }
+    if (cdc.openClarification) {
+      cdcParts.push("Rückfrage an User offen – keine neue Vollantwort nötig");
+    }
+    if (cdc.followUpCount > 0) {
+      cdcParts.push(`Folgefragen bisher: ${cdc.followUpCount}`);
+    }
+    if (cdc.replyCycleCount > 0) {
+      cdcParts.push(`Abgeschlossene Antwortzyklen: ${cdc.replyCycleCount}`);
+    }
+    if (cdc.lastLeadAgent) {
+      cdcParts.push(`Letzter führender Agent: ${cdc.lastLeadAgent === "deepseek" ? "DeepSeek" : "Gemini"}`);
+    }
+    if (cdcParts.length) {
+      sections.push(`Live-Dialogkontext (Step D – echte User-Nachricht, Routing, Reply-Bezug):\n${cdcParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Konferenz Step D – Dialog-Kontext eingebunden", {
+        dialogState: cdc.dialogState,
+        targetAgent: cdc.targetAgent,
+        openClarification: cdc.openClarification,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

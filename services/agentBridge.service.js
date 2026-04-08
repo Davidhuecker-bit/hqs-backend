@@ -1629,6 +1629,53 @@ const CONFERENCE_RESULT_KEYWORDS = ["ergebnis", "fazit", "zusammenfassung", "abs
 const PERSPECTIVE_CONTRIBUTION_MAX_LENGTH = 150;
 
 /* ─────────────────────────────────────────────
+   Konferenz Step D: Live Dialog / User Message Handling /
+   Agent Reply Routing / Dialogue Reliability
+
+   Strengthens the conference into a real live dialog room:
+   - Free user messages per session, sauber gespeichert
+   - Stable agent targeting (deepseek/gemini/both/system)
+   - Agent replies routed back into the same session thread
+   - Reply reference / context (responseType, replyToMessageId, followUpOf)
+   - Follow-up and counter-question support
+   - Pending/lifecycle states for reliable dialog tracking
+   - Enhanced admin summary with dialog quality metrics
+   ───────────────────────────────────────────────────────── */
+
+/** Response types – what kind of reply an agent is giving */
+const VALID_CONFERENCE_RESPONSE_TYPES = [
+  "direct_answer",   // Direct answer to user question
+  "clarification",   // Clarifying the question or context
+  "rückfrage",       // Counter-question: agent asks user for more info
+  "follow_up",       // Extends or builds on a previous answer in the thread
+  "coordinated",     // Part of a coordinated multi-agent reply
+  "summary",         // Summary of the thread or current topic
+];
+
+/** Dialog states – lifecycle of a user ↔ agent exchange within a session */
+const VALID_CONFERENCE_DIALOG_STATES = [
+  "dialog_idle",              // No recent message; session open but quiet
+  "message_received",         // User message just recorded, routing in progress
+  "agent_reply_pending",      // Routing decided, agent reply not yet recorded
+  "reply_delivered",          // Agent reply recorded; awaiting next user action
+  "additional_agent_pending", // First agent replied; second agent (both mode) still pending
+  "reply_cycle_complete",     // All targeted agents replied; cycle finished
+  "clarification_open",       // Agent returned a Rückfrage; awaiting user follow-up
+  "follow_up_pending",        // Recent follow-up message; reply cycle not yet complete
+];
+
+/** Keywords indicating a follow-up or clarification from the user */
+const CONFERENCE_FOLLOWUP_KEYWORDS = [
+  "nochmal", "ergänzend", "noch eine frage", "noch etwas", "und was", "außerdem",
+  "ich meinte", "korrigiere", "genauer", "was noch", "kannst du", "und wenn",
+  "was ist mit", "was passiert", "wie sieht es aus", "was würdest du", "warum",
+  "konkret", "beispiel", "detail", "bitte erkläre", "erkläre mir",
+];
+
+/** Max length for lastUserMessage excerpt stored on session */
+const CONFERENCE_LAST_USER_MSG_MAX_LENGTH = 200;
+
+/* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
    package and any pending frontend feedback.
@@ -14940,6 +14987,14 @@ function openConferenceSession({
     phaseTransitionCount: 0,
     resultCardCount: 0,
     decisionRoomActivationCount: 0,
+    // Konferenz Step D: Live dialog / reply lifecycle tracking
+    dialogState: "dialog_idle",
+    followUpCount: 0,
+    replyCycleCount: 0,
+    openClarification: false,
+    lastUserMessageId: null,
+    lastUserMessage: null,
+    lastReplyAgents: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -15007,6 +15062,14 @@ function sendConferenceMessage({
   const messageIntent = _deriveMessageIntent(userMessage);
   const now = new Date().toISOString();
 
+  // Konferenz Step D: Detect follow-up and update dialog state
+  const isFollowUp = _isFollowUpMessage(userMessage, session);
+  const followUpOf = isFollowUp ? (session.lastUserMessageId || null) : null;
+  if (isFollowUp) {
+    session.followUpCount += 1;
+  }
+  session.dialogState = "message_received";
+
   // Record user message
   _conferenceMsgCounter += 1;
   const userMsgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
@@ -15021,6 +15084,9 @@ function sendConferenceMessage({
     content: userMessage.trim(),
     replyToMessageId: replyToMessageId || null,
     conferenceMode: session.conferenceMode,
+    // Konferenz Step D: follow-up tracking
+    isFollowUp,
+    followUpOf,
     createdAt: now,
   };
 
@@ -15030,34 +15096,67 @@ function sendConferenceMessage({
   session.lastSpeaker = "user";
   session.lastActivity = now;
 
+  // Konferenz Step D: track last user message for reply context
+  session.lastUserMessageId = userMsgId;
+  session.lastUserMessage = userMessage.trim().slice(0, CONFERENCE_LAST_USER_MSG_MAX_LENGTH);
+  session.openClarification = false; // reset on new user message
+
   // Trim messages if over limit
   if (session.messages.length > CONFERENCE_SESSION_MAX_MESSAGES) {
     session.messages = session.messages.slice(-CONFERENCE_SESSION_MAX_MESSAGES);
   }
 
-  logger.info("[agentBridge] Konferenz Step A – Konferenz-Nachricht empfangen", {
+  // Konferenz Step D: update dialog state to routing
+  session.dialogState = "agent_reply_pending";
+
+  logger.info("[agentBridge] Konferenz Step D – User-Nachricht empfangen und geroutet", {
     conferenceId,
     targetAgent: resolvedTarget.target,
     routingReason: resolvedTarget.routingReason,
     messageIntent,
+    isFollowUp,
+    userMsgId,
   });
 
   // Generate agent replies based on target
   const agentReplies = [];
 
   if (resolvedTarget.target === "both") {
-    // Both agents reply
+    // Both agents reply – DeepSeek leads, Gemini supplements
     const dsReply = _generateConferenceReply("deepseek", messageIntent, userMessage, session);
     const gmReply = _generateConferenceReply("gemini", messageIntent, userMessage, session);
-    agentReplies.push(_recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId));
-    agentReplies.push(_recordConferenceAgentReply(session, "gemini", gmReply, userMsgId));
+    const dsRecord = _recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId, null);
+    const gmRecord = _recordConferenceAgentReply(session, "gemini", gmReply, userMsgId, dsRecord.messageId);
+    agentReplies.push(dsRecord);
+    agentReplies.push(gmRecord);
+    session.lastReplyAgents = ["deepseek", "gemini"];
   } else if (resolvedTarget.target === "system") {
     const sysReply = _generateConferenceSystemReply(messageIntent, session);
-    agentReplies.push(_recordConferenceAgentReply(session, "system", sysReply, userMsgId));
+    const sysRecord = _recordConferenceAgentReply(session, "system", sysReply, userMsgId, null);
+    agentReplies.push(sysRecord);
+    session.lastReplyAgents = ["system"];
   } else {
     // Single agent reply
     const reply = _generateConferenceReply(resolvedTarget.target, messageIntent, userMessage, session);
-    agentReplies.push(_recordConferenceAgentReply(session, resolvedTarget.target, reply, userMsgId));
+    const record = _recordConferenceAgentReply(session, resolvedTarget.target, reply, userMsgId, null);
+    agentReplies.push(record);
+    session.lastReplyAgents = [resolvedTarget.target];
+  }
+
+  // Konferenz Step D: derive dialog state after replies
+  const hasRückfrage = agentReplies.some((r) => r.responseType === "rückfrage");
+  if (hasRückfrage) {
+    session.openClarification = true;
+    session.dialogState = "clarification_open";
+    logger.info("[agentBridge] Konferenz Step D – Rückfrage offen", { conferenceId });
+  } else {
+    session.openClarification = false;
+    session.dialogState = "reply_cycle_complete";
+    session.replyCycleCount += 1;
+    logger.info("[agentBridge] Konferenz Step D – Antwortzyklus abgeschlossen", {
+      conferenceId,
+      replyCycleCount: session.replyCycleCount,
+    });
   }
 
   session.lastTargetAgent = resolvedTarget.target;
@@ -15082,17 +15181,30 @@ function sendConferenceMessage({
     workPhase: session.workPhase,
     moderationSignal: session.moderationSignal,
     handoffDirection: session.handoffDirection,
+    // Konferenz Step D: dialog state
+    dialogState: session.dialogState,
+    openClarification: session.openClarification,
+    replyCycleCount: session.replyCycleCount,
+    followUpCount: session.followUpCount,
   };
 }
 
 /**
  * Record an agent reply within a conference session.
+ * @param {Object} session
+ * @param {string} agent
+ * @param {string} content
+ * @param {string} replyToMessageId – ID of the user message being replied to
+ * @param {string|null} [followUpOf] – ID of a previous agent message this supplements (null for first reply)
  * @private
  */
-function _recordConferenceAgentReply(session, agent, content, replyToMessageId) {
+function _recordConferenceAgentReply(session, agent, content, replyToMessageId, followUpOf = null) {
   _conferenceMsgCounter += 1;
   const msgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
   const now = new Date().toISOString();
+
+  // Konferenz Step D: derive response type
+  const responseType = _deriveResponseType(agent, content, session, followUpOf);
 
   const record = {
     messageId: msgId,
@@ -15102,6 +15214,9 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId) 
     speakerRole: agent === "deepseek" ? "backend_agent" : agent === "gemini" ? "frontend_agent" : "coordinator",
     content,
     replyToMessageId,
+    responseType,
+    responseToRole: "user",
+    followUpOf: followUpOf || null,
     conferenceMode: session.conferenceMode,
     createdAt: now,
   };
@@ -15114,6 +15229,14 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId) 
   if (agent === "deepseek") session.deepseekMessageCount += 1;
   else if (agent === "gemini") session.geminiMessageCount += 1;
   else session.systemMessageCount += 1;
+
+  logger.info("[agentBridge] Konferenz Step D – Agent-Antwort erzeugt", {
+    conferenceId: session.conferenceId,
+    agent,
+    responseType,
+    replyToMessageId,
+    followUpOf,
+  });
 
   return record;
 }
@@ -15509,6 +15632,7 @@ function getConferenceAdminSummary() {
   const byStatus = {};
   const byMode = {};
   const byTarget = {};
+  const byDialogState = {};
 
   for (const s of sessions) {
     byStatus[s.conferenceStatus] = (byStatus[s.conferenceStatus] || 0) + 1;
@@ -15516,6 +15640,9 @@ function getConferenceAdminSummary() {
     if (s.lastTargetAgent) {
       byTarget[s.lastTargetAgent] = (byTarget[s.lastTargetAgent] || 0) + 1;
     }
+    // Konferenz Step D: dialog state distribution
+    const ds = s.dialogState || "dialog_idle";
+    byDialogState[ds] = (byDialogState[ds] || 0) + 1;
   }
 
   const totalActive = byStatus["session_active"] || 0;
@@ -15532,6 +15659,7 @@ function getConferenceAdminSummary() {
   const totalBothTargeted = byTarget["both"] || 0;
 
   const totalMessages = sessions.reduce((sum, s) => sum + s.messageCount, 0);
+  const totalUserMessages = sessions.reduce((sum, s) => sum + (s.userMessageCount || 0), 0);
 
   // Sessions with follow-up need (recent messages with follow_up intent)
   const totalWithFollowUp = sessions.filter((s) => {
@@ -15541,6 +15669,15 @@ function getConferenceAdminSummary() {
 
   // Sessions with related cases
   const totalWithCaseBinding = sessions.filter((s) => !!s.relatedCaseId).length;
+
+  // Konferenz Step D: dialog quality metrics
+  const totalFollowUpMessages = sessions.reduce((sum, s) => sum + (s.followUpCount || 0), 0);
+  const totalCompletedCycles = sessions.reduce((sum, s) => sum + (s.replyCycleCount || 0), 0);
+  const totalWithOpenClarification = sessions.filter((s) => s.openClarification === true).length;
+  const totalWithActiveDialog = sessions.filter((s) =>
+    s.dialogState !== "dialog_idle" && s.dialogState !== "reply_cycle_complete" &&
+    (s.conferenceStatus === "session_active" || s.conferenceStatus === "session_open")
+  ).length;
 
   return {
     totalSessions: total,
@@ -15555,11 +15692,18 @@ function getConferenceAdminSummary() {
     totalGeminiOnly,
     totalBothTargeted,
     totalMessages,
+    totalUserMessages,
     totalWithFollowUp,
     totalWithCaseBinding,
+    // Konferenz Step D: dialog quality metrics
+    totalFollowUpMessages,
+    totalCompletedCycles,
+    totalWithOpenClarification,
+    totalWithActiveDialog,
     byStatus,
     byMode,
     byTarget,
+    byDialogState,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -15613,6 +15757,14 @@ function _formatConferenceSession(session) {
     phaseTransitionCount: session.phaseTransitionCount || 0,
     decisionRoomActivationCount: session.decisionRoomActivationCount || 0,
     currentResultCard: session.currentResultCard || null,
+    // Konferenz Step D: Live dialog state
+    dialogState: session.dialogState || "dialog_idle",
+    openClarification: session.openClarification || false,
+    followUpCount: session.followUpCount || 0,
+    replyCycleCount: session.replyCycleCount || 0,
+    lastUserMessageId: session.lastUserMessageId || null,
+    lastUserMessage: session.lastUserMessage || null,
+    lastReplyAgents: session.lastReplyAgents || [],
   };
 }
 
@@ -15632,6 +15784,128 @@ function _formatDuration(startIso, endIso) {
   } catch {
     return "—";
   }
+}
+
+/* ─────────────────────────────────────────────
+   Konferenz Step D: Live Dialog / User Message Handling /
+   Agent Reply Routing / Dialogue Reliability
+   ───────────────────────────────────────────── */
+
+/**
+ * Detect whether a user message is a follow-up on a previous exchange.
+ * Uses keyword signals and session state (prior messages in session).
+ * @param {string} userMessage
+ * @param {Object} session
+ * @returns {boolean}
+ * @private
+ */
+function _isFollowUpMessage(userMessage, session) {
+  if (!session.lastUserMessageId) return false; // first message in session
+  const lower = userMessage.toLowerCase();
+  return CONFERENCE_FOLLOWUP_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+/**
+ * Derive the response type for an agent reply.
+ * Analyses content signals and context to classify the reply.
+ * @param {string} agent - "deepseek" | "gemini" | "system"
+ * @param {string} content - reply content
+ * @param {Object} session - current session
+ * @param {string|null} followUpOf - ID of a prior agent message this supplements
+ * @returns {string} one of VALID_CONFERENCE_RESPONSE_TYPES
+ * @private
+ */
+function _deriveResponseType(agent, content, session, followUpOf) {
+  if (agent === "system") return "summary";
+  const lower = (content || "").toLowerCase();
+
+  // Supplementary agent reply in "both" mode → follow_up
+  if (followUpOf) return "follow_up";
+
+  // Coordinated reply (multi-agent active)
+  if (session.coordinationState === "coordinated_active" ||
+      session.currentReplyPattern === "coordinated_reply" ||
+      session.currentReplyPattern === "bundled_reply") {
+    return "coordinated";
+  }
+
+  // Counter-question signals
+  const rückfrageSignals = [
+    "kannst du", "könntest du", "was meinst du", "meinst du damit", "was genau",
+    "könntest du das", "bitte erkläre", "ich bräuchte", "magst du", "darf ich fragen",
+    "was ist der", "wie ist der", "wie meinst du", "könnten sie",
+  ];
+  if (rückfrageSignals.some((kw) => lower.includes(kw))) return "rückfrage";
+
+  // Clarification
+  const clarifySignals = ["ich präzisiere", "genauer gesagt", "ich klare", "zur klarstellung", "anders ausgedrückt"];
+  if (clarifySignals.some((kw) => lower.includes(kw))) return "clarification";
+
+  // Summary
+  const summarySignals = ["zusammenfassend", "zusammenfassung", "fazit", "im ergebnis", "zusammengefasst"];
+  if (summarySignals.some((kw) => lower.includes(kw))) return "summary";
+
+  // Default: direct answer
+  return "direct_answer";
+}
+
+/**
+ * Get the current dialog state for a conference session, including
+ * pending indicators and reply context for frontend consumption.
+ *
+ * @param {Object} params
+ * @param {string} params.conferenceId – required
+ * @returns {Object|null}
+ */
+function getConferenceDialogState({ conferenceId } = {}) {
+  if (!conferenceId) return null;
+  const session = _conferenceSessions.get(conferenceId);
+  if (!session) return null;
+
+  const dialogStateLabel = {
+    dialog_idle: "Kein aktiver Dialog",
+    message_received: "Nachricht empfangen",
+    agent_reply_pending: "Agentenantwort ausstehend",
+    reply_delivered: "Antwort zugestellt",
+    additional_agent_pending: "Zweite Agentenantwort ausstehend",
+    reply_cycle_complete: "Antwortzyklus abgeschlossen",
+    clarification_open: "Rückfrage offen",
+    follow_up_pending: "Folgefrage wartet auf Antwort",
+  }[session.dialogState] || session.dialogState;
+
+  // Last few messages for context
+  const recentMessages = session.messages.slice(-6).map((m) => ({
+    messageId: m.messageId,
+    speakerAgent: m.speakerAgent,
+    messageRole: m.messageRole,
+    messageIntent: m.messageIntent || null,
+    responseType: m.responseType || null,
+    replyToMessageId: m.replyToMessageId || null,
+    followUpOf: m.followUpOf || null,
+    isFollowUp: m.isFollowUp || false,
+    createdAt: m.createdAt,
+    contentExcerpt: (m.content || "").slice(0, 100),
+  }));
+
+  return {
+    conferenceId,
+    dialogState: session.dialogState,
+    dialogStateLabel,
+    openClarification: session.openClarification,
+    followUpCount: session.followUpCount,
+    replyCycleCount: session.replyCycleCount,
+    lastUserMessageId: session.lastUserMessageId,
+    lastUserMessage: session.lastUserMessage,
+    lastReplyAgents: session.lastReplyAgents || [],
+    lastTargetAgent: session.lastTargetAgent,
+    lastSpeaker: session.lastSpeaker,
+    lastActivity: session.lastActivity,
+    conferenceStatus: session.conferenceStatus,
+    conferenceMode: session.conferenceMode,
+    workPhase: session.workPhase,
+    recentMessages,
+    generatedAt: new Date().toISOString(),
+  };
 }
 
 /* ─────────────────────────────────────────────
@@ -17280,4 +17554,8 @@ module.exports = {
   VALID_CONFERENCE_CONSENSUS_STATES,
   VALID_CONFERENCE_HANDOFF_DIRECTIONS,
   VALID_CONFERENCE_MODERATION_SIGNALS,
+  // Konferenz Step D: Live Dialog / User Message Handling / Agent Reply Routing / Dialogue Reliability
+  getConferenceDialogState,
+  VALID_CONFERENCE_RESPONSE_TYPES,
+  VALID_CONFERENCE_DIALOG_STATES,
 };
