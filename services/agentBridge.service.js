@@ -15782,6 +15782,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     const fallback = _generateConferenceReplyFallback(agent, messageIntent, session);
     return { text: fallback.text, usedFallback: true, apiError: String(err.message || "").slice(0, 120) };
   }
+  // API returned an empty response – fall back to static template
   return _generateConferenceReplyFallback(agent, messageIntent, session);
 }
 
@@ -17772,6 +17773,7 @@ async function sendCoordinatedConferenceMessage({
       const bundledText = `[Backend] ${dsBundle.text}\n\n[Frontend] ${gmBundle.text}`;
       agentReplies.push(_recordConferenceAgentReply(session, "system", bundledText, userMsgId, null, {
         usedFallback: dsBundle.usedFallback || gmBundle.usedFallback,
+        apiError: dsBundle.apiError || gmBundle.apiError || null,
       }));
       coordinatorMessages.push(_recordCoordinatorMessage(session, "reply_bundled", {}));
       session.bundledReplyCount += 1;
