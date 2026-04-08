@@ -98,12 +98,12 @@ describe("Step 22 – Thread Handoff Fields", () => {
     expect(thread.handoffHistory).toEqual([]);
   });
 
-  test("getConversationThread returns handoff fields", () => {
+  test("getConversationThread returns handoff fields", async () => {
     const id = testId("thread-get");
     getOrCreateConversationThread(id);
 
     // Send a message to populate the thread
-    sendUserMessage({ agentCaseId: id, userMessage: "Hallo" });
+    await sendUserMessage({ agentCaseId: id, userMessage: "Hallo" });
 
     const thread = getConversationThread({ agentCaseId: id });
     expect(thread).toHaveProperty("handoffStatus");
@@ -122,10 +122,10 @@ describe("Step 22 – Thread Handoff Fields", () => {
    ──────────────────────────────────────────── */
 
 describe("Step 22 – Automatic Handoff Detection", () => {
-  test("cross-layer message triggers handoff", () => {
+  test("cross-layer message triggers handoff", async () => {
     const id = testId("auto-cross");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Das Problem betrifft frontend und backend zusammen, das Zusammenspiel ist gestört",
     });
@@ -140,10 +140,10 @@ describe("Step 22 – Automatic Handoff Detection", () => {
     expect(result.handoffCount).toBeGreaterThan(0);
   });
 
-  test("simple backend question does not trigger handoff", () => {
+  test("simple backend question does not trigger handoff", async () => {
     const id = testId("auto-simple");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Wie funktioniert die API?",
     });
@@ -153,10 +153,10 @@ describe("Step 22 – Automatic Handoff Detection", () => {
     expect(result.supportingAgentReply).toBeNull();
   });
 
-  test("user-requested handoff triggers handoff", () => {
+  test("user-requested handoff triggers handoff", async () => {
     const id = testId("auto-user-req");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Bitte hole Gemini dazu, ich brauche eine zweite Meinung",
     });
@@ -167,10 +167,10 @@ describe("Step 22 – Automatic Handoff Detection", () => {
     expect(result.supportingAgentReply).toBeTruthy();
   });
 
-  test("message touching both domains triggers handoff", () => {
+  test("message touching both domains triggers handoff", async () => {
     const id = testId("auto-dual");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Das API-Endpoint liefert Daten, aber die Anzeige im Frontend ist fehlerhaft, prüfe den Datenfluss und die Darstellung",
     });
@@ -180,10 +180,10 @@ describe("Step 22 – Automatic Handoff Detection", () => {
     expect(result.supportingAgentReply).toBeTruthy();
   });
 
-  test("handoff messages are recorded in thread", () => {
+  test("handoff messages are recorded in thread", async () => {
     const id = testId("auto-thread");
 
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Bitte übergib an den anderen Agenten zur Ergänzung",
     });
@@ -218,16 +218,16 @@ describe("Step 22 – Automatic Handoff Detection", () => {
    ──────────────────────────────────────────── */
 
 describe("Step 22 – triggerHandoff", () => {
-  test("manually triggers a handoff", () => {
+  test("manually triggers a handoff", async () => {
     const id = testId("trigger-manual");
 
     // First create a thread with a message
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Bitte schau dir den Backend-Code an",
     });
 
-    const result = triggerHandoff({
+    const result = await triggerHandoff({
       agentCaseId: id,
       targetAgent: "gemini",
       reason: "cross_layer_issue",
@@ -243,28 +243,28 @@ describe("Step 22 – triggerHandoff", () => {
     expect(result.supportingAgentReply).toBeTruthy();
   });
 
-  test("rejects missing agentCaseId", () => {
-    const result = triggerHandoff({});
+  test("rejects missing agentCaseId", async () => {
+    const result = await triggerHandoff({});
     expect(result.success).toBe(false);
     expect(result.error).toContain("agentCaseId");
   });
 
-  test("rejects non-existent thread", () => {
-    const result = triggerHandoff({
+  test("rejects non-existent thread", async () => {
+    const result = await triggerHandoff({
       agentCaseId: "non-existent-id-step22",
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain("No conversation thread");
   });
 
-  test("rejects invalid handoff reason", () => {
+  test("rejects invalid handoff reason", async () => {
     const id = testId("trigger-invalid");
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Test Nachricht",
     });
 
-    const result = triggerHandoff({
+    const result = await triggerHandoff({
       agentCaseId: id,
       reason: "invalid_reason",
     });
@@ -272,14 +272,14 @@ describe("Step 22 – triggerHandoff", () => {
     expect(result.error).toContain("Invalid handoff reason");
   });
 
-  test("auto-derives target agent when not specified", () => {
+  test("auto-derives target agent when not specified", async () => {
     const id = testId("trigger-auto");
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Einfacher Test",
     });
 
-    const result = triggerHandoff({
+    const result = await triggerHandoff({
       agentCaseId: id,
     });
 
@@ -313,9 +313,9 @@ describe("Step 22 – getHandoffSummary", () => {
     expect(summary).toHaveProperty("generatedAt");
   });
 
-  test("reflects triggered handoffs", () => {
+  test("reflects triggered handoffs", async () => {
     const id = testId("summary-reflect");
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Frontend und Backend zusammen prüfen, das Zusammenspiel ist gestört",
     });
@@ -341,9 +341,9 @@ describe("Step 22 – Conversation Summary Handoff Fields", () => {
     expect(typeof summary.totalHandoffs).toBe("number");
   });
 
-  test("thread summaries include handoff fields", () => {
+  test("thread summaries include handoff fields", async () => {
     const id = testId("convsum-handoff");
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Übergib an Gemini dazu, zweite Meinung nötig",
     });
@@ -366,10 +366,10 @@ describe("Step 22 – Conversation Summary Handoff Fields", () => {
    ──────────────────────────────────────────── */
 
 describe("Step 22 – Message Quality", () => {
-  test("handoff messages are human-readable German", () => {
+  test("handoff messages are human-readable German", async () => {
     const id = testId("msg-quality");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Das Zusammenspiel von frontend und backend ist gestört, bitte schau beides an",
     });
@@ -386,10 +386,10 @@ describe("Step 22 – Message Quality", () => {
     expect(content).not.toContain("handoff_not_needed");
   });
 
-  test("handoff initiation message references the other agent", () => {
+  test("handoff initiation message references the other agent", async () => {
     const id = testId("msg-ref");
 
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Frontend und Backend zusammen prüfen, beide Seiten relevant",
     });
@@ -411,10 +411,10 @@ describe("Step 22 – Message Quality", () => {
     expect(mentionsAgent).toBe(true);
   });
 
-  test("completion message indicates return to normal", () => {
+  test("completion message indicates return to normal", async () => {
     const id = testId("msg-complete");
 
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Bitte hole die zweite Meinung zur Ergänzung",
     });
@@ -438,10 +438,10 @@ describe("Step 22 – Message Quality", () => {
    ──────────────────────────────────────────── */
 
 describe("Step 22 – Handoff History", () => {
-  test("handoff history is recorded on the thread", () => {
+  test("handoff history is recorded on the thread", async () => {
     const id = testId("history-record");
 
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Frontend und Backend prüfen, das Zusammenspiel klappt nicht",
     });
@@ -461,17 +461,17 @@ describe("Step 22 – Handoff History", () => {
     expect(entry).toHaveProperty("completionMessageId");
   });
 
-  test("multiple handoffs accumulate in history", () => {
+  test("multiple handoffs accumulate in history", async () => {
     const id = testId("history-multi");
 
     // First handoff via message
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Frontend und Backend Zusammenspiel prüfen, end-to-end",
     });
 
     // Second handoff via trigger
-    triggerHandoff({
+    await triggerHandoff({
       agentCaseId: id,
       reason: "user_requested",
     });
@@ -487,10 +487,10 @@ describe("Step 22 – Handoff History", () => {
    ──────────────────────────────────────────── */
 
 describe("Step 22 – Edge Cases", () => {
-  test("sendUserMessage still works without handoff", () => {
+  test("sendUserMessage still works without handoff", async () => {
     const id = testId("edge-no-handoff");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Einfache Backend-Frage zur API",
     });
@@ -502,17 +502,17 @@ describe("Step 22 – Edge Cases", () => {
     expect(result.supportingAgentReply).toBeNull();
   });
 
-  test("thread returns to normal after handoff", () => {
+  test("thread returns to normal after handoff", async () => {
     const id = testId("edge-normal");
 
     // Trigger handoff
-    sendUserMessage({
+    await sendUserMessage({
       agentCaseId: id,
       userMessage: "Frontend und Backend Zusammenspiel prüfen, beide Seiten relevant",
     });
 
     // Follow-up without handoff
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Danke, jetzt eine einfache API-Frage",
     });
@@ -523,10 +523,10 @@ describe("Step 22 – Edge Cases", () => {
     expect(result.agentReply.content).toBeTruthy();
   });
 
-  test("sendUserMessage returns new handoff response fields", () => {
+  test("sendUserMessage returns new handoff response fields", async () => {
     const id = testId("edge-fields");
 
-    const result = sendUserMessage({
+    const result = await sendUserMessage({
       agentCaseId: id,
       userMessage: "Test Nachricht",
     });
