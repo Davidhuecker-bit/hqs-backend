@@ -1698,21 +1698,38 @@ function getResponseText(response) {
   try {
     if (!response) return "";
 
-    // New @google/genai SDK: response.text is a string directly
-    if (typeof response.text === "string") {
-      return response.text;
+    // @google/genai SDK v1+: response.text is a getter returning string | undefined.
+    // Read the getter into a variable first to avoid calling it twice.
+    // If it returns a non-empty string, use it directly.
+    // If it returns "" or undefined (e.g., thought-only parts, safety block),
+    // fall through to the direct candidates extraction path which reads parts
+    // without the SDK's thought-filtering and catches edge cases the getter misses.
+    let textFromGetter;
+    try {
+      const raw = response.text;
+      if (typeof raw === "string") {
+        textFromGetter = raw;
+      } else if (typeof raw === "function") {
+        // transitional: SDK exposed text as a callable in some versions
+        const val = raw();
+        if (typeof val === "string") textFromGetter = val;
+      }
+    } catch (_getterErr) {
+      // getter threw – fall through to candidates path
     }
 
-    // New SDK: response.text may also be a function (transitional)
-    if (typeof response.text === "function") {
-      const value = response.text();
-      if (typeof value === "string") return value;
-    }
+    // Only use getter result when it contains actual non-empty text.
+    // Empty string from the getter (falsy) falls through to the candidates
+    // extraction below, which is the correct behaviour: an empty getter result
+    // may still have text in parts that the getter's thought-filtering skipped.
+    if (textFromGetter) return textFromGetter;
 
-    // Legacy candidates fallback (old SDK shape)
+    // Direct candidates extraction (works even when the SDK getter returns "" or undefined).
+    // This is the primary fallback and handles safety-blocked responses gracefully.
     const geminiResponse = response?.response ?? response;
-    if (Array.isArray(geminiResponse?.candidates)) {
-      const parts = geminiResponse.candidates
+    const candidates = geminiResponse?.candidates;
+    if (Array.isArray(candidates) && candidates.length > 0) {
+      const parts = candidates
         .flatMap((candidate) => candidate?.content?.parts || [])
         .map((part) => part?.text || "")
         .filter(Boolean);
@@ -1981,15 +1998,22 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
     return { success: false, text: "", error: "NO_INPUT" };
   }
   const modelName = getModelName();
-  logger.info("[geminiArchitect] runGeminiChat start", {
+  logger.info("[geminiArchitect] runGeminiChat – start", {
     codepath: "runGeminiChat",
     apiVersion: GEMINI_API_VERSION,
     model: modelName,
     maxTokens,
     timeoutMs,
+    promptPreview: (userMessage || "").slice(0, 80),
   });
   try {
     const client = getGeminiClient();
+
+    logger.info("[geminiArchitect] runGeminiChat – calling generateContent", {
+      codepath: "runGeminiChat",
+      model: modelName,
+      apiVersion: GEMINI_API_VERSION,
+    });
 
     const response = await _withGeminiRetry(async () => {
       let timerId;
@@ -2014,13 +2038,45 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
       }
     });
 
+    // Log raw response structure for diagnosability
+    const candidateCount = response?.candidates?.length ?? 0;
+    const firstFinishReason = response?.candidates?.[0]?.finishReason ?? null;
+    const blockReason = response?.promptFeedback?.blockReason ?? null;
+    logger.info("[geminiArchitect] runGeminiChat – response received", {
+      codepath: "runGeminiChat",
+      model: modelName,
+      apiVersion: GEMINI_API_VERSION,
+      candidateCount,
+      firstFinishReason,
+      blockReason,
+      hasPromptFeedback: Boolean(response?.promptFeedback),
+    });
+
     const text = getResponseText(response) || "";
     if (!text) {
+      logger.warn("[geminiArchitect] runGeminiChat – empty text extracted from response", {
+        codepath: "runGeminiChat",
+        model: modelName,
+        apiVersion: GEMINI_API_VERSION,
+        candidateCount,
+        firstFinishReason,
+        blockReason,
+        // Log abbreviated raw response shape to help diagnose extraction failures
+        responseKeys: response ? Object.keys(response).join(",") : "null",
+      });
       return { success: false, text: "", error: "EMPTY_RESPONSE" };
     }
+
+    logger.info("[geminiArchitect] runGeminiChat – success", {
+      codepath: "runGeminiChat",
+      model: modelName,
+      apiVersion: GEMINI_API_VERSION,
+      textLength: text.length,
+      textPreview: text.slice(0, 80),
+    });
     return { success: true, text };
   } catch (err) {
-    logger.warn("[geminiArchitect] runGeminiChat error", {
+    logger.warn("[geminiArchitect] runGeminiChat – error", {
       codepath: "runGeminiChat",
       apiVersion: GEMINI_API_VERSION,
       model: modelName,
