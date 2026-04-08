@@ -15363,30 +15363,35 @@ async function sendConferenceMessage({
     // Set intermediate dialog state: first agent replied, second still pending
     session.dialogState = "additional_agent_pending";
 
-    const dsRecord = _recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId, null, {
+    const dsRecord = _recordConferenceAgentReply(session, "deepseek", dsReply.text, userMsgId, null, {
       bothMode: true,
       cooperationType: null,
       followsAgent: null,
       bothModeSequence: "primary",
       openSecondReply: true,
+      usedFallback: dsReply.usedFallback,
+      apiError: dsReply.apiError,
     });
 
     logger.info("[agentBridge] Konferenz Step E – DeepSeek-Antwort erzeugt (primär)", {
       conferenceId,
       messageId: dsRecord.messageId,
       responseType: dsRecord.responseType,
+      usedFallback: dsReply.usedFallback,
     });
 
     // Generate Gemini reply (secondary) – knows about DeepSeek's reply via context
-    const gmReply = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { deepseekReply: dsReply });
-    const cooperationType = _deriveCooperationType(gmReply, dsReply);
+    const gmReply = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { deepseekReply: dsReply.text });
+    const cooperationType = _deriveCooperationType(gmReply.text, dsReply.text);
 
-    const gmRecord = _recordConferenceAgentReply(session, "gemini", gmReply, userMsgId, dsRecord.messageId, {
+    const gmRecord = _recordConferenceAgentReply(session, "gemini", gmReply.text, userMsgId, dsRecord.messageId, {
       bothMode: true,
       cooperationType,
       followsAgent: "deepseek",
       bothModeSequence: "secondary",
       openSecondReply: false,
+      usedFallback: gmReply.usedFallback,
+      apiError: gmReply.apiError,
     });
 
     logger.info("[agentBridge] Konferenz Step E – Gemini-Antwort erzeugt (sekundär)", {
@@ -15394,6 +15399,7 @@ async function sendConferenceMessage({
       messageId: gmRecord.messageId,
       responseType: gmRecord.responseType,
       cooperationType,
+      usedFallback: gmReply.usedFallback,
     });
 
     agentReplies.push(dsRecord);
@@ -15419,7 +15425,10 @@ async function sendConferenceMessage({
   } else {
     // Single agent reply – real API call
     const reply = await _generateConferenceReply(resolvedTarget.target, messageIntent, userMessage, session);
-    const record = _recordConferenceAgentReply(session, resolvedTarget.target, reply, userMsgId, null);
+    const record = _recordConferenceAgentReply(session, resolvedTarget.target, reply.text, userMsgId, null, {
+      usedFallback: reply.usedFallback,
+      apiError: reply.apiError,
+    });
     agentReplies.push(record);
     session.lastReplyAgents = [resolvedTarget.target];
     // Konferenz Step E: track single-agent counts
@@ -15488,6 +15497,11 @@ async function sendConferenceMessage({
     bothModeMessageCount: session.bothModeMessageCount || 0,
     completedBothReplyCycles: session.completedBothReplyCycles || 0,
     partialBothReplyCycles: session.partialBothReplyCycles || 0,
+    // API status: whether the agent APIs are configured (helps frontend show live vs fallback state)
+    agentApiConfigured: {
+      deepseek: isDeepSeekConfigured(),
+      gemini: isGeminiConfigured(),
+    },
   };
 }
 
@@ -15521,6 +15535,8 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId, 
     followsAgent = null,
     bothModeSequence = null,
     openSecondReply = false,
+    usedFallback = false,
+    apiError = null,
   } = bothModeOptions;
 
   const record = {
@@ -15544,6 +15560,9 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId, 
     followsAgent: bothMode ? (followsAgent || null) : null,
     bothModeSequence: bothMode ? (bothModeSequence || null) : null,
     openSecondReply: bothMode ? openSecondReply : false,
+    // API status: whether the reply came from real AI or a static fallback template
+    usedFallback,
+    apiError: usedFallback ? (apiError || null) : null,
     createdAt: now,
   };
 
@@ -15565,6 +15584,7 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId, 
     bothMode,
     cooperationType: bothMode ? cooperationType : undefined,
     bothModeSequence: bothMode ? bothModeSequence : undefined,
+    usedFallback,
   });
 
   return record;
@@ -15729,6 +15749,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
   }[session.conferenceMode] || "Arbeitschat";
 
   // ── Optional note when this agent replies after another agent in both-mode ──
+  // context.deepseekReply and context.primaryAgentReply are plain strings from call sites
   const primaryReply = context.deepseekReply || context.primaryAgentReply || null;
   const prevNote = primaryReply
     ? `\nEin anderer Agent hat bereits geantwortet: "${primaryReply.slice(0, 300)}"\nDeine Antwort soll ergänzen, nicht wiederholen.`
@@ -15752,13 +15773,16 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
       maxTokens: 512,
       temperature: 0.5,
     });
-    if (text.trim()) return text.trim();
+    if (text.trim()) return { text: text.trim(), usedFallback: false, apiError: null };
   } catch (err) {
     logger.warn("[agentBridge] Konferenz API Fehler – Fallback aktiviert", {
       agent,
       message: err.message,
     });
+    const fallback = _generateConferenceReplyFallback(agent, messageIntent, session);
+    return { text: fallback.text, usedFallback: true, apiError: String(err.message || "").slice(0, 120) };
   }
+  // API returned an empty response – fall back to static template
   return _generateConferenceReplyFallback(agent, messageIntent, session);
 }
 
@@ -15810,7 +15834,7 @@ function _generateConferenceReplyFallback(agent, messageIntent, session) {
 
   const candidates = replies[messageIntent] || replies.freeform;
   const idx = (session.messageCount || 0) % candidates.length;
-  return candidates[idx];
+  return { text: candidates[idx], usedFallback: true, apiError: null };
 }
 
 /**
@@ -17697,7 +17721,9 @@ async function sendCoordinatedConferenceMessage({
     case "solo_reply": {
       const agent = resolvedTarget.target === "both" ? session.leadAgent : resolvedTarget.target;
       const reply = await _generateConferenceReply(agent, messageIntent, userMessage, session);
-      agentReplies.push(_recordConferenceAgentReply(session, agent, reply, userMsgId));
+      agentReplies.push(_recordConferenceAgentReply(session, agent, reply.text, userMsgId, null, {
+        usedFallback: reply.usedFallback, apiError: reply.apiError,
+      }));
       session.soloReplyCount += 1;
       break;
     }
@@ -17705,7 +17731,9 @@ async function sendCoordinatedConferenceMessage({
     case "supporting_reply": {
       // Lead answers first via real API, then support agent adds a real supplementary reply
       const leadReply = await _generateConferenceReply(session.leadAgent, messageIntent, userMessage, session);
-      agentReplies.push(_recordConferenceAgentReply(session, session.leadAgent, leadReply, userMsgId));
+      agentReplies.push(_recordConferenceAgentReply(session, session.leadAgent, leadReply.text, userMsgId, null, {
+        usedFallback: leadReply.usedFallback, apiError: leadReply.apiError,
+      }));
 
       // Support agent gets the lead's reply as context so it can genuinely supplement
       const supportReply = await _generateConferenceReply(
@@ -17713,9 +17741,11 @@ async function sendCoordinatedConferenceMessage({
         messageIntent,
         userMessage,
         session,
-        { primaryAgentReply: leadReply }
+        { primaryAgentReply: leadReply.text }
       );
-      agentReplies.push(_recordConferenceAgentReply(session, session.supportAgent, supportReply, userMsgId));
+      agentReplies.push(_recordConferenceAgentReply(session, session.supportAgent, supportReply.text, userMsgId, null, {
+        usedFallback: supportReply.usedFallback, apiError: supportReply.apiError,
+      }));
 
       coordinatorMessages.push(_recordCoordinatorMessage(session, "supplement_added", { supportAgent: session.supportAgent }));
       session.supportingReplyCount += 1;
@@ -17725,9 +17755,13 @@ async function sendCoordinatedConferenceMessage({
     case "coordinated_reply": {
       // Both agents contribute
       const dsReply = await _generateConferenceReply("deepseek", messageIntent, userMessage, session);
-      const gmReply = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { deepseekReply: dsReply });
-      agentReplies.push(_recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId));
-      agentReplies.push(_recordConferenceAgentReply(session, "gemini", gmReply, userMsgId));
+      const gmReply = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { deepseekReply: dsReply.text });
+      agentReplies.push(_recordConferenceAgentReply(session, "deepseek", dsReply.text, userMsgId, null, {
+        usedFallback: dsReply.usedFallback, apiError: dsReply.apiError,
+      }));
+      agentReplies.push(_recordConferenceAgentReply(session, "gemini", gmReply.text, userMsgId, null, {
+        usedFallback: gmReply.usedFallback, apiError: gmReply.apiError,
+      }));
       session.coordinatedReplyCount += 1;
       break;
     }
@@ -17735,9 +17769,12 @@ async function sendCoordinatedConferenceMessage({
     case "bundled_reply": {
       // Both agents contribute; their replies are stored individually and summarised
       const dsBundle = await _generateConferenceReply("deepseek", messageIntent, userMessage, session);
-      const gmBundle = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { primaryAgentReply: dsBundle });
-      const bundledText = `[Backend] ${dsBundle}\n\n[Frontend] ${gmBundle}`;
-      agentReplies.push(_recordConferenceAgentReply(session, "system", bundledText, userMsgId));
+      const gmBundle = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { primaryAgentReply: dsBundle.text });
+      const bundledText = `[Backend] ${dsBundle.text}\n\n[Frontend] ${gmBundle.text}`;
+      agentReplies.push(_recordConferenceAgentReply(session, "system", bundledText, userMsgId, null, {
+        usedFallback: dsBundle.usedFallback || gmBundle.usedFallback,
+        apiError: dsBundle.apiError || gmBundle.apiError || null,
+      }));
       coordinatorMessages.push(_recordCoordinatorMessage(session, "reply_bundled", {}));
       session.bundledReplyCount += 1;
       break;
@@ -17756,7 +17793,9 @@ async function sendCoordinatedConferenceMessage({
       // One agent follows up on the other's point
       const agent = resolvedTarget.target === "both" ? session.leadAgent : resolvedTarget.target;
       const reply = await _generateConferenceReply(agent, messageIntent, userMessage, session);
-      agentReplies.push(_recordConferenceAgentReply(session, agent, reply, userMsgId));
+      agentReplies.push(_recordConferenceAgentReply(session, agent, reply.text, userMsgId, null, {
+        usedFallback: reply.usedFallback, apiError: reply.apiError,
+      }));
       session.soloReplyCount += 1;
       break;
     }
@@ -17771,7 +17810,9 @@ async function sendCoordinatedConferenceMessage({
       // Fallback to solo reply
       const fallbackAgent = resolvedTarget.target === "both" ? session.leadAgent : (resolvedTarget.target || "deepseek");
       const reply = await _generateConferenceReply(fallbackAgent, messageIntent, userMessage, session);
-      agentReplies.push(_recordConferenceAgentReply(session, fallbackAgent, reply, userMsgId));
+      agentReplies.push(_recordConferenceAgentReply(session, fallbackAgent, reply.text, userMsgId, null, {
+        usedFallback: reply.usedFallback, apiError: reply.apiError,
+      }));
       session.soloReplyCount += 1;
     }
   }
