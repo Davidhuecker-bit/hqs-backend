@@ -283,6 +283,69 @@ const RESULT_TYPES = {
 };
 
 /* ─────────────────────────────────────────────
+   Retry configuration for transient API errors
+   ───────────────────────────────────────────── */
+
+const GEMINI_MAX_RETRIES    = 2;          // up to 2 retries (3 attempts total)
+const GEMINI_RETRY_DELAY_MS = [1000, 2000]; // wait 1 s, then 2 s before each retry
+
+/**
+ * Returns true when the error is a transient server-side failure that is
+ * worth retrying (e.g. 503 ServiceUnavailable, 429 TooManyRequests).
+ * Timeout errors and auth/key errors are NOT retried.
+ *
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function _isRetryableGeminiError(err) {
+  const msg = String(err.message || "").toLowerCase();
+  if (msg.includes("gemini_timeout") || msg.includes("timeout") || msg.includes("deadline")) {
+    return false;
+  }
+  return (
+    msg.includes("503") ||
+    msg.includes("service unavailable") ||
+    msg.includes("serviceunavailable") ||
+    msg.includes("overloaded") ||
+    msg.includes("429") ||
+    msg.includes("too many requests") ||
+    msg.includes("toomanyrequests")
+  );
+}
+
+/**
+ * Wraps a Gemini API call with automatic retry on transient errors.
+ * The supplied `callFn` must be a zero-argument async function that
+ * returns the raw Gemini response (or throws on failure).
+ *
+ * @param {() => Promise<*>} callFn
+ * @returns {Promise<*>}
+ */
+async function _withGeminiRetry(callFn) {
+  let lastErr;
+  for (let attempt = 0; attempt <= GEMINI_MAX_RETRIES; attempt++) {
+    try {
+      return await callFn();
+    } catch (err) {
+      lastErr = err;
+      const isLast = attempt === GEMINI_MAX_RETRIES;
+      if (isLast || !_isRetryableGeminiError(err)) {
+        throw err;
+      }
+      const delayMs = GEMINI_RETRY_DELAY_MS[attempt] ?? 2000;
+      logger.warn("[geminiArchitect] Retryable error – will retry", {
+        attempt: attempt + 1,
+        maxRetries: GEMINI_MAX_RETRIES,
+        delayMs,
+        reason: String(err.message || "").slice(0, 80),
+      });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+/* ─────────────────────────────────────────────
    JSON response parsing & normalisation
    ───────────────────────────────────────────── */
 
@@ -1736,18 +1799,20 @@ async function runGeminiArchitectReview(payload = {}) {
   let response;
   try {
     const GEMINI_TIMEOUT_MS = 30_000;
-    let timerId;
-    const timeoutPromise = new Promise((_, reject) => {
-      timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), GEMINI_TIMEOUT_MS);
+    response = await _withGeminiRetry(async () => {
+      let timerId;
+      const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), GEMINI_TIMEOUT_MS);
+      });
+      try {
+        return await Promise.race([
+          model.generateContent(userPrompt),
+          timeoutPromise,
+        ]);
+      } finally {
+        clearTimeout(timerId);
+      }
     });
-    try {
-      response = await Promise.race([
-        model.generateContent(userPrompt),
-        timeoutPromise,
-      ]);
-    } finally {
-      clearTimeout(timerId);
-    }
   } catch (apiErr) {
     const safeMsg = String(apiErr.message || "").slice(0, 80);
     const isTimeout = safeMsg.includes("GEMINI_TIMEOUT") ||
@@ -1908,17 +1973,17 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
       },
     });
 
-    let timerId;
-    const timeoutPromise = new Promise((_, reject) => {
-      timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
+    const response = await _withGeminiRetry(async () => {
+      let timerId;
+      const timeoutPromise = new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
+      });
+      try {
+        return await Promise.race([model.generateContent(userMessage), timeoutPromise]);
+      } finally {
+        clearTimeout(timerId);
+      }
     });
-
-    let response;
-    try {
-      response = await Promise.race([model.generateContent(userMessage), timeoutPromise]);
-    } finally {
-      clearTimeout(timerId);
-    }
 
     const text = getResponseText(response) || "";
     if (!text) {
