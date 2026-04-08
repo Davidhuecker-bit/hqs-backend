@@ -1529,6 +1529,46 @@ function buildUserPrompt(normalised) {
     }
   }
 
+  // ── Konferenz Step E: Inject both-mode context when available ──
+  if (bridgeContext && bridgeContext.bothModeContext) {
+    const bmc = bridgeContext.bothModeContext;
+    const bmcParts = [];
+    if (bmc.bothMode) {
+      bmcParts.push("Both-Mode aktiv – du bist Gemini und antwortest als zweiter Agent nach DeepSeek");
+    }
+    if (bmc.primaryAskedAgents && bmc.primaryAskedAgents.length) {
+      bmcParts.push(`Beide angefragt: ${bmc.primaryAskedAgents.join(", ")}`);
+    }
+    if (bmc.sameQuestionContext) {
+      bmcParts.push(`Gemeinsame Frage: ${bmc.sameQuestionContext}`);
+    }
+    if (bmc.priorAgentReply) {
+      bmcParts.push(`DeepSeek hat bereits geantwortet: ${bmc.priorAgentReply}`);
+    }
+    if (bmc.cooperationMode) {
+      const modeLabels = {
+        supplements: "Ergänzen (komplementäre Information)",
+        aligns: "Bestätigen (DeepSeek zustimmen)",
+        contrasts: "Andere Perspektive (anderen Schwerpunkt setzen)",
+        extends: "Vertiefen (breiteren Scope einbringen)",
+        dissent_light: "Leichter Dissens (ein Aspekt anders)",
+        common_line: "Gemeinsame Linie (Konvergenz)",
+      };
+      bmcParts.push(`Empfohlener Kooperationsstil: ${modeLabels[bmc.cooperationMode] || bmc.cooperationMode}`);
+    }
+    if (bmc.openSecondReply === false) {
+      bmcParts.push("Dies ist die zweite und letzte Antwort im Doppelantwort-Zyklus");
+    }
+    if (bmcParts.length) {
+      sections.push(`Both-Mode-Kontext (Step E – echter Zwei-Agenten-Dialog, eigene Antwort):\n${bmcParts.map((p) => `- ${p}`).join("\n")}`);
+      logger.info("[geminiArchitect] Konferenz Step E – Both-Mode-Kontext eingebunden", {
+        bothMode: bmc.bothMode,
+        cooperationMode: bmc.cooperationMode,
+        hasPriorReply: !!bmc.priorAgentReply,
+      });
+    }
+  }
+
   if (message) {
     sections.push(`Anfrage:\n${message}`);
   }

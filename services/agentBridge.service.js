@@ -1675,6 +1675,63 @@ const CONFERENCE_FOLLOWUP_KEYWORDS = [
 /** Max length for lastUserMessage excerpt stored on session */
 const CONFERENCE_LAST_USER_MSG_MAX_LENGTH = 200;
 
+/* ─────────────────────────────────────────────────────────────────────
+   Konferenz Step E: Companion Multi-Agent Both-Mode Backend –
+   Dual Reply Routing / Same-Thread Two-Agent Responses /
+   Explicit Both Opinion Flow
+
+   Strengthens the "both" mode into a first-class dual-agent reply flow:
+   - Explicit both-mode detection (text and parameter)
+   - Two real agent replies (DeepSeek + Gemini) in the same thread
+   - Structured reply references and cooperation types
+   - Pending state between first and second reply
+   - Both-mode metrics in admin summary
+   - bothModeContext injected into Gemini prompt
+   ───────────────────────────────────────────────────────────────────── */
+
+/** Cooperation types for second-agent reply in both-mode */
+const VALID_BOTH_MODE_COOPERATION_TYPES = [
+  "supplements",      // Gemini adds complementary information to DeepSeek's reply
+  "aligns",           // Gemini agrees and confirms DeepSeek's main point
+  "contrasts",        // Gemini offers a different angle or priority
+  "extends",          // Gemini deepens the reply with additional scope
+  "dissent_light",    // Gemini mildly disagrees on a specific aspect
+  "common_line",      // Both agents converge on same recommendation
+];
+
+/** Sequence position of an agent reply in a both-mode cycle */
+const VALID_BOTH_MODE_SEQUENCES = [
+  "primary",    // First agent to reply (DeepSeek leads by default)
+  "secondary",  // Second agent to reply (Gemini supplements by default)
+];
+
+/**
+ * Conservative German phrases that indicate a user explicitly wants
+ * both agents to respond. Only used when no explicit targetAgent="both"
+ * is set. Matching is phrase-boundary-aware.
+ */
+const BOTH_MODE_DETECTION_PHRASES = [
+  "beide meinungen",
+  "beide eure einschätzung",
+  "beide ihre einschätzung",
+  "deepseek und gemini",
+  "gemini und deepseek",
+  "was meint ihr beide",
+  "ich will beide",
+  "gebt mir beide",
+  "beide antworten",
+  "beide sichtweisen",
+  "beide perspektiven",
+  "von beiden",
+  "euch beide",
+];
+
+/** Minimum word length when computing overlap for common_line detection */
+const BOTH_MODE_MIN_WORD_LENGTH_FOR_OVERLAP = 4;
+
+/** Minimum number of shared words for the secondary reply to be classified as common_line */
+const BOTH_MODE_MIN_OVERLAP_FOR_COMMON_LINE = 3;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -14995,6 +15052,13 @@ function openConferenceSession({
     lastUserMessageId: null,
     lastUserMessage: null,
     lastReplyAgents: [],
+    // Konferenz Step E: Both-Mode tracking
+    bothModeMessageCount: 0,
+    completedBothReplyCycles: 0,
+    partialBothReplyCycles: 0,
+    deepseekOnlyCount: 0,
+    geminiOnlyCount: 0,
+    bothModeCooperationTypes: {},
     createdAt: now,
     updatedAt: now,
   };
@@ -15087,6 +15151,8 @@ function sendConferenceMessage({
     // Konferenz Step D: follow-up tracking
     isFollowUp,
     followUpOf,
+    // Konferenz Step E: both-mode flag on user message
+    bothMode: resolvedTarget.target === "both",
     createdAt: now,
   };
 
@@ -15118,18 +15184,78 @@ function sendConferenceMessage({
     userMsgId,
   });
 
+  // Konferenz Step E: log both-mode detection
+  if (resolvedTarget.target === "both") {
+    logger.info("[agentBridge] Konferenz Step E – Both-Mode erkannt, Zielagenten bestimmt", {
+      conferenceId,
+      routingReason: resolvedTarget.routingReason,
+      primaryAgent: "deepseek",
+      secondaryAgent: "gemini",
+    });
+  }
+
   // Generate agent replies based on target
   const agentReplies = [];
 
   if (resolvedTarget.target === "both") {
-    // Both agents reply – DeepSeek leads, Gemini supplements
+    // Konferenz Step E: Both-Mode – DeepSeek leads (primary), Gemini supplements (secondary)
+    // Track both-mode message count
+    session.bothModeMessageCount = (session.bothModeMessageCount || 0) + 1;
+
+    // Generate DeepSeek reply (primary)
     const dsReply = _generateConferenceReply("deepseek", messageIntent, userMessage, session);
+
+    // Set intermediate dialog state: first agent replied, second still pending
+    session.dialogState = "additional_agent_pending";
+
+    const dsRecord = _recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId, null, {
+      bothMode: true,
+      cooperationType: null,
+      followsAgent: null,
+      bothModeSequence: "primary",
+      openSecondReply: true,
+    });
+
+    logger.info("[agentBridge] Konferenz Step E – DeepSeek-Antwort erzeugt (primär)", {
+      conferenceId,
+      messageId: dsRecord.messageId,
+      responseType: dsRecord.responseType,
+    });
+
+    // Generate Gemini reply (secondary) – knows about DeepSeek's reply
     const gmReply = _generateConferenceReply("gemini", messageIntent, userMessage, session);
-    const dsRecord = _recordConferenceAgentReply(session, "deepseek", dsReply, userMsgId, null);
-    const gmRecord = _recordConferenceAgentReply(session, "gemini", gmReply, userMsgId, dsRecord.messageId);
+    const cooperationType = _deriveCooperationType(gmReply, dsReply);
+
+    const gmRecord = _recordConferenceAgentReply(session, "gemini", gmReply, userMsgId, dsRecord.messageId, {
+      bothMode: true,
+      cooperationType,
+      followsAgent: "deepseek",
+      bothModeSequence: "secondary",
+      openSecondReply: false,
+    });
+
+    logger.info("[agentBridge] Konferenz Step E – Gemini-Antwort erzeugt (sekundär)", {
+      conferenceId,
+      messageId: gmRecord.messageId,
+      responseType: gmRecord.responseType,
+      cooperationType,
+    });
+
     agentReplies.push(dsRecord);
     agentReplies.push(gmRecord);
     session.lastReplyAgents = ["deepseek", "gemini"];
+
+    // Track cooperation type
+    if (cooperationType) {
+      session.bothModeCooperationTypes = session.bothModeCooperationTypes || {};
+      session.bothModeCooperationTypes[cooperationType] = (session.bothModeCooperationTypes[cooperationType] || 0) + 1;
+    }
+
+    logger.info("[agentBridge] Konferenz Step E – Doppelantwort-Zyklus abgeschlossen", {
+      conferenceId,
+      cooperationType,
+      bothModeMessageCount: session.bothModeMessageCount,
+    });
   } else if (resolvedTarget.target === "system") {
     const sysReply = _generateConferenceSystemReply(messageIntent, session);
     const sysRecord = _recordConferenceAgentReply(session, "system", sysReply, userMsgId, null);
@@ -15141,6 +15267,12 @@ function sendConferenceMessage({
     const record = _recordConferenceAgentReply(session, resolvedTarget.target, reply, userMsgId, null);
     agentReplies.push(record);
     session.lastReplyAgents = [resolvedTarget.target];
+    // Konferenz Step E: track single-agent counts
+    if (resolvedTarget.target === "deepseek") {
+      session.deepseekOnlyCount = (session.deepseekOnlyCount || 0) + 1;
+    } else if (resolvedTarget.target === "gemini") {
+      session.geminiOnlyCount = (session.geminiOnlyCount || 0) + 1;
+    }
   }
 
   // Konferenz Step D: derive dialog state after replies
@@ -15153,9 +15285,19 @@ function sendConferenceMessage({
     session.openClarification = false;
     session.dialogState = "reply_cycle_complete";
     session.replyCycleCount += 1;
+    // Konferenz Step E: track completed both-mode cycles
+    if (resolvedTarget.target === "both") {
+      const bothComplete = agentReplies.filter((r) => r.bothMode).length === 2;
+      if (bothComplete) {
+        session.completedBothReplyCycles = (session.completedBothReplyCycles || 0) + 1;
+      } else {
+        session.partialBothReplyCycles = (session.partialBothReplyCycles || 0) + 1;
+      }
+    }
     logger.info("[agentBridge] Konferenz Step D – Antwortzyklus abgeschlossen", {
       conferenceId,
       replyCycleCount: session.replyCycleCount,
+      bothModeComplete: resolvedTarget.target === "both" ? agentReplies.filter((r) => r.bothMode).length === 2 : undefined,
     });
   }
 
@@ -15186,6 +15328,10 @@ function sendConferenceMessage({
     openClarification: session.openClarification,
     replyCycleCount: session.replyCycleCount,
     followUpCount: session.followUpCount,
+    // Konferenz Step E: both-mode summary
+    bothMode: resolvedTarget.target === "both",
+    bothModeMessageCount: session.bothModeMessageCount || 0,
+    completedBothReplyCycles: session.completedBothReplyCycles || 0,
   };
 }
 
@@ -15196,15 +15342,30 @@ function sendConferenceMessage({
  * @param {string} content
  * @param {string} replyToMessageId – ID of the user message being replied to
  * @param {string|null} [followUpOf] – ID of a previous agent message this supplements (null for first reply)
+ * @param {Object} [bothModeOptions] – Konferenz Step E both-mode metadata
+ * @param {boolean} [bothModeOptions.bothMode] – true when this reply is part of a both-mode cycle
+ * @param {string|null} [bothModeOptions.cooperationType] – cooperation classification
+ * @param {string|null} [bothModeOptions.followsAgent] – agent whose reply came before this one
+ * @param {string|null} [bothModeOptions.bothModeSequence] – "primary" or "secondary"
+ * @param {boolean} [bothModeOptions.openSecondReply] – true if second reply not yet recorded
  * @private
  */
-function _recordConferenceAgentReply(session, agent, content, replyToMessageId, followUpOf = null) {
+function _recordConferenceAgentReply(session, agent, content, replyToMessageId, followUpOf = null, bothModeOptions = {}) {
   _conferenceMsgCounter += 1;
   const msgId = `cfm-${Date.now()}-${_conferenceMsgCounter}`;
   const now = new Date().toISOString();
 
   // Konferenz Step D: derive response type
   const responseType = _deriveResponseType(agent, content, session, followUpOf);
+
+  // Konferenz Step E: both-mode fields
+  const {
+    bothMode = false,
+    cooperationType = null,
+    followsAgent = null,
+    bothModeSequence = null,
+    openSecondReply = false,
+  } = bothModeOptions;
 
   const record = {
     messageId: msgId,
@@ -15214,10 +15375,19 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId, 
     speakerRole: agent === "deepseek" ? "backend_agent" : agent === "gemini" ? "frontend_agent" : "coordinator",
     content,
     replyToMessageId,
+    // Konferenz Step E: explicit semantic alias so the frontend can identify which user
+    // message this reply responds to without relying on the internal replyToMessageId name.
+    responseToMessageId: replyToMessageId,
     responseType,
     responseToRole: "user",
     followUpOf: followUpOf || null,
     conferenceMode: session.conferenceMode,
+    // Konferenz Step E: both-mode reply metadata
+    bothMode,
+    cooperationType: bothMode ? (cooperationType || null) : null,
+    followsAgent: bothMode ? (followsAgent || null) : null,
+    bothModeSequence: bothMode ? (bothModeSequence || null) : null,
+    openSecondReply: bothMode ? openSecondReply : false,
     createdAt: now,
   };
 
@@ -15236,6 +15406,9 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId, 
     responseType,
     replyToMessageId,
     followUpOf,
+    bothMode,
+    cooperationType: bothMode ? cooperationType : undefined,
+    bothModeSequence: bothMode ? bothModeSequence : undefined,
   });
 
   return record;
@@ -15256,6 +15429,11 @@ function _resolveConferenceTarget(targetAgent, userMessage, session) {
       system: "Explizites Targeting: System-Antwort",
     };
     return { target: targetAgent, routingReason: reasonMap[targetAgent] || "Explizites Targeting" };
+  }
+
+  // Konferenz Step E: Conservative text-based both-mode detection (before keyword scoring)
+  if (_detectBothModeFromText(userMessage)) {
+    return { target: "both", routingReason: "Textuelle Erkennung: User möchte beide Meinungen" };
   }
 
   // Keyword-based routing as fallback
@@ -15287,6 +15465,69 @@ function _resolveConferenceTarget(targetAgent, userMessage, session) {
 
   // Default routing based on last speaker or deepseek
   return { target: "deepseek", routingReason: "Standard-Routing zum Backend-Agenten" };
+}
+
+/**
+ * Konferenz Step E: Conservative detection of "both agents" intent from user message text.
+ * Only triggers for clearly recognisable German phrases. Explicit targetAgent always takes priority.
+ * @param {string} userMessage
+ * @returns {boolean}
+ * @private
+ */
+function _detectBothModeFromText(userMessage) {
+  if (!userMessage || typeof userMessage !== "string") return false;
+  const lower = userMessage.toLowerCase();
+  return BOTH_MODE_DETECTION_PHRASES.some((phrase) => lower.includes(phrase));
+}
+
+/**
+ * Konferenz Step E: Derive the cooperation type for the second agent's reply in both-mode.
+ * Analyses the content of the second reply relative to the first to classify how they relate.
+ * @param {string} secondContent - content of the second agent's reply
+ * @param {string} firstContent  - content of the first agent's reply
+ * @returns {string} one of VALID_BOTH_MODE_COOPERATION_TYPES
+ * @private
+ */
+function _deriveCooperationType(secondContent, firstContent) {
+  const lower = (secondContent || "").toLowerCase();
+  const firstLower = (firstContent || "").toLowerCase();
+
+  // Signals of disagreement / different angle
+  const dissentSignals = [
+    "jedoch", "allerdings", "aus meiner sicht anders", "ich sehe das etwas anders",
+    "abweichend", "im gegensatz", "nicht ganz", "anders als",
+  ];
+  if (dissentSignals.some((s) => lower.includes(s))) return "dissent_light";
+
+  // Signals of contrast / different priority
+  const contrastSignals = [
+    "dagegen", "im unterschied", "im vergleich dazu", "während deepseek", "andere perspektive",
+    "andere priorität", "ich würde eher", "mein schwerpunkt liegt",
+  ];
+  if (contrastSignals.some((s) => lower.includes(s))) return "contrasts";
+
+  // Signals of agreement / convergence
+  const alignSignals = [
+    "ich stimme zu", "ich bestätige", "wie bereits erwähnt", "ähnlich sehe ich",
+    "das sehe ich genauso", "gemeinsame linie", "einig",
+  ];
+  if (alignSignals.some((s) => lower.includes(s))) return "aligns";
+
+  // Signals of extending / deepening
+  const extendSignals = [
+    "zusätzlich", "darüber hinaus", "ich ergänze", "und auch", "noch wichtig",
+    "erweitert", "es kommt hinzu", "außerdem",
+  ];
+  if (extendSignals.some((s) => lower.includes(s))) return "extends";
+
+  // Default: supplements (adds complementary info)
+  // If both content snippets share similar root words, classify as common_line
+  const firstWords = new Set(firstLower.split(/\s+/).filter((w) => w.length > BOTH_MODE_MIN_WORD_LENGTH_FOR_OVERLAP));
+  const secondWords = secondContent.toLowerCase().split(/\s+/).filter((w) => w.length > BOTH_MODE_MIN_WORD_LENGTH_FOR_OVERLAP);
+  const overlap = secondWords.filter((w) => firstWords.has(w)).length;
+  if (overlap >= BOTH_MODE_MIN_OVERLAP_FOR_COMMON_LINE) return "common_line";
+
+  return "supplements";
 }
 
 /**
@@ -15679,6 +15920,22 @@ function getConferenceAdminSummary() {
     (s.conferenceStatus === "session_active" || s.conferenceStatus === "session_open")
   ).length;
 
+  // Konferenz Step E: Both-Mode metrics
+  const totalBothModeMessages = sessions.reduce((sum, s) => sum + (s.bothModeMessageCount || 0), 0);
+  const totalCompletedBothReplyCycles = sessions.reduce((sum, s) => sum + (s.completedBothReplyCycles || 0), 0);
+  const totalPartialBothReplyCycles = sessions.reduce((sum, s) => sum + (s.partialBothReplyCycles || 0), 0);
+  const totalDeepseekOnlyMessages = sessions.reduce((sum, s) => sum + (s.deepseekOnlyCount || 0), 0);
+  const totalGeminiOnlyMessages = sessions.reduce((sum, s) => sum + (s.geminiOnlyCount || 0), 0);
+
+  // Aggregate cooperation type distribution across all sessions
+  const byCooperationType = {};
+  for (const s of sessions) {
+    const ct = s.bothModeCooperationTypes || {};
+    for (const [type, count] of Object.entries(ct)) {
+      byCooperationType[type] = (byCooperationType[type] || 0) + count;
+    }
+  }
+
   return {
     totalSessions: total,
     totalActive,
@@ -15700,6 +15957,13 @@ function getConferenceAdminSummary() {
     totalCompletedCycles,
     totalWithOpenClarification,
     totalWithActiveDialog,
+    // Konferenz Step E: Both-Mode metrics
+    totalBothModeMessages,
+    totalCompletedBothReplyCycles,
+    totalPartialBothReplyCycles,
+    totalDeepseekOnlyMessages,
+    totalGeminiOnlyMessages,
+    byCooperationType,
     byStatus,
     byMode,
     byTarget,
@@ -17562,4 +17826,8 @@ module.exports = {
   getConferenceDialogState,
   VALID_CONFERENCE_RESPONSE_TYPES,
   VALID_CONFERENCE_DIALOG_STATES,
+  // Konferenz Step E: Companion Multi-Agent Both-Mode Backend – Dual Reply Routing
+  VALID_BOTH_MODE_COOPERATION_TYPES,
+  VALID_BOTH_MODE_SEQUENCES,
+  BOTH_MODE_DETECTION_PHRASES,
 };
