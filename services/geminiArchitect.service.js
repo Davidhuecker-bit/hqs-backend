@@ -1699,10 +1699,11 @@ function getResponseText(response) {
     if (!response) return "";
 
     // @google/genai SDK v1+: response.text is a getter returning string | undefined.
-    // We MUST NOT short-circuit on "" here – an empty getter result may still have
-    // text buried in candidates (e.g., after a thought-only part).
-    // So: try the getter first; if it gives a non-empty string, use it.
-    // Otherwise fall through to direct candidates extraction.
+    // Read the getter into a variable first to avoid calling it twice.
+    // If it returns a non-empty string, use it directly.
+    // If it returns "" or undefined (e.g., thought-only parts, safety block),
+    // fall through to the direct candidates extraction path which reads parts
+    // without the SDK's thought-filtering and catches edge cases the getter misses.
     let textFromGetter;
     try {
       const raw = response.text;
@@ -1717,6 +1718,10 @@ function getResponseText(response) {
       // getter threw – fall through to candidates path
     }
 
+    // Only use getter result when it contains actual non-empty text.
+    // Empty string from the getter (falsy) falls through to the candidates
+    // extraction below, which is the correct behaviour: an empty getter result
+    // may still have text in parts that the getter's thought-filtering skipped.
     if (textFromGetter) return textFromGetter;
 
     // Direct candidates extraction (works even when the SDK getter returns "" or undefined).
@@ -1985,8 +1990,7 @@ async function runGeminiArchitectReview(payload = {}) {
  * @returns {Promise<{ success: boolean, text: string, error?: string }>}
  */
 async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, timeoutMs = 25000 } = {}) {
-  const hasApiKey = Boolean(process.env.GEMINI_API_KEY);
-  if (!hasApiKey) {
+  if (!isGeminiConfigured()) {
     logger.warn("[geminiArchitect] runGeminiChat – GEMINI_API_KEY not set");
     return { success: false, text: "", error: "GEMINI_NOT_CONFIGURED" };
   }
@@ -2000,7 +2004,6 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
     model: modelName,
     maxTokens,
     timeoutMs,
-    hasApiKey,
     promptPreview: (userMessage || "").slice(0, 80),
   });
   try {

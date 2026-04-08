@@ -15724,7 +15724,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
   const configured = agentDef.isConfigured();
   logger.info("[agentBridge] Konferenz – _generateConferenceReply", {
     agent,
-    codepath: agent === "gemini" ? "runGeminiChat / @google/genai / generateContent" : "createDeepSeekChatCompletion",
+    codepath: agent === "gemini" ? "runGeminiChat / @google/genai / models.generateContent" : "createDeepSeekChatCompletion",
     apiVersion: agent === "gemini" ? "v1 (httpOptions.apiVersion)" : "n/a",
     model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash-lite") : "deepseek-chat",
     isConfigured: configured,

@@ -6474,12 +6474,13 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
    }
    ========================================================= */
 router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
+  const GEMINI_CODEPATH = "runGeminiChat / @google/genai / models.generateContent";
   const configured = isGeminiConfigured();
   if (!configured) {
     return res.status(503).json({
       success: false,
       configured: false,
-      codepath: "runGeminiChat / @google/genai / models.generateContent",
+      codepath: GEMINI_CODEPATH,
       error: "GEMINI_API_KEY is not set – Gemini is not configured",
     });
   }
@@ -6497,7 +6498,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       return res.json({
         success: true,
         configured: true,
-        codepath: "runGeminiChat / @google/genai / models.generateContent",
+        codepath: GEMINI_CODEPATH,
         apiVersion: "v1",
         model,
         response: result.text,
@@ -6508,7 +6509,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
     return res.status(500).json({
       success: false,
       configured: true,
-      codepath: "runGeminiChat / @google/genai / models.generateContent",
+      codepath: GEMINI_CODEPATH,
       apiVersion: "v1",
       model,
       error: result.error || "EMPTY_RESPONSE",
@@ -6520,7 +6521,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
     return res.status(500).json({
       success: false,
       configured: true,
-      codepath: "runGeminiChat / @google/genai / models.generateContent",
+      codepath: GEMINI_CODEPATH,
       apiVersion: "v1",
       model,
       error: error.message || "UNKNOWN_ERROR",
