@@ -15478,6 +15478,8 @@ async function sendConferenceMessage({
     conferenceMode: session.conferenceMode,
     userMessage: userMsgRecord,
     agentReplies,
+    // replies[] – alias for agentReplies so all consumers can rely on a stable field name
+    replies: agentReplies,
     routing: {
       targetAgent: resolvedTarget.target,
       routingReason: resolvedTarget.routingReason,
@@ -15719,7 +15721,19 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     return _generateConferenceReplyFallback(agent, messageIntent, session);
   }
 
-  if (!agentDef.isConfigured()) {
+  const configured = agentDef.isConfigured();
+  logger.info("[agentBridge] Konferenz – _generateConferenceReply", {
+    agent,
+    codepath: agent === "gemini" ? "runGeminiChat / @google/genai / generateContent" : "createDeepSeekChatCompletion",
+    apiVersion: agent === "gemini" ? "v1 (httpOptions.apiVersion)" : "n/a",
+    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash-lite") : "deepseek-chat",
+    isConfigured: configured,
+    messageIntent,
+    conferenceId: session.conferenceId,
+  });
+
+  if (!configured) {
+    logger.warn("[agentBridge] Konferenz – Agent nicht konfiguriert, Fallback", { agent });
     return _generateConferenceReplyFallback(agent, messageIntent, session);
   }
 
@@ -15767,17 +15781,37 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
   const historyContext = recentMessages ? `Bisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
   const fullMessage = `${historyContext}${safeUserMessage}`;
 
+  logger.info("[agentBridge] Konferenz – API-Aufruf startet", {
+    agent,
+    conferenceId: session.conferenceId,
+    messageLengthChars: fullMessage.length,
+  });
+
   try {
     const text = await agentDef.callApi(systemPrompt, fullMessage, {
       timeoutMs: agent === "deepseek" ? 20000 : 22000,
       maxTokens: 512,
       temperature: 0.5,
     });
-    if (text.trim()) return { text: text.trim(), usedFallback: false, apiError: null };
-  } catch (err) {
-    logger.warn("[agentBridge] Konferenz API Fehler – Fallback aktiviert", {
+    if (text && text.trim()) {
+      logger.info("[agentBridge] Konferenz – echte Agentenantwort erhalten", {
+        agent,
+        conferenceId: session.conferenceId,
+        textLength: text.trim().length,
+        textPreview: text.trim().slice(0, 80),
+        usedFallback: false,
+      });
+      return { text: text.trim(), usedFallback: false, apiError: null };
+    }
+    logger.warn("[agentBridge] Konferenz – API lieferte leeren Text, Fallback", {
       agent,
-      message: err.message,
+      conferenceId: session.conferenceId,
+    });
+  } catch (err) {
+    logger.warn("[agentBridge] Konferenz – API Fehler, Fallback aktiviert", {
+      agent,
+      conferenceId: session.conferenceId,
+      error: String(err.message || "").slice(0, 120),
     });
     const fallback = _generateConferenceReplyFallback(agent, messageIntent, session);
     return { text: fallback.text, usedFallback: true, apiError: String(err.message || "").slice(0, 120) };

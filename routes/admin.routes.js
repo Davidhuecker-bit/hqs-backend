@@ -6456,6 +6456,79 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
 });
 
 /* =========================================================
+   GET /api/admin/deepseek/agent-bridge/gemini-smoke-test
+
+   Minimal smoke test for the Gemini conference path.
+   Sends "Reply only with OK" through the same runGeminiChat
+   function that the conference room uses.
+
+   Response:
+   {
+     "success": true,
+     "configured": true,
+     "codepath": "runGeminiChat / @google/genai / models.generateContent",
+     "apiVersion": "v1",
+     "model": "gemini-2.0-flash-lite",
+     "response": "OK",
+     "textLength": 2
+   }
+   ========================================================= */
+router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
+  const configured = isGeminiConfigured();
+  if (!configured) {
+    return res.status(503).json({
+      success: false,
+      configured: false,
+      codepath: "runGeminiChat / @google/genai / models.generateContent",
+      error: "GEMINI_API_KEY is not set – Gemini is not configured",
+    });
+  }
+
+  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
+  try {
+    const result = await runGeminiChat({
+      systemPrompt: "You are a minimal test assistant. Respond only with the single word asked for.",
+      userMessage: "Reply only with OK",
+      maxTokens: 16,
+      timeoutMs: 20000,
+    });
+
+    if (result.success && result.text) {
+      return res.json({
+        success: true,
+        configured: true,
+        codepath: "runGeminiChat / @google/genai / models.generateContent",
+        apiVersion: "v1",
+        model,
+        response: result.text,
+        textLength: result.text.length,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      configured: true,
+      codepath: "runGeminiChat / @google/genai / models.generateContent",
+      apiVersion: "v1",
+      model,
+      error: result.error || "EMPTY_RESPONSE",
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent-bridge/gemini-smoke-test error", {
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      configured: true,
+      codepath: "runGeminiChat / @google/genai / models.generateContent",
+      apiVersion: "v1",
+      model,
+      error: error.message || "UNKNOWN_ERROR",
+    });
+  }
+});
+
+/* =========================================================
    Konferenz Step B: Coordination / Moderation / Coordinated Reply Flow
    ========================================================= */
 
