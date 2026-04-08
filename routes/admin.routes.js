@@ -4184,6 +4184,7 @@ const {
 const {
   isGeminiConfigured,
   runGeminiArchitectReview,
+  runGeminiChat,
   VALID_MODES: GEMINI_ARCHITECT_MODES,
   RESULT_TYPES: GEMINI_RESULT_TYPES,
   FALLBACK_LABELS: GEMINI_FALLBACK_LABELS,
@@ -4383,6 +4384,52 @@ router.post("/deepseek/review-to-human", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error during Review-to-Human translation",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/gemini/test
+   Sends a simple test prompt to the Gemini API and returns
+   the result.  Used for connectivity / key validation only.
+========================================================= */
+
+router.post("/gemini/test", async (req, res) => {
+  if (!isGeminiConfigured()) {
+    return res.status(503).json({
+      success: false,
+      configured: false,
+      error: "GEMINI_API_KEY is not configured",
+    });
+  }
+
+  try {
+    const result = await runGeminiChat({
+      systemPrompt: "You are a concise diagnostics assistant. Always reply in one short sentence.",
+      userMessage: 'Reply with exactly: "Gemini API is working correctly."',
+      maxTokens: 64,
+      timeoutMs: 15000,
+    });
+
+    if (result.success) {
+      return res.json({
+        success: true,
+        configured: true,
+        response: result.text,
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      configured: true,
+      error: result.error || "Gemini returned no response",
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/test error", { message: error.message });
+    return res.status(500).json({
+      success: false,
+      configured: true,
+      error: error.message,
     });
   }
 });
