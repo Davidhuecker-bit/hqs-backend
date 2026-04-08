@@ -149,8 +149,8 @@ describe("Step 24 – Option Derivation via sendUserMessage", () => {
     getOrCreateConversationThread(caseId);
   });
 
-  test("first message does not generate options (< 2 messages)", () => {
-    const result = sendUserMessage({
+  test("first message does not generate options (< 2 messages)", async () => {
+    const result = await sendUserMessage({
       agentCaseId: caseId,
       userMessage: "Was genau ist das Problem?",
     });
@@ -160,8 +160,8 @@ describe("Step 24 – Option Derivation via sendUserMessage", () => {
     expect(result.decisionFrameStatus).toBeDefined();
   });
 
-  test("second message triggers option derivation", () => {
-    const result = sendUserMessage({
+  test("second message triggers option derivation", async () => {
+    const result = await sendUserMessage({
       agentCaseId: caseId,
       userMessage: "Bitte nur den Backend-Teil vorbereiten.",
     });
@@ -173,8 +173,8 @@ describe("Step 24 – Option Derivation via sendUserMessage", () => {
     expect(result.optionCount).toBeLessThanOrEqual(4);
   });
 
-  test("options have proper structure", () => {
-    const result = sendUserMessage({
+  test("options have proper structure", async () => {
+    const result = await sendUserMessage({
       agentCaseId: caseId,
       userMessage: "Zeig mir die Optionen.",
     });
@@ -201,14 +201,14 @@ describe("Step 24 – Option Derivation via sendUserMessage", () => {
 });
 
 describe("Step 24 – Comparison Dimensions", () => {
-  test("each option has all comparison dimensions", () => {
+  test("each option has all comparison dimensions", async () => {
     const caseId = `df-test-comp-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Comparison dimensions test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Diagnose vertiefen" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Scope prüfen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Diagnose vertiefen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Scope prüfen" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     const df = thread.decisionFrame;
@@ -235,14 +235,14 @@ describe("Step 24 – Comparison Dimensions", () => {
 });
 
 describe("Step 24 – Recommended Option / Preference", () => {
-  test("decision frame has recommended option", () => {
+  test("decision frame has recommended option", async () => {
     const caseId = `df-test-rec-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Recommendation test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Was ist der Plan?" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Welche Optionen habe ich?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Was ist der Plan?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Welche Optionen habe ich?" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     const df = thread.decisionFrame;
@@ -263,14 +263,14 @@ describe("Step 24 – Recommended Option / Preference", () => {
     expect(recommended.optionStatus).toBe("option_preferred");
   });
 
-  test("preferred strategy is populated", () => {
+  test("preferred strategy is populated", async () => {
     const caseId = `df-test-strat-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Strategy test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Was soll passieren?" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen prüfen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Was soll passieren?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen prüfen" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     expect(thread.decisionFrame.preferredStrategy).toBeDefined();
@@ -279,14 +279,14 @@ describe("Step 24 – Recommended Option / Preference", () => {
 });
 
 describe("Step 24 – Decision Roles", () => {
-  test("decision roles include primary agent", () => {
+  test("decision roles include primary agent", async () => {
     const caseId = `df-test-roles-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Decision roles test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Backend prüfen" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "API optimieren" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Backend prüfen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "API optimieren" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     const df = thread.decisionFrame;
@@ -298,32 +298,32 @@ describe("Step 24 – Decision Roles", () => {
 });
 
 describe("Step 24 – Decision Frame Status Lifecycle", () => {
-  test("status progresses with conversation", () => {
+  test("status progresses with conversation", async () => {
     const caseId = `df-test-status-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Status lifecycle test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
     // First message
-    const r1 = sendUserMessage({ agentCaseId: caseId, userMessage: "Was ist los?" });
+    const r1 = await sendUserMessage({ agentCaseId: caseId, userMessage: "Was ist los?" });
     expect(VALID_DECISION_FRAME_STATUSES).toContain(r1.decisionFrameStatus);
 
     // Second message
-    const r2 = sendUserMessage({ agentCaseId: caseId, userMessage: "Wie sieht der Plan aus?" });
+    const r2 = await sendUserMessage({ agentCaseId: caseId, userMessage: "Wie sieht der Plan aus?" });
     expect(VALID_DECISION_FRAME_STATUSES).toContain(r2.decisionFrameStatus);
     expect(r2.decisionFrameStatus).not.toBe("options_not_ready");
   });
 });
 
 describe("Step 24 – Decision Tradeoff / Narrowing", () => {
-  test("tradeoff and narrowing are populated", () => {
+  test("tradeoff and narrowing are populated", async () => {
     const caseId = `df-test-tradeoff-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Tradeoff test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Welche Wege gibt es?" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Was sind die Alternativen?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Welche Wege gibt es?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Was sind die Alternativen?" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     const df = thread.decisionFrame;
@@ -336,14 +336,14 @@ describe("Step 24 – Decision Tradeoff / Narrowing", () => {
     }
   });
 
-  test("option contrast is populated when multiple strategies exist", () => {
+  test("option contrast is populated when multiple strategies exist", async () => {
     const caseId = `df-test-contrast-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Contrast test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Backend und Frontend prüfen" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Was sind die Wege?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Backend und Frontend prüfen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Was sind die Wege?" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     const df = thread.decisionFrame;
@@ -357,14 +357,14 @@ describe("Step 24 – Decision Tradeoff / Narrowing", () => {
 });
 
 describe("Step 24 – Option Summary Text", () => {
-  test("option summary is human-readable and mentions all options", () => {
+  test("option summary is human-readable and mentions all options", async () => {
     const caseId = `df-test-summary-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Summary text test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Status?" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir Optionen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Status?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir Optionen" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     const df = thread.decisionFrame;
@@ -388,14 +388,14 @@ describe("Step 24 – getDecisionFrame", () => {
     expect(result).toBeNull();
   });
 
-  test("returns complete decision frame for active thread", () => {
+  test("returns complete decision frame for active thread", async () => {
     const caseId = `df-test-get-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "getDecisionFrame test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Analyse starten" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen prüfen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Analyse starten" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen prüfen" });
 
     const result = getDecisionFrame({ agentCaseId: caseId });
     expect(result).toBeDefined();
@@ -444,14 +444,14 @@ describe("Step 24 – getConversationSummary includes decision analytics", () =>
 });
 
 describe("Step 24 – getConversationThread includes decision frame", () => {
-  test("thread response contains decisionFrame block", () => {
+  test("thread response contains decisionFrame block", async () => {
     const caseId = `df-test-thread-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Thread decision frame test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Was tun?" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Wie weiter?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Was tun?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Wie weiter?" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     expect(thread.decisionFrame).toBeDefined();
@@ -466,14 +466,14 @@ describe("Step 24 – getConversationThread includes decision frame", () => {
 });
 
 describe("Step 24 – sendUserMessage response includes decision fields", () => {
-  test("response contains decision frame status and option count", () => {
+  test("response contains decision frame status and option count", async () => {
     const caseId = `df-test-resp-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Response fields test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Start" });
-    const result = sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen zeigen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Start" });
+    const result = await sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen zeigen" });
 
     expect(result.decisionFrameStatus).toBeDefined();
     expect(VALID_DECISION_FRAME_STATUSES).toContain(result.decisionFrameStatus);
@@ -486,14 +486,14 @@ describe("Step 24 – sendUserMessage response includes decision fields", () => 
 });
 
 describe("Step 24 – Human-Readable Option Texts", () => {
-  test("option texts are in German and cooperative", () => {
+  test("option texts are in German and cooperative", async () => {
     const caseId = `df-test-lang-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Language test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Problem analysieren" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Problem analysieren" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Optionen?" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     for (const opt of thread.decisionFrame.actionOptions) {
@@ -506,19 +506,19 @@ describe("Step 24 – Human-Readable Option Texts", () => {
 });
 
 describe("Step 24 – Decision Frame Update Count", () => {
-  test("update count increments with each interaction", () => {
+  test("update count increments with each interaction", async () => {
     const caseId = `df-test-count-${Date.now()}`;
     const pkg = makeBridgePackage({ title: "Update count test" });
     buildAgentCaseFromBridgePackage(pkg);
     getOrCreateConversationThread(caseId);
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Erste Nachricht" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zweite Nachricht" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Erste Nachricht" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zweite Nachricht" });
 
     const t1 = getConversationThread({ agentCaseId: caseId });
     const count1 = t1.decisionFrame.decisionFrameUpdateCount;
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Dritte Nachricht" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Dritte Nachricht" });
 
     const t2 = getConversationThread({ agentCaseId: caseId });
     expect(t2.decisionFrame.decisionFrameUpdateCount).toBeGreaterThan(count1);

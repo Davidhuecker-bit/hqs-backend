@@ -108,8 +108,8 @@ describe("Step 21 – Thread creation", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – sendUserMessage", () => {
-  test("accepts a free-form user message and returns agent reply", () => {
-    const result = sendUserMessage({
+  test("accepts a free-form user message and returns agent reply", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-msg-1",
       userMessage: "Warum ist das noch blockiert?",
     });
@@ -126,24 +126,24 @@ describe("Step 21 – sendUserMessage", () => {
     expect(result.messageCount).toBe(2);
   });
 
-  test("rejects missing agentCaseId", () => {
-    const result = sendUserMessage({ userMessage: "test" });
+  test("rejects missing agentCaseId", async () => {
+    const result = await sendUserMessage({ userMessage: "test" });
     expect(result.success).toBe(false);
     expect(result.error).toBeTruthy();
   });
 
-  test("rejects empty userMessage", () => {
-    const result = sendUserMessage({ agentCaseId: "test-conv-msg-2", userMessage: "" });
+  test("rejects empty userMessage", async () => {
+    const result = await sendUserMessage({ agentCaseId: "test-conv-msg-2", userMessage: "" });
     expect(result.success).toBe(false);
   });
 
-  test("rejects missing userMessage", () => {
-    const result = sendUserMessage({ agentCaseId: "test-conv-msg-3" });
+  test("rejects missing userMessage", async () => {
+    const result = await sendUserMessage({ agentCaseId: "test-conv-msg-3" });
     expect(result.success).toBe(false);
   });
 
-  test("user message has correct message structure", () => {
-    const result = sendUserMessage({
+  test("user message has correct message structure", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-msg-struct",
       userMessage: "Bitte prüfe die Ursache tiefer.",
     });
@@ -156,8 +156,8 @@ describe("Step 21 – sendUserMessage", () => {
     expect(msg.createdAt).toBeTruthy();
   });
 
-  test("agent reply has correct message structure", () => {
-    const result = sendUserMessage({
+  test("agent reply has correct message structure", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-msg-reply",
       userMessage: "Erkläre mir das genauer.",
     });
@@ -177,8 +177,8 @@ describe("Step 21 – sendUserMessage", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – Agent routing", () => {
-  test("routes backend-related messages to DeepSeek", () => {
-    const result = sendUserMessage({
+  test("routes backend-related messages to DeepSeek", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-route-backend",
       userMessage: "Die API gibt falsche Daten zurück, prüfe den Backend-Datenfluss.",
     });
@@ -186,8 +186,8 @@ describe("Step 21 – Agent routing", () => {
     expect(result.routing.speakerRole).toBe("backend_agent");
   });
 
-  test("routes frontend-related messages to Gemini", () => {
-    const result = sendUserMessage({
+  test("routes frontend-related messages to Gemini", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-route-frontend",
       userMessage: "Das UI-Layout ist kaputt und die Beschriftung fehlt.",
     });
@@ -195,16 +195,16 @@ describe("Step 21 – Agent routing", () => {
     expect(result.routing.speakerRole).toBe("frontend_agent");
   });
 
-  test("routes ambiguous messages to DeepSeek by default", () => {
-    const result = sendUserMessage({
+  test("routes ambiguous messages to DeepSeek by default", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-route-default",
       userMessage: "Ich habe eine allgemeine Frage zum System.",
     });
     expect(result.routing.speakerAgent).toBe("deepseek");
   });
 
-  test("routing reason is provided", () => {
-    const result = sendUserMessage({
+  test("routing reason is provided", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-route-reason",
       userMessage: "Das Frontend-Design stimmt nicht.",
     });
@@ -218,40 +218,40 @@ describe("Step 21 – Agent routing", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – Message intent", () => {
-  test("derives question intent", () => {
-    const result = sendUserMessage({
+  test("derives question intent", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-intent-q",
       userMessage: "Warum ist der Prozess blockiert?",
     });
     expect(result.userMessage.messageIntent).toBe("question");
   });
 
-  test("derives scope_change intent", () => {
-    const result = sendUserMessage({
+  test("derives scope_change intent", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-intent-scope",
       userMessage: "Nur Backend, Frontend raus.",
     });
     expect(result.userMessage.messageIntent).toBe("scope_change");
   });
 
-  test("derives clarification intent", () => {
-    const result = sendUserMessage({
+  test("derives clarification intent", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-intent-clar",
       userMessage: "Erkläre mir das bitte genauer.",
     });
     expect(result.userMessage.messageIntent).toBe("clarification");
   });
 
-  test("derives diagnosis_request intent", () => {
-    const result = sendUserMessage({
+  test("derives diagnosis_request intent", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-intent-diag",
       userMessage: "Prüfe die Ursache bitte tiefer.",
     });
     expect(result.userMessage.messageIntent).toBe("diagnosis_request");
   });
 
-  test("derives freeform intent for generic messages", () => {
-    const result = sendUserMessage({
+  test("derives freeform intent for generic messages", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-intent-free",
       userMessage: "Alles klar, machen wir so.",
     });
@@ -264,8 +264,8 @@ describe("Step 21 – Message intent", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – Thread state", () => {
-  test("thread awaits user reply after agent response", () => {
-    const result = sendUserMessage({
+  test("thread awaits user reply after agent response", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-state-1",
       userMessage: "Was ist der aktuelle Stand?",
     });
@@ -274,16 +274,16 @@ describe("Step 21 – Thread state", () => {
     expect(result.threadStatus).toBe("thread_waiting_for_user");
   });
 
-  test("thread tracks last speaker", () => {
-    const result = sendUserMessage({
+  test("thread tracks last speaker", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-state-2",
       userMessage: "Wie sieht der API-Status aus?",
     });
     expect(result.lastSpeaker).toBe("deepseek");
   });
 
-  test("thread suggests next speaker", () => {
-    const result = sendUserMessage({
+  test("thread suggests next speaker", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-state-3",
       userMessage: "Ich habe noch eine Frage.",
     });
@@ -296,24 +296,24 @@ describe("Step 21 – Thread state", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – Reply linking", () => {
-  test("agent reply references user message via replyToMessageId", () => {
-    const result = sendUserMessage({
+  test("agent reply references user message via replyToMessageId", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-link-1",
       userMessage: "Bitte genauer erklären.",
     });
     expect(result.agentReply.replyToMessageId).toBe(result.userMessage.messageId);
   });
 
-  test("follow-up messages reference previous message", () => {
-    sendUserMessage({ agentCaseId: "test-conv-link-2", userMessage: "Erste Nachricht." });
-    const r2 = sendUserMessage({ agentCaseId: "test-conv-link-2", userMessage: "Zweite Nachricht." });
+  test("follow-up messages reference previous message", async () => {
+    await sendUserMessage({ agentCaseId: "test-conv-link-2", userMessage: "Erste Nachricht." });
+    const r2 = await sendUserMessage({ agentCaseId: "test-conv-link-2", userMessage: "Zweite Nachricht." });
     // The second user message's followUpOf should reference the previous message (agent reply)
     expect(r2.userMessage.followUpOf).toBeTruthy();
   });
 
-  test("replyToMessageId can be set explicitly", () => {
-    const r1 = sendUserMessage({ agentCaseId: "test-conv-link-3", userMessage: "Nachricht eins." });
-    const r2 = sendUserMessage({
+  test("replyToMessageId can be set explicitly", async () => {
+    const r1 = await sendUserMessage({ agentCaseId: "test-conv-link-3", userMessage: "Nachricht eins." });
+    const r2 = await sendUserMessage({
       agentCaseId: "test-conv-link-3",
       userMessage: "Antwort auf die erste.",
       replyToMessageId: r1.userMessage.messageId,
@@ -327,8 +327,8 @@ describe("Step 21 – Reply linking", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – getConversationThread", () => {
-  test("returns thread with messages", () => {
-    sendUserMessage({ agentCaseId: "test-conv-get-1", userMessage: "Hallo." });
+  test("returns thread with messages", async () => {
+    await sendUserMessage({ agentCaseId: "test-conv-get-1", userMessage: "Hallo." });
     const thread = getConversationThread({ agentCaseId: "test-conv-get-1" });
     expect(thread).toBeTruthy();
     expect(thread.threadId).toBe("test-conv-get-1");
@@ -338,9 +338,9 @@ describe("Step 21 – getConversationThread", () => {
     expect(thread.conversationSummary).toBeTruthy();
   });
 
-  test("respects limit parameter", () => {
+  test("respects limit parameter", async () => {
     for (let i = 0; i < 5; i++) {
-      sendUserMessage({ agentCaseId: "test-conv-get-limit", userMessage: `Nachricht ${i}` });
+      await sendUserMessage({ agentCaseId: "test-conv-get-limit", userMessage: `Nachricht ${i}` });
     }
     const thread = getConversationThread({ agentCaseId: "test-conv-get-limit", limit: 3 });
     expect(thread.messages.length).toBe(3);
@@ -394,8 +394,8 @@ describe("Step 21 – getConversationSummary", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – Dialog quality", () => {
-  test("agent replies are cooperative German text, not log-style", () => {
-    const result = sendUserMessage({
+  test("agent replies are cooperative German text, not log-style", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-quality-1",
       userMessage: "Was ist die Ursache für das Problem im Backend?",
     });
@@ -408,9 +408,9 @@ describe("Step 21 – Dialog quality", () => {
     expect(reply.toLowerCase()).toMatch(/sicht|fall|bereich|schwerpunkt|prüf|schau/);
   });
 
-  test("agent replies differ based on intent", () => {
-    const r1 = sendUserMessage({ agentCaseId: "test-conv-quality-q", userMessage: "Warum ist das so?" });
-    const r2 = sendUserMessage({ agentCaseId: "test-conv-quality-s", userMessage: "Nur Backend, Frontend raus." });
+  test("agent replies differ based on intent", async () => {
+    const r1 = await sendUserMessage({ agentCaseId: "test-conv-quality-q", userMessage: "Warum ist das so?" });
+    const r2 = await sendUserMessage({ agentCaseId: "test-conv-quality-s", userMessage: "Nur Backend, Frontend raus." });
     // Different intents should produce different reply styles
     expect(r1.agentReply.content).not.toBe(r2.agentReply.content);
   });
@@ -421,8 +421,8 @@ describe("Step 21 – Dialog quality", () => {
    ───────────────────────────────────────────── */
 
 describe("Step 21 – Conversation phase tracking", () => {
-  test("messages carry messagePhase", () => {
-    const result = sendUserMessage({
+  test("messages carry messagePhase", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-phase-1",
       userMessage: "Wie ist der aktuelle Stand?",
     });
@@ -430,8 +430,8 @@ describe("Step 21 – Conversation phase tracking", () => {
     expect(VALID_CONVERSATION_PHASES).toContain(result.userMessage.messagePhase);
   });
 
-  test("conversationState is set on thread", () => {
-    const result = sendUserMessage({
+  test("conversationState is set on thread", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "test-conv-phase-2",
       userMessage: "Prüfe die Diagnose.",
     });

@@ -1683,6 +1683,18 @@ const CONFERENCE_FOLLOWUP_KEYWORDS = [
 /** Max length for lastUserMessage excerpt stored on session */
 const CONFERENCE_LAST_USER_MSG_MAX_LENGTH = 200;
 
+/** Max chars of userMessage sent to AI APIs – prevents oversized payloads */
+const CONFERENCE_USER_MSG_MAX_INPUT = 4000;
+
+/** Max chars of each historical message included in conversation-history prompts */
+const CONFERENCE_HISTORY_MSG_MAX_LENGTH = 400;
+
+/** Max chars for the conferenceFocus field */
+const CONFERENCE_FOCUS_MAX_LENGTH = 200;
+
+/** Max chars of userMessage sent to Step-21 conversation AI APIs */
+const CONVERSATION_USER_MSG_MAX_INPUT = 4000;
+
 /* ─────────────────────────────────────────────────────────────────────
    Konferenz Step E: Companion Multi-Agent Both-Mode Backend –
    Dual Reply Routing / Same-Thread Two-Agent Responses /
@@ -1771,6 +1783,69 @@ const _conversationThreads = new Map();
 
 /** Auto-increment counter for conversation message IDs */
 let _conversationMsgCounter = 0;
+
+/* ─────────────────────────────────────────────
+   Conference Agent Registry
+   ───────────────────────────────────────────────────────────────────
+   To add a new AI participant to the conference system, add one entry
+   here. No other code needs to change for basic participation.
+
+   Each entry must provide:
+     id           – unique string identifier used as targetAgent value
+     label        – human-readable name used in German prompts
+     role         – speaker role string (e.g. "backend_agent")
+     domain       – domain description used in German prompts
+     isConfigured – () => boolean, returns true when the API key / SDK is ready
+     callApi      – async (systemPrompt, userMessage, opts) => string
+                    must throw on failure (fallback is handled by caller)
+   ───────────────────────────────────────────────────────────────────
+   */
+const _conferenceAgentRegistry = new Map([
+  [
+    "deepseek",
+    {
+      id: "deepseek",
+      label: "DeepSeek (Backend)",
+      role: "backend_agent",
+      domain: "Backend-Entwicklung, APIs und Systemlogik",
+      isConfigured: () => isDeepSeekConfigured(),
+      async callApi(systemPrompt, userMessage, opts = {}) {
+        const completion = await createDeepSeekChatCompletion({
+          tier: "fast",
+          timeoutMs: opts.timeoutMs || 20000,
+          temperature: opts.temperature || 0.5,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage },
+          ],
+        });
+        const text = completion?.choices?.[0]?.message?.content || "";
+        if (!text.trim()) throw new Error("DEEPSEEK_EMPTY_RESPONSE");
+        return text.trim();
+      },
+    },
+  ],
+  [
+    "gemini",
+    {
+      id: "gemini",
+      label: "Gemini (Frontend)",
+      role: "frontend_agent",
+      domain: "Frontend-Entwicklung, UX und Systemarchitektur",
+      isConfigured: () => isGeminiConfigured(),
+      async callApi(systemPrompt, userMessage, opts = {}) {
+        const result = await runGeminiChat({
+          systemPrompt,
+          userMessage,
+          maxTokens: opts.maxTokens || 512,
+          timeoutMs: opts.timeoutMs || 22000,
+        });
+        if (result.success && result.text.trim()) return result.text.trim();
+        throw new Error(result.error || "GEMINI_EMPTY_RESPONSE");
+      },
+    },
+  ],
+]);
 
 /* ─────────────────────────────────────────────
    Konferenz Step A: In-memory conference session store
@@ -12155,7 +12230,7 @@ function _generateHandoffCompletionMsg(fromAgent, toAgent) {
  * @param {string} params.afterMessageId - the message this handoff follows
  * @returns {{ handoffMessages: Array, supportingAgentReply: Object }}
  */
-function _executeHandoff({ thread, primaryAgent, reason, userMessage, agentCase, afterMessageId }) {
+async function _executeHandoff({ thread, primaryAgent, reason, userMessage, agentCase, afterMessageId }) {
   const supportingAgent = primaryAgent === "deepseek" ? "gemini" : "deepseek";
   const supportingRole = supportingAgent === "deepseek" ? "backend_agent" : "frontend_agent";
   const handoffMessages = [];
@@ -12226,10 +12301,16 @@ function _executeHandoff({ thread, primaryAgent, reason, userMessage, agentCase,
     reason,
   });
 
-  // 2. Supporting agent reply
+  // 2. Supporting agent reply – real API call with fallback to template
   _conversationMsgCounter += 1;
   const supportMsgId = `conv-${Date.now()}-${_conversationMsgCounter}`;
-  const supportText = _generateSupportingAgentReply(supportingAgent, reason, userMessage, agentCase, thread);
+  const supportText = await _generateConversationReply({
+    speakerAgent: supportingAgent,
+    messageIntent: "follow_up",
+    userMessage: userMessage || "",
+    agentCase,
+    thread,
+  });
 
   const supportMsg = {
     messageId: supportMsgId,
@@ -12383,7 +12464,7 @@ function _executeHandoff({ thread, primaryAgent, reason, userMessage, agentCase,
  * @param {string} [params.reason]
  * @returns {Object}
  */
-function triggerHandoff({ agentCaseId, targetAgent, reason } = {}) {
+async function triggerHandoff({ agentCaseId, targetAgent, reason } = {}) {
   if (!agentCaseId) {
     return { success: false, error: "agentCaseId is required" };
   }
@@ -12413,7 +12494,7 @@ function triggerHandoff({ agentCaseId, targetAgent, reason } = {}) {
     : null;
   const afterMessageId = lastMsg ? lastMsg.messageId : null;
 
-  const result = _executeHandoff({
+  const result = await _executeHandoff({
     thread,
     primaryAgent: currentPrimary,
     reason: resolvedReason,
@@ -14356,7 +14437,68 @@ function _buildConversationSummaryLine(thread) {
  * @param {string} [params.quotedMessageId] - optional quoted message
  * @returns {Object} result with user message, agent reply, thread state
  */
-function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, quotedMessageId = null } = {}) {
+/**
+ * Call the real AI API for a Step-21 conversation thread.
+ * Uses _conferenceAgentRegistry for dispatch so new agents are plug-and-play.
+ * Falls back to the static template reply when the API is unavailable.
+ *
+ * @param {Object} params
+ * @param {string} params.speakerAgent  - "deepseek" | "gemini" | any registered agent id
+ * @param {string} params.messageIntent
+ * @param {string} params.userMessage
+ * @param {Object} params.agentCase
+ * @param {Object} params.thread
+ * @returns {Promise<string>} agent reply text
+ * @private
+ */
+async function _generateConversationReply({ speakerAgent, messageIntent, userMessage, agentCase, thread }) {
+  const agentDef = _conferenceAgentRegistry.get(speakerAgent);
+  if (!agentDef || !agentDef.isConfigured()) {
+    // Fall back to static templates when API is not available
+    return _generateAgentReply({ speakerAgent, messageIntent, userMessage, agentCase, thread });
+  }
+
+  const problemTitle = (agentCase && agentCase.problemTitle) || "den aktuellen Fall";
+  const safeMsg = (userMessage || "").slice(0, CONVERSATION_USER_MSG_MAX_INPUT);
+
+  // Build conversation history from thread
+  const recentHistory = (thread.conversationMessages || [])
+    .slice(-8)
+    .filter((m) => m.messageRole === "user" || (m.messageRole === "agent" && m.speakerAgent !== "system"))
+    .map((m) => {
+      const isOwn = m.messageRole === "agent" && m.speakerAgent === speakerAgent;
+      const label = m.messageRole === "user" ? "Nutzer" : isOwn ? agentDef.label : "Anderer Agent";
+      return `${label}: ${(m.content || "").slice(0, CONFERENCE_HISTORY_MSG_MAX_LENGTH)}`;
+    })
+    .join("\n");
+
+  const systemPrompt = [
+    `Du bist ${agentDef.label}, ein spezialisierter KI-Assistent für ${agentDef.domain}.`,
+    `Du führst einen technischen Dialog zu: ${problemTitle}.`,
+    `Antworte immer auf Deutsch. Sei kooperativ, klar und präzise. Maximal 5 Sätze.`,
+  ].join("\n");
+
+  const fullMessage = recentHistory
+    ? `${recentHistory}\n\nNutzer: ${safeMsg}`
+    : safeMsg;
+
+  try {
+    const text = await agentDef.callApi(systemPrompt, fullMessage, {
+      timeoutMs: speakerAgent === "deepseek" ? 20000 : 22000,
+      maxTokens: 600,
+      temperature: 0.5,
+    });
+    if (text.trim()) return text.trim();
+  } catch (err) {
+    logger.warn("[agentBridge] Step 21 – API Fehler, Fallback auf Template", {
+      agent: speakerAgent,
+      message: err.message,
+    });
+  }
+  return _generateAgentReply({ speakerAgent, messageIntent, userMessage, agentCase, thread });
+}
+
+async function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, quotedMessageId = null } = {}) {
   if (!agentCaseId) {
     logger.warn("[agentBridge] Step 21 – sendUserMessage ohne agentCaseId");
     return { success: false, error: "agentCaseId is required" };
@@ -14426,8 +14568,8 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
   // --- 2. Route to appropriate agent ---
   const routing = _routeToAgent(userMessage, agentCase);
 
-  // --- 3. Generate agent reply ---
-  let agentReplyText = _generateAgentReply({
+  // --- 3. Generate agent reply via real API (falls back to template when unconfigured) ---
+  let agentReplyText = await _generateConversationReply({
     speakerAgent: routing.speakerAgent,
     messageIntent,
     userMessage: userMessage.trim(),
@@ -14495,7 +14637,7 @@ function sendUserMessage({ agentCaseId, userMessage, replyToMessageId = null, qu
 
   if (handoffAssessment.needed) {
     // Execute the full handoff: initiation → supporting reply → completion
-    handoffResult = _executeHandoff({
+    handoffResult = await _executeHandoff({
       thread,
       primaryAgent: routing.speakerAgent,
       reason: handoffAssessment.reason,
@@ -14982,8 +15124,11 @@ function openConferenceSession({
     return { success: true, conferenceId, session: _formatConferenceSession(existing), resumed: true };
   }
 
-  // Validate mode
+  // Validate and truncate inputs
   const mode = VALID_CONFERENCE_MODES.includes(conferenceMode) ? conferenceMode : "work_chat";
+  const safeFocus = typeof conferenceFocus === "string"
+    ? conferenceFocus.slice(0, CONFERENCE_FOCUS_MAX_LENGTH)
+    : null;
 
   // Create new session
   _conferenceIdCounter += 1;
@@ -14994,7 +15139,7 @@ function openConferenceSession({
     conferenceId: newId,
     conferenceStatus: "session_active",
     conferenceMode: mode,
-    conferenceFocus: conferenceFocus || null,
+    conferenceFocus: safeFocus,
     conferenceOwner: conferenceOwner || "admin",
     relatedCaseId: relatedCaseId || null,
     activeAgents: ["deepseek", "gemini"],
@@ -15547,13 +15692,32 @@ function _deriveCooperationType(secondContent, firstContent) {
  * @private
  */
 async function _generateConferenceReply(agent, messageIntent, userMessage, session, context = {}) {
+  // ── Resolve agent from registry ──
+  const agentDef = _conferenceAgentRegistry.get(agent);
+  if (!agentDef) {
+    logger.warn("[agentBridge] Konferenz – Unbekannter Agent angefordert", { agent });
+    return _generateConferenceReplyFallback(agent, messageIntent, session);
+  }
+
+  if (!agentDef.isConfigured()) {
+    return _generateConferenceReplyFallback(agent, messageIntent, session);
+  }
+
+  // ── Truncate user message to stay within API limits ──
+  const safeUserMessage = (userMessage || "").slice(0, CONFERENCE_USER_MSG_MAX_INPUT);
+
   // ── Build conversation history for context ──
   const recentMessages = (session.messages || [])
     .slice(-10)
     .filter((m) => m.messageRole === "user" || (m.messageRole === "agent" && m.speakerAgent !== "system"))
     .map((m) => {
-      const role = m.messageRole === "user" ? "user" : m.speakerAgent === agent ? "assistant" : "user";
-      return `${role === "assistant" ? (agent === "deepseek" ? "DeepSeek" : "Gemini") : "Nutzer"}: ${m.content}`;
+      const isOwnReply = m.messageRole === "agent" && m.speakerAgent === agent;
+      const label = m.messageRole === "user"
+        ? "Nutzer"
+        : isOwnReply ? agentDef.label : "Anderer Agent";
+      // Truncate each history excerpt to prevent prompt bloat
+      const excerpt = (m.content || "").slice(0, CONFERENCE_HISTORY_MSG_MAX_LENGTH);
+      return `${label}: ${excerpt}`;
     })
     .join("\n");
 
@@ -15564,60 +15728,37 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     decision_mode: "Entscheidungsmodus",
   }[session.conferenceMode] || "Arbeitschat";
 
-  if (agent === "deepseek") {
-    if (!isDeepSeekConfigured()) {
-      return _generateConferenceReplyFallback(agent, messageIntent, session);
-    }
-    const systemPrompt = `Du bist DeepSeek, ein spezialisierter KI-Assistent für Backend-Entwicklung, APIs und Systemlogik.
-Du nimmst an einer technischen Konferenz teil (Modus: ${modeLabel}).
-${focus}Antworte immer auf Deutsch. Sei klar, präzise und hilfreich. Beantworte die Frage direkt.
-Halte deine Antwort fokussiert (2-5 Sätze). Wenn Gemini auch antwortet, wirst du als Primärantwort angezeigt.`.trim();
+  // ── Optional note when this agent replies after another agent in both-mode ──
+  const primaryReply = context.deepseekReply || context.primaryAgentReply || null;
+  const prevNote = primaryReply
+    ? `\nEin anderer Agent hat bereits geantwortet: "${primaryReply.slice(0, 300)}"\nDeine Antwort soll ergänzen, nicht wiederholen.`
+    : "";
 
-    const historyContext = recentMessages ? `\nBisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
-    const fullMessage = `${historyContext}${userMessage}`;
+  const systemPrompt = [
+    `Du bist ${agentDef.label}, ein spezialisierter KI-Assistent für ${agentDef.domain}.`,
+    `Du nimmst an einer technischen Konferenz teil (Modus: ${modeLabel}).`,
+    focus,
+    `Antworte immer auf Deutsch. Sei klar, präzise und hilfreich. Beantworte die Frage direkt.`,
+    `Halte deine Antwort fokussiert (2-5 Sätze).`,
+    prevNote,
+  ].filter(Boolean).join("\n").trim();
 
-    try {
-      const completion = await createDeepSeekChatCompletion({
-        tier: "fast",
-        timeoutMs: 20000,
-        temperature: 0.5,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: fullMessage },
-        ],
-      });
-      const text = completion?.choices?.[0]?.message?.content || "";
-      if (text.trim()) return text.trim();
-    } catch (err) {
-      logger.warn("[agentBridge] Konferenz DeepSeek API Fehler – Fallback aktiviert", { message: err.message });
-    }
-    return _generateConferenceReplyFallback(agent, messageIntent, session);
+  const historyContext = recentMessages ? `Bisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
+  const fullMessage = `${historyContext}${safeUserMessage}`;
+
+  try {
+    const text = await agentDef.callApi(systemPrompt, fullMessage, {
+      timeoutMs: agent === "deepseek" ? 20000 : 22000,
+      maxTokens: 512,
+      temperature: 0.5,
+    });
+    if (text.trim()) return text.trim();
+  } catch (err) {
+    logger.warn("[agentBridge] Konferenz API Fehler – Fallback aktiviert", {
+      agent,
+      message: err.message,
+    });
   }
-
-  if (agent === "gemini") {
-    if (!isGeminiConfigured()) {
-      return _generateConferenceReplyFallback(agent, messageIntent, session);
-    }
-    const deepseekReplyNote = context.deepseekReply
-      ? `\nDeepSeek hat bereits geantwortet: "${context.deepseekReply.slice(0, 300)}"\nDeine Antwort soll ergänzen, nicht wiederholen.`
-      : "";
-
-    const systemPrompt = `Du bist Gemini, ein spezialisierter KI-Assistent für Frontend-Entwicklung, UX und Systemarchitektur.
-Du nimmst an einer technischen Konferenz teil (Modus: ${modeLabel}).
-${focus}Antworte immer auf Deutsch. Sei klar, präzise und hilfreich. Beantworte die Frage direkt.
-Halte deine Antwort fokussiert (2-5 Sätze).${deepseekReplyNote}`.trim();
-
-    const historyContext = recentMessages ? `Bisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
-    const fullMessage = `${historyContext}${userMessage}`;
-
-    const gemResult = await runGeminiChat({ systemPrompt, userMessage: fullMessage, maxTokens: 512, timeoutMs: 22000 });
-    if (gemResult.success && gemResult.text.trim()) {
-      return gemResult.text.trim();
-    }
-    logger.warn("[agentBridge] Konferenz Gemini API Fehler – Fallback aktiviert", { error: gemResult.error });
-    return _generateConferenceReplyFallback(agent, messageIntent, session);
-  }
-
   return _generateConferenceReplyFallback(agent, messageIntent, session);
 }
 
@@ -15735,8 +15876,10 @@ function updateConferenceSession({
   }
 
   if (conferenceFocus !== null) {
-    session.conferenceFocus = conferenceFocus;
-    changes.push(`Fokus aktualisiert: ${conferenceFocus}`);
+    session.conferenceFocus = typeof conferenceFocus === "string"
+      ? conferenceFocus.slice(0, CONFERENCE_FOCUS_MAX_LENGTH)
+      : conferenceFocus;
+    changes.push(`Fokus aktualisiert: ${session.conferenceFocus}`);
   }
 
   if (relatedCaseId !== null) {
@@ -17560,13 +17703,20 @@ async function sendCoordinatedConferenceMessage({
     }
 
     case "supporting_reply": {
-      // Lead answers first, then support supplements
+      // Lead answers first via real API, then support agent adds a real supplementary reply
       const leadReply = await _generateConferenceReply(session.leadAgent, messageIntent, userMessage, session);
       agentReplies.push(_recordConferenceAgentReply(session, session.leadAgent, leadReply, userMsgId));
-      
-      const supportReply = _generateSupportingReply(session.supportAgent, session.leadAgent, messageIntent, userMessage, session);
+
+      // Support agent gets the lead's reply as context so it can genuinely supplement
+      const supportReply = await _generateConferenceReply(
+        session.supportAgent,
+        messageIntent,
+        userMessage,
+        session,
+        { primaryAgentReply: leadReply }
+      );
       agentReplies.push(_recordConferenceAgentReply(session, session.supportAgent, supportReply, userMsgId));
-      
+
       coordinatorMessages.push(_recordCoordinatorMessage(session, "supplement_added", { supportAgent: session.supportAgent }));
       session.supportingReplyCount += 1;
       break;
@@ -17583,9 +17733,11 @@ async function sendCoordinatedConferenceMessage({
     }
 
     case "bundled_reply": {
-      // Bundled answer combining both perspectives
-      const bundled = _generateBundledReply(messageIntent, userMessage, session);
-      agentReplies.push(_recordConferenceAgentReply(session, "system", bundled, userMsgId));
+      // Both agents contribute; their replies are stored individually and summarised
+      const dsBundle = await _generateConferenceReply("deepseek", messageIntent, userMessage, session);
+      const gmBundle = await _generateConferenceReply("gemini", messageIntent, userMessage, session, { primaryAgentReply: dsBundle });
+      const bundledText = `[Backend] ${dsBundle}\n\n[Frontend] ${gmBundle}`;
+      agentReplies.push(_recordConferenceAgentReply(session, "system", bundledText, userMsgId));
       coordinatorMessages.push(_recordCoordinatorMessage(session, "reply_bundled", {}));
       session.bundledReplyCount += 1;
       break;

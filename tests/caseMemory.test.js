@@ -112,8 +112,8 @@ describe("Step 23 – Thread caseMemory structure", () => {
 // ── sendUserMessage with memory ──
 
 describe("Step 23 – sendUserMessage includes memory fields", () => {
-  test("response includes caseContinuityStatus and memoryFreshness", () => {
-    const result = sendUserMessage({
+  test("response includes caseContinuityStatus and memoryFreshness", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "step23-msg-1",
       userMessage: "Zeig mir die Ursache im Backend",
     });
@@ -124,8 +124,8 @@ describe("Step 23 – sendUserMessage includes memory fields", () => {
     expect(VALID_MEMORY_FRESHNESS).toContain(result.memoryFreshness);
   });
 
-  test("response includes workingSummary after interaction", () => {
-    const result = sendUserMessage({
+  test("response includes workingSummary after interaction", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "step23-msg-2",
       userMessage: "Ich will nur den Backend-Teil prüfen",
     });
@@ -134,8 +134,8 @@ describe("Step 23 – sendUserMessage includes memory fields", () => {
     expect(result.workingSummary.length).toBeGreaterThan(0);
   });
 
-  test("response includes nextOpenStep", () => {
-    const result = sendUserMessage({
+  test("response includes nextOpenStep", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "step23-msg-3",
       userMessage: "Was ist der nächste Schritt?",
     });
@@ -144,8 +144,8 @@ describe("Step 23 – sendUserMessage includes memory fields", () => {
     expect("nextOpenStep" in result).toBe(true);
   });
 
-  test("response includes dominantMemoryOwner", () => {
-    const result = sendUserMessage({
+  test("response includes dominantMemoryOwner", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "step23-msg-4",
       userMessage: "Zeig mir die API-Logik",
     });
@@ -153,8 +153,8 @@ describe("Step 23 – sendUserMessage includes memory fields", () => {
     expect("dominantMemoryOwner" in result).toBe(true);
   });
 
-  test("response includes memoryFocus", () => {
-    const result = sendUserMessage({
+  test("response includes memoryFocus", async () => {
+    const result = await sendUserMessage({
       agentCaseId: "step23-msg-5",
       userMessage: "Bitte nur Backend, Frontend raus",
     });
@@ -166,9 +166,9 @@ describe("Step 23 – sendUserMessage includes memory fields", () => {
 // ── Scope detection / memory anchors ──
 
 describe("Step 23 – Memory anchors from scope decisions", () => {
-  test("scope_change message creates scope_decision anchor", () => {
+  test("scope_change message creates scope_decision anchor", async () => {
     const caseId = "step23-scope-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Bitte nur backend prüfen, Frontend raus" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Bitte nur backend prüfen, Frontend raus" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData).not.toBeNull();
@@ -176,17 +176,17 @@ describe("Step 23 – Memory anchors from scope decisions", () => {
     expect(threadData.caseMemory.caseScope).toBe("backend");
   });
 
-  test("user preference detected and stored", () => {
+  test("user preference detected and stored", async () => {
     const caseId = "step23-pref-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Ich möchte die Ursache tiefer prüfen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Ich möchte die Ursache tiefer prüfen" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.userPreferencesInCase.length).toBeGreaterThan(0);
   });
 
-  test("discarded direction detected", () => {
+  test("discarded direction detected", async () => {
     const caseId = "step23-discard-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Die Frontend-Folge lassen wir erstmal" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Die Frontend-Folge lassen wir erstmal" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.discardedDirections.length).toBeGreaterThan(0);
@@ -196,9 +196,9 @@ describe("Step 23 – Memory anchors from scope decisions", () => {
 // ── Working summary ──
 
 describe("Step 23 – Working summary generation", () => {
-  test("working summary is a human-readable string", () => {
+  test("working summary is a human-readable string", async () => {
     const caseId = "step23-summary-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir die Backend-Logik genauer" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir die Backend-Logik genauer" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.workingSummary).toBeDefined();
@@ -207,9 +207,9 @@ describe("Step 23 – Working summary generation", () => {
     expect(threadData.caseMemory.workingSummaryReady).toBe(true);
   });
 
-  test("working summary uses cooperative language", () => {
+  test("working summary uses cooperative language", async () => {
     const caseId = "step23-summary-2";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Ich will nur backend, frontend raus" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Ich will nur backend, frontend raus" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     const summary = threadData.caseMemory.workingSummary;
@@ -221,26 +221,26 @@ describe("Step 23 – Working summary generation", () => {
 // ── Continuity status ──
 
 describe("Step 23 – Continuity status and memory freshness", () => {
-  test("continuity status is valid after first message", () => {
+  test("continuity status is valid after first message", async () => {
     const caseId = "step23-cont-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Hallo" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Hallo" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(VALID_CONTINUITY_STATUSES).toContain(threadData.caseMemory.caseContinuityStatus);
   });
 
-  test("memory freshness is valid after interaction", () => {
+  test("memory freshness is valid after interaction", async () => {
     const caseId = "step23-fresh-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Teste den Datenfluss" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Teste den Datenfluss" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(VALID_MEMORY_FRESHNESS).toContain(threadData.caseMemory.memoryFreshness);
   });
 
-  test("memory freshness updates after interaction", () => {
+  test("memory freshness updates after interaction", async () => {
     const caseId = "step23-fresh-2";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Erster Schritt" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zweiter Schritt" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Erster Schritt" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zweiter Schritt" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.memoryFreshness).not.toBe("memory_empty");
@@ -251,9 +251,9 @@ describe("Step 23 – Continuity status and memory freshness", () => {
 // ── Role-based memory view ──
 
 describe("Step 23 – Role-based memory view", () => {
-  test("dominantMemoryOwner is set after agent interaction", () => {
+  test("dominantMemoryOwner is set after agent interaction", async () => {
     const caseId = "step23-role-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Prüfe die API-Routen" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Prüfe die API-Routen" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.dominantMemoryOwner).toBeDefined();
@@ -262,27 +262,27 @@ describe("Step 23 – Role-based memory view", () => {
     );
   });
 
-  test("lastContributingAgent is set after agent reply", () => {
+  test("lastContributingAgent is set after agent reply", async () => {
     const caseId = "step23-role-2";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Backend-Diagnose bitte" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Backend-Diagnose bitte" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.lastContributingAgent).toBeDefined();
     expect(["deepseek", "gemini"]).toContain(threadData.caseMemory.lastContributingAgent);
   });
 
-  test("memoryContributors is populated", () => {
+  test("memoryContributors is populated", async () => {
     const caseId = "step23-role-3";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir den Code" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir den Code" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(Array.isArray(threadData.caseMemory.memoryContributors)).toBe(true);
     expect(threadData.caseMemory.memoryContributors.length).toBeGreaterThan(0);
   });
 
-  test("memoryFocus is set", () => {
+  test("memoryFocus is set", async () => {
     const caseId = "step23-focus-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Was genau passiert im Mapping?" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Was genau passiert im Mapping?" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.memoryFocus).toBeDefined();
@@ -303,9 +303,9 @@ describe("Step 23 – getCaseMemory", () => {
     expect(result).toBeNull();
   });
 
-  test("returns case memory for existing thread", () => {
+  test("returns case memory for existing thread", async () => {
     const caseId = "step23-get-mem-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir die Diagnose" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zeig mir die Diagnose" });
 
     const result = getCaseMemory({ agentCaseId: caseId });
     expect(result).not.toBeNull();
@@ -319,9 +319,9 @@ describe("Step 23 – getCaseMemory", () => {
 // ── getCaseMemorySummary ──
 
 describe("Step 23 – getCaseMemorySummary", () => {
-  test("returns summary object with expected fields", () => {
+  test("returns summary object with expected fields", async () => {
     // Ensure at least one thread exists
-    sendUserMessage({ agentCaseId: "step23-summ-1", userMessage: "Test" });
+    await sendUserMessage({ agentCaseId: "step23-summ-1", userMessage: "Test" });
 
     const summary = getCaseMemorySummary();
     expect(summary).toBeDefined();
@@ -349,9 +349,9 @@ describe("Step 23 – getCaseMemorySummary", () => {
 // ── getConversationThread includes memory ──
 
 describe("Step 23 – getConversationThread includes caseMemory", () => {
-  test("thread response includes caseMemory object", () => {
+  test("thread response includes caseMemory object", async () => {
     const caseId = "step23-thread-mem-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Analysiere das Backend" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Analysiere das Backend" });
 
     const thread = getConversationThread({ agentCaseId: caseId });
     expect(thread.caseMemory).toBeDefined();
@@ -365,8 +365,8 @@ describe("Step 23 – getConversationThread includes caseMemory", () => {
 // ── getConversationSummary includes memory analytics ──
 
 describe("Step 23 – getConversationSummary includes memory analytics", () => {
-  test("summary includes Step 23 memory analytics", () => {
-    sendUserMessage({ agentCaseId: "step23-conv-summ-1", userMessage: "Test" });
+  test("summary includes Step 23 memory analytics", async () => {
+    await sendUserMessage({ agentCaseId: "step23-conv-summ-1", userMessage: "Test" });
 
     const summary = getConversationSummary();
     expect(typeof summary.totalWithMemory).toBe("number");
@@ -375,8 +375,8 @@ describe("Step 23 – getConversationSummary includes memory analytics", () => {
     expect(typeof summary.totalWithAgreedDirection).toBe("number");
   });
 
-  test("thread summaries include memory fields", () => {
-    sendUserMessage({ agentCaseId: "step23-conv-summ-2", userMessage: "Hallo" });
+  test("thread summaries include memory fields", async () => {
+    await sendUserMessage({ agentCaseId: "step23-conv-summ-2", userMessage: "Hallo" });
 
     const summary = getConversationSummary();
     if (summary.threadSummaries.length > 0) {
@@ -394,12 +394,12 @@ describe("Step 23 – getConversationSummary includes memory analytics", () => {
 // ── Memory injection into reply ──
 
 describe("Step 23 – Memory context injection into agent replies", () => {
-  test("agent reply references case scope after scope change", () => {
+  test("agent reply references case scope after scope change", async () => {
     const caseId = "step23-inject-1";
     // First message: set scope
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Bitte nur backend, frontend raus" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Bitte nur backend, frontend raus" });
     // Second message: should reference scope
-    const result = sendUserMessage({ agentCaseId: caseId, userMessage: "Was ist der nächste Schritt?" });
+    const result = await sendUserMessage({ agentCaseId: caseId, userMessage: "Was ist der nächste Schritt?" });
 
     expect(result.success).toBe(true);
     // The reply should contain either scope reference or the normal reply
@@ -411,23 +411,23 @@ describe("Step 23 – Memory context injection into agent replies", () => {
 // ── Multiple interactions build memory ──
 
 describe("Step 23 – Multiple interactions build memory progressively", () => {
-  test("memory version increases with each interaction", () => {
+  test("memory version increases with each interaction", async () => {
     const caseId = "step23-multi-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Erster Punkt" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Erster Punkt" });
     const t1 = getConversationThread({ agentCaseId: caseId });
     const v1 = t1.caseMemory.memoryUpdateCount;
 
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Zweiter Punkt" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Zweiter Punkt" });
     const t2 = getConversationThread({ agentCaseId: caseId });
     const v2 = t2.caseMemory.memoryUpdateCount;
 
     expect(v2).toBeGreaterThan(v1);
   });
 
-  test("agreed direction detected from user agreement", () => {
+  test("agreed direction detected from user agreement", async () => {
     const caseId = "step23-agree-1";
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Prüfe die Backend-Logik" });
-    sendUserMessage({ agentCaseId: caseId, userMessage: "Klingt gut, machen wir so" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Prüfe die Backend-Logik" });
+    await sendUserMessage({ agentCaseId: caseId, userMessage: "Klingt gut, machen wir so" });
 
     const threadData = getConversationThread({ agentCaseId: caseId });
     expect(threadData.caseMemory.agreedDirection).toBeDefined();
