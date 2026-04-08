@@ -1,6 +1,6 @@
 "use strict";
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenAI } = require("@google/genai");
 
 const logger = require("../utils/logger");
 
@@ -19,13 +19,13 @@ function getGeminiClient() {
     throw new Error("Missing GEMINI_API_KEY – Gemini Architect is not configured");
   }
   if (!_client) {
-    _client = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    _client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   }
   return _client;
 }
 
 function getModelName() {
-  return process.env.GEMINI_MODEL || "gemini-1.5-flash";
+  return process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
 }
 
 /* ─────────────────────────────────────────────
@@ -1685,19 +1685,22 @@ function buildUserPrompt(normalised) {
 
 function getResponseText(response) {
   try {
-    const geminiResponse = response?.response ?? response;
-    if (!geminiResponse) return "";
+    if (!response) return "";
 
-    if (typeof geminiResponse.text === "function") {
-      const value = geminiResponse.text();
+    // New @google/genai SDK: response.text is a string directly
+    if (typeof response.text === "string") {
+      return response.text;
+    }
+
+    // New SDK: response.text may also be a function (transitional)
+    if (typeof response.text === "function") {
+      const value = response.text();
       if (typeof value === "string") return value;
     }
 
-    if (typeof geminiResponse.text === "string") {
-      return geminiResponse.text;
-    }
-
-    if (Array.isArray(geminiResponse.candidates)) {
+    // Legacy candidates fallback (old SDK shape)
+    const geminiResponse = response?.response ?? response;
+    if (Array.isArray(geminiResponse?.candidates)) {
       const parts = geminiResponse.candidates
         .flatMap((candidate) => candidate?.content?.parts || [])
         .map((part) => part?.text || "")
@@ -1753,18 +1756,8 @@ async function runGeminiArchitectReview(payload = {}) {
   const client = getGeminiClient();
   const modelName = getModelName();
 
-  const model = client.getGenerativeModel({
-    model: modelName,
-    systemInstruction: SYSTEM_PROMPT,
-    generationConfig: {
-      temperature: 0.15,
-      maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
-      responseMimeType: "application/json",
-      responseSchema: RESPONSE_SCHEMA,
-    },
-  });
-
   logger.info("[geminiArchitect] sending request", {
+    codepath: "runGeminiArchitectReview",
     mode: normalised.mode,
     model: modelName,
     maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
@@ -1806,7 +1799,17 @@ async function runGeminiArchitectReview(payload = {}) {
       });
       try {
         return await Promise.race([
-          model.generateContent(userPrompt),
+          client.models.generateContent({
+            model: modelName,
+            contents: userPrompt,
+            config: {
+              systemInstruction: SYSTEM_PROMPT,
+              temperature: 0.15,
+              maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+              responseMimeType: "application/json",
+              responseSchema: RESPONSE_SCHEMA,
+            },
+          }),
           timeoutPromise,
         ]);
       } finally {
@@ -1820,10 +1823,12 @@ async function runGeminiArchitectReview(payload = {}) {
                       safeMsg.toLowerCase().includes("deadline");
     const errType = isTimeout ? RESULT_TYPES.TIMEOUT : RESULT_TYPES.API_ERROR;
     logger.warn("[geminiArchitect] Gemini API call failed", {
+      codepath: "runGeminiArchitectReview",
       mode: normalised.mode,
       model: modelName,
       resultType: errType,
       isTimeout,
+      httpStatus: apiErr.status || apiErr.statusCode || null,
       reason: safeMsg,
     });
     return {
@@ -1964,14 +1969,6 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
   try {
     const client = getGeminiClient();
     const modelName = getModelName();
-    const model = client.getGenerativeModel({
-      model: modelName,
-      systemInstruction: systemPrompt || "",
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: maxTokens,
-      },
-    });
 
     const response = await _withGeminiRetry(async () => {
       let timerId;
@@ -1979,7 +1976,18 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
         timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
       });
       try {
-        return await Promise.race([model.generateContent(userMessage), timeoutPromise]);
+        return await Promise.race([
+          client.models.generateContent({
+            model: modelName,
+            contents: userMessage,
+            config: {
+              systemInstruction: systemPrompt || "",
+              temperature: 0.7,
+              maxOutputTokens: maxTokens,
+            },
+          }),
+          timeoutPromise,
+        ]);
       } finally {
         clearTimeout(timerId);
       }
@@ -1991,7 +1999,12 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
     }
     return { success: true, text };
   } catch (err) {
-    logger.warn("[geminiArchitect] runGeminiChat error", { message: err.message });
+    logger.warn("[geminiArchitect] runGeminiChat error", {
+      codepath: "runGeminiChat",
+      model: getModelName(),
+      httpStatus: err.status || err.statusCode || null,
+      message: String(err.message || "").slice(0, 120),
+    });
     return { success: false, text: "", error: String(err.message || "UNKNOWN").slice(0, 120) };
   }
 }
