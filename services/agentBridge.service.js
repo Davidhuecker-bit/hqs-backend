@@ -1726,6 +1726,12 @@ const BOTH_MODE_DETECTION_PHRASES = [
   "euch beide",
 ];
 
+/** Minimum word length when computing overlap for common_line detection */
+const BOTH_MODE_MIN_WORD_LENGTH_FOR_OVERLAP = 4;
+
+/** Minimum number of shared words for the secondary reply to be classified as common_line */
+const BOTH_MODE_MIN_OVERLAP_FOR_COMMON_LINE = 3;
+
 /* ─────────────────────────────────────────────
    In-memory bridge state (lightweight, no DB)
    Stores the most recently generated bridge
@@ -15369,6 +15375,8 @@ function _recordConferenceAgentReply(session, agent, content, replyToMessageId, 
     speakerRole: agent === "deepseek" ? "backend_agent" : agent === "gemini" ? "frontend_agent" : "coordinator",
     content,
     replyToMessageId,
+    // Konferenz Step E: explicit semantic alias so the frontend can identify which user
+    // message this reply responds to without relying on the internal replyToMessageId name.
     responseToMessageId: replyToMessageId,
     responseType,
     responseToRole: "user",
@@ -15514,10 +15522,10 @@ function _deriveCooperationType(secondContent, firstContent) {
 
   // Default: supplements (adds complementary info)
   // If both content snippets share similar root words, classify as common_line
-  const firstWords = new Set(firstLower.split(/\s+/).filter((w) => w.length > 4));
-  const secondWords = secondContent.toLowerCase().split(/\s+/).filter((w) => w.length > 4);
+  const firstWords = new Set(firstLower.split(/\s+/).filter((w) => w.length > BOTH_MODE_MIN_WORD_LENGTH_FOR_OVERLAP));
+  const secondWords = secondContent.toLowerCase().split(/\s+/).filter((w) => w.length > BOTH_MODE_MIN_WORD_LENGTH_FOR_OVERLAP);
   const overlap = secondWords.filter((w) => firstWords.has(w)).length;
-  if (overlap >= 3) return "common_line";
+  if (overlap >= BOTH_MODE_MIN_OVERLAP_FOR_COMMON_LINE) return "common_line";
 
   return "supplements";
 }
