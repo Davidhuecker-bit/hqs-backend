@@ -103,36 +103,36 @@ describe("Konferenz Step B – Constants", () => {
    2. Coordinated Reply Flow – Basic
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Coordinated Reply Flow", () => {
-  test("sendCoordinatedConferenceMessage requires conferenceId", () => {
-    const result = sendCoordinatedConferenceMessage({ userMessage: "Test" });
+  test("sendCoordinatedConferenceMessage requires conferenceId", async () => {
+    const result = await sendCoordinatedConferenceMessage({ userMessage: "Test" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("conferenceId");
   });
 
-  test("sendCoordinatedConferenceMessage requires userMessage", () => {
+  test("sendCoordinatedConferenceMessage requires userMessage", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({ conferenceId: cid });
+    const result = await sendCoordinatedConferenceMessage({ conferenceId: cid });
     expect(result.success).toBe(false);
     expect(result.error).toContain("userMessage");
   });
 
-  test("sendCoordinatedConferenceMessage rejects closed session", () => {
+  test("sendCoordinatedConferenceMessage rejects closed session", async () => {
     const cid = createTestSession();
     closeConferenceSession({ conferenceId: cid });
-    const result = sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Test" });
+    const result = await sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Test" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("closed");
   });
 
-  test("sendCoordinatedConferenceMessage rejects non-existent session", () => {
-    const result = sendCoordinatedConferenceMessage({ conferenceId: "nonexistent", userMessage: "Test" });
+  test("sendCoordinatedConferenceMessage rejects non-existent session", async () => {
+    const result = await sendCoordinatedConferenceMessage({ conferenceId: "nonexistent", userMessage: "Test" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("not found");
   });
 
-  test("solo reply pattern – single agent targeted", () => {
+  test("solo reply pattern – single agent targeted", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Wie funktioniert die API?",
       targetAgent: "deepseek",
@@ -144,16 +144,16 @@ describe("Konferenz Step B – Coordinated Reply Flow", () => {
     expect(result.coordination.replyPattern).toBe("solo_reply");
   });
 
-  test("supporting reply pattern – problem_solving with both agents", () => {
+  test("supporting reply pattern – problem_solving with both agents", async () => {
     const cid = createTestSession({ conferenceMode: "problem_solving" });
     // First set a lead agent by sending a backend message
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend API Problem",
       targetAgent: "deepseek",
     });
     // Now send with both target
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Wie wirkt sich das auf Frontend und Backend aus?",
       targetAgent: "both",
@@ -164,9 +164,9 @@ describe("Konferenz Step B – Coordinated Reply Flow", () => {
     expect(result.coordinatorMessages.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("bundled reply pattern – decision_mode with both agents", () => {
+  test("bundled reply pattern – decision_mode with both agents", async () => {
     const cid = createTestSession({ conferenceMode: "decision_mode" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Welche Option ist besser?",
       targetAgent: "both",
@@ -178,9 +178,9 @@ describe("Konferenz Step B – Coordinated Reply Flow", () => {
     expect(result.coordinatorMessages.length).toBeGreaterThanOrEqual(1);
   });
 
-  test("coordinated reply pattern – work_chat with both agents", () => {
+  test("coordinated reply pattern – work_chat with both agents", async () => {
     const cid = createTestSession({ conferenceMode: "work_chat" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Allgemeiner Überblick bitte",
       targetAgent: "both",
@@ -190,9 +190,9 @@ describe("Konferenz Step B – Coordinated Reply Flow", () => {
     expect(result.agentReplies.length).toBe(2);
   });
 
-  test("requestedReplyPattern override", () => {
+  test("requestedReplyPattern override", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Bitte gebündelt antworten",
       targetAgent: "both",
@@ -202,10 +202,10 @@ describe("Konferenz Step B – Coordinated Reply Flow", () => {
     expect(result.coordination.replyPattern).toBe("bundled_reply");
   });
 
-  test("resumes paused session on message", () => {
+  test("resumes paused session on message", async () => {
     const cid = createTestSession();
     updateConferenceSession({ conferenceId: cid, conferenceStatus: "session_paused" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Weiter geht es",
     });
@@ -218,9 +218,9 @@ describe("Konferenz Step B – Coordinated Reply Flow", () => {
    3. Lead / Support Agent Derivation
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Lead / Support Agent", () => {
-  test("backend message assigns deepseek as lead", () => {
+  test("backend message assigns deepseek as lead", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Ich brauche Hilfe mit der Backend API und dem Server",
       targetAgent: "deepseek",
@@ -229,9 +229,9 @@ describe("Konferenz Step B – Lead / Support Agent", () => {
     expect(result.coordination.supportAgent).toBe("gemini");
   });
 
-  test("frontend message assigns gemini as lead", () => {
+  test("frontend message assigns gemini as lead", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Das Frontend UI Design und Layout muss angepasst werden",
       targetAgent: "gemini",
@@ -240,9 +240,9 @@ describe("Konferenz Step B – Lead / Support Agent", () => {
     expect(result.coordination.supportAgent).toBe("deepseek");
   });
 
-  test("coordination response includes lead and support agent", () => {
+  test("coordination response includes lead and support agent", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Allgemeine Frage",
     });
@@ -257,9 +257,9 @@ describe("Konferenz Step B – Lead / Support Agent", () => {
    4. Coordination State Management
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Coordination State", () => {
-  test("solo reply → lead_assigned or uncoordinated", () => {
+  test("solo reply → lead_assigned or uncoordinated", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend API prüfen",
       targetAgent: "deepseek",
@@ -267,9 +267,9 @@ describe("Konferenz Step B – Coordination State", () => {
     expect(["lead_assigned", "uncoordinated"]).toContain(result.coordination.coordinationState);
   });
 
-  test("bundled reply → bundling_needed", () => {
+  test("bundled reply → bundling_needed", async () => {
     const cid = createTestSession({ conferenceMode: "decision_mode" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Beide Optionen bewerten",
       targetAgent: "both",
@@ -277,9 +277,9 @@ describe("Konferenz Step B – Coordination State", () => {
     expect(result.coordination.coordinationState).toBe("bundling_needed");
   });
 
-  test("coordinated reply → coordinated_active", () => {
+  test("coordinated reply → coordinated_active", async () => {
     const cid = createTestSession({ conferenceMode: "work_chat" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Überblick",
       targetAgent: "both",
@@ -287,15 +287,15 @@ describe("Konferenz Step B – Coordination State", () => {
     expect(result.coordination.coordinationState).toBe("coordinated_active");
   });
 
-  test("supporting reply → support_active", () => {
+  test("supporting reply → support_active", async () => {
     const cid = createTestSession({ conferenceMode: "problem_solving" });
     // Set lead agent
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend prüfen",
       targetAgent: "deepseek",
     });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Beide Perspektiven",
       targetAgent: "both",
@@ -308,31 +308,31 @@ describe("Konferenz Step B – Coordination State", () => {
    5. Phase Status Derivation
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Phase Status", () => {
-  test("initial phase is phase_open", () => {
+  test("initial phase is phase_open", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Hallo",
     });
     expect(VALID_CONFERENCE_PHASE_STATUSES).toContain(result.coordination.phaseStatus);
   });
 
-  test("recommendation keyword drives recommendation_ready", () => {
+  test("recommendation keyword drives recommendation_ready", async () => {
     const cid = createTestSession();
     // Build enough context
-    sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
-    sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Ich empfehle die Lösung" });
-    const result = sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
+    await sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Ich empfehle die Lösung" });
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Die Empfehlung ist klar",
     });
     expect(result.coordination.phaseStatus).toBe("recommendation_ready");
   });
 
-  test("cause keyword drives cause_identified", () => {
+  test("cause keyword drives cause_identified", async () => {
     const cid = createTestSession();
-    sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Was ist die Ursache?" });
-    const result = sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({ conferenceId: cid, userMessage: "Was ist die Ursache?" });
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Die Ursache liegt im Backend",
     });
@@ -344,17 +344,17 @@ describe("Konferenz Step B – Phase Status", () => {
    6. Clarification / Open Points
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Clarification & Open Points", () => {
-  test("short message in long conference triggers clarification", () => {
+  test("short message in long conference triggers clarification", async () => {
     const cid = createTestSession();
     // Build up message count
     for (let i = 0; i < 6; i++) {
-      sendCoordinatedConferenceMessage({
+      await sendCoordinatedConferenceMessage({
         conferenceId: cid,
         userMessage: `Nachricht Nummer ${i + 1} zur Diskussion`,
       });
     }
     // Very short message should trigger clarification
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Hmm ok",
     });
@@ -362,9 +362,9 @@ describe("Konferenz Step B – Clarification & Open Points", () => {
     expect(result.coordination.coordinationState).toBe("clarification_pending");
   });
 
-  test("open points are tracked in coordination", () => {
+  test("open points are tracked in coordination", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Was ist das Problem genau?",
     });
@@ -387,14 +387,14 @@ describe("Konferenz Step B – Phase Digest", () => {
     expect(digest).toBeNull();
   });
 
-  test("returns structured digest after messages", () => {
+  test("returns structured digest after messages", async () => {
     const cid = createTestSession();
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Bitte Backend prüfen",
       targetAgent: "deepseek",
     });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Frontend auch prüfen",
       targetAgent: "gemini",
@@ -414,9 +414,9 @@ describe("Konferenz Step B – Phase Digest", () => {
     expect(digest.generatedAt).toBeDefined();
   });
 
-  test("digest reflects both-agent contributions", () => {
+  test("digest reflects both-agent contributions", async () => {
     const cid = createTestSession();
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend und Frontend zusammen prüfen",
       targetAgent: "both",
@@ -431,14 +431,14 @@ describe("Konferenz Step B – Phase Digest", () => {
    8. Coordinator Messages
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Coordinator Messages", () => {
-  test("supporting reply generates coordinator message", () => {
+  test("supporting reply generates coordinator message", async () => {
     const cid = createTestSession({ conferenceMode: "problem_solving" });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend prüfen",
       targetAgent: "deepseek",
     });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Beide Perspektiven bitte",
       targetAgent: "both",
@@ -449,9 +449,9 @@ describe("Konferenz Step B – Coordinator Messages", () => {
     expect(coordMsgs.some(m => m.content && m.content.includes("Koordination:"))).toBe(true);
   });
 
-  test("bundled reply generates reply_bundled coordinator message", () => {
+  test("bundled reply generates reply_bundled coordinator message", async () => {
     const cid = createTestSession({ conferenceMode: "decision_mode" });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Gebündelte Bewertung bitte",
       targetAgent: "both",
@@ -461,14 +461,14 @@ describe("Konferenz Step B – Coordinator Messages", () => {
     expect(bundledMsg.content).toContain("gebündelt");
   });
 
-  test("coordinator messages have proper structure", () => {
+  test("coordinator messages have proper structure", async () => {
     const cid = createTestSession({ conferenceMode: "problem_solving" });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend prüfen",
       targetAgent: "deepseek",
     });
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Beide Perspektiven",
       targetAgent: "both",
@@ -492,17 +492,17 @@ describe("Konferenz Step B – Coordinator Messages", () => {
    9. Coordination Summary (Admin View)
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Coordination Summary", () => {
-  test("returns structured summary", () => {
+  test("returns structured summary", async () => {
     // Create sessions with different patterns
     const cid1 = createTestSession({ conferenceMode: "work_chat" });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid1,
       userMessage: "Test work chat",
       targetAgent: "both",
     });
 
     const cid2 = createTestSession({ conferenceMode: "decision_mode" });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid2,
       userMessage: "Test decision mode",
       targetAgent: "both",
@@ -527,14 +527,14 @@ describe("Konferenz Step B – Coordination Summary", () => {
     expect(summary.generatedAt).toBeDefined();
   });
 
-  test("summary counts match actual session data", () => {
+  test("summary counts match actual session data", async () => {
     const cid = createTestSession({ conferenceMode: "decision_mode" });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Bundled test",
       targetAgent: "both",
     });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Noch eine bundled Frage",
       targetAgent: "both",
@@ -567,14 +567,14 @@ describe("Konferenz Step B – Session Model Extension", () => {
     expect(session.openPointCount).toBeDefined();
   });
 
-  test("reply counts increment correctly", () => {
+  test("reply counts increment correctly", async () => {
     const cid = createTestSession({ conferenceMode: "decision_mode" });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Bundled test",
       targetAgent: "both",
     });
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Solo test",
       targetAgent: "deepseek",
@@ -590,16 +590,16 @@ describe("Konferenz Step B – Session Model Extension", () => {
    11. Cross Agent Follow-up
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Cross Agent Follow-up", () => {
-  test("single agent target in problem_solving with recent other-agent reply → cross_agent_followup", () => {
+  test("single agent target in problem_solving with recent other-agent reply → cross_agent_followup", async () => {
     const cid = createTestSession({ conferenceMode: "problem_solving" });
     // Gemini replies first
-    sendCoordinatedConferenceMessage({
+    await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Frontend prüfen",
       targetAgent: "gemini",
     });
     // Now deepseek follows up
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Backend prüfen",
       targetAgent: "deepseek",
@@ -612,9 +612,9 @@ describe("Konferenz Step B – Cross Agent Follow-up", () => {
    12. Backward Compatibility
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Backward Compatibility", () => {
-  test("Step A sendConferenceMessage still works", () => {
+  test("Step A sendConferenceMessage still works", async () => {
     const cid = createTestSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Step A kompatibilität",
       targetAgent: "deepseek",
@@ -623,10 +623,10 @@ describe("Konferenz Step B – Backward Compatibility", () => {
     expect(result.agentReplies.length).toBe(1);
   });
 
-  test("Step A and Step B can be used on the same session", () => {
+  test("Step A and Step B can be used on the same session", async () => {
     const cid = createTestSession();
     // Step A message
-    const r1 = sendConferenceMessage({
+    const r1 = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Step A Nachricht",
       targetAgent: "deepseek",
@@ -634,7 +634,7 @@ describe("Konferenz Step B – Backward Compatibility", () => {
     expect(r1.success).toBe(true);
 
     // Step B coordinated message
-    const r2 = sendCoordinatedConferenceMessage({
+    const r2 = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Step B koordinierte Nachricht",
       targetAgent: "both",
@@ -648,9 +648,9 @@ describe("Konferenz Step B – Backward Compatibility", () => {
    13. Response Structure Completeness
    ───────────────────────────────────────────── */
 describe("Konferenz Step B – Response Structure", () => {
-  test("coordinated message response has all expected fields", () => {
+  test("coordinated message response has all expected fields", async () => {
     const cid = createTestSession();
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId: cid,
       userMessage: "Vollständige Antwort bitte",
       targetAgent: "deepseek",

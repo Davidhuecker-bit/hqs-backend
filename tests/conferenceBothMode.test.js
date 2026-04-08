@@ -75,9 +75,9 @@ describe("Konferenz Step E – Exported Constants", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
-  test("targetAgent='both' routes to both agents", () => {
+  test("targetAgent='both' routes to both agents", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Was meint ihr?",
       targetAgent: "both",
@@ -87,9 +87,9 @@ describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
     expect(result.bothMode).toBe(true);
   });
 
-  test("Both-mode returns exactly two agent replies", () => {
+  test("Both-mode returns exactly two agent replies", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Bitte beide antworten",
       targetAgent: "both",
@@ -97,9 +97,9 @@ describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
     expect(result.agentReplies).toHaveLength(2);
   });
 
-  test("First reply is DeepSeek (primary)", () => {
+  test("First reply is DeepSeek (primary)", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -109,9 +109,9 @@ describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
     expect(first.bothModeSequence).toBe("primary");
   });
 
-  test("Second reply is Gemini (secondary)", () => {
+  test("Second reply is Gemini (secondary)", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -121,9 +121,9 @@ describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
     expect(second.bothModeSequence).toBe("secondary");
   });
 
-  test("Both replies have bothMode=true", () => {
+  test("Both replies have bothMode=true", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -133,9 +133,9 @@ describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
     }
   });
 
-  test("Single-agent reply has bothMode=false", () => {
+  test("Single-agent reply has bothMode=false", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Nur Backend bitte",
       targetAgent: "deepseek",
@@ -147,9 +147,9 @@ describe("Konferenz Step E – Both-Mode Explicit Targeting", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Reply References and Cooperation Type", () => {
-  test("Both replies reference the same user message (replyToMessageId)", () => {
+  test("Both replies reference the same user message (replyToMessageId)", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Was denkt ihr?",
       targetAgent: "both",
@@ -160,9 +160,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(gm.replyToMessageId).toBe(userMsgId);
   });
 
-  test("responseToMessageId equals replyToMessageId for both replies", () => {
+  test("responseToMessageId equals replyToMessageId for both replies", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Eure Meinungen bitte",
       targetAgent: "both",
@@ -172,9 +172,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(gm.responseToMessageId).toBe(gm.replyToMessageId);
   });
 
-  test("Gemini's followUpOf references DeepSeek's messageId", () => {
+  test("Gemini's followUpOf references DeepSeek's messageId", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -183,9 +183,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(gm.followUpOf).toBe(ds.messageId);
   });
 
-  test("Gemini reply has followsAgent='deepseek'", () => {
+  test("Gemini reply has followsAgent='deepseek'", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -194,9 +194,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(gm.followsAgent).toBe("deepseek");
   });
 
-  test("DeepSeek reply has followsAgent=null (is first)", () => {
+  test("DeepSeek reply has followsAgent=null (is first)", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -205,9 +205,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(ds.followsAgent).toBeNull();
   });
 
-  test("Gemini reply has a valid cooperationType", () => {
+  test("Gemini reply has a valid cooperationType", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -217,9 +217,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(VALID_BOTH_MODE_COOPERATION_TYPES).toContain(gm.cooperationType);
   });
 
-  test("DeepSeek reply has cooperationType=null (is primary)", () => {
+  test("DeepSeek reply has cooperationType=null (is primary)", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -228,9 +228,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(ds.cooperationType).toBeNull();
   });
 
-  test("Primary reply has openSecondReply=true", () => {
+  test("Primary reply has openSecondReply=true", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -239,9 +239,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
     expect(ds.openSecondReply).toBe(true);
   });
 
-  test("Secondary reply has openSecondReply=false", () => {
+  test("Secondary reply has openSecondReply=false", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -254,9 +254,9 @@ describe("Konferenz Step E – Reply References and Cooperation Type", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Text-based Both-Mode Detection", () => {
-  test("'beide meinungen' triggers both-mode routing without explicit targetAgent", () => {
+  test("'beide meinungen' triggers both-mode routing without explicit targetAgent", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Ich möchte beide meinungen hören",
     });
@@ -264,9 +264,9 @@ describe("Konferenz Step E – Text-based Both-Mode Detection", () => {
     expect(result.agentReplies).toHaveLength(2);
   });
 
-  test("'deepseek und gemini' triggers both-mode routing", () => {
+  test("'deepseek und gemini' triggers both-mode routing", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "DeepSeek und Gemini, was meint ihr dazu?",
     });
@@ -274,27 +274,27 @@ describe("Konferenz Step E – Text-based Both-Mode Detection", () => {
     expect(result.agentReplies).toHaveLength(2);
   });
 
-  test("'beide antworten' triggers both-mode routing", () => {
+  test("'beide antworten' triggers both-mode routing", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Ich hätte gern beide antworten",
     });
     expect(result.routing.targetAgent).toBe("both");
   });
 
-  test("'beide perspektiven' triggers both-mode routing", () => {
+  test("'beide perspektiven' triggers both-mode routing", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Zeigt mir beide perspektiven",
     });
     expect(result.routing.targetAgent).toBe("both");
   });
 
-  test("Explicit targetAgent='deepseek' takes priority over text detection", () => {
+  test("Explicit targetAgent='deepseek' takes priority over text detection", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "DeepSeek und Gemini, was meint ihr?",
       targetAgent: "deepseek",
@@ -305,9 +305,9 @@ describe("Konferenz Step E – Text-based Both-Mode Detection", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("deepseek");
   });
 
-  test("Neutral message without both-phrase does not trigger both-mode by default", () => {
+  test("Neutral message without both-phrase does not trigger both-mode by default", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Wie läuft die API an?",
       targetAgent: "deepseek",
@@ -316,9 +316,9 @@ describe("Konferenz Step E – Text-based Both-Mode Detection", () => {
     expect(result.agentReplies).toHaveLength(1);
   });
 
-  test("Text-based detection routing reason mentions textuelle Erkennung", () => {
+  test("Text-based detection routing reason mentions textuelle Erkennung", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Bitte beide meinungen",
     });
@@ -329,9 +329,9 @@ describe("Konferenz Step E – Text-based Both-Mode Detection", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Dialog State Lifecycle in Both-Mode", () => {
-  test("Dialog state is reply_cycle_complete after both replies", () => {
+  test("Dialog state is reply_cycle_complete after both replies", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -339,9 +339,9 @@ describe("Konferenz Step E – Dialog State Lifecycle in Both-Mode", () => {
     expect(result.dialogState).toBe("reply_cycle_complete");
   });
 
-  test("Both-mode user message has bothMode=true", () => {
+  test("Both-mode user message has bothMode=true", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -349,9 +349,9 @@ describe("Konferenz Step E – Dialog State Lifecycle in Both-Mode", () => {
     expect(result.userMessage.bothMode).toBe(true);
   });
 
-  test("Single-agent user message has bothMode=false", () => {
+  test("Single-agent user message has bothMode=false", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Backend nur",
       targetAgent: "deepseek",
@@ -363,9 +363,9 @@ describe("Konferenz Step E – Dialog State Lifecycle in Both-Mode", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – No Summary Replacement in Both-Mode", () => {
-  test("Both-mode returns two message objects, not a merged single reply", () => {
+  test("Both-mode returns two message objects, not a merged single reply", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -377,9 +377,9 @@ describe("Konferenz Step E – No Summary Replacement in Both-Mode", () => {
     expect(ds.speakerAgent).not.toBe(gm.speakerAgent);
   });
 
-  test("Both replies have individual content strings (not merged)", () => {
+  test("Both replies have individual content strings (not merged)", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -391,9 +391,9 @@ describe("Konferenz Step E – No Summary Replacement in Both-Mode", () => {
     expect(gm.content.length).toBeGreaterThan(0);
   });
 
-  test("Both replies are stored as separate messages in session", () => {
+  test("Both replies are stored as separate messages in session", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({
+    await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -407,17 +407,17 @@ describe("Konferenz Step E – No Summary Replacement in Both-Mode", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Session Tracking and Metrics", () => {
-  test("bothModeMessageCount increments on each both-mode message", () => {
+  test("bothModeMessageCount increments on each both-mode message", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
-    sendConferenceMessage({ conferenceId, userMessage: "Nochmal beide", targetAgent: "both" });
-    const result = sendConferenceMessage({ conferenceId, userMessage: "Und nochmal", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Nochmal beide", targetAgent: "both" });
+    const result = await sendConferenceMessage({ conferenceId, userMessage: "Und nochmal", targetAgent: "both" });
     expect(result.bothModeMessageCount).toBe(3);
   });
 
-  test("completedBothReplyCycles increments when both replies are delivered", () => {
+  test("completedBothReplyCycles increments when both replies are delivered", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -425,9 +425,9 @@ describe("Konferenz Step E – Session Tracking and Metrics", () => {
     expect(result.completedBothReplyCycles).toBe(1);
   });
 
-  test("Single-agent message does not increment bothModeMessageCount", () => {
+  test("Single-agent message does not increment bothModeMessageCount", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Nur DeepSeek",
       targetAgent: "deepseek",
@@ -435,9 +435,9 @@ describe("Konferenz Step E – Session Tracking and Metrics", () => {
     expect(result.bothModeMessageCount).toBe(0);
   });
 
-  test("lastReplyAgents contains both agents after both-mode reply", () => {
+  test("lastReplyAgents contains both agents after both-mode reply", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
     const session = getConferenceSession({ conferenceId });
     expect(session.lastReplyAgents).toEqual(expect.arrayContaining(["deepseek", "gemini"]));
   });
@@ -450,17 +450,17 @@ describe("Konferenz Step E – Admin Summary Both-Mode Metrics", () => {
     // Ensure at least one session with both-mode activity
   });
 
-  test("getConferenceAdminSummary includes totalBothModeMessages", () => {
+  test("getConferenceAdminSummary includes totalBothModeMessages", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
     const summary = getConferenceAdminSummary();
     expect(typeof summary.totalBothModeMessages).toBe("number");
     expect(summary.totalBothModeMessages).toBeGreaterThanOrEqual(1);
   });
 
-  test("getConferenceAdminSummary includes totalCompletedBothReplyCycles", () => {
+  test("getConferenceAdminSummary includes totalCompletedBothReplyCycles", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
     const summary = getConferenceAdminSummary();
     expect(typeof summary.totalCompletedBothReplyCycles).toBe("number");
     expect(summary.totalCompletedBothReplyCycles).toBeGreaterThanOrEqual(1);
@@ -471,25 +471,25 @@ describe("Konferenz Step E – Admin Summary Both-Mode Metrics", () => {
     expect(typeof summary.totalPartialBothReplyCycles).toBe("number");
   });
 
-  test("getConferenceAdminSummary includes totalDeepseekOnlyMessages", () => {
+  test("getConferenceAdminSummary includes totalDeepseekOnlyMessages", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Nur DeepSeek", targetAgent: "deepseek" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Nur DeepSeek", targetAgent: "deepseek" });
     const summary = getConferenceAdminSummary();
     expect(typeof summary.totalDeepseekOnlyMessages).toBe("number");
     expect(summary.totalDeepseekOnlyMessages).toBeGreaterThanOrEqual(1);
   });
 
-  test("getConferenceAdminSummary includes totalGeminiOnlyMessages", () => {
+  test("getConferenceAdminSummary includes totalGeminiOnlyMessages", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Nur Gemini", targetAgent: "gemini" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Nur Gemini", targetAgent: "gemini" });
     const summary = getConferenceAdminSummary();
     expect(typeof summary.totalGeminiOnlyMessages).toBe("number");
     expect(summary.totalGeminiOnlyMessages).toBeGreaterThanOrEqual(1);
   });
 
-  test("getConferenceAdminSummary includes byCooperationType object", () => {
+  test("getConferenceAdminSummary includes byCooperationType object", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
     const summary = getConferenceAdminSummary();
     expect(typeof summary.byCooperationType).toBe("object");
     // At least one cooperation type should be tracked
@@ -497,9 +497,9 @@ describe("Konferenz Step E – Admin Summary Both-Mode Metrics", () => {
     expect(keys.length).toBeGreaterThan(0);
   });
 
-  test("byCooperationType values are all in VALID_BOTH_MODE_COOPERATION_TYPES", () => {
+  test("byCooperationType values are all in VALID_BOTH_MODE_COOPERATION_TYPES", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
     const summary = getConferenceAdminSummary();
     for (const key of Object.keys(summary.byCooperationType)) {
       expect(VALID_BOTH_MODE_COOPERATION_TYPES).toContain(key);
@@ -510,10 +510,10 @@ describe("Konferenz Step E – Admin Summary Both-Mode Metrics", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Session Thread Robustness", () => {
-  test("Both replies land in the same session, not a different one", () => {
+  test("Both replies land in the same session, not a different one", async () => {
     const { conferenceId: cid1 } = newSession();
     const { conferenceId: cid2 } = newSession();
-    sendConferenceMessage({ conferenceId: cid1, userMessage: "Beide bitte", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId: cid1, userMessage: "Beide bitte", targetAgent: "both" });
     const session1 = getConferenceSession({ conferenceId: cid1 });
     const session2 = getConferenceSession({ conferenceId: cid2 });
     const s1AgentMsgs = session1.messages.filter((m) => m.messageRole === "agent");
@@ -522,9 +522,9 @@ describe("Konferenz Step E – Session Thread Robustness", () => {
     expect(s2AgentMsgs).toHaveLength(0);
   });
 
-  test("Both replies carry the correct conferenceId", () => {
+  test("Both replies carry the correct conferenceId", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -534,10 +534,10 @@ describe("Konferenz Step E – Session Thread Robustness", () => {
     }
   });
 
-  test("Multiple both-mode messages in sequence all land in the same session", () => {
+  test("Multiple both-mode messages in sequence all land in the same session", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Frage 1", targetAgent: "both" });
-    sendConferenceMessage({ conferenceId, userMessage: "Frage 2", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Frage 1", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Frage 2", targetAgent: "both" });
     const session = getConferenceSession({ conferenceId });
     // 2 user messages + 4 agent replies = 6 messages
     expect(session.messageCount).toBe(6);
@@ -545,11 +545,11 @@ describe("Konferenz Step E – Session Thread Robustness", () => {
     expect(agentMessages).toHaveLength(4);
   });
 
-  test("Both-mode messages don't mix with other session messages", () => {
+  test("Both-mode messages don't mix with other session messages", async () => {
     const { conferenceId: cidA } = newSession();
     const { conferenceId: cidB } = newSession();
-    sendConferenceMessage({ conferenceId: cidA, userMessage: "Beide A", targetAgent: "both" });
-    sendConferenceMessage({ conferenceId: cidB, userMessage: "Nur B", targetAgent: "gemini" });
+    await sendConferenceMessage({ conferenceId: cidA, userMessage: "Beide A", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId: cidB, userMessage: "Nur B", targetAgent: "gemini" });
     const sessionA = getConferenceSession({ conferenceId: cidA });
     const sessionB = getConferenceSession({ conferenceId: cidB });
     const aMsgs = sessionA.messages.filter((m) => m.messageRole === "agent");
@@ -562,9 +562,9 @@ describe("Konferenz Step E – Session Thread Robustness", () => {
     }
   });
 
-  test("Both replies' messageIds are unique", () => {
+  test("Both replies' messageIds are unique", async () => {
     const { conferenceId } = newSession();
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage: "Beide bitte",
       targetAgent: "both",
@@ -573,9 +573,9 @@ describe("Konferenz Step E – Session Thread Robustness", () => {
     expect(ds.messageId).not.toBe(gm.messageId);
   });
 
-  test("Session is still accessible after both-mode exchange", () => {
+  test("Session is still accessible after both-mode exchange", async () => {
     const { conferenceId } = newSession();
-    sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId, userMessage: "Beide", targetAgent: "both" });
     const session = getConferenceSession({ conferenceId });
     expect(session).not.toBeNull();
     expect(session.conferenceStatus).toBe("session_active");
@@ -585,10 +585,10 @@ describe("Konferenz Step E – Session Thread Robustness", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("Konferenz Step E – Cooperation Type Values", () => {
-  test("All sent both-mode messages produce valid cooperationType on Gemini reply", () => {
+  test("All sent both-mode messages produce valid cooperationType on Gemini reply", async () => {
     const { conferenceId } = newSession();
     for (let i = 0; i < 5; i++) {
-      const result = sendConferenceMessage({
+      const result = await sendConferenceMessage({
         conferenceId,
         userMessage: `Frage ${i}`,
         targetAgent: "both",

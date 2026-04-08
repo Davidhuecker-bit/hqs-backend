@@ -87,10 +87,10 @@ describe("Konferenz Step D – Session model fields", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step D – Free user message stored correctly", () => {
-  test("User message lands in session with correct fields", () => {
+  test("User message lands in session with correct fields", async () => {
     const session = openConferenceSession({ conferenceFocus: "Backend-Analyse" });
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Wo liegt das Problem?" });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Wo liegt das Problem?" });
     expect(result.success).toBe(true);
     expect(result.userMessage.messageRole).toBe("user");
     expect(result.userMessage.speakerAgent).toBe("user");
@@ -100,31 +100,31 @@ describe("Konferenz Step D – Free user message stored correctly", () => {
     expect(result.userMessage.createdAt).toBeDefined();
   });
 
-  test("User message is part of the session message list", () => {
+  test("User message is part of the session message list", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist der Status?" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist der Status?" });
     const retrieved = getConferenceSession({ conferenceId: cid });
     const userMsgs = retrieved.messages.filter((m) => m.messageRole === "user");
     expect(userMsgs.length).toBe(1);
     expect(userMsgs[0].content).toBe("Was ist der Status?");
   });
 
-  test("Multiple user messages accumulate correctly", () => {
+  test("Multiple user messages accumulate correctly", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Frage" });
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Zweite Frage" });
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Dritte Frage" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Frage" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Zweite Frage" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Dritte Frage" });
     const retrieved = getConferenceSession({ conferenceId: cid });
     const userMsgs = retrieved.messages.filter((m) => m.messageRole === "user");
     expect(userMsgs.length).toBe(3);
   });
 
-  test("session.lastUserMessage is set after sendConferenceMessage", () => {
+  test("session.lastUserMessage is set after sendConferenceMessage", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Was passiert hier?" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Was passiert hier?" });
     const dialogState = getConferenceDialogState({ conferenceId: cid });
     expect(dialogState.lastUserMessage).toBe("Was passiert hier?");
     expect(dialogState.lastUserMessageId).toBeDefined();
@@ -136,10 +136,10 @@ describe("Konferenz Step D – Free user message stored correctly", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step D – Agent targeting", () => {
-  test("Explicit targetAgent 'deepseek' routes only to deepseek", () => {
+  test("Explicit targetAgent 'deepseek' routes only to deepseek", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Bitte analysiere das Backend",
       targetAgent: "deepseek",
@@ -150,10 +150,10 @@ describe("Konferenz Step D – Agent targeting", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("deepseek");
   });
 
-  test("Explicit targetAgent 'gemini' routes only to gemini", () => {
+  test("Explicit targetAgent 'gemini' routes only to gemini", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Wie sieht das UI aus?",
       targetAgent: "gemini",
@@ -164,10 +164,10 @@ describe("Konferenz Step D – Agent targeting", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("gemini");
   });
 
-  test("Explicit targetAgent 'both' routes to both agents", () => {
+  test("Explicit targetAgent 'both' routes to both agents", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Bitte beide Perspektiven",
       targetAgent: "both",
@@ -180,10 +180,10 @@ describe("Konferenz Step D – Agent targeting", () => {
     expect(agents).toContain("gemini");
   });
 
-  test("Explicit targetAgent 'system' routes to system", () => {
+  test("Explicit targetAgent 'system' routes to system", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Was ist der Status?",
       targetAgent: "system",
@@ -194,10 +194,10 @@ describe("Konferenz Step D – Agent targeting", () => {
     expect(result.agentReplies[0].speakerAgent).toBe("system");
   });
 
-  test("Invalid targetAgent falls back to keyword routing", () => {
+  test("Invalid targetAgent falls back to keyword routing", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Allgemeine Frage",
       targetAgent: "invalid_agent",
@@ -212,38 +212,38 @@ describe("Konferenz Step D – Agent targeting", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step D – Agent reply fields", () => {
-  test("Agent reply contains responseType from VALID_CONFERENCE_RESPONSE_TYPES", () => {
+  test("Agent reply contains responseType from VALID_CONFERENCE_RESPONSE_TYPES", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
     for (const reply of result.agentReplies) {
       expect(VALID_CONFERENCE_RESPONSE_TYPES).toContain(reply.responseType);
     }
   });
 
-  test("Agent reply contains responseToRole = 'user'", () => {
+  test("Agent reply contains responseToRole = 'user'", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Erkläre mir den Fehler." });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Erkläre mir den Fehler." });
     for (const reply of result.agentReplies) {
       expect(reply.responseToRole).toBe("user");
     }
   });
 
-  test("Agent reply contains replyToMessageId referencing the user message", () => {
+  test("Agent reply contains replyToMessageId referencing the user message", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Frage an den Agenten." });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Frage an den Agenten." });
     const userMsgId = result.userMessage.messageId;
     for (const reply of result.agentReplies) {
       expect(reply.replyToMessageId).toBe(userMsgId);
     }
   });
 
-  test("Second agent reply (both mode) has followUpOf referencing first agent reply", () => {
+  test("Second agent reply (both mode) has followUpOf referencing first agent reply", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Bitte beide antworten",
       targetAgent: "both",
@@ -255,10 +255,10 @@ describe("Konferenz Step D – Agent reply fields", () => {
     expect(second.followUpOf).toBe(first.messageId);
   });
 
-  test("Second agent reply (both mode) has responseType 'follow_up'", () => {
+  test("Second agent reply (both mode) has responseType 'follow_up'", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Bitte beide Agenten",
       targetAgent: "both",
@@ -266,10 +266,10 @@ describe("Konferenz Step D – Agent reply fields", () => {
     expect(result.agentReplies[1].responseType).toBe("follow_up");
   });
 
-  test("System agent reply has responseType 'summary'", () => {
+  test("System agent reply has responseType 'summary'", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId: cid,
       userMessage: "Status bitte",
       targetAgent: "system",
@@ -288,44 +288,44 @@ describe("Konferenz Step D – Dialog state tracking", () => {
     expect(session.session.dialogState).toBe("dialog_idle");
   });
 
-  test("After sendConferenceMessage, dialogState transitions to reply_cycle_complete (normal flow)", () => {
+  test("After sendConferenceMessage, dialogState transitions to reply_cycle_complete (normal flow)", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Analysiere das Problem." });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Analysiere das Problem." });
     expect(result.dialogState).toBe("reply_cycle_complete");
   });
 
-  test("replyCycleCount increments on each completed cycle", () => {
+  test("replyCycleCount increments on each completed cycle", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Runde" });
-    const r2 = sendConferenceMessage({ conferenceId: cid, userMessage: "Zweite Runde" });
-    const r3 = sendConferenceMessage({ conferenceId: cid, userMessage: "Dritte Runde" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Runde" });
+    const r2 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Zweite Runde" });
+    const r3 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Dritte Runde" });
     expect(r3.replyCycleCount).toBe(3);
   });
 
-  test("dialogState and replyCycleCount available on sendConferenceMessage result", () => {
+  test("dialogState and replyCycleCount available on sendConferenceMessage result", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Wie weiter?" });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Wie weiter?" });
     expect(result.dialogState).toBeDefined();
     expect(typeof result.replyCycleCount).toBe("number");
     expect(typeof result.followUpCount).toBe("number");
     expect(typeof result.openClarification).toBe("boolean");
   });
 
-  test("lastReplyAgents is set correctly after single-agent reply", () => {
+  test("lastReplyAgents is set correctly after single-agent reply", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Backend fragen", targetAgent: "deepseek" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Backend fragen", targetAgent: "deepseek" });
     const dialogState = getConferenceDialogState({ conferenceId: cid });
     expect(dialogState.lastReplyAgents).toEqual(["deepseek"]);
   });
 
-  test("lastReplyAgents contains both agents after both-mode reply", () => {
+  test("lastReplyAgents contains both agents after both-mode reply", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Beide bitte", targetAgent: "both" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Beide bitte", targetAgent: "both" });
     const dialogState = getConferenceDialogState({ conferenceId: cid });
     expect(dialogState.lastReplyAgents).toContain("deepseek");
     expect(dialogState.lastReplyAgents).toContain("gemini");
@@ -337,51 +337,51 @@ describe("Konferenz Step D – Dialog state tracking", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step D – Follow-up detection", () => {
-  test("First message in a session is not a follow-up", () => {
+  test("First message in a session is not a follow-up", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
     expect(result.userMessage.isFollowUp).toBe(false);
     expect(result.userMessage.followUpOf).toBeNull();
   });
 
-  test("First message in a new session is not a follow-up even when other sessions have messages", () => {
+  test("First message in a new session is not a follow-up even when other sessions have messages", async () => {
     // Populate one session first
     const s1 = openConferenceSession();
-    sendConferenceMessage({ conferenceId: s1.conferenceId, userMessage: "Erste Frage." });
+    await sendConferenceMessage({ conferenceId: s1.conferenceId, userMessage: "Erste Frage." });
 
     // New session: first message should NOT be a follow-up regardless of other sessions
     const s2 = openConferenceSession();
-    const result = sendConferenceMessage({ conferenceId: s2.conferenceId, userMessage: "Nochmal – was ist das?" });
+    const result = await sendConferenceMessage({ conferenceId: s2.conferenceId, userMessage: "Nochmal – was ist das?" });
     expect(result.userMessage.isFollowUp).toBe(false);
     expect(result.userMessage.followUpOf).toBeNull();
   });
 
-  test("Message with follow-up keyword detected as follow-up", () => {
+  test("Message with follow-up keyword detected as follow-up", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Frage." });
-    const r2 = sendConferenceMessage({ conferenceId: cid, userMessage: "Und was ist noch relevant?" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Frage." });
+    const r2 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Und was ist noch relevant?" });
     expect(r2.userMessage.isFollowUp).toBe(true);
     expect(r2.userMessage.followUpOf).toBeDefined();
   });
 
-  test("Follow-up message has followUpOf set to previous user message ID", () => {
+  test("Follow-up message has followUpOf set to previous user message ID", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const r1 = sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Frage hier." });
+    const r1 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Frage hier." });
     const firstMsgId = r1.userMessage.messageId;
-    const r2 = sendConferenceMessage({ conferenceId: cid, userMessage: "Nochmal bitte genauer." });
+    const r2 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Nochmal bitte genauer." });
     expect(r2.userMessage.isFollowUp).toBe(true);
     expect(r2.userMessage.followUpOf).toBe(firstMsgId);
   });
 
-  test("followUpCount increments on follow-up messages", () => {
+  test("followUpCount increments on follow-up messages", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Was passiert da?" });
-    const r2 = sendConferenceMessage({ conferenceId: cid, userMessage: "Nochmal genauer." });
-    const r3 = sendConferenceMessage({ conferenceId: cid, userMessage: "Außerdem noch etwas." });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Was passiert da?" });
+    const r2 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Nochmal genauer." });
+    const r3 = await sendConferenceMessage({ conferenceId: cid, userMessage: "Außerdem noch etwas." });
     expect(r2.followUpCount).toBeGreaterThanOrEqual(1);
     expect(r3.followUpCount).toBeGreaterThanOrEqual(2);
   });
@@ -419,10 +419,10 @@ describe("Konferenz Step D – getConferenceDialogState", () => {
     expect(state.generatedAt).toBeDefined();
   });
 
-  test("returns updated state after message exchange", () => {
+  test("returns updated state after message exchange", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Bitte analysiere." });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Bitte analysiere." });
     const state = getConferenceDialogState({ conferenceId: cid });
     expect(state.dialogState).toBe("reply_cycle_complete");
     expect(state.replyCycleCount).toBe(1);
@@ -431,10 +431,10 @@ describe("Konferenz Step D – getConferenceDialogState", () => {
     expect(state.recentMessages.length).toBeGreaterThan(0);
   });
 
-  test("recentMessages contain contentExcerpt field", () => {
+  test("recentMessages contain contentExcerpt field", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Was ist das Problem?" });
     const state = getConferenceDialogState({ conferenceId: cid });
     for (const msg of state.recentMessages) {
       expect(msg.contentExcerpt).toBeDefined();
@@ -468,19 +468,19 @@ describe("Konferenz Step D – Enhanced getConferenceAdminSummary", () => {
     expect(typeof summary.byDialogState).toBe("object");
   });
 
-  test("totalCompletedCycles reflects actual completed reply cycles", () => {
+  test("totalCompletedCycles reflects actual completed reply cycles", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Runde" });
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Zweite Runde" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Erste Runde" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Zweite Runde" });
     const summary = getConferenceAdminSummary();
     expect(summary.totalCompletedCycles).toBeGreaterThanOrEqual(2);
   });
 
-  test("byDialogState contains valid dialog state keys", () => {
+  test("byDialogState contains valid dialog state keys", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Frage an alle" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Frage an alle" });
     const summary = getConferenceAdminSummary();
     const knownStates = Object.keys(summary.byDialogState);
     for (const s of knownStates) {
@@ -488,11 +488,11 @@ describe("Konferenz Step D – Enhanced getConferenceAdminSummary", () => {
     }
   });
 
-  test("totalUserMessages counts user-sent messages", () => {
+  test("totalUserMessages counts user-sent messages", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Msg 1" });
-    sendConferenceMessage({ conferenceId: cid, userMessage: "Msg 2" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Msg 1" });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: "Msg 2" });
     const summary = getConferenceAdminSummary();
     expect(summary.totalUserMessages).toBeGreaterThanOrEqual(2);
   });
@@ -503,13 +503,13 @@ describe("Konferenz Step D – Enhanced getConferenceAdminSummary", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step D – Session / Thread Robustness", () => {
-  test("Messages from different sessions stay in correct session", () => {
+  test("Messages from different sessions stay in correct session", async () => {
     const s1 = openConferenceSession({ conferenceFocus: "Backend" });
     const s2 = openConferenceSession({ conferenceFocus: "Frontend" });
     const cid1 = s1.conferenceId;
     const cid2 = s2.conferenceId;
-    sendConferenceMessage({ conferenceId: cid1, userMessage: "Backend Frage" });
-    sendConferenceMessage({ conferenceId: cid2, userMessage: "Frontend Frage" });
+    await sendConferenceMessage({ conferenceId: cid1, userMessage: "Backend Frage" });
+    await sendConferenceMessage({ conferenceId: cid2, userMessage: "Frontend Frage" });
     const sess1 = getConferenceSession({ conferenceId: cid1 });
     const sess2 = getConferenceSession({ conferenceId: cid2 });
     const s1UserMsgs = sess1.messages.filter((m) => m.messageRole === "user");
@@ -520,35 +520,35 @@ describe("Konferenz Step D – Session / Thread Robustness", () => {
     expect(s2UserMsgs[0].content).toBe("Frontend Frage");
   });
 
-  test("sendConferenceMessage rejects unknown conferenceId", () => {
-    const result = sendConferenceMessage({ conferenceId: "non-existent-id", userMessage: "Test" });
+  test("sendConferenceMessage rejects unknown conferenceId", async () => {
+    const result = await sendConferenceMessage({ conferenceId: "non-existent-id", userMessage: "Test" });
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
   });
 
-  test("sendConferenceMessage rejects closed sessions", () => {
+  test("sendConferenceMessage rejects closed sessions", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
     closeConferenceSession({ conferenceId: cid });
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Zu spät?" });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Zu spät?" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("closed");
   });
 
-  test("Agent replies in both-mode are assigned to correct session", () => {
+  test("Agent replies in both-mode are assigned to correct session", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
-    const result = sendConferenceMessage({ conferenceId: cid, userMessage: "Beide bitte", targetAgent: "both" });
+    const result = await sendConferenceMessage({ conferenceId: cid, userMessage: "Beide bitte", targetAgent: "both" });
     for (const reply of result.agentReplies) {
       expect(reply.conferenceId).toBe(cid);
     }
   });
 
-  test("lastUserMessage is truncated to max 200 chars", () => {
+  test("lastUserMessage is truncated to max 200 chars", async () => {
     const session = openConferenceSession();
     const cid = session.conferenceId;
     const longMsg = "X".repeat(300);
-    sendConferenceMessage({ conferenceId: cid, userMessage: longMsg });
+    await sendConferenceMessage({ conferenceId: cid, userMessage: longMsg });
     const state = getConferenceDialogState({ conferenceId: cid });
     expect(state.lastUserMessage.length).toBeLessThanOrEqual(200);
   });
@@ -559,22 +559,22 @@ describe("Konferenz Step D – Session / Thread Robustness", () => {
    ───────────────────────────────────────────── */
 
 describe("Konferenz Step D – Input validation", () => {
-  test("sendConferenceMessage fails without conferenceId", () => {
-    const result = sendConferenceMessage({ userMessage: "Test" });
+  test("sendConferenceMessage fails without conferenceId", async () => {
+    const result = await sendConferenceMessage({ userMessage: "Test" });
     expect(result.success).toBe(false);
     expect(result.error).toContain("conferenceId");
   });
 
-  test("sendConferenceMessage fails without userMessage", () => {
+  test("sendConferenceMessage fails without userMessage", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({ conferenceId: session.conferenceId });
+    const result = await sendConferenceMessage({ conferenceId: session.conferenceId });
     expect(result.success).toBe(false);
     expect(result.error).toContain("userMessage");
   });
 
-  test("sendConferenceMessage fails with empty userMessage", () => {
+  test("sendConferenceMessage fails with empty userMessage", async () => {
     const session = openConferenceSession();
-    const result = sendConferenceMessage({ conferenceId: session.conferenceId, userMessage: "   " });
+    const result = await sendConferenceMessage({ conferenceId: session.conferenceId, userMessage: "   " });
     expect(result.success).toBe(false);
   });
 
