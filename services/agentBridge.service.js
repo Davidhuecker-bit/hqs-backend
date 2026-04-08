@@ -17731,9 +17731,10 @@ async function sendCoordinatedConferenceMessage({
     case "supporting_reply": {
       // Lead answers first via real API, then support agent adds a real supplementary reply
       const leadReply = await _generateConferenceReply(session.leadAgent, messageIntent, userMessage, session);
-      agentReplies.push(_recordConferenceAgentReply(session, session.leadAgent, leadReply.text, userMsgId, null, {
+      const leadRecord = _recordConferenceAgentReply(session, session.leadAgent, leadReply.text, userMsgId, null, {
         usedFallback: leadReply.usedFallback, apiError: leadReply.apiError,
-      }));
+      });
+      agentReplies.push(leadRecord);
 
       // Support agent gets the lead's reply as context so it can genuinely supplement
       const supportReply = await _generateConferenceReply(
@@ -17743,7 +17744,7 @@ async function sendCoordinatedConferenceMessage({
         session,
         { primaryAgentReply: leadReply.text }
       );
-      agentReplies.push(_recordConferenceAgentReply(session, session.supportAgent, supportReply.text, userMsgId, null, {
+      agentReplies.push(_recordConferenceAgentReply(session, session.supportAgent, supportReply.text, userMsgId, leadRecord.messageId, {
         usedFallback: supportReply.usedFallback, apiError: supportReply.apiError,
       }));
 
