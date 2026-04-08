@@ -15280,7 +15280,7 @@ async function sendConferenceMessage({
   const resolvedTarget = _resolveConferenceTarget(targetAgent, userMessage, session);
 
   // Entry log – used for diagnostics / debugging the conference reply flow
-  logger.info("[agentBridge] Konferenz – Nachricht eingegangen", {
+  logger.info("[agentBridge] Konferenz – Nachricht empfangen", {
     conferenceId,
     conferenceMode: session.conferenceMode,
     targetAgent: resolvedTarget.target,
@@ -15488,9 +15488,6 @@ async function sendConferenceMessage({
 
   // Final diagnostic log – single line to confirm full reply flow completed
   logger.info("[agentBridge] Konferenz – Antwortzyklus abgeschlossen", {
-    conferenceId,
-    conferenceMode: session.conferenceMode,
-    targetAgent: resolvedTarget.target,
     agentReplyCount: agentReplies.length,
     usedFallback: anyFallback,
     apiError: firstApiError,
@@ -17956,6 +17953,7 @@ async function sendCoordinatedConferenceMessage({
       messageCount: session.messageCount,
       lastActivity: session.lastActivity,
       workPhase: session.workPhase,
+      dialogState: session.dialogState,
     },
     messageCount: session.messageCount,
     // ── Phase / moderation signal ─────────────────────────
