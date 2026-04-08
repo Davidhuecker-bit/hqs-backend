@@ -6125,7 +6125,7 @@ router.post("/deepseek/agent-bridge/conference-session", (req, res) => {
      "messageCount": 3
    }
 ========================================================= */
-router.post("/deepseek/agent-bridge/conference-message", (req, res) => {
+router.post("/deepseek/agent-bridge/conference-message", async (req, res) => {
   try {
     const { conferenceId, userMessage, targetAgent, replyToMessageId } = req.body || {};
     if (!conferenceId || !userMessage) {
@@ -6134,7 +6134,7 @@ router.post("/deepseek/agent-bridge/conference-message", (req, res) => {
         error: "conferenceId and userMessage are required",
       });
     }
-    const result = sendConferenceMessage({
+    const result = await sendConferenceMessage({
       conferenceId,
       userMessage,
       targetAgent: targetAgent || null,
@@ -6446,7 +6446,7 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "messageCount": 5
    }
 ========================================================= */
-router.post("/deepseek/agent-bridge/conference-coordinated-message", (req, res) => {
+router.post("/deepseek/agent-bridge/conference-coordinated-message", async (req, res) => {
   try {
     const {
       conferenceId,
@@ -6456,7 +6456,7 @@ router.post("/deepseek/agent-bridge/conference-coordinated-message", (req, res) 
       requestedReplyPattern = null,
     } = req.body || {};
 
-    const result = sendCoordinatedConferenceMessage({
+    const result = await sendCoordinatedConferenceMessage({
       conferenceId,
       userMessage,
       targetAgent,
