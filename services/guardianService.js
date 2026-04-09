@@ -1510,7 +1510,11 @@ Erstelle eine strukturierte Erklärung mit:
     temperature: 0.4,
   });
 
-  return response.choices[0].message.content;
+  const text = response?.choices?.[0]?.message?.content || "";
+  if (!text) {
+    throw new Error("OpenAI (guardian) returned an empty response");
+  }
+  return text;
 }
 
 module.exports = { analyzeStockWithGuardian, detectMissingCanonicalFields };

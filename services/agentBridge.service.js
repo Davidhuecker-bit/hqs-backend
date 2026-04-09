@@ -4,6 +4,7 @@ const logger = require("../utils/logger");
 const {
   createDeepSeekChatCompletion,
   isDeepSeekConfigured,
+  extractDeepSeekText,
 } = require("./deepseek.service");
 const {
   isGeminiConfigured,
@@ -1819,7 +1820,7 @@ const _conferenceAgentRegistry = new Map([
             { role: "user", content: userMessage },
           ],
         });
-        const text = completion?.choices?.[0]?.message?.content || "";
+        const text = extractDeepSeekText(completion);
         if (!text.trim()) throw new Error("DEEPSEEK_EMPTY_RESPONSE");
         return text.trim();
       },

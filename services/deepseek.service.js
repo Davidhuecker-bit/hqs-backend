@@ -4,6 +4,8 @@ const OpenAI = require("openai");
 
 let client = null;
 
+const logger = require("../utils/logger");
+
 /**
  * Returns a lazily-initialised OpenAI-compatible client configured for the
  * DeepSeek API. The client is cached for the lifetime of the process.
@@ -181,6 +183,60 @@ async function createDeepSeekChatCompletion({
 }
 
 /**
+ * Extract the text content from a DeepSeek API completion.
+ *
+ * DeepSeek "reasoner" models (R1 / V3) return two fields:
+ *   - `reasoning_content` – the internal chain-of-thought (may be present)
+ *   - `content`           – the actual answer intended for the user
+ *
+ * Standard `deepseek-chat` only populates `content`.
+ *
+ * This helper always returns the final `content` field, falling back to
+ * `reasoning_content` when `content` is empty (edge case where the model
+ * finished reasoning but produced no final answer).
+ *
+ * @param {Object|null|undefined} completion – raw API response
+ * @returns {string} extracted text (may be empty string)
+ */
+function extractDeepSeekText(completion) {
+  const firstChoice = completion?.choices?.[0];
+  if (!firstChoice) {
+    logger.warn("[deepseek] extractDeepSeekText – no choices in completion", {
+      hasCompletion: Boolean(completion),
+      finishReason: completion?.choices?.[0]?.finish_reason ?? null,
+    });
+    return "";
+  }
+
+  const message = firstChoice.message;
+  if (!message) {
+    logger.warn("[deepseek] extractDeepSeekText – no message in first choice");
+    return "";
+  }
+
+  // Primary: the actual answer
+  const content = (message.content || "").trim();
+  // Fallback: reasoning_content (DeepSeek reasoner models)
+  const reasoning = (message.reasoning_content || "").trim();
+
+  if (content) return content;
+
+  if (reasoning) {
+    logger.info("[deepseek] extractDeepSeekText – content empty, using reasoning_content as fallback", {
+      reasoningLength: reasoning.length,
+      finishReason: firstChoice.finish_reason ?? null,
+    });
+    return reasoning;
+  }
+
+  logger.warn("[deepseek] extractDeepSeekText – both content and reasoning_content empty", {
+    finishReason: firstChoice.finish_reason ?? null,
+    messageKeys: Object.keys(message).join(","),
+  });
+  return "";
+}
+
+/**
  * Convenience wrapper: send a system + user prompt and parse the response as
  * JSON. Returns the parsed object on success, or an error descriptor when
  * parsing fails. API/timeout errors still throw so callers can distinguish
@@ -213,7 +269,19 @@ async function runDeepSeekJsonAnalysis({
     responseFormat: { type: "json_object" },
   });
 
-  const content = completion?.choices?.[0]?.message?.content || "{}";
+  const content = extractDeepSeekText(completion);
+
+  if (!content) {
+    logger.warn("[deepseek] runDeepSeekJsonAnalysis – empty response from API", {
+      tier,
+      model: model || resolveModel(tier),
+    });
+    return {
+      parseError: true,
+      raw: "",
+      message: "DeepSeek returned an empty response",
+    };
+  }
 
   try {
     return JSON.parse(content);
@@ -234,4 +302,5 @@ module.exports = {
   DEEPSEEK_DEEP_MODEL,
   createDeepSeekChatCompletion,
   runDeepSeekJsonAnalysis,
+  extractDeepSeekText,
 };

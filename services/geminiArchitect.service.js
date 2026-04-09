@@ -1694,6 +1694,63 @@ function buildUserPrompt(normalised) {
    Raw response extraction
    ───────────────────────────────────────────── */
 
+/**
+ * Detect whether a Gemini response was blocked by safety filters.
+ * Returns a descriptive string when blocked, or null when not blocked.
+ *
+ * @param {Object|null|undefined} response – raw Gemini API response
+ * @returns {{ blocked: boolean, reason: string|null, safetyRatings: Array|null }}
+ */
+function detectGeminiSafetyBlock(response) {
+  if (!response) return { blocked: false, reason: null, safetyRatings: null };
+
+  const geminiResponse = response?.response ?? response;
+
+  // 1. Check promptFeedback.blockReason (prompt-level block)
+  const blockReason = geminiResponse?.promptFeedback?.blockReason;
+  if (blockReason) {
+    const safetyRatings = geminiResponse?.promptFeedback?.safetyRatings || null;
+    return {
+      blocked: true,
+      reason: `PROMPT_BLOCKED: ${blockReason}`,
+      safetyRatings,
+    };
+  }
+
+  // 2. Check candidate-level finishReason for SAFETY / OTHER / RECITATION
+  const candidates = geminiResponse?.candidates;
+  if (Array.isArray(candidates) && candidates.length > 0) {
+    const finish = candidates[0]?.finishReason;
+    if (finish === "SAFETY" || finish === "OTHER" || finish === "RECITATION") {
+      const safetyRatings = candidates[0]?.safetyRatings || null;
+      return {
+        blocked: true,
+        reason: `CANDIDATE_BLOCKED: finishReason=${finish}`,
+        safetyRatings,
+      };
+    }
+  }
+
+  // 3. Check if no candidates were returned at all (unusual but possible)
+  if (!candidates || candidates.length === 0) {
+    const promptSafetyRatings = geminiResponse?.promptFeedback?.safetyRatings || null;
+    if (promptSafetyRatings && promptSafetyRatings.length > 0) {
+      const highRisk = promptSafetyRatings.find((r) =>
+        r.probability === "HIGH" || r.probability === "MEDIUM"
+      );
+      if (highRisk) {
+        return {
+          blocked: true,
+          reason: `NO_CANDIDATES: safety concern detected (${highRisk.category}: ${highRisk.probability})`,
+          safetyRatings: promptSafetyRatings,
+        };
+      }
+    }
+  }
+
+  return { blocked: false, reason: null, safetyRatings: null };
+}
+
 function getResponseText(response) {
   try {
     if (!response) return "";
@@ -1869,6 +1926,22 @@ async function runGeminiArchitectReview(payload = {}) {
   }
 
   // ── Extract raw text from Gemini response ──
+
+  // Check for safety filter blocks before attempting text extraction
+  const safetyCheck = detectGeminiSafetyBlock(response);
+  if (safetyCheck.blocked) {
+    logger.warn("[geminiArchitect] Gemini response blocked by safety filter", {
+      codepath: "runGeminiArchitectReview",
+      mode: normalised.mode,
+      safetyReason: safetyCheck.reason,
+      safetyRatings: safetyCheck.safetyRatings,
+    });
+    return {
+      mode: normalised.mode,
+      resultType: RESULT_TYPES.EMPTY_RESPONSE,
+      result: fallbackResult(RESULT_TYPES.EMPTY_RESPONSE, `Safety blocked: ${safetyCheck.reason}`),
+    };
+  }
 
   const rawContent = getResponseText(response);
   const rawLengthChars = rawContent ? rawContent.length : 0;
@@ -2051,6 +2124,25 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
       blockReason,
       hasPromptFeedback: Boolean(response?.promptFeedback),
     });
+
+    // Check for safety filter blocks before attempting text extraction
+    const safetyCheck = detectGeminiSafetyBlock(response);
+    if (safetyCheck.blocked) {
+      logger.warn("[geminiArchitect] runGeminiChat – response blocked by safety filter", {
+        codepath: "runGeminiChat",
+        model: modelName,
+        apiVersion: GEMINI_API_VERSION,
+        safetyReason: safetyCheck.reason,
+        safetyRatings: safetyCheck.safetyRatings,
+      });
+      return {
+        success: false,
+        text: "",
+        error: `SAFETY_BLOCK: ${safetyCheck.reason}`,
+        safetyBlocked: true,
+        safetyReason: safetyCheck.reason,
+      };
+    }
 
     const text = getResponseText(response) || "";
     if (!text) {

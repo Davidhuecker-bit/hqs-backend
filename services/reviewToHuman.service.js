@@ -3,6 +3,7 @@
 const {
   isDeepSeekConfigured,
   createDeepSeekChatCompletion,
+  extractDeepSeekText,
 } = require("./deepseek.service");
 
 const logger = require("../utils/logger");
@@ -267,8 +268,7 @@ async function buildHumanReviewSummary(payload = {}) {
       temperature: 0.2,
     });
 
-    const firstChoice = completion && completion.choices && completion.choices[0];
-    rawContent = (firstChoice && firstChoice.message && firstChoice.message.content) || "";
+    rawContent = extractDeepSeekText(completion);
   } catch (err) {
     logger.error("[reviewToHuman] DeepSeek call failed – falling back to static summary", {
       message: err.message,
