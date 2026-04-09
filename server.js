@@ -65,7 +65,6 @@ const marketNewsRoutes = require("./routes/marketNews.routes");
 const secEdgarRoutes = require("./routes/secEdgar.routes");
 const portfolioRoutes = require("./routes/portfolio.routes");
 
-const { adminAuth } = require("./middleware/adminAuth");
 const { apiLimiter, adminLimiter } = require("./middleware/rateLimiter");
 
 /* =========================================================
@@ -155,7 +154,7 @@ app.use(
       return callback(null, isAllowedCorsOrigin(origin));
     },
     methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -170,7 +169,7 @@ app.use("/api/notifications", apiLimiter, notificationsRoutes);
 app.use("/api/opportunities", apiLimiter, opportunitiesRoutes);
 app.use("/api/discovery", apiLimiter, discoveryRoutes);
 app.use("/api/portfolio", apiLimiter, portfolioRoutes);
-app.use("/api/admin", adminLimiter, adminAuth, adminRoutes);
+app.use("/api/admin", adminLimiter, adminRoutes);
 app.use("/api/market-news", apiLimiter, marketNewsRoutes);
 app.use("/api/sec-edgar", apiLimiter, secEdgarRoutes);
 app.use("/api/portfolio", apiLimiter, portfolioRoutes);
