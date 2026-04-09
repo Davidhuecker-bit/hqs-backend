@@ -203,7 +203,7 @@ function extractDeepSeekText(completion) {
   if (!firstChoice) {
     logger.warn("[deepseek] extractDeepSeekText – no choices in completion", {
       hasCompletion: Boolean(completion),
-      finishReason: completion?.choices?.[0]?.finish_reason ?? null,
+      choicesLength: completion?.choices?.length ?? 0,
     });
     return "";
   }
