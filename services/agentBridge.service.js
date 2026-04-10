@@ -1838,11 +1838,15 @@ const _conferenceAgentRegistry = new Map([
         const result = await runGeminiChat({
           systemPrompt,
           userMessage,
+          history: opts.history || undefined,
           maxTokens: opts.maxTokens || 512,
           timeoutMs: opts.timeoutMs || 22000,
         });
         if (result.success && result.text.trim()) return result.text.trim();
-        throw new Error(result.error || "GEMINI_EMPTY_RESPONSE");
+        const errDetail = result.errorCategory
+          ? `${result.error || "GEMINI_EMPTY_RESPONSE"} [${result.errorCategory}]`
+          : (result.error || "GEMINI_EMPTY_RESPONSE");
+        throw new Error(errDetail);
       },
     },
   ],
@@ -15727,7 +15731,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     agent,
     codepath: agent === "gemini" ? "runGeminiChat / @google/genai / models.generateContent" : "createDeepSeekChatCompletion",
     apiVersion: agent === "gemini" ? "v1 (httpOptions.apiVersion)" : "n/a",
-    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.0-flash") : "deepseek-chat",
+    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.5-flash") : "deepseek-chat",
     isConfigured: configured,
     messageIntent,
     conferenceId: session.conferenceId,
@@ -15744,13 +15748,21 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
   // ── Build conversation history for context ──
   const recentMessages = (session.messages || [])
     .slice(-10)
-    .filter((m) => m.messageRole === "user" || (m.messageRole === "agent" && m.speakerAgent !== "system"))
+    .filter((m) => m.messageRole === "user" || (m.messageRole === "agent" && m.speakerAgent !== "system"));
+
+  // Build structured history array for Gemini's multi-turn contents format
+  const structuredHistory = recentMessages.map((m) => ({
+    role: m.messageRole === "user" ? "user" : "model",
+    parts: [{ text: (m.content || "").slice(0, CONFERENCE_HISTORY_MSG_MAX_LENGTH) }],
+  }));
+
+  // Also build a text-based history for the system prompt context
+  const historyText = recentMessages
     .map((m) => {
       const isOwnReply = m.messageRole === "agent" && m.speakerAgent === agent;
       const label = m.messageRole === "user"
         ? "Nutzer"
         : isOwnReply ? agentDef.label : "Anderer Agent";
-      // Truncate each history excerpt to prevent prompt bloat
       const excerpt = (m.content || "").slice(0, CONFERENCE_HISTORY_MSG_MAX_LENGTH);
       return `${label}: ${excerpt}`;
     })
@@ -15779,13 +15791,18 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     prevNote,
   ].filter(Boolean).join("\n").trim();
 
-  const historyContext = recentMessages ? `Bisheriger Verlauf:\n${recentMessages}\n\nNutzer: ` : "";
-  const fullMessage = `${historyContext}${safeUserMessage}`;
+  // For Gemini: pass structured history via the `history` param; userMessage is just the current turn.
+  // For DeepSeek: keep text-based history prepended to the user message (DeepSeek uses OpenAI-style API).
+  const useStructuredHistory = agent === "gemini" && structuredHistory.length > 0;
+  const fullMessage = useStructuredHistory
+    ? safeUserMessage
+    : (historyText ? `Bisheriger Verlauf:\n${historyText}\n\nNutzer: ${safeUserMessage}` : safeUserMessage);
 
   logger.info("[agentBridge] Konferenz – API-Aufruf startet", {
     agent,
     conferenceId: session.conferenceId,
     messageLengthChars: fullMessage.length,
+    structuredHistoryTurns: useStructuredHistory ? structuredHistory.length : 0,
   });
 
   try {
@@ -15793,6 +15810,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
       timeoutMs: agent === "deepseek" ? 20000 : 22000,
       maxTokens: 512,
       temperature: 0.5,
+      history: useStructuredHistory ? structuredHistory : undefined,
     });
     if (text && text.trim()) {
       logger.info("[agentBridge] Konferenz – echte Agentenantwort erhalten", {

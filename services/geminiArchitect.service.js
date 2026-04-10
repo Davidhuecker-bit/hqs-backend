@@ -37,7 +37,7 @@ function getGeminiClient() {
 }
 
 function getModelName() {
-  return process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
 }
 
 /* ─────────────────────────────────────────────
@@ -2054,30 +2054,47 @@ async function runGeminiArchitectReview(payload = {}) {
 
 /**
  * Simple plain-text chat with Gemini – no JSON schema, no structured output.
- * Used by the conference system to get natural language responses.
+ * Used by the conference system and agent chat to get natural language responses.
  *
  * @param {Object}  opts
- * @param {string}  opts.systemPrompt   – instruction for the model
- * @param {string}  opts.userMessage    – the user's message
- * @param {number}  [opts.maxTokens]    – max output tokens (default 1024)
- * @param {number}  [opts.timeoutMs]    – timeout in ms (default 25000)
- * @returns {Promise<{ success: boolean, text: string, error?: string }>}
+ * @param {string}  opts.systemPrompt          – instruction for the model
+ * @param {string}  opts.userMessage           – the user's message (latest turn)
+ * @param {Array<{role:string,parts:Array<{text:string}>}>}  [opts.history]
+ *        – optional multi-turn history in Gemini `contents` format.
+ *          When provided, `history` entries come first and the final user turn
+ *          is appended automatically from `userMessage`.
+ * @param {number}  [opts.maxTokens]           – max output tokens (default 1024)
+ * @param {number}  [opts.timeoutMs]           – timeout in ms (default 25000)
+ * @returns {Promise<{ success: boolean, text: string, error?: string, errorCategory?: string }>}
  */
-async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, timeoutMs = 25000 } = {}) {
+async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1024, timeoutMs = 25000 } = {}) {
   if (!isGeminiConfigured()) {
     logger.warn("[geminiArchitect] runGeminiChat – GEMINI_API_KEY not set");
-    return { success: false, text: "", error: "GEMINI_NOT_CONFIGURED" };
+    return { success: false, text: "", error: "GEMINI_NOT_CONFIGURED", errorCategory: "config" };
   }
   if (!userMessage || !userMessage.trim()) {
-    return { success: false, text: "", error: "NO_INPUT" };
+    return { success: false, text: "", error: "NO_INPUT", errorCategory: "input" };
   }
   const modelName = getModelName();
+
+  // ── Build contents: multi-turn history + latest user turn ──
+  const contents = [];
+  if (Array.isArray(history) && history.length > 0) {
+    for (const entry of history) {
+      if (entry && entry.role && Array.isArray(entry.parts)) {
+        contents.push(entry);
+      }
+    }
+  }
+  contents.push({ role: "user", parts: [{ text: userMessage }] });
+
   logger.info("[geminiArchitect] runGeminiChat – start", {
     codepath: "runGeminiChat",
     apiVersion: GEMINI_API_VERSION,
     model: modelName,
     maxTokens,
     timeoutMs,
+    historyTurns: contents.length - 1,
     promptPreview: (userMessage || "").slice(0, 80),
   });
   try {
@@ -2098,7 +2115,7 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
         return await Promise.race([
           client.models.generateContent({
             model: modelName,
-            contents: userMessage,
+            contents,
             config: {
               systemInstruction: systemPrompt || "",
               temperature: 0.7,
@@ -2140,6 +2157,7 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
         success: false,
         text: "",
         error: `SAFETY_BLOCK: ${safetyCheck.reason}`,
+        errorCategory: "safety",
         safetyBlocked: true,
         safetyReason: safetyCheck.reason,
       };
@@ -2157,7 +2175,7 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
         // Log abbreviated raw response shape to help diagnose extraction failures
         responseKeys: response ? Object.keys(response).join(",") : "null",
       });
-      return { success: false, text: "", error: "EMPTY_RESPONSE" };
+      return { success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response" };
     }
 
     logger.info("[geminiArchitect] runGeminiChat – success", {
@@ -2169,15 +2187,42 @@ async function runGeminiChat({ systemPrompt, userMessage, maxTokens = 1024, time
     });
     return { success: true, text };
   } catch (err) {
+    const httpStatus = err.status || err.statusCode || null;
+    const errMsg = String(err.message || "").slice(0, 200);
+    const errMsgLower = errMsg.toLowerCase();
+
+    // ── Classify error for clear backend diagnostics ──
+    let errorCategory = "unknown";
+    if (httpStatus === 404 || errMsgLower.includes("not found") || errMsgLower.includes("is not found")) {
+      errorCategory = "model_not_found";
+    } else if (httpStatus === 403 || errMsgLower.includes("permission") || errMsgLower.includes("forbidden")) {
+      errorCategory = "permission";
+    } else if (httpStatus === 401 || errMsgLower.includes("unauthorized") || errMsgLower.includes("api key")) {
+      errorCategory = "auth";
+    } else if (httpStatus === 429 || errMsgLower.includes("quota") || errMsgLower.includes("rate limit") || errMsgLower.includes("too many requests")) {
+      errorCategory = "rate_limit";
+    } else if (httpStatus === 503 || errMsgLower.includes("overloaded") || errMsgLower.includes("unavailable")) {
+      errorCategory = "provider_unavailable";
+    } else if (errMsgLower.includes("gemini_timeout") || errMsgLower.includes("timeout") || errMsgLower.includes("deadline")) {
+      errorCategory = "timeout";
+    }
+
     logger.warn("[geminiArchitect] runGeminiChat – error", {
       codepath: "runGeminiChat",
       apiVersion: GEMINI_API_VERSION,
       model: modelName,
-      httpStatus: err.status || err.statusCode || null,
+      httpStatus,
       errorCode: err.code || null,
-      message: String(err.message || "").slice(0, 120),
+      errorCategory,
+      message: errMsg.slice(0, 120),
     });
-    return { success: false, text: "", error: String(err.message || "UNKNOWN").slice(0, 120) };
+    return {
+      success: false,
+      text: "",
+      error: errMsg.slice(0, 120) || "UNKNOWN",
+      errorCategory,
+      httpStatus,
+    };
   }
 }
 

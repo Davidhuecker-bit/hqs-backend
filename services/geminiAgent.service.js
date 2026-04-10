@@ -314,38 +314,41 @@ Anweisungen:
    ───────────────────────────────────────────── */
 
 /**
- * Formats the conversation history + new user message into a single
- * prompt, calls `runGeminiChat`, and returns the parsed result.
+ * Builds a structured multi-turn history array in Gemini `contents` format
+ * from the conversation's message list.
+ *
+ * @param {object} conversation
+ * @returns {Array<{role:string,parts:Array<{text:string}>}>}
+ */
+function _buildGeminiContentsHistory(conversation) {
+  const msgs = conversation.messages || [];
+  const slice = msgs.slice(-MAX_HISTORY_FOR_PROMPT);
+  const GEMINI_ROLE = { user: "user", assistant: "model", system: "user" };
+  return slice.map((m) => ({
+    role: GEMINI_ROLE[m.role] || "user",
+    parts: [{ text: m.content }],
+  }));
+}
+
+/**
+ * Sends the conversation history + new user message to Gemini using
+ * the native multi-turn `contents` array, then returns the parsed result.
  *
  * @param {object}      conversation  – the conversation object
  * @param {string}      userMessage   – latest user message
  * @param {string|null} actionIntent  – current action intent
- * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string }>}
+ * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string, errorCategory?: string }>}
  */
 async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent);
-  const history = _buildConversationHistory(conversation);
-
-  // Build a combined user message that includes dialogue history
-  let combinedMessage = "";
-  if (history.length > 0) {
-    combinedMessage += "Bisheriger Gesprächsverlauf:\n";
-    combinedMessage += "───\n";
-    const ROLE_LABELS = { user: "Nutzer", assistant: "Assistent", system: "System" };
-    for (const msg of history) {
-      const label = ROLE_LABELS[msg.role] || "System";
-      combinedMessage += `${label}: ${msg.content}\n`;
-    }
-    combinedMessage += "───\n\n";
-  }
-  combinedMessage += `Nutzer (aktuelle Nachricht): ${userMessage}`;
+  const history = _buildGeminiContentsHistory(conversation);
 
   logger.info("[geminiAgent] _callGeminiWithHistory – sending prompt", {
     conversationId: conversation.conversationId,
     mode: conversation.mode,
     actionIntent,
-    historyLength: history.length,
-    combinedMessageLength: combinedMessage.length,
+    historyTurns: history.length,
+    userMessageLength: userMessage.length,
   });
 
   const maxTokens = actionIntent === "prepare_patch" ? 2048 : 1024;
@@ -353,7 +356,8 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
 
   const result = await runGeminiChat({
     systemPrompt,
-    userMessage: combinedMessage,
+    userMessage,
+    history,
     maxTokens,
     timeoutMs,
   });
@@ -362,8 +366,9 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
     logger.warn("[geminiAgent] _callGeminiWithHistory – Gemini call failed", {
       conversationId: conversation.conversationId,
       error: result.error,
+      errorCategory: result.errorCategory || "unknown",
     });
-    return { success: false, text: "", parsed: null, error: result.error };
+    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory };
   }
 
   // Attempt JSON parse for structured intents
@@ -764,7 +769,7 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
     assistantReply:   assistantReply || "",
     metadata: {
-      model:         process.env.GEMINI_MODEL || "gemini-2.0-flash",
+      model:         process.env.GEMINI_MODEL || "gemini-2.5-flash",
       apiVersion:    "v1",
       messageCount:  conversation.messageCount,
       historyLength: conversation.messages.length,

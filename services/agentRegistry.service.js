@@ -149,7 +149,7 @@ function _initAgents() {
     role: "frontend_agent",
     domain: "Frontend-Entwicklung, UX, Architektur, UI-Komponenten",
     provider: "google",
-    model: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+    model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
     supportedModes: [
       "layout_review", "darstellung", "frontend_guard",
       "priorisierung", "free_chat", "change_mode",
