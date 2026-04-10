@@ -4189,6 +4189,15 @@ const {
   RESULT_TYPES: GEMINI_RESULT_TYPES,
   FALLBACK_LABELS: GEMINI_FALLBACK_LABELS,
 } = require("../services/geminiArchitect.service");
+const {
+  startConversation: startGeminiAgentConversation,
+  continueConversation: continueGeminiAgentConversation,
+  getConversation: getGeminiAgentConversation,
+  VALID_ACTION_INTENTS: GEMINI_AGENT_ACTION_INTENTS,
+  VALID_AGENT_MODES: GEMINI_AGENT_MODES,
+  VALID_CONVERSATION_STATUSES: GEMINI_AGENT_STATUSES,
+  ALLOWED_PROJECT_PATHS: GEMINI_AGENT_ALLOWED_PATHS,
+} = require("../services/geminiAgent.service");
 
 /* =========================================================
    POST /api/admin/deepseek/math-logic-review
@@ -6888,6 +6897,339 @@ router.get("/deepseek/agent-bridge/conference-dialog-state/:conferenceId", (req,
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error reading conference dialog state",
+    });
+  }
+});
+
+/* =========================================================
+   ┌──────────────────────────────────────────────────────────┐
+   │  Gemini Agent – Multi-Turn Conversation / Change Mode    │
+   │  Echter Gemini-Agent mit fortlaufendem Chat, Analyse,    │
+   │  Änderungsvorschlägen, Patch-Vorbereitung und            │
+   │  kontrollierter Ausführung.                              │
+   └──────────────────────────────────────────────────────────┘
+========================================================= */
+
+/* =========================================================
+   POST /api/admin/gemini/chat
+   Starts a new Gemini Agent conversation.
+
+   Request body:
+   {
+     "mode":          "free_chat|layout_review|darstellung|...",
+     "message":       "...",           // initial user message (required)
+     "actionIntent":  "explain|analyze|propose_change|prepare_patch",
+     "context":       "..."            // optional extra context
+   }
+
+   Response:
+   {
+     "success":            true,
+     "version":            "agent-v1",
+     "conversationId":     "gemini-conv-...",
+     "mode":               "...",
+     "actionIntent":       "...|null",
+     "status":             "active|waiting_for_user|change_proposed|...",
+     "followUpPossible":   true,
+     "assistantReply":     "...",
+     "metadata":           { model, apiVersion, messageCount, ... },
+     "proposedChanges":    [...] | null,
+     "preparedPatch":      {...} | null,
+     "executionResult":    null,
+     "requiresApproval":   false,
+     "approved":           false,
+     "changedFiles":       [],
+     "validModes":         [...],
+     "validActionIntents": [...],
+     "allowedPaths":       [...]
+   }
+========================================================= */
+
+router.post("/gemini/chat", async (req, res) => {
+  const { mode, message, actionIntent, context } = req.body || {};
+
+  logger.info("[admin] gemini/chat – start conversation request", {
+    mode: mode || "not_specified",
+    actionIntent: actionIntent || null,
+    hasMessage: Boolean(message),
+    hasContext: Boolean(context),
+  });
+
+  try {
+    const result = await startGeminiAgentConversation({ mode, message, actionIntent, context });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] gemini/chat – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      mode: result.mode,
+      actionIntent: result.actionIntent,
+      status: result.status,
+      messageCount: result.metadata?.messageCount,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+      validModes: GEMINI_AGENT_MODES,
+      validActionIntents: GEMINI_AGENT_ACTION_INTENTS,
+      allowedPaths: GEMINI_AGENT_ALLOWED_PATHS,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/chat error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      error: error.message || "Internal error starting Gemini Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/gemini/conversations/:id/follow-up
+   Continues an existing Gemini Agent conversation with a
+   follow-up message.
+
+   Request body:
+   {
+     "message":          "...",               // follow-up message (required)
+     "actionIntent":     "explain|analyze|propose_change|prepare_patch|execute_change",
+     "confirmExecution": false,               // set true to trigger execution
+     "approved":         false                // explicit approval for execution
+   }
+
+   Response: same schema as POST /gemini/chat
+========================================================= */
+
+router.post("/gemini/conversations/:id/follow-up", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message, actionIntent, confirmExecution, approved } = req.body || {};
+
+  logger.info("[admin] gemini/conversations/follow-up – request", {
+    conversationId,
+    actionIntent: actionIntent || null,
+    hasMessage: Boolean(message),
+    confirmExecution: confirmExecution || false,
+    approved: approved || false,
+  });
+
+  try {
+    const result = await continueGeminiAgentConversation({
+      conversationId,
+      message,
+      actionIntent,
+      confirmExecution,
+      approved,
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] gemini/conversations/follow-up – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      actionIntent: result.actionIntent,
+      status: result.status,
+      messageCount: result.metadata?.messageCount,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/conversations/follow-up error", {
+      conversationId,
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error continuing Gemini Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/gemini/conversations/:id
+   Retrieves a Gemini Agent conversation by ID, including
+   all messages and metadata.
+
+   Response:
+   {
+     "success":          true,
+     "version":          "agent-v1",
+     "conversationId":   "...",
+     "createdAt":        "...",
+     "updatedAt":        "...",
+     "status":           "...",
+     "mode":             "...",
+     "messageCount":     N,
+     "messages":         [...],
+     "lastActionIntent": "...|null",
+     "proposedChanges":  [...] | null,
+     "preparedPatch":    {...} | null,
+     "executionResult":  {...} | null,
+     "approved":         false
+   }
+========================================================= */
+
+router.get("/gemini/conversations/:id", (req, res) => {
+  const conversationId = req.params.id;
+
+  logger.info("[admin] gemini/conversations/:id – request", { conversationId });
+
+  try {
+    const conversation = getGeminiAgentConversation(conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        version: "agent-v1",
+        error: `Conversation not found: ${conversationId}`,
+      });
+    }
+
+    return res.json({
+      success: true,
+      version: "agent-v1",
+      ...conversation,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/conversations/:id error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error retrieving Gemini Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/gemini/conversations/:id/prepare-change
+   Shorthand endpoint to request a patch preparation within
+   an existing conversation.  Equivalent to follow-up with
+   actionIntent = "prepare_patch".
+
+   Request body:
+   {
+     "message": "..."   // description of the desired change
+   }
+========================================================= */
+
+router.post("/gemini/conversations/:id/prepare-change", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message } = req.body || {};
+
+  logger.info("[admin] gemini/conversations/prepare-change – request", {
+    conversationId,
+    hasMessage: Boolean(message),
+  });
+
+  try {
+    const result = await continueGeminiAgentConversation({
+      conversationId,
+      message: message || "Bitte bereite einen konkreten Patch vor basierend auf dem bisherigen Gespräch.",
+      actionIntent: "prepare_patch",
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] gemini/conversations/prepare-change – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      status: result.status,
+      hasPatch: result.preparedPatch !== null,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/conversations/prepare-change error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error preparing change",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/gemini/conversations/:id/execute-change
+   Executes the prepared patch within a conversation.
+   Requires explicit approval via "approved: true".
+
+   Request body:
+   {
+     "message":  "...",           // confirmation message
+     "approved": true             // REQUIRED – explicit user approval
+   }
+
+   Response includes executionResult with changedFiles, errors, log.
+========================================================= */
+
+router.post("/gemini/conversations/:id/execute-change", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message, approved } = req.body || {};
+
+  logger.info("[admin] gemini/conversations/execute-change – request", {
+    conversationId,
+    approved: approved || false,
+    hasMessage: Boolean(message),
+  });
+
+  try {
+    const result = await continueGeminiAgentConversation({
+      conversationId,
+      message: message || "Führe die vorbereiteten Änderungen aus.",
+      actionIntent: "execute_change",
+      confirmExecution: true,
+      approved: approved === true,
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] gemini/conversations/execute-change – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      status: result.status,
+      changedFiles: result.changedFiles || [],
+      approved: result.approved,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/conversations/execute-change error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error executing change",
     });
   }
 });

@@ -647,7 +647,8 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
  * @param {string} [opts.context]     – optional extra context
  * @returns {Promise<object>} response schema
  */
-async function startConversation({ mode, message, actionIntent, context } = {}) {
+async function startConversation(opts = {}) {
+  const { mode, message, actionIntent, context } = opts || {};
   // ── Validate inputs ──
   if (!VALID_AGENT_MODES.includes(mode)) {
     logger.warn("[geminiAgent] startConversation – invalid mode", { mode });
@@ -803,7 +804,8 @@ async function startConversation({ mode, message, actionIntent, context } = {}) 
  * @param {boolean} [opts.approved]        – explicit approval for execution
  * @returns {Promise<object>} response schema
  */
-async function continueConversation({ conversationId, message, actionIntent, confirmExecution, approved } = {}) {
+async function continueConversation(opts = {}) {
+  const { conversationId, message, actionIntent, confirmExecution, approved } = opts || {};
   const conversation = _geminiConversations.get(conversationId);
 
   if (!conversation) {
