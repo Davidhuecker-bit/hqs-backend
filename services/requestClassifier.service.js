@@ -67,7 +67,7 @@ const INTENT_KEYWORDS = {
   propose_change: ["vorschlag", "vorschläge", "propose", "suggestion", "empfehl", "recommend", "änderungsvorschlag"],
   prepare_patch:  ["patch", "edit plan", "editplan", "vorbereiten", "prepare"],
   dry_run:        ["dry run", "dry-run", "trocken", "simulier", "simulate", "test run"],
-  execute_change: ["ausführ", "execute", "apply", "anwend", "umsetzen", "schreib"],
+  execute_change: ["ausführ", "execute", "apply", "anwend", "umsetzen", "schreib", "run change", "commit change", "perform"],
   verify_fix:     ["verifizier", "verify", "prüfe fix", "check fix", "bestätig"],
   plan_fix:       ["plan", "strategie", "strategy", "roadmap", "schritte", "steps"],
 };

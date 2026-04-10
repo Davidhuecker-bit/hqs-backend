@@ -88,6 +88,7 @@ const ERROR_CODES = {
 };
 
 const TIMEOUT_BUFFER_MS = 10000;
+const CONFERENCE_TIMEOUT_MS = 60000;
 
 /* ─────────────────────────────────────────────
    Unified response builder
@@ -463,6 +464,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
       preparedPatch: agentResponse.preparedPatch,
       executionResult: agentResponse.executionResult,
       dryRunResult: agentResponse.dryRunResult,
+      conferenceId: agentResponse.conferenceId || opts.conferenceId || null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }).catch(() => {});
@@ -477,6 +479,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
       agent: agentId,
       changedFiles: agentResponse.executionResult.changedFiles,
       approved: agentResponse.approved,
+      historyLength: agentResponse.metadata?.historyLength || 0,
     });
   }
 
@@ -486,6 +489,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
       requestId, traceId,
       conversationId: agentResponse.conversationId,
       agent: agentId,
+      historyLength: agentResponse.metadata?.historyLength || 0,
       metadata: { wouldChange: agentResponse.dryRunResult.wouldChange },
     });
   }
@@ -526,11 +530,24 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
           message: opts.message,
           targetAgent: opts.agent || "both",
         }),
-        60000,
+        CONFERENCE_TIMEOUT_MS,
         "conference message",
       );
 
       const durationMs = Date.now() - startTime;
+
+      // Persist conference follow-up
+      conversationStore.save({
+        conversationId: `conf-${opts.conferenceId}`,
+        agent: "conference",
+        mode: classification.mode,
+        status: result?.conferenceStatus || "active",
+        lastActionIntent: classification.actionIntent,
+        conferenceId: opts.conferenceId,
+        messageCount: result?.replies?.length || 0,
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+
       return _buildUnifiedResponse({
         conferenceId: opts.conferenceId,
         agent: "conference",
@@ -575,11 +592,25 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
           message: opts.message,
           targetAgent: "both",
         }),
-        60000,
+        CONFERENCE_TIMEOUT_MS,
         "conference initial message",
       );
 
       const durationMs = Date.now() - startTime;
+
+      // Persist new conference session
+      conversationStore.save({
+        conversationId: `conf-${session.conferenceId}`,
+        agent: "conference",
+        mode: classification.mode,
+        status: "active",
+        lastActionIntent: classification.actionIntent,
+        conferenceId: session.conferenceId,
+        messageCount: result?.replies?.length || 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+
       return _buildUnifiedResponse({
         conferenceId: session.conferenceId,
         agent: "conference",
@@ -643,6 +674,8 @@ module.exports = {
   handleRequest,
   getSystemStatus,
   ERROR_CODES,
+  TIMEOUT_BUFFER_MS,
+  CONFERENCE_TIMEOUT_MS,
   // Re-exports for convenience
   generateRequestId,
   generateTraceId,
