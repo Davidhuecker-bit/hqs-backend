@@ -36,6 +36,7 @@ const {
   getConversation,
   VALID_ACTION_INTENTS,
   VALID_AGENT_MODES,
+  MODE_ALIASES,
   VALID_CONVERSATION_STATUSES,
   ALLOWED_PROJECT_PATHS,
 } = require("../services/geminiAgent.service");
@@ -101,6 +102,15 @@ describe("Gemini Agent – Constants", () => {
       expect(p.endsWith("/")).toBe(true);
     }
   });
+
+  test("MODE_ALIASES maps presentation_review to darstellung", () => {
+    expect(MODE_ALIASES).toBeDefined();
+    expect(MODE_ALIASES["presentation_review"]).toBe("darstellung");
+  });
+
+  test("MODE_ALIASES maps priority_review to priorisierung", () => {
+    expect(MODE_ALIASES["priority_review"]).toBe("priorisierung");
+  });
 });
 
 /* ─────────────────────────────────────────────
@@ -135,6 +145,29 @@ describe("Gemini Agent – startConversation", () => {
 
     expect(result.status).toBe("error");
     expect(result.assistantReply).toMatch(/Ungültiger Modus/);
+    expect(result.errorCode).toBe("INVALID_MODE");
+  });
+
+  test("maps presentation_review alias to darstellung mode", async () => {
+    const result = await startConversation({
+      mode: "presentation_review",
+      message: "Prüfe die Darstellung.",
+    });
+
+    expect(result.status).toBe("waiting_for_user");
+    expect(result.mode).toBe("darstellung");
+    expect(result.errorCode).toBeUndefined();
+  });
+
+  test("maps priority_review alias to priorisierung mode", async () => {
+    const result = await startConversation({
+      mode: "priority_review",
+      message: "Prüfe die Priorisierung.",
+    });
+
+    expect(result.status).toBe("waiting_for_user");
+    expect(result.mode).toBe("priorisierung");
+    expect(result.errorCode).toBeUndefined();
   });
 
   test("returns error for empty message", async () => {
