@@ -34,6 +34,14 @@ const VALID_AGENT_MODES = [
   "architecture",
 ];
 
+/* Maps legacy / architect-service mode names to the agent-service canonical name.
+   Allows older clients (agentBridge, geminiArchitect) to keep using their own
+   mode names without a breaking change. */
+const MODE_ALIASES = {
+  presentation_review: "darstellung",
+  priority_review:     "priorisierung",
+};
+
 const VALID_CONVERSATION_STATUSES = [
   "active",
   "waiting_for_user",
@@ -747,8 +755,8 @@ async function _executeChanges(conversation) {
  * @param {boolean}     isInitial
  * @returns {object}
  */
-function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
-  return {
+function _buildResponse(conversation, assistantReply, actionIntent, isInitial, errorCode) {
+  const response = {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
     actionIntent:     actionIntent || null,
@@ -771,6 +779,10 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
     approved:         conversation.approved,
     changedFiles:     conversation.executionResult?.changedFiles || [],
   };
+  if (errorCode) {
+    response.errorCode = errorCode;
+  }
+  return response;
 }
 
 /* ─────────────────────────────────────────────
@@ -789,15 +801,21 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
  * @returns {Promise<object>} response schema
  */
 async function startConversation(opts = {}) {
-  const { mode, message, actionIntent, context } = opts || {};
+  const safeOpts = opts || {};
+  const { message, actionIntent, context } = safeOpts;
+  // ── Normalise mode: resolve aliases before validation ──
+  const rawMode = safeOpts.mode;
+  const mode = MODE_ALIASES[rawMode] || rawMode;
+
   // ── Validate inputs ──
   if (!VALID_AGENT_MODES.includes(mode)) {
-    logger.warn("[geminiAgent] startConversation – invalid mode", { mode });
+    logger.warn("[geminiAgent] startConversation – invalid mode", { mode: rawMode });
     return _buildResponse(
-      { conversationId: null, mode: mode || "unknown", status: "error", messageCount: 0, messages: [], approved: false },
-      `Ungültiger Modus: ${mode}. Erlaubt: ${VALID_AGENT_MODES.join(", ")}`,
+      { conversationId: null, mode: rawMode || "unknown", status: "error", messageCount: 0, messages: [], approved: false },
+      `Ungültiger Modus: ${rawMode}. Erlaubt: ${VALID_AGENT_MODES.join(", ")}`,
       actionIntent || null,
       true,
+      "INVALID_MODE",
     );
   }
 
@@ -1242,6 +1260,7 @@ module.exports = {
   getConversation,
   VALID_ACTION_INTENTS,
   VALID_AGENT_MODES,
+  MODE_ALIASES,
   VALID_CONVERSATION_STATUSES,
   ALLOWED_PROJECT_PATHS,
   // Exposed for testing
