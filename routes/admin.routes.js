@@ -7000,6 +7000,58 @@ router.post("/gemini/chat", async (req, res) => {
 });
 
 /* =========================================================
+   POST /api/admin/gemini/agent-chat
+   Alias for POST /api/admin/gemini/chat – so that frontends
+   using the "/agent-chat" path (matching the DeepSeek naming
+   convention) reach the same handler.
+========================================================= */
+
+router.post("/gemini/agent-chat", async (req, res) => {
+  const { mode, message, actionIntent, context } = req.body || {};
+
+  logger.info("[admin] gemini/agent-chat (alias) – start conversation request", {
+    mode: mode || "not_specified",
+    actionIntent: actionIntent || null,
+    hasMessage: Boolean(message),
+    hasContext: Boolean(context),
+  });
+
+  try {
+    const result = await startGeminiAgentConversation({ mode, message, actionIntent, context });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] gemini/agent-chat (alias) – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      mode: result.mode,
+      actionIntent: result.actionIntent,
+      status: result.status,
+      messageCount: result.metadata?.messageCount,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+      validModes: GEMINI_AGENT_MODES,
+      validActionIntents: GEMINI_AGENT_ACTION_INTENTS,
+      allowedPaths: GEMINI_AGENT_ALLOWED_PATHS,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/agent-chat (alias) error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      error: error.message || "Internal error starting Gemini Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
    POST /api/admin/gemini/conversations/:id/follow-up
    Continues an existing Gemini Agent conversation with a
    follow-up message.
