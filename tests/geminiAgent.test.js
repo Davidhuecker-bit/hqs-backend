@@ -559,13 +559,18 @@ describe("Gemini Agent – Multi-turn context", () => {
       message: "Zweite Frage",
     });
 
-    // runGeminiChat should have been called with history included
+    // runGeminiChat should have been called with structured history
     const lastCall = runGeminiChat.mock.calls[runGeminiChat.mock.calls.length - 1];
     expect(lastCall).toBeDefined();
-    const userMessage = lastCall[0].userMessage;
-    expect(userMessage).toContain("Gesprächsverlauf");
-    expect(userMessage).toContain("Erste Frage zum Layout");
-    expect(userMessage).toContain("Zweite Frage");
+    const callOpts = lastCall[0];
+    // History is now passed as a structured array, not flattened into userMessage
+    expect(Array.isArray(callOpts.history)).toBe(true);
+    expect(callOpts.history.length).toBeGreaterThanOrEqual(1);
+    // The latest user message is the current turn
+    expect(callOpts.userMessage).toContain("Zweite Frage");
+    // History should contain the earlier conversation turns
+    const historyTexts = callOpts.history.map((h) => h.parts.map((p) => p.text).join("")).join(" ");
+    expect(historyTexts).toContain("Erste Frage zum Layout");
   });
 });
 
