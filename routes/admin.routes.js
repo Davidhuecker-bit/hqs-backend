@@ -4228,6 +4228,9 @@ const {
    }
 ========================================================= */
 
+// Maximum characters to store from the user prompt when registering external exchanges
+const MAX_USER_SUMMARY_LENGTH = 1000;
+
 router.post("/deepseek/math-logic-review", async (req, res) => {
   if (!isDeepSeekConfigured()) {
     return res.status(503).json({
@@ -4242,7 +4245,7 @@ router.post("/deepseek/math-logic-review", async (req, res) => {
     // Register the exchange in the conversation store so follow-ups can
     // reference this structured analysis as context.
     const userSummary = req.body?.message
-      ? String(req.body.message).slice(0, 1000)
+      ? String(req.body.message).slice(0, MAX_USER_SUMMARY_LENGTH)
       : "[math-logic-review request]";
     const assistantSummary = JSON.stringify(result);
     const conversationId = registerExternalExchange(
@@ -4331,7 +4334,7 @@ router.post("/deepseek/controller-guard", async (req, res) => {
 
     // Register the exchange in the conversation store.
     const userSummary = req.body?.message
-      ? String(req.body.message).slice(0, 1000)
+      ? String(req.body.message).slice(0, MAX_USER_SUMMARY_LENGTH)
       : "[controller-guard request]";
     const assistantSummary = JSON.stringify(result);
     const conversationId = registerExternalExchange(

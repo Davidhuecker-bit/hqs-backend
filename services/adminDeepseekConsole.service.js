@@ -102,6 +102,7 @@ Regeln:
 
 const MAX_CONVERSATIONS = 200;
 const MAX_HISTORY_MESSAGES = 20; // maximum messages included in the context window
+const PRUNE_PERCENTAGE = 0.1;    // fraction of MAX_CONVERSATIONS to remove when pruning
 
 const _deepseekConversations = new Map();
 
@@ -114,7 +115,7 @@ function _pruneConversations() {
   const sorted = [..._deepseekConversations.entries()].sort(
     (a, b) => a[1].updatedAt - b[1].updatedAt
   );
-  const removeCount = Math.max(1, Math.floor(MAX_CONVERSATIONS * 0.1));
+  const removeCount = Math.max(1, Math.floor(MAX_CONVERSATIONS * PRUNE_PERCENTAGE));
   for (let i = 0; i < removeCount; i++) {
     _deepseekConversations.delete(sorted[i][0]);
   }
@@ -170,7 +171,10 @@ function _addExchange(conversationId, userContent, assistantContent, metadata) {
  */
 function _buildMessagesWithHistory(conversationId, systemPrompt, newUserContent) {
   const conv = _deepseekConversations.get(conversationId);
-  const historyEntries = conv ? conv.messages.slice(-MAX_HISTORY_MESSAGES) : [];
+  const historyEntries = conv
+    // Take the most recent MAX_HISTORY_MESSAGES messages to stay within context window
+    ? conv.messages.slice(-MAX_HISTORY_MESSAGES)
+    : [];
   const historyMessages = historyEntries.map(({ role, content }) => ({ role, content }));
 
   return {
