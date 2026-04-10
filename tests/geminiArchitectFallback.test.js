@@ -234,6 +234,7 @@ describe("Both models fail", () => {
 
     expect(result.success).toBe(false);
     expect(result.primaryModel).toBe("gemini-2.5-flash");
+    expect(result.fallbackModelUsed).toBe(true);
     expect(result.finalModelUsed).toBe("gemini-1.5-flash");
   });
 });

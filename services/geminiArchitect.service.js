@@ -2181,12 +2181,18 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
   function _classifyError(err) {
     const httpStatus  = err.status || err.statusCode || null;
     const errMsgLower = String(err.message || "").toLowerCase();
-    if (httpStatus === 404 || errMsgLower.includes("not found"))                                                                  return "model_not_found";
-    if (httpStatus === 403 || errMsgLower.includes("permission") || errMsgLower.includes("forbidden"))                           return "permission";
-    if (httpStatus === 401 || errMsgLower.includes("unauthorized") || errMsgLower.includes("api key"))                           return "auth";
-    if (httpStatus === 429 || errMsgLower.includes("quota") || errMsgLower.includes("rate limit") || errMsgLower.includes("too many requests")) return "rate_limit";
-    if (httpStatus === 503 || errMsgLower.includes("overloaded") || errMsgLower.includes("unavailable"))                         return "provider_unavailable";
-    if (errMsgLower.includes("gemini_timeout") || errMsgLower.includes("timeout") || errMsgLower.includes("deadline"))           return "timeout";
+    if (httpStatus === 404 || errMsgLower.includes("not found"))
+      return "model_not_found";
+    if (httpStatus === 403 || errMsgLower.includes("permission") || errMsgLower.includes("forbidden"))
+      return "permission";
+    if (httpStatus === 401 || errMsgLower.includes("unauthorized") || errMsgLower.includes("api key"))
+      return "auth";
+    if (httpStatus === 429 || errMsgLower.includes("quota") || errMsgLower.includes("rate limit") || errMsgLower.includes("too many requests"))
+      return "rate_limit";
+    if (httpStatus === 503 || errMsgLower.includes("overloaded") || errMsgLower.includes("unavailable"))
+      return "provider_unavailable";
+    if (errMsgLower.includes("gemini_timeout") || errMsgLower.includes("timeout") || errMsgLower.includes("deadline"))
+      return "timeout";
     return "unknown";
   }
 
