@@ -764,7 +764,7 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
     assistantReply:   assistantReply || "",
     metadata: {
-      model:         process.env.GEMINI_MODEL || "gemini-2.0-flash-lite",
+      model:         process.env.GEMINI_MODEL || "gemini-1.5-flash",
       apiVersion:    "v1",
       messageCount:  conversation.messageCount,
       historyLength: conversation.messages.length,
