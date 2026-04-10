@@ -17,10 +17,14 @@ const {
 const VALID_ACTION_INTENTS = [
   "explain",
   "analyze",
+  "diagnose",
+  "inspect_files",
   "propose_change",
   "prepare_patch",
   "dry_run",
   "execute_change",
+  "verify_fix",
+  "plan_fix",
 ];
 
 const VALID_AGENT_MODES = [
@@ -168,6 +172,58 @@ Anweisungen:
 - Gliedere die Antwort in Abschnitte: Zusammenfassung, Befunde, Empfehlungen.
 - Benenne Risiken und Verbesserungspotenzial konkret.
 - Halte dich kurz und sachlich.`;
+  }
+
+  if (actionIntent === "diagnose") {
+    return `${base}
+
+Aktueller Modus: ${mode}
+Aktuelle Aufgabe: Diagnose
+
+Anweisungen:
+- Identifiziere die Ursache des Problems (Root Cause).
+- Gliedere in: Symptome, Ursachenanalyse, Diagnose, Nächste Schritte.
+- Benenne betroffene Dateien und Codezeilen wenn möglich.
+- Schlage konkrete Diagnoseschritte vor.`;
+  }
+
+  if (actionIntent === "inspect_files") {
+    return `${base}
+
+Aktueller Modus: ${mode}
+Aktuelle Aufgabe: Dateien inspizieren
+
+Anweisungen:
+- Analysiere die genannten Dateien auf Struktur, Abhängigkeiten und Probleme.
+- Benenne relevante Codeabschnitte und ihre Funktion.
+- Identifiziere Auffälligkeiten oder Verbesserungspotenzial.
+- Halte die Antwort strukturiert und prägnant.`;
+  }
+
+  if (actionIntent === "verify_fix") {
+    return `${base}
+
+Aktueller Modus: ${mode}
+Aktuelle Aufgabe: Fix verifizieren
+
+Anweisungen:
+- Prüfe ob die vorgeschlagene/durchgeführte Änderung das Problem löst.
+- Identifiziere mögliche Nebenwirkungen oder Regressionen.
+- Bewerte die Vollständigkeit der Lösung.
+- Empfehle ggf. weitere Tests oder Nacharbeiten.`;
+  }
+
+  if (actionIntent === "plan_fix") {
+    return `${base}
+
+Aktueller Modus: ${mode}
+Aktuelle Aufgabe: Fix planen
+
+Anweisungen:
+- Erstelle einen schrittweisen Reparaturplan.
+- Gliedere in: Zielbeschreibung, Schritte, betroffene Dateien, Risikobewertung.
+- Priorisiere die Schritte nach Wichtigkeit und Abhängigkeiten.
+- Benenne Voraussetzungen und Abhängigkeiten klar.`;
   }
 
   if (actionIntent === "propose_change") {

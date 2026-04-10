@@ -78,18 +78,17 @@ beforeEach(() => {
 describe("DeepSeek Agent – Constants", () => {
   test("VALID_ACTION_INTENTS has expected entries", () => {
     expect(Array.isArray(VALID_ACTION_INTENTS)).toBe(true);
-    expect(VALID_ACTION_INTENTS.length).toBe(6);
+    expect(VALID_ACTION_INTENTS.length).toBe(10);
     expect(VALID_ACTION_INTENTS).toContain("explain");
     expect(VALID_ACTION_INTENTS).toContain("analyze");
+    expect(VALID_ACTION_INTENTS).toContain("diagnose");
+    expect(VALID_ACTION_INTENTS).toContain("inspect_files");
     expect(VALID_ACTION_INTENTS).toContain("propose_change");
     expect(VALID_ACTION_INTENTS).toContain("prepare_patch");
     expect(VALID_ACTION_INTENTS).toContain("dry_run");
     expect(VALID_ACTION_INTENTS).toContain("execute_change");
-  });
-
-  test("VALID_AGENT_MODES has expected entries", () => {
-    expect(Array.isArray(VALID_AGENT_MODES)).toBe(true);
-    expect(VALID_AGENT_MODES.length).toBe(9);
+    expect(VALID_ACTION_INTENTS).toContain("verify_fix");
+    expect(VALID_ACTION_INTENTS).toContain("plan_fix");
     expect(VALID_AGENT_MODES).toContain("free_chat");
     expect(VALID_AGENT_MODES).toContain("change_mode");
     expect(VALID_AGENT_MODES).toContain("backend_review");

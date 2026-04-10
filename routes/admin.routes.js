@@ -7646,4 +7646,155 @@ router.post("/deepseek/agent/conversations/:id/execute-change", async (req, res)
   }
 });
 
+/* ═══════════════════════════════════════════════════════════════
+   ORCHESTRATOR / SYSTEM ROUTES
+   Central orchestrator, agent registry, audit trail, classifier
+   ═══════════════════════════════════════════════════════════════ */
+
+const { handleRequest, getSystemStatus, ERROR_CODES: ORCHESTRATOR_ERROR_CODES } = require("../services/agentOrchestrator.service");
+const { getAgentHealth, getAvailableAgents, getAllAgents, getAgentCapabilities, UNIFIED_ACTION_INTENTS, SAFETY_LEVELS } = require("../services/agentRegistry.service");
+const { classifyRequest } = require("../services/requestClassifier.service");
+const { getRecentAuditEvents, getAuditSummary, getAuditEventsByConversation, getAuditEventsByConference } = require("../services/auditTrail.service");
+const conversationStore = require("../services/conversationStore.service");
+
+const ORCHESTRATOR_DEFAULT_LIMIT = 50;
+const ORCHESTRATOR_MAX_LIMIT = 200;
+
+/* ─── POST /api/admin/orchestrator/handle ─── */
+router.post("/orchestrator/handle", async (req, res) => {
+  try {
+    const result = await handleRequest(req.body);
+    const statusCode = result.status === "error" ? 400 : 200;
+    return res.status(statusCode).json({ success: result.status !== "error", version: "orchestrator-v1", ...result });
+  } catch (error) {
+    logger.error("[admin] orchestrator/handle error", { message: error.message });
+    return res.status(500).json({ success: false, version: "orchestrator-v1", error: error.message });
+  }
+});
+
+/* ─── POST /api/admin/orchestrator/classify ─── */
+router.post("/orchestrator/classify", (req, res) => {
+  try {
+    const classification = classifyRequest(req.body);
+    return res.json({ success: true, version: "orchestrator-v1", classification });
+  } catch (error) {
+    logger.error("[admin] orchestrator/classify error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/system-status ─── */
+router.get("/orchestrator/system-status", (req, res) => {
+  try {
+    const status = getSystemStatus();
+    return res.json({ success: true, version: "orchestrator-v1", ...status });
+  } catch (error) {
+    logger.error("[admin] orchestrator/system-status error", { message: error.message });
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/agents ─── */
+router.get("/orchestrator/agents", (req, res) => {
+  try {
+    const agents = getAllAgents().map((a) => getAgentCapabilities(a.id));
+    return res.json({ success: true, version: "orchestrator-v1", agents });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/agents/health ─── */
+router.get("/orchestrator/agents/health", (req, res) => {
+  try {
+    const health = getAgentHealth();
+    return res.json({ success: true, version: "orchestrator-v1", health });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/agents/:agentId ─── */
+router.get("/orchestrator/agents/:agentId", (req, res) => {
+  try {
+    const capabilities = getAgentCapabilities(req.params.agentId);
+    if (!capabilities) {
+      return res.status(404).json({ success: false, error: `Agent "${req.params.agentId}" nicht gefunden.` });
+    }
+    return res.json({ success: true, version: "orchestrator-v1", agent: capabilities });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/intents ─── */
+router.get("/orchestrator/intents", (req, res) => {
+  return res.json({ success: true, version: "orchestrator-v1", intents: UNIFIED_ACTION_INTENTS, safetyLevels: SAFETY_LEVELS });
+});
+
+/* ─── GET /api/admin/orchestrator/audit ─── */
+router.get("/orchestrator/audit", (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit, 10) || ORCHESTRATOR_DEFAULT_LIMIT, ORCHESTRATOR_MAX_LIMIT);
+    const events = getRecentAuditEvents(limit);
+    return res.json({ success: true, version: "orchestrator-v1", events, count: events.length });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/audit/summary ─── */
+router.get("/orchestrator/audit/summary", (req, res) => {
+  try {
+    const summary = getAuditSummary();
+    return res.json({ success: true, version: "orchestrator-v1", ...summary });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/audit/conversation/:id ─── */
+router.get("/orchestrator/audit/conversation/:id", (req, res) => {
+  try {
+    const events = getAuditEventsByConversation(req.params.id);
+    return res.json({ success: true, version: "orchestrator-v1", events, count: events.length });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/audit/conference/:id ─── */
+router.get("/orchestrator/audit/conference/:id", (req, res) => {
+  try {
+    const events = getAuditEventsByConference(req.params.id);
+    return res.json({ success: true, version: "orchestrator-v1", events, count: events.length });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/conversations ─── */
+router.get("/orchestrator/conversations", (req, res) => {
+  try {
+    const filters = {};
+    if (req.query.agent) filters.agent = req.query.agent;
+    if (req.query.status) filters.status = req.query.status;
+    filters.limit = Math.min(parseInt(req.query.limit, 10) || ORCHESTRATOR_DEFAULT_LIMIT, ORCHESTRATOR_MAX_LIMIT);
+    const conversations = conversationStore.list(filters);
+    return res.json({ success: true, version: "orchestrator-v1", conversations, count: conversations.length });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ─── GET /api/admin/orchestrator/conversations/stats ─── */
+router.get("/orchestrator/conversations/stats", (req, res) => {
+  try {
+    const stats = conversationStore.getStats();
+    return res.json({ success: true, version: "orchestrator-v1", ...stats });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
