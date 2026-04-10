@@ -6486,7 +6486,7 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "configured": true,
      "codepath": "runGeminiChat / @google/genai / models.generateContent",
      "apiVersion": "v1",
-     "model": "gemini-2.0-flash-lite",
+     "model": "gemini-1.5-flash",
      "response": "OK",
      "textLength": 2
    }
@@ -6503,7 +6503,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
     });
   }
 
-  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
+  const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
   try {
     const result = await runGeminiChat({
       systemPrompt: "You are a minimal test assistant. Respond only with the single word asked for.",

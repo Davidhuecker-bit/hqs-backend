@@ -37,7 +37,7 @@ function getGeminiClient() {
 }
 
 function getModelName() {
-  return process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
+  return process.env.GEMINI_MODEL || "gemini-1.5-flash";
 }
 
 /* ─────────────────────────────────────────────
