@@ -4,7 +4,11 @@ const fs = require("fs");
 const path = require("path");
 
 const logger = require("../utils/logger");
-const { isGeminiConfigured, runGeminiChat } = require("./geminiArchitect.service");
+const {
+  isDeepSeekConfigured,
+  createDeepSeekChatCompletion,
+  extractDeepSeekText,
+} = require("./deepseek.service");
 
 /* ─────────────────────────────────────────────
    Constants & validation
@@ -20,14 +24,15 @@ const VALID_ACTION_INTENTS = [
 ];
 
 const VALID_AGENT_MODES = [
-  "layout_review",
-  "darstellung",
-  "frontend_guard",
-  "priorisierung",
-  "free_chat",
-  "change_mode",
+  "backend_review",
+  "api_review",
+  "system_diagnostics",
   "code_review",
+  "change_mode",
+  "free_chat",
   "architecture",
+  "security_review",
+  "performance",
 ];
 
 const VALID_CONVERSATION_STATUSES = [
@@ -41,9 +46,9 @@ const VALID_CONVERSATION_STATUSES = [
   "error",
 ];
 
-const MAX_CONVERSATIONS           = 200;
+const MAX_CONVERSATIONS             = 200;
 const MAX_MESSAGES_PER_CONVERSATION = 100;
-const MAX_HISTORY_FOR_PROMPT      = 20;
+const MAX_HISTORY_FOR_PROMPT        = 20;
 
 const ALLOWED_PROJECT_PATHS = [
   "src/",
@@ -76,21 +81,16 @@ const BLOCKED_PATH_PATTERNS = [
    ───────────────────────────────────────────── */
 
 /** @type {Map<string, object>} conversationId → conversation object */
-const _geminiConversations = new Map();
+const _deepseekConversations = new Map();
 
 /* ─────────────────────────────────────────────
    Helper – unique conversation ID
    ───────────────────────────────────────────── */
 
-/**
- * Generates a unique conversation ID.
- * Format: gemini-conv-{timestamp}-{random4hex}
- * @returns {string}
- */
 function _generateConversationId() {
   const ts = Date.now();
   const hex = Math.random().toString(16).slice(2, 6);
-  return `gemini-conv-${ts}-${hex}`;
+  return `deepseek-conv-${ts}-${hex}`;
 }
 
 /* ─────────────────────────────────────────────
@@ -100,7 +100,7 @@ function _generateConversationId() {
 /**
  * Returns true when `filePath` is within an allowed project directory
  * and does NOT match any blocked pattern.
- * @param {string} filePath – relative file path to validate
+ * @param {string} filePath
  * @returns {boolean}
  */
 function _isPathAllowed(filePath) {
@@ -108,57 +108,41 @@ function _isPathAllowed(filePath) {
 
   const normalised = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
 
-  // Must not contain path traversal sequences
   if (normalised.includes("..")) return false;
 
-  // Check against blocked patterns first (reject fast)
   for (const blocked of BLOCKED_PATH_PATTERNS) {
     if (normalised.includes(blocked)) return false;
   }
 
-  // Must start with at least one allowed prefix
-  const allowed = ALLOWED_PROJECT_PATHS.some((prefix) =>
-    normalised.startsWith(prefix),
-  );
-  return allowed;
+  return ALLOWED_PROJECT_PATHS.some((prefix) => normalised.startsWith(prefix));
 }
 
 /* ─────────────────────────────────────────────
    Helper – prune oldest conversations
    ───────────────────────────────────────────── */
 
-/**
- * If the conversation map exceeds MAX_CONVERSATIONS, remove the
- * oldest entries (by createdAt) until we are back within limits.
- */
 function _pruneConversations() {
-  if (_geminiConversations.size <= MAX_CONVERSATIONS) return;
+  if (_deepseekConversations.size <= MAX_CONVERSATIONS) return;
 
-  const sorted = [..._geminiConversations.entries()].sort(
+  const sorted = [..._deepseekConversations.entries()].sort(
     (a, b) => new Date(a[1].createdAt) - new Date(b[1].createdAt),
   );
 
   const toRemove = sorted.length - MAX_CONVERSATIONS;
   for (let i = 0; i < toRemove; i++) {
-    _geminiConversations.delete(sorted[i][0]);
+    _deepseekConversations.delete(sorted[i][0]);
   }
 
-  logger.info("[geminiAgent] pruned conversations", {
+  logger.info("[deepseekAgent] pruned conversations", {
     removed: toRemove,
-    remaining: _geminiConversations.size,
+    remaining: _deepseekConversations.size,
   });
 }
 
 /* ─────────────────────────────────────────────
-   Helper – build conversation history for Gemini
+   Helper – build conversation history
    ───────────────────────────────────────────── */
 
-/**
- * Returns the last MAX_HISTORY_FOR_PROMPT messages as an array of
- * `{ role, content }` pairs suitable for prompt construction.
- * @param {object} conversation
- * @returns {{ role: string, content: string }[]}
- */
 function _buildConversationHistory(conversation) {
   const msgs = conversation.messages || [];
   const slice = msgs.slice(-MAX_HISTORY_FOR_PROMPT);
@@ -169,18 +153,10 @@ function _buildConversationHistory(conversation) {
    System prompt builder
    ───────────────────────────────────────────── */
 
-/**
- * Builds a mode- and intent-aware German system prompt for the agent.
- * @param {string} mode   – one of VALID_AGENT_MODES
- * @param {string|null} actionIntent – one of VALID_ACTION_INTENTS or null
- * @returns {string}
- */
 function _buildAgentSystemPrompt(mode, actionIntent) {
-  // ── Base identity ──
-  const base = `Du bist Gemini Agent – ein kooperativer Frontend- und Architektur-Analyst für das HQS-System.
+  const base = `Du bist DeepSeek Agent – ein kooperativer Backend- und System-Analyst für das HQS-System.
 Antworte immer auf Deutsch. Nutze klare, präzise Sprache ohne Füllwörter.`;
 
-  // ── Intent-specific instructions ──
   if (actionIntent === "explain" || actionIntent === "analyze") {
     return `${base}
 
@@ -254,123 +230,111 @@ Anweisungen:
 - Halte die Antwort kurz und strukturiert.`;
   }
 
-  // ── free_chat / generic fallback ──
   return `${base}
 
 Aktueller Modus: ${mode}
 
 Anweisungen:
 - Sei ein hilfreicher, sachlicher Gesprächspartner.
-- Beantworte Fragen zum HQS-Frontend, zur Architektur und zum Code.
+- Beantworte Fragen zum HQS-Backend, zur Systemarchitektur und zum Code.
 - Halte Antworten kompakt und verständlich.
 - Wenn du dir unsicher bist, weise darauf hin.`;
 }
 
 /* ─────────────────────────────────────────────
-   Core – call Gemini with conversation history
+   Core – call DeepSeek with conversation history
    ───────────────────────────────────────────── */
 
-/**
- * Formats the conversation history + new user message into a single
- * prompt, calls `runGeminiChat`, and returns the parsed result.
- *
- * @param {object}      conversation  – the conversation object
- * @param {string}      userMessage   – latest user message
- * @param {string|null} actionIntent  – current action intent
- * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string }>}
- */
-async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
+async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent) {
   const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent);
   const history = _buildConversationHistory(conversation);
 
-  // Build a combined user message that includes dialogue history
-  let combinedMessage = "";
-  if (history.length > 0) {
-    combinedMessage += "Bisheriger Gesprächsverlauf:\n";
-    combinedMessage += "───\n";
-    const ROLE_LABELS = { user: "Nutzer", assistant: "Assistent", system: "System" };
-    for (const msg of history) {
-      const label = ROLE_LABELS[msg.role] || "System";
-      combinedMessage += `${label}: ${msg.content}\n`;
-    }
-    combinedMessage += "───\n\n";
-  }
-  combinedMessage += `Nutzer (aktuelle Nachricht): ${userMessage}`;
+  const messages = [{ role: "system", content: systemPrompt }];
 
-  logger.info("[geminiAgent] _callGeminiWithHistory – sending prompt", {
+  if (history.length > 0) {
+    for (const msg of history) {
+      messages.push({
+        role: msg.role === "assistant" ? "assistant" : "user",
+        content: msg.content,
+      });
+    }
+  }
+
+  messages.push({ role: "user", content: userMessage });
+
+  logger.info("[deepseekAgent] _callDeepSeekWithHistory – sending prompt", {
     conversationId: conversation.conversationId,
     mode: conversation.mode,
     actionIntent,
     historyLength: history.length,
-    combinedMessageLength: combinedMessage.length,
+    messageCount: messages.length,
   });
 
-  const maxTokens = actionIntent === "prepare_patch" ? 2048 : 1024;
   const timeoutMs = actionIntent === "prepare_patch" ? 40000 : 25000;
 
-  const result = await runGeminiChat({
-    systemPrompt,
-    userMessage: combinedMessage,
-    maxTokens,
-    timeoutMs,
-  });
-
-  if (!result.success) {
-    logger.warn("[geminiAgent] _callGeminiWithHistory – Gemini call failed", {
-      conversationId: conversation.conversationId,
-      error: result.error,
+  let completion;
+  try {
+    completion = await createDeepSeekChatCompletion({
+      tier: "fast",
+      timeoutMs,
+      temperature: 0.4,
+      messages,
     });
-    return { success: false, text: "", parsed: null, error: result.error };
+  } catch (err) {
+    logger.warn("[deepseekAgent] _callDeepSeekWithHistory – API call failed", {
+      conversationId: conversation.conversationId,
+      error: String(err.message).slice(0, 120),
+    });
+    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120) };
+  }
+
+  const text = extractDeepSeekText(completion);
+
+  if (!text || !text.trim()) {
+    logger.warn("[deepseekAgent] _callDeepSeekWithHistory – empty response", {
+      conversationId: conversation.conversationId,
+    });
+    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response" };
   }
 
   // Attempt JSON parse for structured intents
   let parsed = null;
-  if (
-    actionIntent === "propose_change" ||
-    actionIntent === "prepare_patch"
-  ) {
+  if (actionIntent === "propose_change" || actionIntent === "prepare_patch") {
     try {
-      // Try direct parse first
-      parsed = JSON.parse(result.text);
+      parsed = JSON.parse(text);
     } catch {
-      // Try to extract JSON from text (brace extraction)
-      const braceStart = result.text.indexOf("{");
-      const braceEnd = result.text.lastIndexOf("}");
+      const braceStart = text.indexOf("{");
+      const braceEnd = text.lastIndexOf("}");
       if (braceStart !== -1 && braceEnd > braceStart) {
         try {
-          parsed = JSON.parse(result.text.slice(braceStart, braceEnd + 1));
+          parsed = JSON.parse(text.slice(braceStart, braceEnd + 1));
         } catch {
-          logger.warn("[geminiAgent] _callGeminiWithHistory – JSON parse fallback failed", {
+          logger.warn("[deepseekAgent] _callDeepSeekWithHistory – JSON parse fallback failed", {
             conversationId: conversation.conversationId,
             actionIntent,
-            textPreview: result.text.slice(0, 120),
+            textPreview: text.slice(0, 120),
           });
         }
       }
     }
   }
 
-  logger.info("[geminiAgent] _callGeminiWithHistory – response received", {
+  logger.info("[deepseekAgent] _callDeepSeekWithHistory – response received", {
     conversationId: conversation.conversationId,
-    textLength: result.text.length,
+    textLength: text.length,
     hasParsed: parsed !== null,
   });
 
-  return { success: true, text: result.text, parsed, error: undefined };
+  return { success: true, text: text.trim(), parsed, error: undefined };
 }
 
 /* ─────────────────────────────────────────────
-   Core – propose changes (parse Gemini output)
+   Core – propose changes (parse output)
    ───────────────────────────────────────────── */
 
-/**
- * Parses a Gemini proposal response into structured proposedChanges[].
- * @param {{ text: string, parsed: object|null }} geminiResponse
- * @returns {{ file: string, description: string, risk: string, priority: number }[]}
- */
-function _proposeChanges(geminiResponse) {
-  if (geminiResponse.parsed && Array.isArray(geminiResponse.parsed.proposedChanges)) {
-    return geminiResponse.parsed.proposedChanges.map((c) => ({
+function _proposeChanges(agentResponse) {
+  if (agentResponse.parsed && Array.isArray(agentResponse.parsed.proposedChanges)) {
+    return agentResponse.parsed.proposedChanges.map((c) => ({
       file:        String(c.file || ""),
       description: String(c.description || ""),
       risk:        String(c.risk || "medium"),
@@ -381,18 +345,13 @@ function _proposeChanges(geminiResponse) {
 }
 
 /* ─────────────────────────────────────────────
-   Core – prepare patch (parse Gemini output)
+   Core – prepare patch (parse output)
    ───────────────────────────────────────────── */
 
-/**
- * Parses a Gemini patch response into a structured editPlan.
- * @param {{ text: string, parsed: object|null }} geminiResponse
- * @returns {{ editPlan: object[], summary: string, warnings: string[] }|null}
- */
-function _preparePatch(geminiResponse) {
-  if (!geminiResponse.parsed) return null;
+function _preparePatch(agentResponse) {
+  if (!agentResponse.parsed) return null;
 
-  const plan = geminiResponse.parsed;
+  const plan = agentResponse.parsed;
   const editPlan = Array.isArray(plan.editPlan)
     ? plan.editPlan.map((e) => ({
         file:        String(e.file || ""),
@@ -417,6 +376,7 @@ function _preparePatch(geminiResponse) {
 
 /**
  * Validates the prepared patch without writing any files.
+ * Returns a report of what would change and any issues found.
  * @param {object} conversation
  * @returns {{ success: boolean, wouldChange: string[], issues: string[], log: string[] }}
  */
@@ -458,6 +418,7 @@ function _dryRunChanges(conversation) {
       continue;
     }
 
+    // Check file existence for operations that read
     if (op === "replace" || op === "delete") {
       if (!fs.existsSync(absolutePath)) {
         result.issues.push(`Datei existiert nicht: ${filePath}`);
@@ -504,7 +465,7 @@ function _dryRunChanges(conversation) {
     result.log.push(`DRY-RUN OK: ${op} on ${filePath}`);
   }
 
-  logger.info("[geminiAgent] _dryRunChanges – completed", {
+  logger.info("[deepseekAgent] _dryRunChanges – completed", {
     conversationId: conversation.conversationId,
     success: result.success,
     wouldChange: result.wouldChange,
@@ -518,13 +479,6 @@ function _dryRunChanges(conversation) {
    Core – execute changes (controlled file editor)
    ───────────────────────────────────────────── */
 
-/**
- * Applies the prepared patch from the conversation to the file system.
- * Validates every file path before touching anything.
- *
- * @param {object} conversation – must contain a valid `preparedPatch`
- * @returns {Promise<{ success: boolean, changedFiles: string[], errors: string[], log: string[] }>}
- */
 async function _executeChanges(conversation) {
   const result = { success: true, changedFiles: [], errors: [], log: [] };
 
@@ -540,12 +494,11 @@ async function _executeChanges(conversation) {
   for (const edit of patch.editPlan) {
     const filePath = edit.file;
 
-    // ── Path validation ──
     if (!_isPathAllowed(filePath)) {
       const msg = `Pfad abgelehnt (nicht erlaubt): ${filePath}`;
       result.errors.push(msg);
       result.log.push(msg);
-      logger.warn("[geminiAgent] _executeChanges – path rejected", {
+      logger.warn("[deepseekAgent] _executeChanges – path rejected", {
         conversationId: conversation.conversationId,
         filePath,
       });
@@ -555,7 +508,6 @@ async function _executeChanges(conversation) {
 
     const absolutePath = path.resolve(projectRoot, filePath);
 
-    // Ensure resolved path is still inside the project root
     if (!absolutePath.startsWith(projectRoot)) {
       const msg = `Pfad abgelehnt (außerhalb Projektverzeichnis): ${filePath}`;
       result.errors.push(msg);
@@ -567,10 +519,6 @@ async function _executeChanges(conversation) {
     try {
       const op = edit.operation;
 
-      /**
-       * Validates that a lineRange [start, end] is sensible for a
-       * file with `lineCount` lines.  Returns an error string or null.
-       */
       const validateLineRange = (range, lineCount) => {
         if (!Array.isArray(range) || range.length < 2) return "lineRange muss ein Array mit [start, end] sein.";
         const [s, e] = range;
@@ -662,7 +610,7 @@ async function _executeChanges(conversation) {
         result.success = false;
       }
 
-      logger.info("[geminiAgent] _executeChanges – applied edit", {
+      logger.info("[deepseekAgent] _executeChanges – applied edit", {
         conversationId: conversation.conversationId,
         filePath,
         operation: op,
@@ -672,7 +620,7 @@ async function _executeChanges(conversation) {
       result.errors.push(msg);
       result.log.push(msg);
       result.success = false;
-      logger.warn("[geminiAgent] _executeChanges – file operation error", {
+      logger.warn("[deepseekAgent] _executeChanges – file operation error", {
         conversationId: conversation.conversationId,
         filePath,
         error: String(err.message).slice(0, 120),
@@ -680,7 +628,6 @@ async function _executeChanges(conversation) {
     }
   }
 
-  // Append execution summary to conversation messages
   conversation.messages.push({
     role: "system",
     content: result.success
@@ -690,7 +637,7 @@ async function _executeChanges(conversation) {
     metadata: { executionResult: result },
   });
 
-  logger.info("[geminiAgent] _executeChanges – finished", {
+  logger.info("[deepseekAgent] _executeChanges – finished", {
     conversationId: conversation.conversationId,
     success: result.success,
     changedFiles: result.changedFiles,
@@ -704,14 +651,6 @@ async function _executeChanges(conversation) {
    Helper – build standard response object
    ───────────────────────────────────────────── */
 
-/**
- * Assembles the public response schema from conversation state.
- * @param {object}      conversation
- * @param {string}      assistantReply
- * @param {string|null} actionIntent
- * @param {boolean}     isInitial
- * @returns {object}
- */
 function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
   return {
     conversationId:   conversation.conversationId,
@@ -721,7 +660,7 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
     assistantReply:   assistantReply || "",
     metadata: {
-      model:         process.env.GEMINI_MODEL || "gemini-2.0-flash-lite",
+      model:         process.env.DEEPSEEK_FAST_MODEL || "deepseek-chat",
       apiVersion:    "v1",
       messageCount:  conversation.messageCount,
       historyLength: conversation.messages.length,
@@ -742,22 +681,11 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
    Public – start a new conversation
    ───────────────────────────────────────────── */
 
-/**
- * Creates a new multi-turn conversation and sends the first message
- * to Gemini.
- *
- * @param {object} opts
- * @param {string} opts.mode          – one of VALID_AGENT_MODES
- * @param {string} opts.message       – initial user message
- * @param {string} [opts.actionIntent]– one of VALID_ACTION_INTENTS
- * @param {string} [opts.context]     – optional extra context
- * @returns {Promise<object>} response schema
- */
 async function startConversation(opts = {}) {
   const { mode, message, actionIntent, context } = opts || {};
-  // ── Validate inputs ──
+
   if (!VALID_AGENT_MODES.includes(mode)) {
-    logger.warn("[geminiAgent] startConversation – invalid mode", { mode });
+    logger.warn("[deepseekAgent] startConversation – invalid mode", { mode });
     return _buildResponse(
       { conversationId: null, mode: mode || "unknown", status: "error", messageCount: 0, messages: [], approved: false },
       `Ungültiger Modus: ${mode}. Erlaubt: ${VALID_AGENT_MODES.join(", ")}`,
@@ -767,7 +695,7 @@ async function startConversation(opts = {}) {
   }
 
   if (!message || typeof message !== "string" || !message.trim()) {
-    logger.warn("[geminiAgent] startConversation – empty message");
+    logger.warn("[deepseekAgent] startConversation – empty message");
     return _buildResponse(
       { conversationId: null, mode, status: "error", messageCount: 0, messages: [], approved: false },
       "Nachricht darf nicht leer sein.",
@@ -776,11 +704,11 @@ async function startConversation(opts = {}) {
     );
   }
 
-  if (!isGeminiConfigured()) {
-    logger.warn("[geminiAgent] startConversation – Gemini not configured");
+  if (!isDeepSeekConfigured()) {
+    logger.warn("[deepseekAgent] startConversation – DeepSeek not configured");
     return _buildResponse(
       { conversationId: null, mode, status: "error", messageCount: 0, messages: [], approved: false },
-      "Gemini ist nicht konfiguriert (GEMINI_API_KEY fehlt).",
+      "DeepSeek ist nicht konfiguriert (DEEPSEEK_API_KEY fehlt).",
       actionIntent || null,
       true,
     );
@@ -790,7 +718,6 @@ async function startConversation(opts = {}) {
     ? actionIntent
     : null;
 
-  // ── Create conversation ──
   const conversationId = _generateConversationId();
   const now = new Date().toISOString();
 
@@ -810,7 +737,6 @@ async function startConversation(opts = {}) {
     approved:        false,
   };
 
-  // Add optional context as system message
   if (context && typeof context === "string" && context.trim()) {
     conversation.messages.push({
       role: "system",
@@ -820,7 +746,6 @@ async function startConversation(opts = {}) {
     conversation.messageCount++;
   }
 
-  // Add user message
   conversation.messages.push({
     role: "user",
     content: message.trim(),
@@ -829,63 +754,60 @@ async function startConversation(opts = {}) {
   });
   conversation.messageCount++;
 
-  logger.info("[geminiAgent] startConversation – created", {
+  logger.info("[deepseekAgent] startConversation – created", {
     conversationId,
     mode,
     actionIntent: intent,
     isInitial: true,
   });
 
-  // ── Call Gemini ──
-  let geminiResult;
+  let agentResult;
   try {
-    geminiResult = await _callGeminiWithHistory(conversation, message.trim(), intent);
+    agentResult = await _callDeepSeekWithHistory(conversation, message.trim(), intent);
   } catch (err) {
-    logger.warn("[geminiAgent] startConversation – unexpected error", {
+    logger.warn("[deepseekAgent] startConversation – unexpected error", {
       conversationId,
       error: String(err.message).slice(0, 120),
     });
     conversation.status = "error";
-    _geminiConversations.set(conversationId, conversation);
+    _deepseekConversations.set(conversationId, conversation);
     _pruneConversations();
     return _buildResponse(conversation, `Fehler: ${String(err.message).slice(0, 120)}`, intent, true);
   }
 
-  if (!geminiResult.success) {
+  if (!agentResult.success) {
     conversation.status = "error";
-    _geminiConversations.set(conversationId, conversation);
+    _deepseekConversations.set(conversationId, conversation);
     _pruneConversations();
-    return _buildResponse(conversation, `Gemini-Fehler: ${geminiResult.error || "Unbekannt"}`, intent, true);
+    return _buildResponse(conversation, `DeepSeek-Fehler: ${agentResult.error || "Unbekannt"}`, intent, true);
   }
 
-  // ── Process structured intents ──
   if (intent === "propose_change") {
-    conversation.proposedChanges = _proposeChanges(geminiResult);
+    conversation.proposedChanges = _proposeChanges(agentResult);
     conversation.status = conversation.proposedChanges.length > 0
       ? "change_proposed"
       : "active";
   } else if (intent === "prepare_patch") {
-    conversation.preparedPatch = _preparePatch(geminiResult);
+    conversation.preparedPatch = _preparePatch(agentResult);
     conversation.status = conversation.preparedPatch ? "patch_prepared" : "active";
   } else {
     conversation.status = "waiting_for_user";
   }
 
-  // Add assistant reply to history
   conversation.messages.push({
     role: "assistant",
-    content: geminiResult.text,
+    content: agentResult.text,
     timestamp: new Date().toISOString(),
     actionIntent: intent,
-    metadata: { hasParsed: geminiResult.parsed !== null },
+    metadata: { hasParsed: agentResult.parsed !== null },
   });
   conversation.messageCount++;
   conversation.updatedAt = new Date().toISOString();
 
-  _geminiConversations.set(conversationId, conversation);
+  _deepseekConversations.set(conversationId, conversation);
   _pruneConversations();
 
-  logger.info("[geminiAgent] startConversation – completed", {
+  logger.info("[deepseekAgent] startConversation – completed", {
     conversationId,
     mode,
     actionIntent: intent,
@@ -893,30 +815,19 @@ async function startConversation(opts = {}) {
     messageCount: conversation.messageCount,
   });
 
-  return _buildResponse(conversation, geminiResult.text, intent, true);
+  return _buildResponse(conversation, agentResult.text, intent, true);
 }
 
 /* ─────────────────────────────────────────────
    Public – continue an existing conversation
    ───────────────────────────────────────────── */
 
-/**
- * Continues a multi-turn conversation with a follow-up message.
- *
- * @param {object}  opts
- * @param {string}  opts.conversationId    – existing conversation ID
- * @param {string}  opts.message           – user follow-up message
- * @param {string}  [opts.actionIntent]    – new action intent
- * @param {boolean} [opts.confirmExecution]– set true to trigger execution
- * @param {boolean} [opts.approved]        – explicit approval for execution
- * @returns {Promise<object>} response schema
- */
 async function continueConversation(opts = {}) {
   const { conversationId, message, actionIntent, confirmExecution, approved, dryRun } = opts || {};
-  const conversation = _geminiConversations.get(conversationId);
+  const conversation = _deepseekConversations.get(conversationId);
 
   if (!conversation) {
-    logger.warn("[geminiAgent] continueConversation – conversation not found", { conversationId });
+    logger.warn("[deepseekAgent] continueConversation – conversation not found", { conversationId });
     return _buildResponse(
       { conversationId, mode: "unknown", status: "error", messageCount: 0, messages: [], approved: false },
       `Konversation nicht gefunden: ${conversationId}`,
@@ -926,12 +837,12 @@ async function continueConversation(opts = {}) {
   }
 
   if (!message || typeof message !== "string" || !message.trim()) {
-    logger.warn("[geminiAgent] continueConversation – empty message", { conversationId });
+    logger.warn("[deepseekAgent] continueConversation – empty message", { conversationId });
     return _buildResponse(conversation, "Nachricht darf nicht leer sein.", actionIntent || null, false);
   }
 
   if (conversation.messageCount >= MAX_MESSAGES_PER_CONVERSATION) {
-    logger.warn("[geminiAgent] continueConversation – message limit reached", {
+    logger.warn("[deepseekAgent] continueConversation – message limit reached", {
       conversationId,
       messageCount: conversation.messageCount,
     });
@@ -944,9 +855,9 @@ async function continueConversation(opts = {}) {
     );
   }
 
-  if (!isGeminiConfigured()) {
-    logger.warn("[geminiAgent] continueConversation – Gemini not configured");
-    return _buildResponse(conversation, "Gemini ist nicht konfiguriert (GEMINI_API_KEY fehlt).", actionIntent || null, false);
+  if (!isDeepSeekConfigured()) {
+    logger.warn("[deepseekAgent] continueConversation – DeepSeek not configured");
+    return _buildResponse(conversation, "DeepSeek ist nicht konfiguriert (DEEPSEEK_API_KEY fehlt).", actionIntent || null, false);
   }
 
   const intent = actionIntent && VALID_ACTION_INTENTS.includes(actionIntent)
@@ -980,7 +891,7 @@ async function continueConversation(opts = {}) {
     });
     conversation.messageCount++;
 
-    logger.info("[geminiAgent] continueConversation – dry run completed", {
+    logger.info("[deepseekAgent] continueConversation – dry run completed", {
       conversationId,
       success: dryResult.success,
       wouldChange: dryResult.wouldChange,
@@ -1026,7 +937,7 @@ async function continueConversation(opts = {}) {
     }
 
     if (approved !== true) {
-      logger.info("[geminiAgent] continueConversation – approval required", { conversationId });
+      logger.info("[deepseekAgent] continueConversation – approval required", { conversationId });
       return _buildResponse(
         conversation,
         "Änderung erfordert explizite Freigabe. Setze 'approved: true' um fortzufahren.",
@@ -1035,12 +946,10 @@ async function continueConversation(opts = {}) {
       );
     }
 
-    // Execute the changes
     conversation.status = "executing";
     conversation.approved = true;
     conversation.lastActionIntent = "execute_change";
 
-    // Add user approval message
     conversation.messages.push({
       role: "user",
       content: message.trim(),
@@ -1050,7 +959,7 @@ async function continueConversation(opts = {}) {
     });
     conversation.messageCount++;
 
-    logger.info("[geminiAgent] continueConversation – executing changes", {
+    logger.info("[deepseekAgent] continueConversation – executing changes", {
       conversationId,
       editPlanLength: conversation.preparedPatch.editPlan?.length || 0,
     });
@@ -1059,7 +968,7 @@ async function continueConversation(opts = {}) {
     try {
       execResult = await _executeChanges(conversation);
     } catch (err) {
-      logger.warn("[geminiAgent] continueConversation – execution error", {
+      logger.warn("[deepseekAgent] continueConversation – execution error", {
         conversationId,
         error: String(err.message).slice(0, 120),
       });
@@ -1076,7 +985,7 @@ async function continueConversation(opts = {}) {
       ? `Änderungen erfolgreich angewendet auf: ${execResult.changedFiles.join(", ")}`
       : `Ausführung mit Fehlern: ${execResult.errors.join("; ")}`;
 
-    logger.info("[geminiAgent] continueConversation – execution finished", {
+    logger.info("[deepseekAgent] continueConversation – execution finished", {
       conversationId,
       success: execResult.success,
       changedFiles: execResult.changedFiles,
@@ -1095,7 +1004,7 @@ async function continueConversation(opts = {}) {
   conversation.messageCount++;
   conversation.lastActionIntent = intent;
 
-  logger.info("[geminiAgent] continueConversation – calling Gemini", {
+  logger.info("[deepseekAgent] continueConversation – calling DeepSeek", {
     conversationId,
     mode: conversation.mode,
     actionIntent: intent,
@@ -1103,11 +1012,11 @@ async function continueConversation(opts = {}) {
     isFollowUp: true,
   });
 
-  let geminiResult;
+  let agentResult;
   try {
-    geminiResult = await _callGeminiWithHistory(conversation, message.trim(), intent);
+    agentResult = await _callDeepSeekWithHistory(conversation, message.trim(), intent);
   } catch (err) {
-    logger.warn("[geminiAgent] continueConversation – unexpected error", {
+    logger.warn("[deepseekAgent] continueConversation – unexpected error", {
       conversationId,
       error: String(err.message).slice(0, 120),
     });
@@ -1116,37 +1025,35 @@ async function continueConversation(opts = {}) {
     return _buildResponse(conversation, `Fehler: ${String(err.message).slice(0, 120)}`, intent, false);
   }
 
-  if (!geminiResult.success) {
+  if (!agentResult.success) {
     conversation.status = "error";
     conversation.updatedAt = new Date().toISOString();
-    return _buildResponse(conversation, `Gemini-Fehler: ${geminiResult.error || "Unbekannt"}`, intent, false);
+    return _buildResponse(conversation, `DeepSeek-Fehler: ${agentResult.error || "Unbekannt"}`, intent, false);
   }
 
-  // ── Process structured intents ──
   if (intent === "propose_change") {
-    conversation.proposedChanges = _proposeChanges(geminiResult);
+    conversation.proposedChanges = _proposeChanges(agentResult);
     conversation.status = conversation.proposedChanges.length > 0
       ? "change_proposed"
       : "waiting_for_user";
   } else if (intent === "prepare_patch") {
-    conversation.preparedPatch = _preparePatch(geminiResult);
+    conversation.preparedPatch = _preparePatch(agentResult);
     conversation.status = conversation.preparedPatch ? "patch_prepared" : "waiting_for_user";
   } else {
     conversation.status = "waiting_for_user";
   }
 
-  // Add assistant reply
   conversation.messages.push({
     role: "assistant",
-    content: geminiResult.text,
+    content: agentResult.text,
     timestamp: new Date().toISOString(),
     actionIntent: intent,
-    metadata: { hasParsed: geminiResult.parsed !== null },
+    metadata: { hasParsed: agentResult.parsed !== null },
   });
   conversation.messageCount++;
   conversation.updatedAt = new Date().toISOString();
 
-  logger.info("[geminiAgent] continueConversation – completed", {
+  logger.info("[deepseekAgent] continueConversation – completed", {
     conversationId,
     mode: conversation.mode,
     actionIntent: intent,
@@ -1154,26 +1061,21 @@ async function continueConversation(opts = {}) {
     messageCount: conversation.messageCount,
   });
 
-  return _buildResponse(conversation, geminiResult.text, intent, false);
+  return _buildResponse(conversation, agentResult.text, intent, false);
 }
 
 /* ─────────────────────────────────────────────
    Public – retrieve a conversation
    ───────────────────────────────────────────── */
 
-/**
- * Returns a conversation by ID, including all messages and metadata.
- * @param {string} conversationId
- * @returns {object|null}
- */
 function getConversation(conversationId) {
-  const conversation = _geminiConversations.get(conversationId);
+  const conversation = _deepseekConversations.get(conversationId);
   if (!conversation) {
-    logger.info("[geminiAgent] getConversation – not found", { conversationId });
+    logger.info("[deepseekAgent] getConversation – not found", { conversationId });
     return null;
   }
 
-  logger.info("[geminiAgent] getConversation – retrieved", {
+  logger.info("[deepseekAgent] getConversation – retrieved", {
     conversationId,
     mode: conversation.mode,
     status: conversation.status,

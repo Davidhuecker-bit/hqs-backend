@@ -59,11 +59,12 @@ beforeEach(() => {
 describe("Gemini Agent – Constants", () => {
   test("VALID_ACTION_INTENTS has expected entries", () => {
     expect(Array.isArray(VALID_ACTION_INTENTS)).toBe(true);
-    expect(VALID_ACTION_INTENTS.length).toBe(5);
+    expect(VALID_ACTION_INTENTS.length).toBe(6);
     expect(VALID_ACTION_INTENTS).toContain("explain");
     expect(VALID_ACTION_INTENTS).toContain("analyze");
     expect(VALID_ACTION_INTENTS).toContain("propose_change");
     expect(VALID_ACTION_INTENTS).toContain("prepare_patch");
+    expect(VALID_ACTION_INTENTS).toContain("dry_run");
     expect(VALID_ACTION_INTENTS).toContain("execute_change");
   });
 
@@ -82,11 +83,12 @@ describe("Gemini Agent – Constants", () => {
 
   test("VALID_CONVERSATION_STATUSES has expected entries", () => {
     expect(Array.isArray(VALID_CONVERSATION_STATUSES)).toBe(true);
-    expect(VALID_CONVERSATION_STATUSES.length).toBe(7);
+    expect(VALID_CONVERSATION_STATUSES.length).toBe(8);
     expect(VALID_CONVERSATION_STATUSES).toContain("active");
     expect(VALID_CONVERSATION_STATUSES).toContain("waiting_for_user");
     expect(VALID_CONVERSATION_STATUSES).toContain("change_proposed");
     expect(VALID_CONVERSATION_STATUSES).toContain("patch_prepared");
+    expect(VALID_CONVERSATION_STATUSES).toContain("dry_run_completed");
     expect(VALID_CONVERSATION_STATUSES).toContain("executing");
     expect(VALID_CONVERSATION_STATUSES).toContain("completed");
     expect(VALID_CONVERSATION_STATUSES).toContain("error");

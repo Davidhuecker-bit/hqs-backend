@@ -4198,6 +4198,15 @@ const {
   VALID_CONVERSATION_STATUSES: GEMINI_AGENT_STATUSES,
   ALLOWED_PROJECT_PATHS: GEMINI_AGENT_ALLOWED_PATHS,
 } = require("../services/geminiAgent.service");
+const {
+  startConversation: startDeepSeekAgentConversation,
+  continueConversation: continueDeepSeekAgentConversation,
+  getConversation: getDeepSeekAgentConversation,
+  VALID_ACTION_INTENTS: DEEPSEEK_AGENT_ACTION_INTENTS,
+  VALID_AGENT_MODES: DEEPSEEK_AGENT_MODES,
+  VALID_CONVERSATION_STATUSES: DEEPSEEK_AGENT_STATUSES,
+  ALLOWED_PROJECT_PATHS: DEEPSEEK_AGENT_ALLOWED_PATHS,
+} = require("../services/deepseekAgent.service");
 
 /* =========================================================
    POST /api/admin/deepseek/math-logic-review
@@ -7008,7 +7017,7 @@ router.post("/gemini/chat", async (req, res) => {
 
 router.post("/gemini/conversations/:id/follow-up", async (req, res) => {
   const conversationId = req.params.id;
-  const { message, actionIntent, confirmExecution, approved } = req.body || {};
+  const { message, actionIntent, confirmExecution, approved, dryRun } = req.body || {};
 
   logger.info("[admin] gemini/conversations/follow-up – request", {
     conversationId,
@@ -7016,6 +7025,7 @@ router.post("/gemini/conversations/:id/follow-up", async (req, res) => {
     hasMessage: Boolean(message),
     confirmExecution: confirmExecution || false,
     approved: approved || false,
+    dryRun: dryRun || false,
   });
 
   try {
@@ -7025,6 +7035,7 @@ router.post("/gemini/conversations/:id/follow-up", async (req, res) => {
       actionIntent,
       confirmExecution,
       approved,
+      dryRun,
     });
 
     const isSuccess = result.status !== "error";
@@ -7222,6 +7233,407 @@ router.post("/gemini/conversations/:id/execute-change", async (req, res) => {
     });
   } catch (error) {
     logger.error("[admin] gemini/conversations/execute-change error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error executing change",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/gemini/conversations/:id/dry-run
+   Runs a dry-run validation of the prepared patch without
+   applying any changes.
+
+   Request body:
+   {
+     "message": "..."   // optional description
+   }
+========================================================= */
+
+router.post("/gemini/conversations/:id/dry-run", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message } = req.body || {};
+
+  logger.info("[admin] gemini/conversations/dry-run – request", {
+    conversationId,
+    hasMessage: Boolean(message),
+  });
+
+  try {
+    const result = await continueGeminiAgentConversation({
+      conversationId,
+      message: message || "Bitte führe einen Dry Run für den vorbereiteten Patch durch.",
+      actionIntent: "dry_run",
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] gemini/conversations/dry-run – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      status: result.status,
+      dryRunResult: result.dryRunResult ? "present" : "null",
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] gemini/conversations/dry-run error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error running dry run",
+    });
+  }
+});
+
+/* =========================================================
+   ┌──────────────────────────────────────────────────────────┐
+   │  DeepSeek Agent – Multi-Turn Conversation / Change Mode  │
+   │  Echter DeepSeek-Agent mit fortlaufendem Chat, Analyse,  │
+   │  Änderungsvorschlägen, Patch-Vorbereitung, Dry Run und   │
+   │  kontrollierter Ausführung.                              │
+   └──────────────────────────────────────────────────────────┘
+========================================================= */
+
+/* =========================================================
+   POST /api/admin/deepseek/agent/chat
+   Starts a new DeepSeek Agent conversation.
+
+   Request body:
+   {
+     "mode":          "free_chat|backend_review|api_review|...",
+     "message":       "...",           // initial user message (required)
+     "actionIntent":  "explain|analyze|propose_change|prepare_patch",
+     "context":       "..."            // optional extra context
+   }
+
+   Response: same schema as Gemini Agent (with DeepSeek model info)
+========================================================= */
+
+router.post("/deepseek/agent/chat", async (req, res) => {
+  const { mode, message, actionIntent, context } = req.body || {};
+
+  logger.info("[admin] deepseek/agent/chat – start conversation request", {
+    mode: mode || "not_specified",
+    actionIntent: actionIntent || null,
+    hasMessage: Boolean(message),
+    hasContext: Boolean(context),
+  });
+
+  try {
+    const result = await startDeepSeekAgentConversation({ mode, message, actionIntent, context });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] deepseek/agent/chat – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      mode: result.mode,
+      actionIntent: result.actionIntent,
+      status: result.status,
+      messageCount: result.metadata?.messageCount,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+      validModes: DEEPSEEK_AGENT_MODES,
+      validActionIntents: DEEPSEEK_AGENT_ACTION_INTENTS,
+      allowedPaths: DEEPSEEK_AGENT_ALLOWED_PATHS,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent/chat error", {
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      error: error.message || "Internal error starting DeepSeek Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent/conversations/:id/follow-up
+   Sends a follow-up message within an existing DeepSeek Agent
+   conversation.
+
+   Request body:
+   {
+     "message":           "...",
+     "actionIntent":      "explain|analyze|propose_change|prepare_patch|dry_run|execute_change",
+     "confirmExecution":  false,
+     "approved":          false,
+     "dryRun":            false
+   }
+========================================================= */
+
+router.post("/deepseek/agent/conversations/:id/follow-up", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message, actionIntent, confirmExecution, approved, dryRun } = req.body || {};
+
+  logger.info("[admin] deepseek/agent/conversations/follow-up – request", {
+    conversationId,
+    actionIntent: actionIntent || null,
+    hasMessage: Boolean(message),
+    confirmExecution: confirmExecution || false,
+    approved: approved || false,
+    dryRun: dryRun || false,
+  });
+
+  try {
+    const result = await continueDeepSeekAgentConversation({
+      conversationId,
+      message,
+      actionIntent,
+      confirmExecution,
+      approved,
+      dryRun,
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] deepseek/agent/conversations/follow-up – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      actionIntent: result.actionIntent,
+      status: result.status,
+      messageCount: result.metadata?.messageCount,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent/conversations/follow-up error", {
+      conversationId,
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error continuing DeepSeek Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/agent/conversations/:id
+   Retrieves a DeepSeek Agent conversation by ID.
+========================================================= */
+
+router.get("/deepseek/agent/conversations/:id", (req, res) => {
+  const conversationId = req.params.id;
+
+  logger.info("[admin] deepseek/agent/conversations/:id – request", { conversationId });
+
+  try {
+    const conversation = getDeepSeekAgentConversation(conversationId);
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        version: "agent-v1",
+        error: `Conversation not found: ${conversationId}`,
+      });
+    }
+
+    return res.json({
+      success: true,
+      version: "agent-v1",
+      ...conversation,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent/conversations/:id error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error retrieving DeepSeek Agent conversation",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent/conversations/:id/prepare-change
+   Shorthand to prepare a patch within a conversation.
+
+   Request body:
+   {
+     "message": "..."   // description of the desired change
+   }
+========================================================= */
+
+router.post("/deepseek/agent/conversations/:id/prepare-change", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message } = req.body || {};
+
+  logger.info("[admin] deepseek/agent/conversations/prepare-change – request", {
+    conversationId,
+    hasMessage: Boolean(message),
+  });
+
+  try {
+    const result = await continueDeepSeekAgentConversation({
+      conversationId,
+      message: message || "Bitte bereite einen konkreten Patch vor basierend auf dem bisherigen Gespräch.",
+      actionIntent: "prepare_patch",
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] deepseek/agent/conversations/prepare-change – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      status: result.status,
+      hasPatch: result.preparedPatch !== null,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent/conversations/prepare-change error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error preparing change",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent/conversations/:id/dry-run
+   Runs a dry-run validation of the prepared patch without
+   applying any changes.
+
+   Request body:
+   {
+     "message": "..."   // optional description
+   }
+========================================================= */
+
+router.post("/deepseek/agent/conversations/:id/dry-run", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message } = req.body || {};
+
+  logger.info("[admin] deepseek/agent/conversations/dry-run – request", {
+    conversationId,
+    hasMessage: Boolean(message),
+  });
+
+  try {
+    const result = await continueDeepSeekAgentConversation({
+      conversationId,
+      message: message || "Bitte führe einen Dry Run für den vorbereiteten Patch durch.",
+      actionIntent: "dry_run",
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] deepseek/agent/conversations/dry-run – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      status: result.status,
+      dryRunResult: result.dryRunResult ? "present" : "null",
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent/conversations/dry-run error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      version: "agent-v1",
+      conversationId,
+      error: error.message || "Internal error running dry run",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/agent/conversations/:id/execute-change
+   Executes the prepared patch within a DeepSeek conversation.
+   Requires explicit approval via "approved: true".
+
+   Request body:
+   {
+     "message":  "...",           // confirmation message
+     "approved": true             // REQUIRED – explicit user approval
+   }
+========================================================= */
+
+router.post("/deepseek/agent/conversations/:id/execute-change", async (req, res) => {
+  const conversationId = req.params.id;
+  const { message, approved } = req.body || {};
+
+  logger.info("[admin] deepseek/agent/conversations/execute-change – request", {
+    conversationId,
+    approved: approved || false,
+    hasMessage: Boolean(message),
+  });
+
+  try {
+    const result = await continueDeepSeekAgentConversation({
+      conversationId,
+      message: message || "Führe die vorbereiteten Änderungen aus.",
+      actionIntent: "execute_change",
+      confirmExecution: true,
+      approved: approved === true,
+    });
+
+    const isSuccess = result.status !== "error";
+
+    logger.info("[admin] deepseek/agent/conversations/execute-change – response", {
+      success: isSuccess,
+      conversationId: result.conversationId,
+      status: result.status,
+      changedFiles: result.changedFiles || [],
+      approved: result.approved,
+    });
+
+    return res.status(isSuccess ? 200 : 400).json({
+      success: isSuccess,
+      version: "agent-v1",
+      ...result,
+    });
+  } catch (error) {
+    logger.error("[admin] deepseek/agent/conversations/execute-change error", {
       conversationId,
       message: error.message,
     });
