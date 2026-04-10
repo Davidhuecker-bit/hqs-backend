@@ -718,6 +718,17 @@ process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
 app.listen(PORT, async () => {
   logger.info(`HQS Backend aktiv auf Port ${PORT}`);
 
+  // Initialize persistent conversation store (loads from DB into memory)
+  try {
+    const conversationStore = require("./services/conversationStore.service");
+    await conversationStore.initialize();
+    logger.info("[startup] conversationStore initialized");
+  } catch (err) {
+    logger.warn("[startup] conversationStore initialization failed (in-memory only)", {
+      error: String(err.message).slice(0, 120),
+    });
+  }
+
   const initErrors = await runStartupInit();
 
   // Build the initial world_state snapshot (regime + cross-asset + sector + agents)

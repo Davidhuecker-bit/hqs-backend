@@ -54,31 +54,10 @@ const MAX_CONVERSATIONS             = 200;
 const MAX_MESSAGES_PER_CONVERSATION = 100;
 const MAX_HISTORY_FOR_PROMPT        = 20;
 
-const ALLOWED_PROJECT_PATHS = [
-  "src/",
-  "components/",
-  "pages/",
-  "views/",
-  "layouts/",
-  "styles/",
-  "config/",
-  "utils/",
-  "lib/",
-  "public/",
-  "services/",
-  "routes/",
-  "middleware/",
-  "engines/",
-];
-
-const BLOCKED_PATH_PATTERNS = [
-  ".env",
-  "node_modules",
-  ".git",
-  "secrets",
-  "credentials",
-  "package-lock",
-];
+const {
+  ALLOWED_PROJECT_PATHS,
+  BLOCKED_PATH_PATTERNS,
+} = require("./agentRegistry.service");
 
 /* ─────────────────────────────────────────────
    In-memory conversation store
