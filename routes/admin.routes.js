@@ -6503,7 +6503,6 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
     });
   }
 
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
   try {
     const result = await runGeminiChat({
       systemPrompt: "You are a minimal test assistant. Respond only with the single word asked for.",
@@ -6518,7 +6517,9 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         configured: true,
         codepath: GEMINI_CODEPATH,
         apiVersion: "v1",
-        model,
+        primaryModel: result.primaryModel,
+        fallbackModelUsed: result.fallbackModelUsed,
+        finalModelUsed: result.finalModelUsed,
         response: result.text,
         textLength: result.text.length,
       });
@@ -6529,8 +6530,11 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       configured: true,
       codepath: GEMINI_CODEPATH,
       apiVersion: "v1",
-      model,
+      primaryModel: result.primaryModel,
+      fallbackModelUsed: result.fallbackModelUsed,
+      finalModelUsed: result.finalModelUsed,
       error: result.error || "EMPTY_RESPONSE",
+      errorCategory: result.errorCategory,
     });
   } catch (error) {
     logger.error("[admin] deepseek/agent-bridge/gemini-smoke-test error", {
@@ -6541,7 +6545,6 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       configured: true,
       codepath: GEMINI_CODEPATH,
       apiVersion: "v1",
-      model,
       error: error.message || "UNKNOWN_ERROR",
     });
   }
