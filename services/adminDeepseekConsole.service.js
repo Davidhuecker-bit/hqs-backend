@@ -83,6 +83,111 @@ Regeln:
 };
 
 /* ─────────────────────────────────────────────
+   Conversation Store (in-memory)
+   ─────────────────────────────────────────────
+   Each conversation holds a rolling message history that is
+   forwarded to DeepSeek on every follow-up request, providing
+   genuine multi-turn context.
+
+   Structure per entry:
+   {
+     conversationId : string,
+     mode           : "chat" | "diagnose" | "change_review" | "math_logic_review" | "controller_guard",
+     createdAt      : number (epoch ms),
+     updatedAt      : number (epoch ms),
+     messages       : [{ role, content, timestamp, metadata? }],
+     lastMetadata   : object | null   // structured findings from last response
+   }
+   ───────────────────────────────────────────── */
+
+const MAX_CONVERSATIONS = 200;
+const MAX_HISTORY_MESSAGES = 20; // maximum messages included in the context window
+const PRUNE_PERCENTAGE = 0.1;    // fraction of MAX_CONVERSATIONS to remove when pruning
+
+const _deepseekConversations = new Map();
+
+function _generateConversationId() {
+  return `dsconv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function _pruneConversations() {
+  if (_deepseekConversations.size < MAX_CONVERSATIONS) return;
+  const sorted = [..._deepseekConversations.entries()].sort(
+    (a, b) => a[1].updatedAt - b[1].updatedAt
+  );
+  const removeCount = Math.max(1, Math.floor(MAX_CONVERSATIONS * PRUNE_PERCENTAGE));
+  for (let i = 0; i < removeCount; i++) {
+    _deepseekConversations.delete(sorted[i][0]);
+  }
+}
+
+const VALID_CONVERSATION_MODES = [
+  "chat",
+  "diagnose",
+  "change_review",
+  "math_logic_review",
+  "controller_guard",
+];
+
+function _createConversation(mode) {
+  _pruneConversations();
+  const conversationId = _generateConversationId();
+  const now = Date.now();
+  _deepseekConversations.set(conversationId, {
+    conversationId,
+    mode: VALID_CONVERSATION_MODES.includes(mode) ? mode : "chat",
+    createdAt: now,
+    updatedAt: now,
+    messages: [],
+    lastMetadata: null,
+  });
+  return conversationId;
+}
+
+function _getConversation(conversationId) {
+  return _deepseekConversations.get(String(conversationId || "")) || null;
+}
+
+function _addExchange(conversationId, userContent, assistantContent, metadata) {
+  const conv = _deepseekConversations.get(conversationId);
+  if (!conv) return;
+  const now = Date.now();
+  conv.messages.push({ role: "user", content: userContent, timestamp: now });
+  conv.messages.push({ role: "assistant", content: assistantContent, timestamp: now, metadata: metadata || null });
+  conv.updatedAt = now;
+  if (metadata && typeof metadata === "object") {
+    conv.lastMetadata = metadata;
+  }
+}
+
+/**
+ * Build the messages array for a DeepSeek API call that includes
+ * the conversation history followed by the new user message.
+ *
+ * @param {string} conversationId
+ * @param {string} systemPrompt
+ * @param {string} newUserContent
+ * @returns {{ messages: Array, historyLength: number }}
+ */
+function _buildMessagesWithHistory(conversationId, systemPrompt, newUserContent) {
+  const conv = _deepseekConversations.get(conversationId);
+  const historyEntries = conv
+    // Take the most recent MAX_HISTORY_MESSAGES messages to stay within context window
+    ? conv.messages.slice(-MAX_HISTORY_MESSAGES)
+    : [];
+  const historyMessages = historyEntries.map(({ role, content }) => ({ role, content }));
+
+  return {
+    messages: [
+      { role: "system", content: systemPrompt },
+      ...historyMessages,
+      { role: "user", content: newUserContent },
+    ],
+    historyLength: historyMessages.length,
+  };
+}
+
+/* ─────────────────────────────────────────────
    Input normalisation helpers
    ───────────────────────────────────────────── */
 
@@ -291,14 +396,19 @@ function buildUserPrompt({ message, context, logs, changedFiles, notes }) {
 /**
  * Run an admin chat with DeepSeek.
  *
+ * Supports genuine multi-turn conversation context: when a `conversationId`
+ * is provided (or returned from a prior call) the full message history is
+ * forwarded to DeepSeek so follow-up questions can reference earlier answers.
+ *
  * @param {Object}          payload
- * @param {string}          payload.message        – admin message (required)
- * @param {string}          [payload.mode]         – chat | diagnose | change_review
- * @param {string}          [payload.context]      – optional context
- * @param {string|string[]} [payload.logs]         – optional logs
- * @param {string[]}        [payload.changedFiles] – optional changed files
- * @param {string}          [payload.notes]        – optional notes
- * @returns {Promise<Object>} { success, mode, model, result }
+ * @param {string}          payload.message          – admin message (required)
+ * @param {string}          [payload.mode]           – chat | diagnose | change_review
+ * @param {string}          [payload.conversationId] – existing conversation to continue
+ * @param {string}          [payload.context]        – optional context
+ * @param {string|string[]} [payload.logs]           – optional logs
+ * @param {string[]}        [payload.changedFiles]   – optional changed files
+ * @param {string}          [payload.notes]          – optional notes
+ * @returns {Promise<Object>} { success, mode, model, conversationId, followUpPossible, result }
  */
 async function runAdminDeepseekChat(payload = {}) {
   if (!isDeepSeekConfigured()) {
@@ -317,8 +427,26 @@ async function runAdminDeepseekChat(payload = {}) {
       success: false,
       mode,
       model: null,
+      conversationId: null,
+      followUpPossible: false,
       error: "Nachricht erforderlich – bitte eine nicht-leere Admin-Nachricht angeben.",
     };
+  }
+
+  // ── conversation context ──────────────────────
+  let conversationId = toStr(payload.conversationId);
+  let isFollowUp = false;
+
+  if (conversationId) {
+    const existing = _getConversation(conversationId);
+    if (existing) {
+      isFollowUp = existing.messages.length > 0;
+    } else {
+      // Unknown ID – start fresh with the requested mode
+      conversationId = _createConversation(mode);
+    }
+  } else {
+    conversationId = _createConversation(mode);
   }
 
   const modePrompt = MODE_PROMPTS[mode] || MODE_PROMPTS.chat;
@@ -329,32 +457,141 @@ async function runAdminDeepseekChat(payload = {}) {
   // change_review uses the reasoner and may take longer
   const timeoutMs = mode === "change_review" ? 45000 : 15000;
 
+  const { messages, historyLength } = _buildMessagesWithHistory(
+    conversationId,
+    systemPrompt,
+    userPrompt
+  );
+
+  logger.info("[adminDeepseekConsole] DeepSeek request", {
+    conversationId,
+    mode,
+    model: modelName,
+    historyLength,
+    isFollowUp,
+  });
+
   const completion = await createDeepSeekChatCompletion({
     model: modelName,
     timeoutMs,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
+    messages,
     temperature: mode === "chat" ? 0.3 : 0.1,
   });
 
   const rawContent = completion?.choices?.[0]?.message?.content || "";
 
   logger.info("[adminDeepseekConsole] DeepSeek response received", {
+    conversationId,
     mode,
     model: modelName,
+    historyLength,
+    isFollowUp,
     rawLength: String(rawContent || "").length,
   });
 
   const result = normaliseResponse(rawContent, mode);
 
+  // ── persist exchange in conversation store ────
+  _addExchange(conversationId, userPrompt, rawContent, {
+    warnings: result.warnings,
+    suggestedNextSteps: result.suggestedNextSteps,
+  });
+
   return {
     success: true,
     mode,
     model: modelName,
+    conversationId,
+    followUpPossible: true,
     result,
   };
+}
+
+/* ─────────────────────────────────────────────
+   Conversation public API
+   ───────────────────────────────────────────── */
+
+/**
+ * Continue an existing DeepSeek conversation with a new follow-up message.
+ * Loads the full stored history and forwards it to DeepSeek so the model
+ * can reference all prior context.
+ *
+ * @param {string}  conversationId
+ * @param {string}  newMessage
+ * @param {Object}  [options]            – additional payload fields (context, logs, …)
+ * @returns {Promise<Object>}
+ */
+async function continueDeepSeekConversation(conversationId, newMessage, options = {}) {
+  if (!isDeepSeekConfigured()) {
+    throw new Error("DeepSeek is not configured – cannot continue conversation");
+  }
+
+  const conv = _getConversation(conversationId);
+  if (!conv) {
+    return {
+      success: false,
+      conversationId,
+      followUpPossible: false,
+      error: `Konversation nicht gefunden: ${conversationId}`,
+    };
+  }
+
+  return runAdminDeepseekChat({
+    ...options,
+    message: newMessage,
+    mode: conv.mode,
+    conversationId,
+  });
+}
+
+/**
+ * Retrieve a stored conversation with its message history.
+ *
+ * Returns null when the conversation does not exist.
+ *
+ * @param {string} conversationId
+ * @returns {Object|null}
+ */
+function getDeepSeekConversation(conversationId) {
+  const conv = _getConversation(conversationId);
+  if (!conv) return null;
+
+  return {
+    conversationId: conv.conversationId,
+    mode: conv.mode,
+    createdAt: conv.createdAt,
+    updatedAt: conv.updatedAt,
+    messageCount: conv.messages.length,
+    lastMetadata: conv.lastMetadata,
+    messages: conv.messages.map(({ role, content, timestamp, metadata }) => ({
+      role,
+      content,
+      timestamp,
+      ...(metadata ? { metadata } : {}),
+    })),
+  };
+}
+
+/**
+ * Register an exchange from an external mode (math_logic_review / controller_guard)
+ * into the conversation store so follow-ups can reference the original analysis.
+ *
+ * Creates a new conversation when no conversationId is supplied.
+ *
+ * @param {string}  mode
+ * @param {string}  userContent   – the user prompt that was sent
+ * @param {string}  assistantContent – the raw response received
+ * @param {Object}  metadata
+ * @param {string}  [conversationId] – optional existing conversation to extend
+ * @returns {string} conversationId
+ */
+function registerExternalExchange(mode, userContent, assistantContent, metadata, conversationId) {
+  let convId = toStr(conversationId);
+  if (!convId || !_getConversation(convId)) {
+    convId = _createConversation(mode);
+  }
+  _addExchange(convId, userContent, assistantContent, metadata);
+  return convId;
 }
 
 /* ─────────────────────────────────────────────
@@ -362,4 +599,7 @@ async function runAdminDeepseekChat(payload = {}) {
    ───────────────────────────────────────────── */
 module.exports = {
   runAdminDeepseekChat,
+  continueDeepSeekConversation,
+  getDeepSeekConversation,
+  registerExternalExchange,
 };
