@@ -2193,7 +2193,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
 
     // ── Classify error for clear backend diagnostics ──
     let errorCategory = "unknown";
-    if (httpStatus === 404 || errMsgLower.includes("not found") || errMsgLower.includes("is not found")) {
+    if (httpStatus === 404 || errMsgLower.includes("not found")) {
       errorCategory = "model_not_found";
     } else if (httpStatus === 403 || errMsgLower.includes("permission") || errMsgLower.includes("forbidden")) {
       errorCategory = "permission";
