@@ -4097,7 +4097,12 @@ router.get("/deepseek/dependency-mapping", async (_req, res) => {
    }
 ========================================================= */
 
-const { runAdminDeepseekChat } = require("../services/adminDeepseekConsole.service");
+const {
+  runAdminDeepseekChat,
+  continueDeepSeekConversation,
+  getDeepSeekConversation,
+  registerExternalExchange,
+} = require("../services/adminDeepseekConsole.service");
 const { runMathLogicReview } = require("../services/mathLogicReview.service");
 const { runControllerGuard } = require("../services/controllerGuard.service");
 const { buildHumanReviewSummary } = require("../services/reviewToHuman.service");
@@ -4233,7 +4238,32 @@ router.post("/deepseek/math-logic-review", async (req, res) => {
 
   try {
     const result = await runMathLogicReview(req.body);
-    return res.json({ success: true, version: "light-v1", result });
+
+    // Register the exchange in the conversation store so follow-ups can
+    // reference this structured analysis as context.
+    const userSummary = req.body?.message
+      ? String(req.body.message).slice(0, 1000)
+      : "[math-logic-review request]";
+    const assistantSummary = JSON.stringify(result);
+    const conversationId = registerExternalExchange(
+      "math_logic_review",
+      userSummary,
+      assistantSummary,
+      { reviewLevel: result?.reviewLevel, detectedRisks: result?.detectedRisks },
+      req.body?.conversationId
+    );
+
+    logger.info("[admin] deepseek/math-logic-review conversation registered", {
+      conversationId,
+    });
+
+    return res.json({
+      success: true,
+      version: "light-v1",
+      conversationId,
+      followUpPossible: true,
+      result,
+    });
   } catch (error) {
     logger.error("[admin] deepseek/math-logic-review error", {
       message: error.message,
@@ -4298,7 +4328,31 @@ router.post("/deepseek/controller-guard", async (req, res) => {
 
   try {
     const result = await runControllerGuard(req.body);
-    return res.json({ success: true, version: "v1", result });
+
+    // Register the exchange in the conversation store.
+    const userSummary = req.body?.message
+      ? String(req.body.message).slice(0, 1000)
+      : "[controller-guard request]";
+    const assistantSummary = JSON.stringify(result);
+    const conversationId = registerExternalExchange(
+      "controller_guard",
+      userSummary,
+      assistantSummary,
+      { guardLevel: result?.guardLevel, contractWarnings: result?.contractWarnings },
+      req.body?.conversationId
+    );
+
+    logger.info("[admin] deepseek/controller-guard conversation registered", {
+      conversationId,
+    });
+
+    return res.json({
+      success: true,
+      version: "v1",
+      conversationId,
+      followUpPossible: true,
+      result,
+    });
   } catch (error) {
     logger.error("[admin] deepseek/controller-guard error", {
       message: error.message,
@@ -4336,6 +4390,124 @@ router.post("/deepseek/chat", async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || "Internal error during admin DeepSeek chat",
+    });
+  }
+});
+
+/* =========================================================
+   POST /api/admin/deepseek/conversations/:id/follow-up
+   Continue an existing DeepSeek conversation with a new
+   follow-up message.  The full stored history is forwarded
+   to DeepSeek so the model can reference all prior context.
+
+   URL param:
+     :id – conversationId returned from a prior request
+
+   Request body:
+   {
+     "message":  "...",    // required – the follow-up question
+     "context":  "...",    // optional – extra context
+     "logs":     [],       // optional
+     "notes":    "..."     // optional
+   }
+
+   Response:
+   {
+     "success":          true,
+     "mode":             "chat|diagnose|change_review|math_logic_review|controller_guard",
+     "model":            "deepseek-chat",
+     "conversationId":   "dsconv_...",
+     "followUpPossible": true,
+     "result": {
+       "answer":             "...",
+       "warnings":           [],
+       "suggestedNextSteps": []
+     }
+   }
+========================================================= */
+
+router.post("/deepseek/conversations/:id/follow-up", async (req, res) => {
+  if (!isDeepSeekConfigured()) {
+    return res.status(503).json({
+      success: false,
+      error: "DEEPSEEK_API_KEY is not configured",
+    });
+  }
+
+  const conversationId = req.params.id;
+  const message = req.body?.message ? String(req.body.message).trim() : "";
+
+  if (!message) {
+    return res.status(400).json({
+      success: false,
+      error: "Nachricht erforderlich – bitte eine nicht-leere Folgefrage angeben.",
+    });
+  }
+
+  try {
+    const result = await continueDeepSeekConversation(conversationId, message, {
+      context: req.body?.context,
+      logs: req.body?.logs,
+      notes: req.body?.notes,
+    });
+
+    if (!result.success) {
+      return res.status(404).json(result);
+    }
+
+    return res.json(result);
+  } catch (error) {
+    logger.error("[admin] deepseek/conversations/follow-up error", {
+      conversationId,
+      message: error.message,
+      stack: error.stack,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error during follow-up",
+    });
+  }
+});
+
+/* =========================================================
+   GET /api/admin/deepseek/conversations/:id
+   Retrieve a stored conversation with its full message history.
+
+   Response:
+   {
+     "success":        true,
+     "conversation": {
+       "conversationId": "dsconv_...",
+       "mode":           "chat|diagnose|…",
+       "createdAt":      1234567890,
+       "updatedAt":      1234567890,
+       "messageCount":   4,
+       "lastMetadata":   { ... },
+       "messages":       [{ "role", "content", "timestamp", "metadata"? }]
+     }
+   }
+========================================================= */
+
+router.get("/deepseek/conversations/:id", (req, res) => {
+  const conversationId = req.params.id;
+
+  try {
+    const conversation = getDeepSeekConversation(conversationId);
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        error: `Konversation nicht gefunden: ${conversationId}`,
+      });
+    }
+    return res.json({ success: true, conversation });
+  } catch (error) {
+    logger.error("[admin] deepseek/conversations GET error", {
+      conversationId,
+      message: error.message,
+    });
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Internal error retrieving conversation",
     });
   }
 });
