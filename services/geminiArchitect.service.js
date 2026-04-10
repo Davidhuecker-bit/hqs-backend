@@ -18,19 +18,28 @@ function isGeminiConfigured() {
 }
 
 let _client = null;
+let _clientLocation = null;
+
+function getLocationName() {
+  return process.env.GEMINI_LOCATION || "us-central1";
+}
 
 function getGeminiClient() {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY – Gemini Architect is not configured");
   }
-  if (!_client) {
+  const location = getLocationName();
+  if (!_client || _clientLocation !== location) {
+    _clientLocation = location;
     logger.info("[geminiArchitect] initializing Gemini client", {
       apiVersion: GEMINI_API_VERSION,
       model: getModelName(),
+      location,
     });
     _client = new GoogleGenAI({
       apiKey: process.env.GEMINI_API_KEY,
       httpOptions: { apiVersion: GEMINI_API_VERSION },
+      location,
     });
   }
   return _client;
@@ -2132,24 +2141,26 @@ async function runGeminiArchitectReview(payload = {}) {
  *   primaryModel: string,
  *   fallbackModelUsed: boolean,
  *   finalModelUsed: string,
+ *   configuredLocation: string,
  *   error?: string,
  *   errorCategory?: string
  * }>}
  */
 async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1024, timeoutMs = 25000 } = {}) {
+  const configuredLocation = getLocationName();
   if (!isGeminiConfigured()) {
     logger.warn("[geminiArchitect] runGeminiChat – GEMINI_API_KEY not set");
     const primaryModel = getModelName();
     return {
       success: false, text: "", error: "GEMINI_NOT_CONFIGURED", errorCategory: "config",
-      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel,
+      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, configuredLocation,
     };
   }
   if (!userMessage || !userMessage.trim()) {
     const primaryModel = getModelName();
     return {
       success: false, text: "", error: "NO_INPUT", errorCategory: "input",
-      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel,
+      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, configuredLocation,
     };
   }
 
@@ -2170,6 +2181,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
     codepath: "runGeminiChat",
     apiVersion: GEMINI_API_VERSION,
     primaryModel,
+    configuredLocation,
     fallbackModel: GEMINI_FALLBACK_MODEL,
     maxTokens,
     timeoutMs,
@@ -2257,6 +2269,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         primaryModel,
         fallbackModelUsed,
         finalModelUsed: finalModel,
+        configuredLocation,
       };
     }
 
@@ -2273,7 +2286,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       });
       return {
         success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response",
-        primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
+        primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation,
       };
     }
 
@@ -2285,7 +2298,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       textLength: text.length,
       textPreview: text.slice(0, 80),
     });
-    return { success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel };
+    return { success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation };
   }
 
   // ── Main request flow: primary model with retry, then optional fallback ──
@@ -2334,6 +2347,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       codepath: "runGeminiChat",
       apiVersion: GEMINI_API_VERSION,
       primaryModel,
+      configuredLocation,
       fallbackModel: fallbackModelUsed ? GEMINI_FALLBACK_MODEL : null,
       httpStatus,
       errorCode: err.code || null,
@@ -2349,6 +2363,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       primaryModel,
       fallbackModelUsed,
       finalModelUsed: finalModel,
+      configuredLocation,
     };
   }
 }
@@ -2359,6 +2374,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
 
 module.exports = {
   isGeminiConfigured,
+  getLocationName,
   runGeminiArchitectReview,
   runGeminiChat,
   VALID_MODES,
