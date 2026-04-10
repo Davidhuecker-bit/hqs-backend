@@ -38,8 +38,8 @@ const VALID_AGENT_MODES = [
    Allows older clients (agentBridge, geminiArchitect) to keep using their own
    mode names without a breaking change. */
 const MODE_ALIASES = {
-  presentation_review: "darstellung",
-  priority_review:     "priorisierung",
+  "presentation_review": "darstellung",
+  "priority_review":     "priorisierung",
 };
 
 const VALID_CONVERSATION_STATUSES = [
@@ -755,7 +755,7 @@ async function _executeChanges(conversation) {
  * @param {boolean}     isInitial
  * @returns {object}
  */
-function _buildResponse(conversation, assistantReply, actionIntent, isInitial, errorCode) {
+function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
   const response = {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
@@ -779,8 +779,8 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial, e
     approved:         conversation.approved,
     changedFiles:     conversation.executionResult?.changedFiles || [],
   };
-  if (errorCode) {
-    response.errorCode = errorCode;
+  if (conversation.errorCode) {
+    response.errorCode = conversation.errorCode;
   }
   return response;
 }
@@ -811,11 +811,10 @@ async function startConversation(opts = {}) {
   if (!VALID_AGENT_MODES.includes(mode)) {
     logger.warn("[geminiAgent] startConversation – invalid mode", { mode: rawMode });
     return _buildResponse(
-      { conversationId: null, mode: rawMode || "unknown", status: "error", messageCount: 0, messages: [], approved: false },
+      { conversationId: null, mode: rawMode || "unknown", status: "error", messageCount: 0, messages: [], approved: false, errorCode: "INVALID_MODE" },
       `Ungültiger Modus: ${rawMode}. Erlaubt: ${VALID_AGENT_MODES.join(", ")}`,
       actionIntent || null,
       true,
-      "INVALID_MODE",
     );
   }
 
