@@ -87,6 +87,8 @@ const ERROR_CODES = {
   INTERNAL_ERROR:           "INTERNAL_ERROR",
 };
 
+const TIMEOUT_BUFFER_MS = 10000;
+
 /* ─────────────────────────────────────────────
    Unified response builder
    ───────────────────────────────────────────── */
@@ -343,7 +345,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
     });
   }
 
-  const timeoutMs = agentDef.defaultTimeoutMs + 10000; // extra buffer
+  const timeoutMs = agentDef.defaultTimeoutMs + TIMEOUT_BUFFER_MS; // extra buffer
 
   let agentResponse;
 

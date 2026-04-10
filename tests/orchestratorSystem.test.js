@@ -255,7 +255,8 @@ describe("Request Classifier", () => {
 
   test("handles undefined options gracefully", () => {
     const result = classifyRequest();
-    expect(result.targetAgent).toBeDefined();
+    expect(result.targetAgent).toBe("deepseek");
+    expect(result.mode).toBe("free_chat");
   });
 
   test("defaults agent to deepseek when no keywords match", () => {

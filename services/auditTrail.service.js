@@ -142,7 +142,9 @@ function recordAuditEvent(event = {}) {
   });
 
   // Async DB persistence (fire and forget – never blocks the main flow)
-  _persistToDb(entry).catch(() => {/* swallow – in-memory is the primary store */});
+  _persistToDb(entry).catch((err) => {
+    logger.debug("[audit] db persist failed", { error: String(err.message).slice(0, 80) });
+  });
 
   return entry;
 }

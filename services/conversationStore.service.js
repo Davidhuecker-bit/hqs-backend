@@ -157,7 +157,8 @@ async function _dbLoad(conversationId) {
     );
     if (rows.length === 0) return null;
     return _rowToConversation(rows[0]);
-  } catch {
+  } catch (err) {
+    logger.debug("[conversationStore] db load failed", { conversationId, error: String(err.message).slice(0, 100) });
     return null;
   }
 }
@@ -171,7 +172,8 @@ async function _dbLoadAll(limit = MAX_CONVERSATIONS) {
       [limit],
     );
     return rows.map(_rowToConversation);
-  } catch {
+  } catch (err) {
+    logger.debug("[conversationStore] db load all failed", { error: String(err.message).slice(0, 100) });
     return [];
   }
 }
@@ -276,7 +278,9 @@ async function remove(conversationId) {
   _conversations.delete(conversationId);
   const pool = await _getPool();
   if (pool && _tableReady) {
-    pool.query(`DELETE FROM hqs_conversations WHERE conversation_id = $1`, [conversationId]).catch(() => {});
+    pool.query(`DELETE FROM hqs_conversations WHERE conversation_id = $1`, [conversationId]).catch((err) => {
+      logger.debug("[conversationStore] db delete failed", { conversationId, error: String(err.message).slice(0, 100) });
+    });
   }
 }
 

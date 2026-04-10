@@ -140,7 +140,7 @@ function classifyRequest(opts = {}) {
     targetAgent:  null,
     mode:         null,
     actionIntent: null,
-    safetyLevel:  safetyLevel || "propose",
+    safetyLevel:  safetyLevel ?? "propose",
     isFollowUp:   false,
     isConference:  false,
     confidence:   "low",
