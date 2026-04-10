@@ -8,9 +8,10 @@ const logger = require("../utils/logger");
    Gemini configuration helpers
    ───────────────────────────────────────────── */
 
-// Stable production API version for all standard text-chat and review calls.
-// v1beta is the SDK default but is not recommended for production workloads.
-const GEMINI_API_VERSION = "v1";
+// v1beta is required because systemInstruction is not part of the v1
+// GenerateContentRequest schema – the v1 endpoint returns HTTP 400
+// "Unknown name 'systemInstruction': Cannot find field" otherwise.
+const GEMINI_API_VERSION = "v1beta";
 
 function isGeminiConfigured() {
   return Boolean(process.env.GEMINI_API_KEY);
