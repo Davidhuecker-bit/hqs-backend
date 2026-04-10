@@ -6954,7 +6954,10 @@ router.get("/deepseek/agent-bridge/conference-dialog-state/:conferenceId", (req,
    }
 ========================================================= */
 
-router.post("/gemini/chat", async (req, res) => {
+/* Shared handler for starting a Gemini Agent conversation.
+   Registered under both /gemini/chat and /gemini/agent-chat so that
+   frontends using either path reach the same logic. */
+async function _handleGeminiChatStart(req, res) {
   const { mode, message, actionIntent, context } = req.body || {};
 
   logger.info("[admin] gemini/chat – start conversation request", {
@@ -6997,7 +7000,10 @@ router.post("/gemini/chat", async (req, res) => {
       error: error.message || "Internal error starting Gemini Agent conversation",
     });
   }
-});
+}
+
+router.post("/gemini/chat", _handleGeminiChatStart);
+router.post("/gemini/agent-chat", _handleGeminiChatStart);
 
 /* =========================================================
    POST /api/admin/gemini/conversations/:id/follow-up
