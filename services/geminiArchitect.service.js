@@ -36,8 +36,11 @@ function getGeminiClient() {
   return _client;
 }
 
+const GEMINI_PRIMARY_MODEL  = "gemini-2.5-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-1.5-flash";
+
 function getModelName() {
-  return process.env.GEMINI_MODEL || "gemini-2.5-flash";
+  return process.env.GEMINI_MODEL || GEMINI_PRIMARY_MODEL;
 }
 
 /* ─────────────────────────────────────────────
@@ -323,6 +326,64 @@ function _isRetryableGeminiError(err) {
     msg.includes("too many requests") ||
     msg.includes("toomanyrequests")
   );
+}
+
+/**
+ * Returns true when the error warrants a one-time fallback to the backup
+ * model rather than surfacing the error to the caller.
+ *
+ * Fallback is triggered for:
+ *  - 503 / overloaded / unavailable / high-demand  (provider capacity)
+ *  - 404 / model-not-found / not-supported         (model availability)
+ *
+ * Fallback is NOT triggered for:
+ *  - 401 / 403 / auth / permission errors           (key problem, not model)
+ *  - 429 / rate-limit / quota errors                (retry/backoff only)
+ *  - Timeout errors                                 (network, not model)
+ *
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function _isModelFallbackWorthy(err) {
+  const httpStatus = err.status || err.statusCode || null;
+  const msg        = String(err.message || "").toLowerCase();
+
+  // Never fallback for auth / permission errors
+  if (
+    httpStatus === 401 || httpStatus === 403 ||
+    msg.includes("unauthorized") || msg.includes("api key") ||
+    msg.includes("permission") || msg.includes("forbidden")
+  ) return false;
+
+  // Never fallback for rate-limit errors (only retry/backoff makes sense)
+  if (
+    httpStatus === 429 ||
+    msg.includes("quota") || msg.includes("rate limit") ||
+    msg.includes("too many requests") || msg.includes("ratelimit")
+  ) return false;
+
+  // Never fallback for client-side timeout
+  if (msg.includes("gemini_timeout") || msg.includes("timeout") || msg.includes("deadline")) {
+    return false;
+  }
+
+  // Fallback for capacity / availability issues
+  if (
+    httpStatus === 503 ||
+    msg.includes("service unavailable") || msg.includes("serviceunavailable") ||
+    msg.includes("overloaded") || msg.includes("unavailable") ||
+    msg.includes("high demand") || msg.includes("capacity")
+  ) return true;
+
+  // Fallback for model-not-found / not-supported
+  if (
+    httpStatus === 404 ||
+    msg.includes("not found") || msg.includes("model not found") ||
+    msg.includes("not available") || msg.includes("not supported") ||
+    msg.includes("does not exist")
+  ) return true;
+
+  return false;
 }
 
 /**
@@ -2065,17 +2126,34 @@ async function runGeminiArchitectReview(payload = {}) {
  *          is appended automatically from `userMessage`.
  * @param {number}  [opts.maxTokens]           – max output tokens (default 1024)
  * @param {number}  [opts.timeoutMs]           – timeout in ms (default 25000)
- * @returns {Promise<{ success: boolean, text: string, error?: string, errorCategory?: string }>}
+ * @returns {Promise<{
+ *   success: boolean,
+ *   text: string,
+ *   primaryModel: string,
+ *   fallbackModelUsed: boolean,
+ *   finalModelUsed: string,
+ *   error?: string,
+ *   errorCategory?: string
+ * }>}
  */
 async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1024, timeoutMs = 25000 } = {}) {
   if (!isGeminiConfigured()) {
     logger.warn("[geminiArchitect] runGeminiChat – GEMINI_API_KEY not set");
-    return { success: false, text: "", error: "GEMINI_NOT_CONFIGURED", errorCategory: "config" };
+    const primaryModel = getModelName();
+    return {
+      success: false, text: "", error: "GEMINI_NOT_CONFIGURED", errorCategory: "config",
+      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel,
+    };
   }
   if (!userMessage || !userMessage.trim()) {
-    return { success: false, text: "", error: "NO_INPUT", errorCategory: "input" };
+    const primaryModel = getModelName();
+    return {
+      success: false, text: "", error: "NO_INPUT", errorCategory: "input",
+      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel,
+    };
   }
-  const modelName = getModelName();
+
+  const primaryModel = getModelName();
 
   // ── Build contents: multi-turn history + latest user turn ──
   const contents = [];
@@ -2091,64 +2169,80 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
   logger.info("[geminiArchitect] runGeminiChat – start", {
     codepath: "runGeminiChat",
     apiVersion: GEMINI_API_VERSION,
-    model: modelName,
+    primaryModel,
+    fallbackModel: GEMINI_FALLBACK_MODEL,
     maxTokens,
     timeoutMs,
     historyTurns: contents.length - 1,
     promptPreview: (userMessage || "").slice(0, 80),
   });
-  try {
+
+  // ── Classify an API error into a named category ──
+  function _classifyError(err) {
+    const httpStatus  = err.status || err.statusCode || null;
+    const errMsgLower = String(err.message || "").toLowerCase();
+    if (httpStatus === 404 || errMsgLower.includes("not found"))
+      return "model_not_found";
+    if (httpStatus === 403 || errMsgLower.includes("permission") || errMsgLower.includes("forbidden"))
+      return "permission";
+    if (httpStatus === 401 || errMsgLower.includes("unauthorized") || errMsgLower.includes("api key"))
+      return "auth";
+    if (httpStatus === 429 || errMsgLower.includes("quota") || errMsgLower.includes("rate limit") || errMsgLower.includes("too many requests"))
+      return "rate_limit";
+    if (httpStatus === 503 || errMsgLower.includes("overloaded") || errMsgLower.includes("unavailable"))
+      return "provider_unavailable";
+    if (errMsgLower.includes("gemini_timeout") || errMsgLower.includes("timeout") || errMsgLower.includes("deadline"))
+      return "timeout";
+    return "unknown";
+  }
+
+  // ── Single generateContent call for a specific model (with timeout) ──
+  async function _callModel(model) {
     const client = getGeminiClient();
-
-    logger.info("[geminiArchitect] runGeminiChat – calling generateContent", {
-      codepath: "runGeminiChat",
-      model: modelName,
-      apiVersion: GEMINI_API_VERSION,
+    let timerId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
     });
+    try {
+      return await Promise.race([
+        client.models.generateContent({
+          model,
+          contents,
+          config: {
+            systemInstruction: systemPrompt || "",
+            temperature: 0.7,
+            maxOutputTokens: maxTokens,
+          },
+        }),
+        timeoutPromise,
+      ]);
+    } finally {
+      clearTimeout(timerId);
+    }
+  }
 
-    const response = await _withGeminiRetry(async () => {
-      let timerId;
-      const timeoutPromise = new Promise((_, reject) => {
-        timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
-      });
-      try {
-        return await Promise.race([
-          client.models.generateContent({
-            model: modelName,
-            contents,
-            config: {
-              systemInstruction: systemPrompt || "",
-              temperature: 0.7,
-              maxOutputTokens: maxTokens,
-            },
-          }),
-          timeoutPromise,
-        ]);
-      } finally {
-        clearTimeout(timerId);
-      }
-    });
+  // ── Process a successful raw Gemini response into the public return shape ──
+  function _processResponse(response, finalModel, fallbackModelUsed) {
+    const candidateCount     = response?.candidates?.length ?? 0;
+    const firstFinishReason  = response?.candidates?.[0]?.finishReason ?? null;
+    const blockReason        = response?.promptFeedback?.blockReason ?? null;
 
-    // Log raw response structure for diagnosability
-    const candidateCount = response?.candidates?.length ?? 0;
-    const firstFinishReason = response?.candidates?.[0]?.finishReason ?? null;
-    const blockReason = response?.promptFeedback?.blockReason ?? null;
     logger.info("[geminiArchitect] runGeminiChat – response received", {
       codepath: "runGeminiChat",
-      model: modelName,
+      model: finalModel,
       apiVersion: GEMINI_API_VERSION,
+      fallbackModelUsed,
       candidateCount,
       firstFinishReason,
       blockReason,
       hasPromptFeedback: Boolean(response?.promptFeedback),
     });
 
-    // Check for safety filter blocks before attempting text extraction
     const safetyCheck = detectGeminiSafetyBlock(response);
     if (safetyCheck.blocked) {
       logger.warn("[geminiArchitect] runGeminiChat – response blocked by safety filter", {
         codepath: "runGeminiChat",
-        model: modelName,
+        model: finalModel,
         apiVersion: GEMINI_API_VERSION,
         safetyReason: safetyCheck.reason,
         safetyRatings: safetyCheck.safetyRatings,
@@ -2160,6 +2254,9 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         errorCategory: "safety",
         safetyBlocked: true,
         safetyReason: safetyCheck.reason,
+        primaryModel,
+        fallbackModelUsed,
+        finalModelUsed: finalModel,
       };
     }
 
@@ -2167,50 +2264,77 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
     if (!text) {
       logger.warn("[geminiArchitect] runGeminiChat – empty text extracted from response", {
         codepath: "runGeminiChat",
-        model: modelName,
+        model: finalModel,
         apiVersion: GEMINI_API_VERSION,
         candidateCount,
         firstFinishReason,
         blockReason,
-        // Log abbreviated raw response shape to help diagnose extraction failures
         responseKeys: response ? Object.keys(response).join(",") : "null",
       });
-      return { success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response" };
+      return {
+        success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response",
+        primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
+      };
     }
 
     logger.info("[geminiArchitect] runGeminiChat – success", {
       codepath: "runGeminiChat",
-      model: modelName,
+      model: finalModel,
       apiVersion: GEMINI_API_VERSION,
+      fallbackModelUsed,
       textLength: text.length,
       textPreview: text.slice(0, 80),
     });
-    return { success: true, text };
-  } catch (err) {
-    const httpStatus = err.status || err.statusCode || null;
-    const errMsg = String(err.message || "").slice(0, 200);
-    const errMsgLower = errMsg.toLowerCase();
+    return { success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel };
+  }
 
-    // ── Classify error for clear backend diagnostics ──
-    let errorCategory = "unknown";
-    if (httpStatus === 404 || errMsgLower.includes("not found")) {
-      errorCategory = "model_not_found";
-    } else if (httpStatus === 403 || errMsgLower.includes("permission") || errMsgLower.includes("forbidden")) {
-      errorCategory = "permission";
-    } else if (httpStatus === 401 || errMsgLower.includes("unauthorized") || errMsgLower.includes("api key")) {
-      errorCategory = "auth";
-    } else if (httpStatus === 429 || errMsgLower.includes("quota") || errMsgLower.includes("rate limit") || errMsgLower.includes("too many requests")) {
-      errorCategory = "rate_limit";
-    } else if (httpStatus === 503 || errMsgLower.includes("overloaded") || errMsgLower.includes("unavailable")) {
-      errorCategory = "provider_unavailable";
-    } else if (errMsgLower.includes("gemini_timeout") || errMsgLower.includes("timeout") || errMsgLower.includes("deadline")) {
-      errorCategory = "timeout";
+  // ── Main request flow: primary model with retry, then optional fallback ──
+  let fallbackModelUsed = false;
+  let finalModel        = primaryModel;
+
+  try {
+    logger.info("[geminiArchitect] runGeminiChat – calling generateContent", {
+      codepath: "runGeminiChat",
+      model: primaryModel,
+      apiVersion: GEMINI_API_VERSION,
+    });
+
+    let response;
+
+    try {
+      // Primary model: up to GEMINI_MAX_RETRIES retries on transient errors (503/429)
+      response = await _withGeminiRetry(() => _callModel(primaryModel));
+    } catch (primaryErr) {
+      if (_isModelFallbackWorthy(primaryErr)) {
+        // Primary failed after retries (or immediately for 404) → single fallback attempt
+        logger.warn("[geminiArchitect] runGeminiChat – primary model failed, trying fallback", {
+          codepath: "runGeminiChat",
+          primaryModel,
+          fallbackModel: GEMINI_FALLBACK_MODEL,
+          reason: String(primaryErr.message || "").slice(0, 80),
+          httpStatus: primaryErr.status || primaryErr.statusCode || null,
+        });
+        fallbackModelUsed = true;
+        finalModel        = GEMINI_FALLBACK_MODEL;
+        // Single attempt on fallback model – no retry
+        response = await _callModel(GEMINI_FALLBACK_MODEL);
+      } else {
+        // Auth / rate-limit / timeout – surface error directly, no model switch
+        throw primaryErr;
+      }
     }
+
+    return _processResponse(response, finalModel, fallbackModelUsed);
+  } catch (err) {
+    const httpStatus    = err.status || err.statusCode || null;
+    const errMsg        = String(err.message || "").slice(0, 200);
+    const errorCategory = _classifyError(err);
 
     logger.warn("[geminiArchitect] runGeminiChat – error", {
       codepath: "runGeminiChat",
       apiVersion: GEMINI_API_VERSION,
-      model: modelName,
+      primaryModel,
+      fallbackModel: fallbackModelUsed ? GEMINI_FALLBACK_MODEL : null,
       httpStatus,
       errorCode: err.code || null,
       errorCategory,
@@ -2222,6 +2346,9 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       error: errMsg.slice(0, 120) || "UNKNOWN",
       errorCategory,
       httpStatus,
+      primaryModel,
+      fallbackModelUsed,
+      finalModelUsed: finalModel,
     };
   }
 }
@@ -2237,4 +2364,6 @@ module.exports = {
   VALID_MODES,
   RESULT_TYPES,
   FALLBACK_LABELS,
+  GEMINI_PRIMARY_MODEL,
+  GEMINI_FALLBACK_MODEL,
 };
