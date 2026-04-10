@@ -286,8 +286,9 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   if (history.length > 0) {
     combinedMessage += "Bisheriger Gesprächsverlauf:\n";
     combinedMessage += "───\n";
+    const ROLE_LABELS = { user: "Nutzer", assistant: "Assistent", system: "System" };
     for (const msg of history) {
-      const label = msg.role === "user" ? "Nutzer" : msg.role === "assistant" ? "Assistent" : "System";
+      const label = ROLE_LABELS[msg.role] || "System";
       combinedMessage += `${label}: ${msg.content}\n`;
     }
     combinedMessage += "───\n\n";
@@ -461,6 +462,19 @@ async function _executeChanges(conversation) {
     try {
       const op = edit.operation;
 
+      /**
+       * Validates that a lineRange [start, end] is sensible for a
+       * file with `lineCount` lines.  Returns an error string or null.
+       */
+      const validateLineRange = (range, lineCount) => {
+        if (!Array.isArray(range) || range.length < 2) return "lineRange muss ein Array mit [start, end] sein.";
+        const [s, e] = range;
+        if (!Number.isFinite(s) || !Number.isFinite(e)) return "lineRange-Werte müssen Zahlen sein.";
+        if (s < 1 || e < s) return `Ungültige lineRange [${s}, ${e}] – start >= 1 und end >= start erforderlich.`;
+        if (s > lineCount) return `lineRange start (${s}) überschreitet Zeilenanzahl (${lineCount}).`;
+        return null;
+      };
+
       if (op === "replace") {
         let content = fs.readFileSync(absolutePath, "utf-8");
 
@@ -474,8 +488,14 @@ async function _executeChanges(conversation) {
           }
           content = content.replace(edit.oldContent, edit.newContent || "");
         } else if (edit.lineRange && Array.isArray(edit.lineRange)) {
-          // Line-range based replace
           const lines = content.split("\n");
+          const rangeErr = validateLineRange(edit.lineRange, lines.length);
+          if (rangeErr) {
+            result.errors.push(`${filePath}: ${rangeErr}`);
+            result.log.push(`${filePath}: ${rangeErr}`);
+            result.success = false;
+            continue;
+          }
           const [start, end] = edit.lineRange;
           const newLines = (edit.newContent || "").split("\n");
           lines.splice(start - 1, end - start + 1, ...newLines);
@@ -489,7 +509,18 @@ async function _executeChanges(conversation) {
       } else if (op === "insert") {
         let content = fs.readFileSync(absolutePath, "utf-8");
         const lines = content.split("\n");
-        const insertAt = edit.lineRange ? edit.lineRange[0] - 1 : lines.length;
+        let insertAt = lines.length;
+        if (edit.lineRange && Array.isArray(edit.lineRange)) {
+          const pos = edit.lineRange[0];
+          if (!Number.isFinite(pos) || pos < 1 || pos > lines.length + 1) {
+            const msg = `${filePath}: Ungültige Einfügeposition ${pos} (1–${lines.length + 1} erlaubt).`;
+            result.errors.push(msg);
+            result.log.push(msg);
+            result.success = false;
+            continue;
+          }
+          insertAt = pos - 1;
+        }
         const newLines = (edit.newContent || "").split("\n");
         lines.splice(insertAt, 0, ...newLines);
         fs.writeFileSync(absolutePath, lines.join("\n"), "utf-8");
@@ -500,9 +531,16 @@ async function _executeChanges(conversation) {
         let content = fs.readFileSync(absolutePath, "utf-8");
 
         if (edit.oldContent != null) {
-          content = content.replace(edit.oldContent, "");
+          content = content.replaceAll(edit.oldContent, "");
         } else if (edit.lineRange && Array.isArray(edit.lineRange)) {
           const lines = content.split("\n");
+          const rangeErr = validateLineRange(edit.lineRange, lines.length);
+          if (rangeErr) {
+            result.errors.push(`${filePath}: ${rangeErr}`);
+            result.log.push(`${filePath}: ${rangeErr}`);
+            result.success = false;
+            continue;
+          }
           const [start, end] = edit.lineRange;
           lines.splice(start - 1, end - start + 1);
           content = lines.join("\n");
