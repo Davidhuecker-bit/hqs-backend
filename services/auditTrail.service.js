@@ -143,7 +143,7 @@ function recordAuditEvent(event = {}) {
 
   // Async DB persistence (fire and forget – never blocks the main flow)
   _persistToDb(entry).catch((err) => {
-    logger.debug("[audit] db persist failed", { error: String(err.message).slice(0, 80) });
+    logger.debug("[audit] db persist failed", { error: String(err.message).slice(0, 100) });
   });
 
   return entry;

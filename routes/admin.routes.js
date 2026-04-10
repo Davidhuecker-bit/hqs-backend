@@ -7657,6 +7657,9 @@ const { classifyRequest } = require("../services/requestClassifier.service");
 const { getRecentAuditEvents, getAuditSummary, getAuditEventsByConversation, getAuditEventsByConference } = require("../services/auditTrail.service");
 const conversationStore = require("../services/conversationStore.service");
 
+const ORCHESTRATOR_DEFAULT_LIMIT = 50;
+const ORCHESTRATOR_MAX_LIMIT = 200;
+
 /* ─── POST /api/admin/orchestrator/handle ─── */
 router.post("/orchestrator/handle", async (req, res) => {
   try {
@@ -7732,7 +7735,7 @@ router.get("/orchestrator/intents", (req, res) => {
 /* ─── GET /api/admin/orchestrator/audit ─── */
 router.get("/orchestrator/audit", (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const limit = Math.min(parseInt(req.query.limit, 10) || ORCHESTRATOR_DEFAULT_LIMIT, ORCHESTRATOR_MAX_LIMIT);
     const events = getRecentAuditEvents(limit);
     return res.json({ success: true, version: "orchestrator-v1", events, count: events.length });
   } catch (error) {
@@ -7776,7 +7779,7 @@ router.get("/orchestrator/conversations", (req, res) => {
     const filters = {};
     if (req.query.agent) filters.agent = req.query.agent;
     if (req.query.status) filters.status = req.query.status;
-    filters.limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    filters.limit = Math.min(parseInt(req.query.limit, 10) || ORCHESTRATOR_DEFAULT_LIMIT, ORCHESTRATOR_MAX_LIMIT);
     const conversations = conversationStore.list(filters);
     return res.json({ success: true, version: "orchestrator-v1", conversations, count: conversations.length });
   } catch (error) {
