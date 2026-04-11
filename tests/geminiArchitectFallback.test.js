@@ -658,6 +658,24 @@ describe("Vertex AI credential guard (GOOGLE_APPLICATION_CREDENTIALS_JSON)", () 
     expect(result.vertexCredentialsPresent).toBe(false);
   });
 
+  test("valid JSON that is not an object (array) → errorCategory=vertex_credentials_invalid", async () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify(["not", "an", "object"]);
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u" });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCategory).toBe("vertex_credentials_invalid");
+  });
+
+  test("valid JSON object missing required service-account fields → errorCategory=vertex_credentials_invalid", async () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({ someKey: "someValue" });
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u" });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCategory).toBe("vertex_credentials_invalid");
+  });
+
   test("valid GOOGLE_APPLICATION_CREDENTIALS_JSON → proceeds to API call", async () => {
     process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({
       type: "service_account",

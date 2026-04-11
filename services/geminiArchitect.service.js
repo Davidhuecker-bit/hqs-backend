@@ -57,7 +57,7 @@ let _clientCredSig  = null; // tracks whether explicit credentials were used
  * Returns:
  *  { credentials: Object, status: "valid"   } – parsed successfully
  *  { credentials: null,   status: "missing" } – env var not set
- *  { credentials: null,   status: "invalid" } – env var set but not valid JSON
+ *  { credentials: null,   status: "invalid" } – env var set but not valid JSON / not a service account object
  *
  * @returns {{ credentials: Object|null, status: "valid"|"missing"|"invalid" }}
  */
@@ -69,6 +69,10 @@ function _parseVertexCredentials() {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { credentials: null, status: "invalid" };
+    }
+    // Require at minimum the fields that identify a service account credential.
+    if (typeof parsed.type !== "string" || typeof parsed.client_email !== "string") {
       return { credentials: null, status: "invalid" };
     }
     return { credentials: parsed, status: "valid" };
