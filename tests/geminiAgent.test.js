@@ -129,7 +129,7 @@ describe("Gemini Agent – startConversation", () => {
     expect(result.mode).toBe("free_chat");
     expect(result.status).toBe("waiting_for_user");
     expect(result.followUpPossible).toBe(true);
-    expect(result.assistantReply).toBeTruthy();
+    expect(result.reply.text).toBeTruthy();
     expect(result.metadata).toBeDefined();
     expect(result.metadata.isInitial).toBe(true);
     expect(result.metadata.messageCount).toBeGreaterThanOrEqual(2);
@@ -144,7 +144,7 @@ describe("Gemini Agent – startConversation", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.assistantReply).toMatch(/Ungültiger Modus/);
+    expect(result.reply.text).toMatch(/Ungültiger Modus/);
     expect(result.errorCode).toBe("INVALID_MODE");
   });
 
@@ -177,7 +177,7 @@ describe("Gemini Agent – startConversation", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.assistantReply).toMatch(/nicht leer/);
+    expect(result.reply.text).toMatch(/nicht leer/);
   });
 
   test("returns error when Gemini not configured", async () => {
@@ -189,7 +189,7 @@ describe("Gemini Agent – startConversation", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.assistantReply).toMatch(/nicht konfiguriert/);
+    expect(result.reply.text).toMatch(/nicht konfiguriert/);
   });
 
   test("passes actionIntent correctly", async () => {
@@ -224,7 +224,7 @@ describe("Gemini Agent – startConversation", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.assistantReply).toMatch(/Gemini-Fehler/);
+    expect(result.reply.text).toMatch(/Gemini-Fehler/);
   });
 
   test("propose_change sets conversation status", async () => {
@@ -337,7 +337,7 @@ describe("Gemini Agent – continueConversation", () => {
     });
 
     expect(result.status).toBe("error");
-    expect(result.assistantReply).toMatch(/nicht gefunden/);
+    expect(result.reply.text).toMatch(/nicht gefunden/);
   });
 
   test("returns error for empty message", async () => {
@@ -351,7 +351,7 @@ describe("Gemini Agent – continueConversation", () => {
       message: "",
     });
 
-    expect(result.assistantReply).toMatch(/nicht leer/);
+    expect(result.reply.text).toMatch(/nicht leer/);
   });
 
   test("allows switching actionIntent mid-conversation", async () => {
@@ -397,7 +397,7 @@ describe("Gemini Agent – continueConversation", () => {
     });
 
     expect(followUp.status).toBe("error");
-    expect(followUp.assistantReply).toMatch(/Gemini-Fehler/);
+    expect(followUp.reply.text).toMatch(/Gemini-Fehler/);
   });
 });
 
@@ -446,7 +446,7 @@ describe("Gemini Agent – execute_change approval gate", () => {
       approved: false,
     });
 
-    expect(result.assistantReply).toMatch(/Freigabe/);
+    expect(result.reply.text).toMatch(/Freigabe/);
     expect(result.approved).toBe(false);
   });
 
@@ -458,7 +458,7 @@ describe("Gemini Agent – execute_change approval gate", () => {
       confirmExecution: true,
     });
 
-    expect(result.assistantReply).toMatch(/Freigabe/);
+    expect(result.reply.text).toMatch(/Freigabe/);
   });
 
   test("attempts execution with approved=true (file not found is expected)", async () => {
@@ -495,7 +495,7 @@ describe("Gemini Agent – Response schema", () => {
     expect(result).toHaveProperty("actionIntent");
     expect(result).toHaveProperty("status");
     expect(result).toHaveProperty("followUpPossible");
-    expect(result).toHaveProperty("assistantReply");
+    expect(result).toHaveProperty("reply");
     expect(result).toHaveProperty("metadata");
     expect(result).toHaveProperty("proposedChanges");
     expect(result).toHaveProperty("preparedPatch");
@@ -631,6 +631,6 @@ describe("Gemini Agent – Edge cases", () => {
       message: "Folge",
     });
 
-    expect(result.assistantReply).toMatch(/nicht konfiguriert/);
+    expect(result.reply.text).toMatch(/nicht konfiguriert/);
   });
 });

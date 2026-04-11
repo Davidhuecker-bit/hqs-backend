@@ -103,7 +103,8 @@ const CONFERENCE_TIMEOUT_MS = 60000;
  * @property {string|null} actionIntent
  * @property {string}      status
  * @property {boolean}     followUpPossible
- * @property {string}      assistantReply
+ * @property {{ text: string }} reply
+ * @property {string|null} errorCategory
  * @property {Object[]}    [replies]
  * @property {Object}      metadata
  * @property {Object|null} proposedChanges
@@ -128,7 +129,8 @@ function _buildUnifiedResponse(opts = {}) {
     actionIntent:     opts.actionIntent || null,
     status:           opts.status || "error",
     followUpPossible: opts.followUpPossible ?? false,
-    assistantReply:   opts.assistantReply || "",
+    reply:            { text: opts.assistantReply || "" },
+    errorCategory:    opts.errorCategory || null,
     replies:          opts.replies || null,
     metadata: {
       model:          opts.model || null,
@@ -170,7 +172,8 @@ function _normalizeAgentResponse(agentResponse, agentId, requestId, traceId, cla
     actionIntent:     agentResponse.actionIntent,
     status:           agentResponse.status,
     followUpPossible: agentResponse.followUpPossible,
-    assistantReply:   agentResponse.assistantReply || "",
+    assistantReply:   agentResponse.reply?.text || "",
+    errorCategory:    agentResponse.errorCategory || null,
     model:            agentResponse.metadata?.model || agentDef?.model,
     provider:         agentDef?.provider,
     apiVersion:       agentResponse.metadata?.apiVersion || "v1",
@@ -438,7 +441,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
   }
 
   // Validate agent response
-  if (!agentResponse || (!agentResponse.assistantReply && agentResponse.status !== "error")) {
+  if (!agentResponse || (!agentResponse.reply?.text && agentResponse.status !== "error")) {
     recordAuditEvent({
       eventType: "agent_empty_response",
       requestId, traceId,
@@ -446,7 +449,8 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
       conversationId: agentResponse?.conversationId,
     });
     if (agentResponse) {
-      agentResponse.assistantReply = agentResponse.assistantReply || "[Leere Antwort vom Agent – bitte erneut versuchen]";
+      agentResponse.reply = agentResponse.reply || {};
+      agentResponse.reply.text = agentResponse.reply.text || "[Leere Antwort vom Agent – bitte erneut versuchen]";
     }
   }
 
