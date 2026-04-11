@@ -4183,6 +4183,8 @@ const {
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
+  getAuthMode: getGeminiAuthMode,
+  getAuthDiagnostics: getGeminiAuthDiagnostics,
   getLocationName: getGeminiLocation,
   runGeminiArchitectReview,
   runGeminiChat,
@@ -6486,27 +6488,36 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "success": true,
      "configured": true,
      "codepath": "runGeminiChat / @google/genai / models.generateContent",
-     "apiVersion": "v1beta",
+     "apiVersion": "v1beta",          // "vertex" when Vertex AI is active
      "configuredLocation": "us-central1",
      "primaryModel": "gemini-2.5-flash",
      "fallbackModelUsed": false,
      "finalModelUsed": "gemini-2.5-flash",
      "usedFallback": false,
      "response": "OK",
-     "textLength": 2
+     "textLength": 2,
+     "authModeRequested": "gemini_api",   // "vertex_ai" | "gemini_api" | "unconfigured"
+     "authModeUsed": "gemini_api",
+     "projectConfigured": false,
+     "locationConfigured": false,
+     "apiKeyPresent": true,
+     "errorCategory": null
    }
    ========================================================= */
 router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
-  const GEMINI_CODEPATH = "runGeminiChat / @google/genai / models.generateContent";
-  const configured = isGeminiConfigured();
+  const GEMINI_CODEPATH    = "runGeminiChat / @google/genai / models.generateContent";
+  const configured         = isGeminiConfigured();
   const configuredLocation = getGeminiLocation();
+  const authDiag           = getGeminiAuthDiagnostics();
+
   if (!configured) {
     return res.status(503).json({
       success: false,
       configured: false,
       configuredLocation,
       codepath: GEMINI_CODEPATH,
-      error: "GEMINI_API_KEY is not set – Gemini is not configured",
+      error: "Gemini is not configured – set GEMINI_API_KEY (gemini_api) or GOOGLE_CLOUD_PROJECT (vertex_ai)",
+      ...authDiag,
     });
   }
 
@@ -6523,7 +6534,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         success: true,
         configured: true,
         codepath: GEMINI_CODEPATH,
-        apiVersion: "v1beta",
+        apiVersion: authDiag.authModeUsed === "vertex_ai" ? "vertex" : "v1beta",
         configuredLocation: result.configuredLocation || configuredLocation,
         primaryModel: result.primaryModel,
         fallbackModelUsed: result.fallbackModelUsed,
@@ -6531,6 +6542,12 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         usedFallback: result.fallbackModelUsed,
         response: result.text,
         textLength: result.text.length,
+        authModeRequested: result.authModeRequested || authDiag.authModeRequested,
+        authModeUsed:      result.authModeUsed      || authDiag.authModeUsed,
+        projectConfigured:  result.projectConfigured  ?? authDiag.projectConfigured,
+        locationConfigured: result.locationConfigured ?? authDiag.locationConfigured,
+        apiKeyPresent:      result.apiKeyPresent      ?? authDiag.apiKeyPresent,
+        errorCategory: null,
       });
     }
 
@@ -6538,7 +6555,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       success: false,
       configured: true,
       codepath: GEMINI_CODEPATH,
-      apiVersion: "v1beta",
+      apiVersion: authDiag.authModeUsed === "vertex_ai" ? "vertex" : "v1beta",
       configuredLocation: result.configuredLocation || configuredLocation,
       primaryModel: result.primaryModel,
       fallbackModelUsed: result.fallbackModelUsed,
@@ -6546,6 +6563,11 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       usedFallback: result.fallbackModelUsed,
       error: result.error || "EMPTY_RESPONSE",
       errorCategory: result.errorCategory,
+      authModeRequested: result.authModeRequested || authDiag.authModeRequested,
+      authModeUsed:      result.authModeUsed      || authDiag.authModeUsed,
+      projectConfigured:  result.projectConfigured  ?? authDiag.projectConfigured,
+      locationConfigured: result.locationConfigured ?? authDiag.locationConfigured,
+      apiKeyPresent:      result.apiKeyPresent      ?? authDiag.apiKeyPresent,
     });
   } catch (error) {
     logger.error("[admin] deepseek/agent-bridge/gemini-smoke-test error", {
@@ -6555,9 +6577,10 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       success: false,
       configured: true,
       codepath: GEMINI_CODEPATH,
-      apiVersion: "v1beta",
+      apiVersion: authDiag.authModeUsed === "vertex_ai" ? "vertex" : "v1beta",
       configuredLocation,
       error: error.message || "UNKNOWN_ERROR",
+      ...authDiag,
     });
   }
 });

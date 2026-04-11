@@ -13,35 +13,117 @@ const logger = require("../utils/logger");
 // "Unknown name 'systemInstruction': Cannot find field" otherwise.
 const GEMINI_API_VERSION = "v1beta";
 
-function isGeminiConfigured() {
-  return Boolean(process.env.GEMINI_API_KEY);
+/**
+ * Determine which auth mode is active.
+ *
+ * Priority:
+ *  1. "vertex_ai"  – when GOOGLE_CLOUD_PROJECT is set (uses ADC / service account)
+ *  2. "gemini_api" – when GEMINI_API_KEY is set
+ *  3. "unconfigured" – neither variable is present
+ *
+ * The two modes are mutually exclusive at the client level:
+ *  - "gemini_api"  → GoogleGenAI({ apiKey, httpOptions })          – NO project/location
+ *  - "vertex_ai"   → GoogleGenAI({ vertexai:true, project, location }) – NO apiKey
+ *
+ * @returns {"vertex_ai"|"gemini_api"|"unconfigured"}
+ */
+function getAuthMode() {
+  if (process.env.GOOGLE_CLOUD_PROJECT) return "vertex_ai";
+  if (process.env.GEMINI_API_KEY)        return "gemini_api";
+  return "unconfigured";
 }
 
-let _client = null;
+function isGeminiConfigured() {
+  const mode = getAuthMode();
+  return mode === "gemini_api" || mode === "vertex_ai";
+}
+
+let _client     = null;
+let _clientMode = null;
 let _clientLocation = null;
 
+/**
+ * Returns the Google Cloud / Vertex AI location to use.
+ * Prefers GOOGLE_CLOUD_LOCATION, then GEMINI_LOCATION, then falls back to us-central1.
+ */
 function getLocationName() {
-  return process.env.GEMINI_LOCATION || "us-central1";
+  return (
+    process.env.GOOGLE_CLOUD_LOCATION ||
+    process.env.GEMINI_LOCATION       ||
+    "us-central1"
+  );
+}
+
+/**
+ * Return a snapshot of the current auth configuration useful for diagnostics
+ * and smoke-test responses.
+ *
+ * @returns {{
+ *   authModeRequested: string,
+ *   authModeUsed: string,
+ *   projectConfigured: boolean,
+ *   locationConfigured: boolean,
+ *   apiKeyPresent: boolean,
+ * }}
+ */
+function getAuthDiagnostics() {
+  const authMode = getAuthMode();
+  return {
+    authModeRequested: authMode,
+    authModeUsed:      authMode,
+    projectConfigured:  Boolean(process.env.GOOGLE_CLOUD_PROJECT),
+    locationConfigured: Boolean(
+      process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION
+    ),
+    apiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
+  };
 }
 
 function getGeminiClient() {
-  if (!process.env.GEMINI_API_KEY) {
-    throw new Error("Missing GEMINI_API_KEY – Gemini Architect is not configured");
-  }
+  const mode     = getAuthMode();
   const location = getLocationName();
-  if (!_client || _clientLocation !== location) {
-    _clientLocation = location;
-    logger.info("[geminiArchitect] initializing Gemini client", {
-      apiVersion: GEMINI_API_VERSION,
-      model: getModelName(),
+
+  if (mode === "unconfigured") {
+    throw new Error(
+      "Gemini is not configured – set GEMINI_API_KEY (Gemini API) " +
+      "or GOOGLE_CLOUD_PROJECT (Vertex AI)"
+    );
+  }
+
+  // Re-create the client only when the mode or location changes.
+  if (_client && _clientMode === mode && _clientLocation === location) {
+    return _client;
+  }
+
+  _clientMode     = mode;
+  _clientLocation = location;
+
+  if (mode === "vertex_ai") {
+    logger.info("[geminiArchitect] initializing Vertex AI client", {
+      authMode: "vertex_ai",
+      project:  process.env.GOOGLE_CLOUD_PROJECT,
+      location,
+      model:    getModelName(),
+    });
+    // Vertex AI: use project + location via ADC; do NOT pass apiKey.
+    _client = new GoogleGenAI({
+      vertexai: true,
+      project:  process.env.GOOGLE_CLOUD_PROJECT,
       location,
     });
+  } else {
+    logger.info("[geminiArchitect] initializing Gemini API client", {
+      authMode:   "gemini_api",
+      apiVersion: GEMINI_API_VERSION,
+      model:      getModelName(),
+    });
+    // Gemini API: use API key only; do NOT pass project/location.
     _client = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY,
+      apiKey:      process.env.GEMINI_API_KEY,
       httpOptions: { apiVersion: GEMINI_API_VERSION },
-      location,
     });
   }
+
   return _client;
 }
 
@@ -2148,12 +2230,15 @@ async function runGeminiArchitectReview(payload = {}) {
  */
 async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1024, timeoutMs = 25000 } = {}) {
   const configuredLocation = getLocationName();
+  const authDiag           = getAuthDiagnostics();
+
   if (!isGeminiConfigured()) {
-    logger.warn("[geminiArchitect] runGeminiChat – GEMINI_API_KEY not set");
+    logger.warn("[geminiArchitect] runGeminiChat – not configured", { authMode: authDiag.authModeUsed });
     const primaryModel = getModelName();
     return {
       success: false, text: "", error: "GEMINI_NOT_CONFIGURED", errorCategory: "config",
       primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, configuredLocation,
+      ...authDiag,
     };
   }
   if (!userMessage || !userMessage.trim()) {
@@ -2161,6 +2246,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
     return {
       success: false, text: "", error: "NO_INPUT", errorCategory: "input",
       primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, configuredLocation,
+      ...authDiag,
     };
   }
 
@@ -2259,7 +2345,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         safetyReason: safetyCheck.reason,
         safetyRatings: safetyCheck.safetyRatings,
       });
-      return {
+    return {
         success: false,
         text: "",
         error: `SAFETY_BLOCK: ${safetyCheck.reason}`,
@@ -2270,6 +2356,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         fallbackModelUsed,
         finalModelUsed: finalModel,
         configuredLocation,
+        ...authDiag,
       };
     }
 
@@ -2287,6 +2374,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       return {
         success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response",
         primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation,
+        ...authDiag,
       };
     }
 
@@ -2298,7 +2386,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       textLength: text.length,
       textPreview: text.slice(0, 80),
     });
-    return { success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation };
+    return { success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation, ...authDiag };
   }
 
   // ── Main request flow: primary model with retry, then optional fallback ──
@@ -2364,6 +2452,7 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       fallbackModelUsed,
       finalModelUsed: finalModel,
       configuredLocation,
+      ...authDiag,
     };
   }
 }
@@ -2374,6 +2463,8 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
 
 module.exports = {
   isGeminiConfigured,
+  getAuthMode,
+  getAuthDiagnostics,
   getLocationName,
   runGeminiArchitectReview,
   runGeminiChat,
