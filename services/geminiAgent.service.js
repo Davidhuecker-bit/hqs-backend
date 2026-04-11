@@ -352,7 +352,8 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   });
 
   const maxTokens = actionIntent === "prepare_patch" ? 2048 : 1024;
-  const timeoutMs = actionIntent === "prepare_patch" ? 40000 : 25000;
+  // gemini-2.5-flash is a thinking model – allow extra time for the reasoning phase.
+  const timeoutMs = actionIntent === "prepare_patch" ? 90000 : 60000;
 
   const result = await runGeminiChat({
     systemPrompt,

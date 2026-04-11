@@ -2531,9 +2531,12 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
 
   // ── Process a successful raw Gemini response into the public return shape ──
   function _processResponse(response, finalModel, fallbackModelUsed) {
-    const candidateCount     = response?.candidates?.length ?? 0;
-    const firstFinishReason  = response?.candidates?.[0]?.finishReason ?? null;
-    const blockReason        = response?.promptFeedback?.blockReason ?? null;
+    // Normalize response: Vertex AI SDK may wrap candidates in a nested `.response` object.
+    const normalizedResponse = response?.response ?? response;
+    const candidateCount     = normalizedResponse?.candidates?.length ?? 0;
+    const firstFinishReason  = normalizedResponse?.candidates?.[0]?.finishReason ?? null;
+    const blockReason        = normalizedResponse?.promptFeedback?.blockReason ?? null;
+    const rawResponsePresent = response != null;
     // Merge auth diagnostics with the actual authModeUsed (may differ when provider fallback ran)
     const resolvedAuthDiag = { ...authDiag, authModeUsed, vertexFlagEnabled: authModeUsed === "vertex_ai" };
 
@@ -2543,10 +2546,11 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       apiVersion: GEMINI_API_VERSION,
       fallbackModelUsed,
       providerFallbackUsed,
+      rawResponsePresent,
       candidateCount,
       firstFinishReason,
       blockReason,
-      hasPromptFeedback: Boolean(response?.promptFeedback),
+      hasPromptFeedback: Boolean(normalizedResponse?.promptFeedback),
     });
 
     const safetyCheck = detectGeminiSafetyBlock(response);
@@ -2565,6 +2569,8 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         errorCategory: "safety",
         safetyBlocked: true,
         safetyReason: safetyCheck.reason,
+        rawResponsePresent,
+        extractedTextLength: 0,
         primaryModel,
         fallbackModelUsed,
         finalModelUsed: finalModel,
@@ -2583,10 +2589,12 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         candidateCount,
         firstFinishReason,
         blockReason,
+        rawResponsePresent,
         responseKeys: response ? Object.keys(response).join(",") : "null",
       });
       return {
-        success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response",
+        success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "empty_model_response",
+        rawResponsePresent, extractedTextLength: 0,
         primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
         fallbackUsed: providerFallbackUsed, configuredLocation, ...resolvedAuthDiag,
       };
@@ -2598,11 +2606,13 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       apiVersion: GEMINI_API_VERSION,
       fallbackModelUsed,
       providerFallbackUsed,
-      textLength: text.length,
+      rawResponsePresent,
+      extractedTextLength: text.length,
       textPreview: text.slice(0, 80),
     });
     return {
-      success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
+      success: true, text, rawResponsePresent, extractedTextLength: text.length,
+      primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
       fallbackUsed: providerFallbackUsed, configuredLocation, ...resolvedAuthDiag,
     };
   }

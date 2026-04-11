@@ -1840,7 +1840,8 @@ const _conferenceAgentRegistry = new Map([
           userMessage,
           history: opts.history || undefined,
           maxTokens: opts.maxTokens || 512,
-          timeoutMs: opts.timeoutMs || 22000,
+          // gemini-2.5-flash is a thinking model – allow up to 60 s for reasoning
+          timeoutMs: opts.timeoutMs || 60000,
         });
         if (result.success && result.text.trim()) return result.text.trim();
         const errDetail = result.errorCategory
