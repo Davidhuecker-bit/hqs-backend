@@ -17,17 +17,25 @@ const GEMINI_API_VERSION = "v1beta";
  * Determine which auth mode is active.
  *
  * Priority:
- *  1. "vertex_ai"  – when GOOGLE_CLOUD_PROJECT is set (uses ADC / service account)
- *  2. "gemini_api" – when GEMINI_API_KEY is set
- *  3. "unconfigured" – neither variable is present
+ *  1. GEMINI_AUTH_MODE env var (explicit main switch – "vertex_ai" | "gemini_api")
+ *  2. Auto-detect: "vertex_ai" when GOOGLE_CLOUD_PROJECT is set (Vertex AI / ADC)
+ *  3. Auto-detect: "gemini_api" when GEMINI_API_KEY is set
+ *  4. "unconfigured" – none of the above
  *
  * The two modes are mutually exclusive at the client level:
- *  - "gemini_api"  → GoogleGenAI({ apiKey, httpOptions })          – NO project/location
  *  - "vertex_ai"   → GoogleGenAI({ vertexai:true, project, location }) – NO apiKey
+ *  - "gemini_api"  → GoogleGenAI({ apiKey, httpOptions })              – NO project/location
+ *
+ * To force Vertex AI as primary: set GEMINI_AUTH_MODE=vertex_ai
+ * Gemini API is only used as optional fallback when ENABLE_GEMINI_FALLBACK=true.
  *
  * @returns {"vertex_ai"|"gemini_api"|"unconfigured"}
  */
 function getAuthMode() {
+  const explicit = (process.env.GEMINI_AUTH_MODE || "").toLowerCase().trim();
+  if (explicit === "vertex_ai")  return "vertex_ai";
+  if (explicit === "gemini_api") return "gemini_api";
+  // Auto-detect: Vertex AI is preferred when GOOGLE_CLOUD_PROJECT is set
   if (process.env.GOOGLE_CLOUD_PROJECT) return "vertex_ai";
   if (process.env.GEMINI_API_KEY)       return "gemini_api";
   return "unconfigured";
@@ -63,6 +71,7 @@ function getLocationName() {
  *   authModeUsed: string,
  *   projectConfigured: boolean,
  *   locationConfigured: boolean,
+ *   vertexFlagEnabled: boolean,
  *   apiKeyPresent: boolean,
  * }}
  */
@@ -75,6 +84,7 @@ function getAuthDiagnostics() {
     locationConfigured: Boolean(
       process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION
     ),
+    vertexFlagEnabled: authMode === "vertex_ai",
     apiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
   };
 }
@@ -475,6 +485,99 @@ function _isModelFallbackWorthy(err) {
   ) return true;
 
   return false;
+}
+
+/**
+ * Determines whether a Vertex AI error should trigger a provider-level fallback
+ * to the Gemini API (when ENABLE_GEMINI_FALLBACK=true and GEMINI_API_KEY is set).
+ *
+ * Triggers fallback for:
+ *  - 404 / model not available / not supported in this region
+ *  - 503 / provider unavailable / temporary overload
+ *  - Region or endpoint connectivity issues
+ *
+ * Never triggers fallback for:
+ *  - 400 / payload, schema, or invalid argument errors (client-side problem)
+ *  - 401 / 403 / auth / permission errors
+ *  - 429 / rate-limit / quota errors
+ *  - Timeout errors
+ *  - Safety/policy blocks (handled at response level, not here)
+ *
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function _isProviderFallbackWorthy(err) {
+  const httpStatus = err.status || err.statusCode || null;
+  const msg        = String(err.message || "").toLowerCase();
+
+  // Never fallback for client-side / bad request errors
+  if (
+    httpStatus === 400 ||
+    msg.includes("invalid argument") || msg.includes("bad request") ||
+    msg.includes("invalid json") || msg.includes("schema")
+  ) return false;
+
+  // Never fallback for auth / permission errors
+  if (
+    httpStatus === 401 || httpStatus === 403 ||
+    msg.includes("unauthorized") || msg.includes("api key") ||
+    msg.includes("permission") || msg.includes("forbidden") ||
+    msg.includes("unauthenticated")
+  ) return false;
+
+  // Never fallback for rate-limit errors
+  if (
+    httpStatus === 429 ||
+    msg.includes("quota") || msg.includes("rate limit") ||
+    msg.includes("too many requests") || msg.includes("ratelimit")
+  ) return false;
+
+  // Never fallback for client-side timeout
+  if (msg.includes("gemini_timeout") || msg.includes("timeout") || msg.includes("deadline")) {
+    return false;
+  }
+
+  // Fallback for provider unavailable / temporary overload
+  if (
+    httpStatus === 503 ||
+    msg.includes("service unavailable") || msg.includes("serviceunavailable") ||
+    msg.includes("overloaded") || msg.includes("unavailable") ||
+    msg.includes("high demand") || msg.includes("capacity")
+  ) return true;
+
+  // Fallback for model not available / not found / region not supported
+  if (
+    httpStatus === 404 ||
+    msg.includes("not found") || msg.includes("model not found") ||
+    msg.includes("not available") || msg.includes("not supported") ||
+    msg.includes("does not exist") || msg.includes("no longer available") ||
+    msg.includes("location") || msg.includes("region") || msg.includes("endpoint")
+  ) return true;
+
+  // Fallback for network / connectivity issues (region endpoint problems)
+  if (
+    err.code === "ENOTFOUND" || err.code === "ECONNREFUSED" ||
+    err.code === "ECONNRESET" || err.code === "ETIMEDOUT" ||
+    msg.includes("enotfound") || msg.includes("econnrefused")
+  ) return true;
+
+  return false;
+}
+
+/**
+ * Creates a temporary Gemini API client for provider-level fallback.
+ * This client is NOT cached – it is only used when Vertex AI fails and
+ * ENABLE_GEMINI_FALLBACK=true is set together with a valid GEMINI_API_KEY.
+ *
+ * apiKey and vertexai params are never mixed in the same constructor call.
+ *
+ * @returns {GoogleGenAI}
+ */
+function _createGeminiApiClient() {
+  return new GoogleGenAI({
+    apiKey:      process.env.GEMINI_API_KEY,
+    httpOptions: { apiVersion: GEMINI_API_VERSION },
+  });
 }
 
 /**
@@ -2223,7 +2326,14 @@ async function runGeminiArchitectReview(payload = {}) {
  *   primaryModel: string,
  *   fallbackModelUsed: boolean,
  *   finalModelUsed: string,
+ *   fallbackUsed: boolean,
  *   configuredLocation: string,
+ *   authModeRequested: string,
+ *   authModeUsed: string,
+ *   vertexFlagEnabled: boolean,
+ *   projectConfigured: boolean,
+ *   locationConfigured: boolean,
+ *   apiKeyPresent: boolean,
  *   error?: string,
  *   errorCategory?: string
  * }>}
@@ -2237,16 +2347,16 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
     const primaryModel = getModelName();
     return {
       success: false, text: "", error: "GEMINI_NOT_CONFIGURED", errorCategory: "config",
-      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, configuredLocation,
-      ...authDiag,
+      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, fallbackUsed: false,
+      configuredLocation, ...authDiag,
     };
   }
   if (!userMessage || !userMessage.trim()) {
     const primaryModel = getModelName();
     return {
       success: false, text: "", error: "NO_INPUT", errorCategory: "input",
-      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, configuredLocation,
-      ...authDiag,
+      primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, fallbackUsed: false,
+      configuredLocation, ...authDiag,
     };
   }
 
@@ -2295,8 +2405,8 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
   }
 
   // ── Single generateContent call for a specific model (with timeout) ──
-  async function _callModel(model) {
-    const client = getGeminiClient();
+  async function _callModel(model, overrideClient) {
+    const client = overrideClient || getGeminiClient();
     let timerId;
     const timeoutPromise = new Promise((_, reject) => {
       timerId = setTimeout(() => reject(new Error("GEMINI_TIMEOUT")), timeoutMs);
@@ -2324,12 +2434,15 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
     const candidateCount     = response?.candidates?.length ?? 0;
     const firstFinishReason  = response?.candidates?.[0]?.finishReason ?? null;
     const blockReason        = response?.promptFeedback?.blockReason ?? null;
+    // Merge auth diagnostics with the actual authModeUsed (may differ when provider fallback ran)
+    const resolvedAuthDiag = { ...authDiag, authModeUsed, vertexFlagEnabled: authModeUsed === "vertex_ai" };
 
     logger.info("[geminiArchitect] runGeminiChat – response received", {
       codepath: "runGeminiChat",
       model: finalModel,
       apiVersion: GEMINI_API_VERSION,
       fallbackModelUsed,
+      providerFallbackUsed,
       candidateCount,
       firstFinishReason,
       blockReason,
@@ -2355,8 +2468,9 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
         primaryModel,
         fallbackModelUsed,
         finalModelUsed: finalModel,
+        fallbackUsed: providerFallbackUsed,
         configuredLocation,
-        ...authDiag,
+        ...resolvedAuthDiag,
       };
     }
 
@@ -2373,8 +2487,8 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       });
       return {
         success: false, text: "", error: "EMPTY_RESPONSE", errorCategory: "response",
-        primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation,
-        ...authDiag,
+        primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
+        fallbackUsed: providerFallbackUsed, configuredLocation, ...resolvedAuthDiag,
       };
     }
 
@@ -2383,21 +2497,29 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       model: finalModel,
       apiVersion: GEMINI_API_VERSION,
       fallbackModelUsed,
+      providerFallbackUsed,
       textLength: text.length,
       textPreview: text.slice(0, 80),
     });
-    return { success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel, configuredLocation, ...authDiag };
+    return {
+      success: true, text, primaryModel, fallbackModelUsed, finalModelUsed: finalModel,
+      fallbackUsed: providerFallbackUsed, configuredLocation, ...resolvedAuthDiag,
+    };
   }
 
   // ── Main request flow: primary model with retry, then optional fallback ──
-  let fallbackModelUsed = false;
-  let finalModel        = primaryModel;
+  let fallbackModelUsed  = false;
+  let finalModel         = primaryModel;
+  // Provider-level fallback tracking (vertex_ai → gemini_api)
+  let providerFallbackUsed = false;
+  let authModeUsed         = authDiag.authModeRequested;
 
   try {
     logger.info("[geminiArchitect] runGeminiChat – calling generateContent", {
       codepath: "runGeminiChat",
       model: primaryModel,
       apiVersion: GEMINI_API_VERSION,
+      authMode: authModeUsed,
     });
 
     let response;
@@ -2431,12 +2553,51 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
     const errMsg        = String(err.message || "").slice(0, 200);
     const errorCategory = _classifyError(err);
 
+    // ── Provider-level fallback: vertex_ai → gemini_api ──
+    // Triggered when: Vertex AI is the primary mode, ENABLE_GEMINI_FALLBACK=true,
+    // GEMINI_API_KEY is present, and the error is a provider/availability issue.
+    // Never triggered for auth/permission/payload/safety errors.
+    if (
+      authDiag.authModeRequested === "vertex_ai" &&
+      process.env.ENABLE_GEMINI_FALLBACK === "true" &&
+      process.env.GEMINI_API_KEY &&
+      _isProviderFallbackWorthy(err)
+    ) {
+      logger.warn("[geminiArchitect] runGeminiChat – Vertex AI failed, trying Gemini API provider fallback", {
+        codepath: "runGeminiChat",
+        authModeRequested: "vertex_ai",
+        fallbackProvider: "gemini_api",
+        reason: errMsg.slice(0, 80),
+        httpStatus,
+      });
+      try {
+        const fbClient = _createGeminiApiClient();
+        providerFallbackUsed = true;
+        authModeUsed         = "gemini_api";
+        // Single attempt with primary model via Gemini API (no model switch on provider fallback)
+        const fbResponse = await _callModel(primaryModel, fbClient);
+        return _processResponse(fbResponse, primaryModel, false);
+      } catch (fbErr) {
+        logger.warn("[geminiArchitect] runGeminiChat – Gemini API provider fallback also failed", {
+          codepath: "runGeminiChat",
+          reason: String(fbErr.message || "").slice(0, 80),
+          httpStatus: fbErr.status || fbErr.statusCode || null,
+        });
+        // Reset – provider fallback did not succeed
+        providerFallbackUsed = false;
+        authModeUsed         = authDiag.authModeRequested;
+      }
+    }
+
     logger.warn("[geminiArchitect] runGeminiChat – error", {
       codepath: "runGeminiChat",
       apiVersion: GEMINI_API_VERSION,
       primaryModel,
       configuredLocation,
+      authModeRequested: authDiag.authModeRequested,
+      authModeUsed,
       fallbackModel: fallbackModelUsed ? GEMINI_FALLBACK_MODEL : null,
+      providerFallbackUsed,
       httpStatus,
       errorCode: err.code || null,
       errorCategory,
@@ -2451,8 +2612,11 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       primaryModel,
       fallbackModelUsed,
       finalModelUsed: finalModel,
+      fallbackUsed: providerFallbackUsed,
       configuredLocation,
       ...authDiag,
+      authModeUsed,
+      vertexFlagEnabled: authModeUsed === "vertex_ai",
     };
   }
 }
