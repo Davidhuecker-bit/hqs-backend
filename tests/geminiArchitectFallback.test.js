@@ -496,6 +496,11 @@ describe("Provider-level fallback (vertex_ai → gemini_api)", () => {
     process.env.GOOGLE_CLOUD_PROJECT  = "my-project";
     process.env.ENABLE_GEMINI_FALLBACK = "true";
     process.env.GEMINI_API_KEY        = "fallback-key";
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({
+      type: "service_account",
+      project_id: "my-project",
+      client_email: "test@my-project.iam.gserviceaccount.com",
+    });
 
     // Re-mock after resetModules
     jest.mock("@google/genai", () => ({
@@ -513,6 +518,7 @@ describe("Provider-level fallback (vertex_ai → gemini_api)", () => {
     delete process.env.GEMINI_AUTH_MODE;
     delete process.env.GOOGLE_CLOUD_PROJECT;
     delete process.env.ENABLE_GEMINI_FALLBACK;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
     jest.resetModules();
     // Restore original mock
     ({ GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL, runGeminiChat } =
@@ -594,5 +600,96 @@ describe("Provider-level fallback (vertex_ai → gemini_api)", () => {
 
     expect(result.success).toBe(false);
     expect(result.fallbackUsed).toBe(false);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   15. Vertex AI credential guard
+   ═══════════════════════════════════════════════════════════ */
+
+describe("Vertex AI credential guard (GOOGLE_APPLICATION_CREDENTIALS_JSON)", () => {
+  let runGeminiChatFresh;
+  let getAuthDiagnosticsFresh;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.GEMINI_AUTH_MODE     = "vertex_ai";
+    process.env.GOOGLE_CLOUD_PROJECT = "my-project";
+
+    jest.mock("@google/genai", () => ({
+      GoogleGenAI: jest.fn().mockImplementation(() => ({
+        models: {
+          generateContent: jest.fn((...args) => mockGenerateContent(...args)),
+        },
+      })),
+    }));
+
+    ({
+      runGeminiChat: runGeminiChatFresh,
+      getAuthDiagnostics: getAuthDiagnosticsFresh,
+    } = require("../services/geminiArchitect.service"));
+  });
+
+  afterEach(() => {
+    delete process.env.GEMINI_AUTH_MODE;
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    jest.resetModules();
+    ({ runGeminiChat } = require("../services/geminiArchitect.service"));
+  });
+
+  test("missing GOOGLE_APPLICATION_CREDENTIALS_JSON → errorCategory=vertex_credentials_missing", async () => {
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u" });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCategory).toBe("vertex_credentials_missing");
+    expect(result.vertexCredentialsPresent).toBe(false);
+  });
+
+  test("invalid JSON in GOOGLE_APPLICATION_CREDENTIALS_JSON → errorCategory=vertex_credentials_invalid", async () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = "not-valid-json{{{";
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u" });
+
+    expect(result.success).toBe(false);
+    expect(result.errorCategory).toBe("vertex_credentials_invalid");
+    expect(result.vertexCredentialsPresent).toBe(false);
+  });
+
+  test("valid GOOGLE_APPLICATION_CREDENTIALS_JSON → proceeds to API call", async () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({
+      type: "service_account",
+      project_id: "my-project",
+      client_email: "test@my-project.iam.gserviceaccount.com",
+    });
+    mockGenerateContent = jest.fn().mockResolvedValue(makeOkResponse("vertex-ok"));
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u" });
+
+    expect(result.success).toBe(true);
+    expect(result.text).toBe("vertex-ok");
+    expect(result.vertexCredentialsPresent).toBe(true);
+    expect(result.authModeUsed).toBe("vertex_ai");
+  });
+
+  test("getAuthDiagnostics: vertexCredentialsPresent=false when var is missing", () => {
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+
+    const diag = getAuthDiagnosticsFresh();
+
+    expect(diag.vertexCredentialsPresent).toBe(false);
+  });
+
+  test("getAuthDiagnostics: vertexCredentialsPresent=true when var is valid JSON object", () => {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({
+      type: "service_account",
+      client_email: "svc@project.iam.gserviceaccount.com",
+    });
+
+    const diag = getAuthDiagnosticsFresh();
+
+    expect(diag.vertexCredentialsPresent).toBe(true);
   });
 });

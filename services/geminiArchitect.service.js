@@ -46,9 +46,36 @@ function isGeminiConfigured() {
   return mode === "gemini_api" || mode === "vertex_ai";
 }
 
-let _client     = null;
-let _clientMode = null;
+let _client         = null;
+let _clientMode     = null;
 let _clientLocation = null;
+let _clientCredSig  = null; // tracks whether explicit credentials were used
+
+/**
+ * Parse the GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable.
+ *
+ * Returns:
+ *  { credentials: Object, status: "valid"   } – parsed successfully
+ *  { credentials: null,   status: "missing" } – env var not set
+ *  { credentials: null,   status: "invalid" } – env var set but not valid JSON
+ *
+ * @returns {{ credentials: Object|null, status: "valid"|"missing"|"invalid" }}
+ */
+function _parseVertexCredentials() {
+  const raw = (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON || "").trim();
+  if (!raw) {
+    return { credentials: null, status: "missing" };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { credentials: null, status: "invalid" };
+    }
+    return { credentials: parsed, status: "valid" };
+  } catch (_) {
+    return { credentials: null, status: "invalid" };
+  }
+}
 
 /**
  * Returns the Google Cloud / Vertex AI location to use.
@@ -73,10 +100,12 @@ function getLocationName() {
  *   locationConfigured: boolean,
  *   vertexFlagEnabled: boolean,
  *   apiKeyPresent: boolean,
+ *   vertexCredentialsPresent: boolean,
  * }}
  */
 function getAuthDiagnostics() {
-  const authMode = getAuthMode();
+  const authMode  = getAuthMode();
+  const credResult = _parseVertexCredentials();
   return {
     authModeRequested: authMode,
     authModeUsed:      authMode,
@@ -84,8 +113,9 @@ function getAuthDiagnostics() {
     locationConfigured: Boolean(
       process.env.GOOGLE_CLOUD_LOCATION || process.env.GEMINI_LOCATION
     ),
-    vertexFlagEnabled: authMode === "vertex_ai",
-    apiKeyPresent: Boolean(process.env.GEMINI_API_KEY),
+    vertexFlagEnabled:         authMode === "vertex_ai",
+    apiKeyPresent:             Boolean(process.env.GEMINI_API_KEY),
+    vertexCredentialsPresent:  credResult.status === "valid",
   };
 }
 
@@ -100,27 +130,55 @@ function getGeminiClient() {
     );
   }
 
-  // Re-create the client only when the mode or location changes.
-  if (_client && _clientMode === mode && _clientLocation === location) {
+  // For Vertex AI, load explicit credentials from env (preferred over ADC).
+  let credSig = "adc"; // default: rely on Application Default Credentials
+  let vertexCredentials = null;
+  if (mode === "vertex_ai") {
+    const credResult = _parseVertexCredentials();
+    if (credResult.status === "valid") {
+      vertexCredentials = credResult.credentials;
+      // Use email as cache key (unique per service account; avoids storing full JSON).
+      credSig = credResult.credentials.client_email || "explicit";
+    }
+  }
+
+  // Re-create the client only when the mode, location, or credentials change.
+  if (
+    _client &&
+    _clientMode     === mode &&
+    _clientLocation === location &&
+    _clientCredSig  === credSig
+  ) {
     return _client;
   }
 
   _clientMode     = mode;
   _clientLocation = location;
+  _clientCredSig  = credSig;
 
   if (mode === "vertex_ai") {
+    const authInfo = vertexCredentials
+      ? `explicit credentials (${credSig})`
+      : "Application Default Credentials (ADC)";
     logger.info("[geminiArchitect] initializing Vertex AI client", {
-      authMode: "vertex_ai",
-      project:  process.env.GOOGLE_CLOUD_PROJECT,
+      authMode:  "vertex_ai",
+      project:   process.env.GOOGLE_CLOUD_PROJECT,
       location,
-      model:    getModelName(),
+      model:     getModelName(),
+      credAuth:  authInfo,
     });
-    // Vertex AI: use project + location via ADC; do NOT pass apiKey.
-    _client = new GoogleGenAI({
+    const vertexOptions = {
       vertexai: true,
       project:  process.env.GOOGLE_CLOUD_PROJECT,
       location,
-    });
+    };
+    if (vertexCredentials) {
+      vertexOptions.googleAuthOptions = {
+        credentials: vertexCredentials,
+        scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+      };
+    }
+    _client = new GoogleGenAI(vertexOptions);
   } else {
     logger.info("[geminiArchitect] initializing Gemini API client", {
       authMode:   "gemini_api",
@@ -2357,6 +2415,38 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
       configuredLocation, ...authDiag,
     };
   }
+
+  // ── Vertex AI credential guard – fail fast when explicit credentials are absent or broken ──
+  if (authDiag.authModeUsed === "vertex_ai") {
+    const credResult = _parseVertexCredentials();
+    if (credResult.status === "missing") {
+      logger.warn("[geminiArchitect] runGeminiChat – vertex credentials missing", {
+        errorCategory: "vertex_credentials_missing",
+      });
+      const primaryModel = getModelName();
+      return {
+        success: false, text: "",
+        error: "GOOGLE_APPLICATION_CREDENTIALS_JSON is not set",
+        errorCategory: "vertex_credentials_missing",
+        primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, fallbackUsed: false,
+        configuredLocation, ...authDiag,
+      };
+    }
+    if (credResult.status === "invalid") {
+      logger.warn("[geminiArchitect] runGeminiChat – vertex credentials invalid", {
+        errorCategory: "vertex_credentials_invalid",
+      });
+      const primaryModel = getModelName();
+      return {
+        success: false, text: "",
+        error: "GOOGLE_APPLICATION_CREDENTIALS_JSON is set but not valid JSON",
+        errorCategory: "vertex_credentials_invalid",
+        primaryModel, fallbackModelUsed: false, finalModelUsed: primaryModel, fallbackUsed: false,
+        configuredLocation, ...authDiag,
+      };
+    }
+  }
+
   if (!userMessage || !userMessage.trim()) {
     const primaryModel = getModelName();
     return {
