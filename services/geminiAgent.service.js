@@ -352,7 +352,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   });
 
   const maxTokens = actionIntent === "prepare_patch" ? 2048 : 1024;
-  // gemini-1.5-flash – allow extra time for complex operations (prepare_patch up to 90 s, others up to 60 s).
+  // gemini-2.5-flash – allow extra time for complex operations (prepare_patch up to 90 s, others up to 60 s).
   const timeoutMs = actionIntent === "prepare_patch" ? 90000 : 60000;
 
   const result = await runGeminiChat({
@@ -770,7 +770,7 @@ function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
     assistantReply:   assistantReply || "",
     metadata: {
-      model:         process.env.GEMINI_MODEL || "gemini-1.5-flash",
+      model:         process.env.GEMINI_MODEL || "gemini-2.5-flash",
       apiVersion:    "v1",
       messageCount:  conversation.messageCount,
       historyLength: conversation.messages.length,

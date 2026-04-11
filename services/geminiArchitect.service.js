@@ -208,8 +208,8 @@ function getGeminiClient() {
   return _client;
 }
 
-const GEMINI_PRIMARY_MODEL  = "gemini-1.5-flash";
-const GEMINI_FALLBACK_MODEL = "gemini-1.5-flash-8b";
+const GEMINI_PRIMARY_MODEL  = "gemini-2.5-flash";
+const GEMINI_FALLBACK_MODEL = "gemini-2.0-flash";
 
 function getModelName() {
   return process.env.GEMINI_MODEL || GEMINI_PRIMARY_MODEL;

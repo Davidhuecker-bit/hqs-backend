@@ -15732,7 +15732,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     agent,
     codepath: agent === "gemini" ? "runGeminiChat / @google/genai / models.generateContent" : "createDeepSeekChatCompletion",
     apiVersion: agent === "gemini" ? "v1 (httpOptions.apiVersion)" : "n/a",
-    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-1.5-flash") : "deepseek-chat",
+    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.5-flash") : "deepseek-chat",
     isConfigured: configured,
     messageIntent,
     conferenceId: session.conferenceId,
