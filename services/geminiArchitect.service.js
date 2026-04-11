@@ -2531,7 +2531,9 @@ async function runGeminiChat({ systemPrompt, userMessage, history, maxTokens = 1
 
   // ── Process a successful raw Gemini response into the public return shape ──
   function _processResponse(response, finalModel, fallbackModelUsed) {
-    // Normalize response: Vertex AI SDK may wrap candidates in a nested `.response` object.
+    // Normalize response: both the Vertex AI and Gemini API SDKs may wrap candidates in
+    // a nested `.response` object; using this fallback ensures consistent candidate access
+    // regardless of which SDK version or provider is active.
     const normalizedResponse = response?.response ?? response;
     const candidateCount     = normalizedResponse?.candidates?.length ?? 0;
     const firstFinishReason  = normalizedResponse?.candidates?.[0]?.finishReason ?? null;

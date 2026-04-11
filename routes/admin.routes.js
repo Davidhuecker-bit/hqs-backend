@@ -6572,7 +6572,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         httpStatus:                200,
         provider:                  authModeUsed,
         model:                     result.finalModelUsed || result.primaryModel,
-        rawResponsePresent:        result.rawResponsePresent ?? true,
+        rawResponsePresent:        result.rawResponsePresent ?? false,
         extractedTextLength:       result.extractedTextLength ?? result.text.length,
         returnedTextLength:        result.text.length,
         // ──────────────────────────
