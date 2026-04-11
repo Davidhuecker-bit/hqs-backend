@@ -488,7 +488,6 @@ describe("vertexFlagEnabled and fallbackUsed fields", () => {
 
 describe("Provider-level fallback (vertex_ai → gemini_api)", () => {
   let runGeminiChatFresh;
-  let { GoogleGenAI } = require("@google/genai");
 
   // Each test in this group sets up vertex_ai mode with ENABLE_GEMINI_FALLBACK=true
   beforeEach(() => {

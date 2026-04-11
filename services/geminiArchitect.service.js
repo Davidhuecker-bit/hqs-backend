@@ -574,8 +574,14 @@ function _isProviderFallbackWorthy(err) {
  * @returns {GoogleGenAI}
  */
 function _createGeminiApiClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      "_createGeminiApiClient: GEMINI_API_KEY is not set – cannot create Gemini API fallback client"
+    );
+  }
   return new GoogleGenAI({
-    apiKey:      process.env.GEMINI_API_KEY,
+    apiKey,
     httpOptions: { apiVersion: GEMINI_API_VERSION },
   });
 }
