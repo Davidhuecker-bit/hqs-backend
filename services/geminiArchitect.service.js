@@ -29,7 +29,7 @@ const GEMINI_API_VERSION = "v1beta";
  */
 function getAuthMode() {
   if (process.env.GOOGLE_CLOUD_PROJECT) return "vertex_ai";
-  if (process.env.GEMINI_API_KEY)        return "gemini_api";
+  if (process.env.GEMINI_API_KEY)       return "gemini_api";
   return "unconfigured";
 }
 

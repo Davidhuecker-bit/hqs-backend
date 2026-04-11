@@ -6542,11 +6542,11 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         usedFallback: result.fallbackModelUsed,
         response: result.text,
         textLength: result.text.length,
-        authModeRequested: result.authModeRequested || authDiag.authModeRequested,
-        authModeUsed:      result.authModeUsed      || authDiag.authModeUsed,
+        authModeRequested:  result.authModeRequested  || authDiag.authModeRequested,
+        authModeUsed:       result.authModeUsed       || authDiag.authModeUsed,
         projectConfigured:  result.projectConfigured  ?? authDiag.projectConfigured,
         locationConfigured: result.locationConfigured ?? authDiag.locationConfigured,
-        apiKeyPresent:      result.apiKeyPresent      ?? authDiag.apiKeyPresent,
+        apiKeyPresent:      result.apiKeyPresent       ?? authDiag.apiKeyPresent,
         errorCategory: null,
       });
     }
@@ -6563,11 +6563,11 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       usedFallback: result.fallbackModelUsed,
       error: result.error || "EMPTY_RESPONSE",
       errorCategory: result.errorCategory,
-      authModeRequested: result.authModeRequested || authDiag.authModeRequested,
-      authModeUsed:      result.authModeUsed      || authDiag.authModeUsed,
+      authModeRequested:  result.authModeRequested  || authDiag.authModeRequested,
+      authModeUsed:       result.authModeUsed       || authDiag.authModeUsed,
       projectConfigured:  result.projectConfigured  ?? authDiag.projectConfigured,
       locationConfigured: result.locationConfigured ?? authDiag.locationConfigured,
-      apiKeyPresent:      result.apiKeyPresent      ?? authDiag.apiKeyPresent,
+      apiKeyPresent:      result.apiKeyPresent       ?? authDiag.apiKeyPresent,
     });
   } catch (error) {
     logger.error("[admin] deepseek/agent-bridge/gemini-smoke-test error", {
