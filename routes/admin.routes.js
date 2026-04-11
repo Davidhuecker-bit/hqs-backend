@@ -6493,12 +6493,12 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "configured": true,
      "codepath": "runGeminiChat / @google/genai / models.generateContent",
      "apiVersion": "v1beta",          // "vertex" when Vertex AI is active
-     "configuredLocation": "us-central1",
+     "configuredLocation": "us-east4",
      "authModeRequested": "vertex_ai",  // "vertex_ai" | "gemini_api" | "unconfigured"
      "authModeUsed": "vertex_ai",       // may differ if provider fallback ran
      "httpStatus": 200,                 // 200 on success; Gemini API HTTP error code on failure
      "provider": "vertex_ai",           // same as authModeUsed
-     "model": "gemini-2.5-flash",       // finalModelUsed
+     "model": "gemini-1.5-flash",       // finalModelUsed
      "rawResponsePresent": true,        // true when a Gemini response object was received
      "extractedTextLength": 2,          // chars extracted from Gemini candidates/parts
      "returnedTextLength": 2,           // chars in the text returned to the caller
@@ -6507,9 +6507,9 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "locationConfigured": true,
      "vertexFlagEnabled": true,         // true when vertexai:true was used in client
      "apiKeyPresent": false,
-     "primaryModel": "gemini-2.5-flash",
+     "primaryModel": "gemini-1.5-flash",
      "fallbackModelUsed": false,
-     "finalModelUsed": "gemini-2.5-flash",
+     "finalModelUsed": "gemini-1.5-flash",
      "response": "OK",
      "textLength": 2,
      "errorCategory": null

@@ -1840,7 +1840,6 @@ const _conferenceAgentRegistry = new Map([
           userMessage,
           history: opts.history || undefined,
           maxTokens: opts.maxTokens || 512,
-          // gemini-2.5-flash is a thinking model – allow up to 60 s for reasoning
           timeoutMs: opts.timeoutMs || 60000,
         });
         if (result.success && result.text.trim()) return result.text.trim();
@@ -15732,7 +15731,7 @@ async function _generateConferenceReply(agent, messageIntent, userMessage, sessi
     agent,
     codepath: agent === "gemini" ? "runGeminiChat / @google/genai / models.generateContent" : "createDeepSeekChatCompletion",
     apiVersion: agent === "gemini" ? "v1 (httpOptions.apiVersion)" : "n/a",
-    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-2.5-flash") : "deepseek-chat",
+    model: agent === "gemini" ? (process.env.GEMINI_MODEL || "gemini-1.5-flash") : "deepseek-chat",
     isConfigured: configured,
     messageIntent,
     conferenceId: session.conferenceId,

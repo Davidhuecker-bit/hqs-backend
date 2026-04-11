@@ -92,12 +92,12 @@ afterAll(() => {
    ═══════════════════════════════════════════════════════════ */
 
 describe("Constants", () => {
-  test("GEMINI_PRIMARY_MODEL is gemini-2.5-flash", () => {
-    expect(GEMINI_PRIMARY_MODEL).toBe("gemini-2.5-flash");
+  test("GEMINI_PRIMARY_MODEL is gemini-1.5-flash", () => {
+    expect(GEMINI_PRIMARY_MODEL).toBe("gemini-1.5-flash");
   });
 
-  test("GEMINI_FALLBACK_MODEL is gemini-1.5-flash", () => {
-    expect(GEMINI_FALLBACK_MODEL).toBe("gemini-1.5-flash");
+  test("GEMINI_FALLBACK_MODEL is gemini-1.5-flash-8b", () => {
+    expect(GEMINI_FALLBACK_MODEL).toBe("gemini-1.5-flash-8b");
   });
 });
 
@@ -116,9 +116,9 @@ describe("Primary model success", () => {
 
     expect(result.success).toBe(true);
     expect(result.text).toBe("OK");
-    expect(result.primaryModel).toBe("gemini-2.5-flash");
+    expect(result.primaryModel).toBe("gemini-1.5-flash");
     expect(result.fallbackModelUsed).toBe(false);
-    expect(result.finalModelUsed).toBe("gemini-2.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
   });
 
   test("generateContent called with primary model name", async () => {
@@ -127,7 +127,7 @@ describe("Primary model success", () => {
     await runGeminiChat({ systemPrompt: "sys", userMessage: "hi" });
 
     expect(mockGenerateContent).toHaveBeenCalledTimes(1);
-    expect(mockGenerateContent.mock.calls[0][0].model).toBe("gemini-2.5-flash");
+    expect(mockGenerateContent.mock.calls[0][0].model).toBe("gemini-1.5-flash");
   });
 });
 
@@ -136,7 +136,7 @@ describe("Primary model success", () => {
    ═══════════════════════════════════════════════════════════ */
 
 describe("503 overloaded → fallback", () => {
-  test("falls back to gemini-1.5-flash after primary 503", async () => {
+  test("falls back to gemini-1.5-flash-8b after primary 503", async () => {
     const overloadErr = makeApiError("service overloaded", 503);
     mockGenerateContent = jest
       .fn()
@@ -155,13 +155,13 @@ describe("503 overloaded → fallback", () => {
 
     expect(result.success).toBe(true);
     expect(result.text).toBe("fallback-ok");
-    expect(result.primaryModel).toBe("gemini-2.5-flash");
+    expect(result.primaryModel).toBe("gemini-1.5-flash");
     expect(result.fallbackModelUsed).toBe(true);
-    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash-8b");
 
     // Last call must be for the fallback model
     const lastCall = mockGenerateContent.mock.calls.at(-1)[0];
-    expect(lastCall.model).toBe("gemini-1.5-flash");
+    expect(lastCall.model).toBe("gemini-1.5-flash-8b");
   });
 
   test("'overloaded' keyword in message triggers fallback", async () => {
@@ -175,7 +175,7 @@ describe("503 overloaded → fallback", () => {
 
     const result = await runGeminiChat({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
     expect(result.fallbackModelUsed).toBe(true);
-    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash-8b");
   });
 });
 
@@ -195,12 +195,12 @@ describe("404 model-not-found → direct fallback", () => {
 
     expect(result.success).toBe(true);
     expect(result.fallbackModelUsed).toBe(true);
-    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash-8b");
 
     // Primary called exactly once, then fallback once
     expect(mockGenerateContent).toHaveBeenCalledTimes(2);
-    expect(mockGenerateContent.mock.calls[0][0].model).toBe("gemini-2.5-flash");
-    expect(mockGenerateContent.mock.calls[1][0].model).toBe("gemini-1.5-flash");
+    expect(mockGenerateContent.mock.calls[0][0].model).toBe("gemini-1.5-flash");
+    expect(mockGenerateContent.mock.calls[1][0].model).toBe("gemini-1.5-flash-8b");
   });
 
   test("'not supported' message triggers fallback", async () => {
@@ -233,9 +233,9 @@ describe("Both models fail", () => {
     const result = await runGeminiChat({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
 
     expect(result.success).toBe(false);
-    expect(result.primaryModel).toBe("gemini-2.5-flash");
+    expect(result.primaryModel).toBe("gemini-1.5-flash");
     expect(result.fallbackModelUsed).toBe(true);
-    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash-8b");
   });
 });
 
@@ -253,11 +253,11 @@ describe("429 rate-limit – no fallback", () => {
     expect(result.success).toBe(false);
     expect(result.errorCategory).toBe("rate_limit");
     expect(result.fallbackModelUsed).toBe(false);
-    expect(result.finalModelUsed).toBe("gemini-2.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
 
     // All calls are to the primary model only
     for (const call of mockGenerateContent.mock.calls) {
-      expect(call[0].model).toBe("gemini-2.5-flash");
+      expect(call[0].model).toBe("gemini-1.5-flash");
     }
   });
 
@@ -285,7 +285,7 @@ describe("401 auth error – no fallback", () => {
     expect(result.success).toBe(false);
     expect(result.errorCategory).toBe("auth");
     expect(result.fallbackModelUsed).toBe(false);
-    expect(result.finalModelUsed).toBe("gemini-2.5-flash");
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
     expect(mockGenerateContent).toHaveBeenCalledTimes(1);
   });
 });
@@ -709,5 +709,112 @@ describe("Vertex AI credential guard (GOOGLE_APPLICATION_CREDENTIALS_JSON)", () 
     const diag = getAuthDiagnosticsFresh();
 
     expect(diag.vertexCredentialsPresent).toBe(true);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   16. Region fallback (ENABLE_GEMINI_REGION_FALLBACK=true)
+   ═══════════════════════════════════════════════════════════ */
+
+describe("Region fallback (ENABLE_GEMINI_REGION_FALLBACK=true)", () => {
+  let runGeminiChatFresh;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.GEMINI_AUTH_MODE             = "vertex_ai";
+    process.env.GOOGLE_CLOUD_PROJECT         = "my-project";
+    process.env.ENABLE_GEMINI_REGION_FALLBACK = "true";
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON = JSON.stringify({
+      type: "service_account",
+      project_id: "my-project",
+      client_email: "test@my-project.iam.gserviceaccount.com",
+    });
+
+    jest.mock("@google/genai", () => ({
+      GoogleGenAI: jest.fn().mockImplementation(() => ({
+        models: {
+          generateContent: jest.fn((...args) => mockGenerateContent(...args)),
+        },
+      })),
+    }));
+
+    ({ runGeminiChat: runGeminiChatFresh } = require("../services/geminiArchitect.service"));
+  });
+
+  afterEach(() => {
+    delete process.env.GEMINI_AUTH_MODE;
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+    delete process.env.ENABLE_GEMINI_REGION_FALLBACK;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+    jest.resetModules();
+    ({ runGeminiChat } = require("../services/geminiArchitect.service"));
+  });
+
+  test("primary+model fallback fail → region fallback succeeds: regionFallbackUsed=true", async () => {
+    const overloadErr = makeApiError("service overloaded", 503);
+    mockGenerateContent = jest
+      .fn()
+      // Primary fails with retries (3 attempts)
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr)
+      // Model fallback (gemini-1.5-flash-8b) also fails
+      .mockRejectedValueOnce(overloadErr)
+      // Region fallback succeeds
+      .mockResolvedValueOnce(makeOkResponse("region-ok"));
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(true);
+    expect(result.text).toBe("region-ok");
+    expect(result.regionFallbackUsed).toBe(true);
+    expect(result.fallbackModelUsed).toBe(false);
+    expect(result.finalModelUsed).toBe("gemini-1.5-flash");
+    expect(result.fallbackUsed).toBe(false); // provider fallback not used
+  });
+
+  test("region fallback also fails → provider fallback triggers if ENABLE_GEMINI_FALLBACK=true", async () => {
+    process.env.ENABLE_GEMINI_FALLBACK = "true";
+    process.env.GEMINI_API_KEY         = "fallback-api-key";
+
+    const overloadErr = makeApiError("service overloaded", 503);
+    mockGenerateContent = jest
+      .fn()
+      // Primary fails (3 attempts)
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr)
+      // Model fallback fails
+      .mockRejectedValueOnce(overloadErr)
+      // Region fallback also fails
+      .mockRejectedValueOnce(overloadErr)
+      // Provider fallback (gemini_api) succeeds
+      .mockResolvedValueOnce(makeOkResponse("provider-ok"));
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(true);
+    expect(result.text).toBe("provider-ok");
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.authModeUsed).toBe("gemini_api");
+
+    delete process.env.ENABLE_GEMINI_FALLBACK;
+    delete process.env.GEMINI_API_KEY;
+  });
+
+  test("ENABLE_GEMINI_REGION_FALLBACK not set: no region fallback on model fallback failure", async () => {
+    process.env.ENABLE_GEMINI_REGION_FALLBACK = "false";
+    const overloadErr = makeApiError("service overloaded", 503);
+    mockGenerateContent = jest
+      .fn()
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr)
+      .mockRejectedValueOnce(overloadErr); // model fallback also fails → no region fallback
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(false);
+    expect(result.regionFallbackUsed).toBe(false);
   });
 });

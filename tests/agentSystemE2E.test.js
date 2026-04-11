@@ -730,8 +730,8 @@ describe("Centralized Constants", () => {
     const dsAgent = getAgent("deepseek");
     const gemAgent = getAgent("gemini");
     expect(dsAgent.defaultTimeoutMs).toBe(25000);
-    // gemini-2.5-flash is a thinking model – needs up to 60 s for reasoning; 70 s with buffer
-    expect(gemAgent.defaultTimeoutMs).toBe(70000);
+    // gemini-1.5-flash – needs up to 60 s; 60 s with buffer
+    expect(gemAgent.defaultTimeoutMs).toBe(60000);
   });
 
   test("INTENT_KEYWORDS covers all 10 intents", () => {
