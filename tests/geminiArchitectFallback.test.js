@@ -399,3 +399,200 @@ describe("Guard paths return metadata fields", () => {
     expect(result).toHaveProperty("finalModelUsed");
   });
 });
+
+/* ═══════════════════════════════════════════════════════════
+   12. GEMINI_AUTH_MODE explicit switch
+   ═══════════════════════════════════════════════════════════ */
+
+describe("GEMINI_AUTH_MODE explicit switch", () => {
+  let getAuthMode;
+
+  beforeAll(() => {
+    jest.resetModules();
+    ({ getAuthMode } = require("../services/geminiArchitect.service"));
+  });
+
+  afterEach(() => {
+    delete process.env.GEMINI_AUTH_MODE;
+  });
+
+  test("GEMINI_AUTH_MODE=vertex_ai forces vertex_ai mode regardless of env", () => {
+    process.env.GEMINI_AUTH_MODE   = "vertex_ai";
+    process.env.GOOGLE_CLOUD_PROJECT = "test-project";
+    const mode = getAuthMode();
+    expect(mode).toBe("vertex_ai");
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+  });
+
+  test("GEMINI_AUTH_MODE=gemini_api forces gemini_api mode", () => {
+    process.env.GEMINI_AUTH_MODE = "gemini_api";
+    process.env.GEMINI_API_KEY   = "test-key";
+    const mode = getAuthMode();
+    expect(mode).toBe("gemini_api");
+  });
+
+  test("GEMINI_AUTH_MODE=vertex_ai takes priority over GEMINI_API_KEY", () => {
+    process.env.GEMINI_AUTH_MODE = "vertex_ai";
+    process.env.GOOGLE_CLOUD_PROJECT = "my-project";
+    process.env.GEMINI_API_KEY   = "some-key";
+    const mode = getAuthMode();
+    expect(mode).toBe("vertex_ai");
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+  });
+
+  test("auto-detect falls back to vertex_ai when GOOGLE_CLOUD_PROJECT is set", () => {
+    delete process.env.GEMINI_AUTH_MODE;
+    process.env.GOOGLE_CLOUD_PROJECT = "auto-project";
+    const mode = getAuthMode();
+    expect(mode).toBe("vertex_ai");
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   13. vertexFlagEnabled and fallbackUsed fields in responses
+   ═══════════════════════════════════════════════════════════ */
+
+describe("vertexFlagEnabled and fallbackUsed fields", () => {
+  test("gemini_api mode: vertexFlagEnabled=false, fallbackUsed=false on success", async () => {
+    mockGenerateContent = jest.fn().mockResolvedValue(makeOkResponse("OK"));
+
+    const result = await runGeminiChat({ systemPrompt: "s", userMessage: "u" });
+
+    expect(result.success).toBe(true);
+    expect(result.vertexFlagEnabled).toBe(false);
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.authModeUsed).toBe("gemini_api");
+  });
+
+  test("response always contains fallbackUsed field", async () => {
+    mockGenerateContent = jest.fn().mockResolvedValue(makeOkResponse("OK"));
+    const result = await runGeminiChat({ systemPrompt: "s", userMessage: "u" });
+    expect(result).toHaveProperty("fallbackUsed");
+  });
+
+  test("error response contains fallbackUsed=false when no provider fallback", async () => {
+    const authErr = makeApiError("Unauthorized", 401);
+    mockGenerateContent = jest.fn().mockRejectedValue(authErr);
+
+    const result = await runGeminiChat({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+    expect(result.success).toBe(false);
+    expect(result.fallbackUsed).toBe(false);
+    expect(result).toHaveProperty("vertexFlagEnabled");
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
+   14. Provider-level fallback: vertex_ai → gemini_api
+   ═══════════════════════════════════════════════════════════ */
+
+describe("Provider-level fallback (vertex_ai → gemini_api)", () => {
+  let runGeminiChatFresh;
+
+  // Each test in this group sets up vertex_ai mode with ENABLE_GEMINI_FALLBACK=true
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.GEMINI_AUTH_MODE      = "vertex_ai";
+    process.env.GOOGLE_CLOUD_PROJECT  = "my-project";
+    process.env.ENABLE_GEMINI_FALLBACK = "true";
+    process.env.GEMINI_API_KEY        = "fallback-key";
+
+    // Re-mock after resetModules
+    jest.mock("@google/genai", () => ({
+      GoogleGenAI: jest.fn().mockImplementation(() => ({
+        models: {
+          generateContent: jest.fn((...args) => mockGenerateContent(...args)),
+        },
+      })),
+    }));
+
+    ({ runGeminiChat: runGeminiChatFresh } = require("../services/geminiArchitect.service"));
+  });
+
+  afterEach(() => {
+    delete process.env.GEMINI_AUTH_MODE;
+    delete process.env.GOOGLE_CLOUD_PROJECT;
+    delete process.env.ENABLE_GEMINI_FALLBACK;
+    jest.resetModules();
+    // Restore original mock
+    ({ GEMINI_PRIMARY_MODEL, GEMINI_FALLBACK_MODEL, runGeminiChat } =
+      require("../services/geminiArchitect.service"));
+  });
+
+  test("vertex 503 → provider fallback → gemini_api success: fallbackUsed=true, authModeUsed=gemini_api", async () => {
+    const vertexErr = makeApiError("service overloaded", 503);
+    mockGenerateContent = jest
+      .fn()
+      // All vertex calls fail (primary + retries)
+      .mockRejectedValueOnce(vertexErr)
+      .mockRejectedValueOnce(vertexErr)
+      .mockRejectedValueOnce(vertexErr)
+      // vertex fallback model also fails
+      .mockRejectedValueOnce(vertexErr)
+      // gemini_api provider fallback succeeds
+      .mockResolvedValueOnce(makeOkResponse("gemini-api-ok"));
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(true);
+    expect(result.text).toBe("gemini-api-ok");
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.authModeUsed).toBe("gemini_api");
+    expect(result.authModeRequested).toBe("vertex_ai");
+    expect(result.vertexFlagEnabled).toBe(false); // gemini_api was actually used
+  });
+
+  test("vertex 404 → provider fallback → gemini_api success: fallbackUsed=true", async () => {
+    const notFoundErr = makeApiError("model not found", 404);
+    mockGenerateContent = jest
+      .fn()
+      .mockRejectedValueOnce(notFoundErr) // primary vertex fails
+      // model fallback (gemini-1.5-flash via vertex) also fails with 404
+      .mockRejectedValueOnce(notFoundErr)
+      // gemini_api provider fallback succeeds
+      .mockResolvedValueOnce(makeOkResponse("ok-from-gemini-api"));
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(true);
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.authModeUsed).toBe("gemini_api");
+  });
+
+  test("vertex 401 auth error: NO provider fallback even with ENABLE_GEMINI_FALLBACK=true", async () => {
+    const authErr = makeApiError("unauthorized", 401);
+    mockGenerateContent = jest.fn().mockRejectedValue(authErr);
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(false);
+    expect(result.fallbackUsed).toBe(false);
+    expect(result.errorCategory).toBe("auth");
+  });
+
+  test("vertex 400 bad request: NO provider fallback", async () => {
+    const badReqErr = makeApiError("invalid argument: bad request", 400);
+    mockGenerateContent = jest.fn().mockRejectedValue(badReqErr);
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(false);
+    expect(result.fallbackUsed).toBe(false);
+  });
+
+  test("ENABLE_GEMINI_FALLBACK not set: no provider fallback on 503", async () => {
+    process.env.ENABLE_GEMINI_FALLBACK = "false";
+    const vertexErr = makeApiError("service overloaded", 503);
+    mockGenerateContent = jest
+      .fn()
+      .mockRejectedValueOnce(vertexErr)
+      .mockRejectedValueOnce(vertexErr)
+      .mockRejectedValueOnce(vertexErr)
+      .mockRejectedValueOnce(vertexErr);
+
+    const result = await runGeminiChatFresh({ systemPrompt: "s", userMessage: "u", timeoutMs: 5000 });
+
+    expect(result.success).toBe(false);
+    expect(result.fallbackUsed).toBe(false);
+  });
+});
