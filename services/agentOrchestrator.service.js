@@ -129,7 +129,7 @@ function _buildUnifiedResponse(opts = {}) {
     actionIntent:     opts.actionIntent || null,
     status:           opts.status || "error",
     followUpPossible: opts.followUpPossible ?? false,
-    reply:            { text: opts.assistantReply || "" },
+    reply:            { text: opts.replyText || "" },
     errorCategory:    opts.errorCategory || null,
     replies:          opts.replies || null,
     metadata: {
@@ -172,7 +172,7 @@ function _normalizeAgentResponse(agentResponse, agentId, requestId, traceId, cla
     actionIntent:     agentResponse.actionIntent,
     status:           agentResponse.status,
     followUpPossible: agentResponse.followUpPossible,
-    assistantReply:   agentResponse.reply?.text || "",
+    replyText:   agentResponse.reply?.text || "",
     errorCategory:    agentResponse.errorCategory || null,
     model:            agentResponse.metadata?.model || agentDef?.model,
     provider:         agentDef?.provider,
@@ -257,7 +257,7 @@ async function handleRequest(opts = {}) {
     if (!opts.message || typeof opts.message !== "string" || !opts.message.trim()) {
       return _buildUnifiedResponse({
         status: "error",
-        assistantReply: "Nachricht darf nicht leer sein.",
+        replyText: "Nachricht darf nicht leer sein.",
         errors: [ERROR_CODES.EMPTY_MESSAGE],
         requestId,
         traceId,
@@ -279,7 +279,7 @@ async function handleRequest(opts = {}) {
       });
       return _buildUnifiedResponse({
         status: "error",
-        assistantReply: `Intent "${effectiveIntent}" ist auf Sicherheitsstufe "${effectiveSafety}" nicht erlaubt.`,
+        replyText: `Intent "${effectiveIntent}" ist auf Sicherheitsstufe "${effectiveSafety}" nicht erlaubt.`,
         errors: [ERROR_CODES.SAFETY_VIOLATION],
         requestId,
         traceId,
@@ -312,7 +312,7 @@ async function handleRequest(opts = {}) {
     });
     return _buildUnifiedResponse({
       status: "error",
-      assistantReply: `Interner Fehler: ${String(err.message).slice(0, 200)}`,
+      replyText: `Interner Fehler: ${String(err.message).slice(0, 200)}`,
       errors: [ERROR_CODES.INTERNAL_ERROR],
       requestId,
       traceId,
@@ -332,7 +332,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
   if (!agentDef) {
     return _buildUnifiedResponse({
       status: "error",
-      assistantReply: `Agent "${agentId}" ist nicht registriert.`,
+      replyText: `Agent "${agentId}" ist nicht registriert.`,
       errors: [ERROR_CODES.AGENT_NOT_AVAILABLE],
       requestId, traceId, agent: agentId,
     });
@@ -343,7 +343,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
   if (!svc) {
     return _buildUnifiedResponse({
       status: "error",
-      assistantReply: `Agent-Service "${agentId}" konnte nicht geladen werden.`,
+      replyText: `Agent-Service "${agentId}" konnte nicht geladen werden.`,
       errors: [ERROR_CODES.AGENT_NOT_AVAILABLE],
       requestId, traceId, agent: agentId,
     });
@@ -392,7 +392,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
         status: "error",
         conversationId: opts.conversationId,
         agent: agentId,
-        assistantReply: `${agentId}-Fehler: ${String(err.message).slice(0, 200)}`,
+        replyText: `${agentId}-Fehler: ${String(err.message).slice(0, 200)}`,
         errors: [isTimeout ? ERROR_CODES.AGENT_TIMEOUT : ERROR_CODES.AGENT_ERROR],
         requestId, traceId,
         durationMs: Date.now() - startTime,
@@ -432,7 +432,7 @@ async function _handleSingleAgentRequest(opts, classification, requestId, traceI
       return _buildUnifiedResponse({
         status: "error",
         agent: agentId,
-        assistantReply: `${agentId}-Fehler: ${String(err.message).slice(0, 200)}`,
+        replyText: `${agentId}-Fehler: ${String(err.message).slice(0, 200)}`,
         errors: [isTimeout ? ERROR_CODES.AGENT_TIMEOUT : ERROR_CODES.AGENT_ERROR],
         requestId, traceId,
         durationMs: Date.now() - startTime,
@@ -511,7 +511,7 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
   if (!bridge) {
     return _buildUnifiedResponse({
       status: "error",
-      assistantReply: "Konferenz-Service konnte nicht geladen werden.",
+      replyText: "Konferenz-Service konnte nicht geladen werden.",
       errors: [ERROR_CODES.CONFERENCE_ERROR],
       requestId, traceId,
     });
@@ -559,7 +559,7 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
         actionIntent: classification.actionIntent,
         status: result?.conferenceStatus || "active",
         followUpPossible: true,
-        assistantReply: result?.replies?.map((r) => `[${r.agent}]: ${r.text}`).join("\n\n") || "",
+        replyText: result?.replies?.map((r) => `[${r.agent}]: ${r.text}`).join("\n\n") || "",
         replies: result?.replies || [],
         requestId, traceId,
         durationMs,
@@ -582,7 +582,7 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
       if (!session?.conferenceId) {
         return _buildUnifiedResponse({
           status: "error",
-          assistantReply: "Konferenz konnte nicht eröffnet werden.",
+          replyText: "Konferenz konnte nicht eröffnet werden.",
           errors: [ERROR_CODES.CONFERENCE_ERROR],
           requestId, traceId,
           agent: "conference",
@@ -622,7 +622,7 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
         actionIntent: classification.actionIntent,
         status: "active",
         followUpPossible: true,
-        assistantReply: result?.replies?.map((r) => `[${r.agent}]: ${r.text}`).join("\n\n") || "",
+        replyText: result?.replies?.map((r) => `[${r.agent}]: ${r.text}`).join("\n\n") || "",
         replies: result?.replies || [],
         requestId, traceId,
         durationMs,
@@ -644,7 +644,7 @@ async function _handleConferenceRequest(opts, classification, requestId, traceId
       status: "error",
       conferenceId: opts.conferenceId,
       agent: "conference",
-      assistantReply: `Konferenz-Fehler: ${String(err.message).slice(0, 200)}`,
+      replyText: `Konferenz-Fehler: ${String(err.message).slice(0, 200)}`,
       errors: [isTimeout ? ERROR_CODES.AGENT_TIMEOUT : ERROR_CODES.CONFERENCE_ERROR],
       requestId, traceId,
       durationMs: Date.now() - startTime,
