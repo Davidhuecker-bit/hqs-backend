@@ -1840,6 +1840,7 @@ const _conferenceAgentRegistry = new Map([
           userMessage,
           history: opts.history || undefined,
           maxTokens: opts.maxTokens || 512,
+          // allow up to 60 s for potentially lengthy generation
           timeoutMs: opts.timeoutMs || 60000,
         });
         if (result.success && result.text.trim()) return result.text.trim();
