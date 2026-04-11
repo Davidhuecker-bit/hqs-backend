@@ -157,7 +157,7 @@ function _initAgents() {
     ],
     supportedIntents: [...UNIFIED_ACTION_INTENTS],
     defaultSafetyLevel: "propose",
-    defaultTimeoutMs: 25000,
+    defaultTimeoutMs: 70000,  // gemini-2.5-flash thinking model needs up to 60 s; add buffer
     maxRetries: 1,
     enabled: true,
     isConfigured: () => {

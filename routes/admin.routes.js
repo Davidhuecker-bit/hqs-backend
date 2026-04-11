@@ -6496,6 +6496,12 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "configuredLocation": "us-central1",
      "authModeRequested": "vertex_ai",  // "vertex_ai" | "gemini_api" | "unconfigured"
      "authModeUsed": "vertex_ai",       // may differ if provider fallback ran
+     "httpStatus": 200,                 // 200 on success; Gemini API HTTP error code on failure
+     "provider": "vertex_ai",           // same as authModeUsed
+     "model": "gemini-2.5-flash",       // finalModelUsed
+     "rawResponsePresent": true,        // true when a Gemini response object was received
+     "extractedTextLength": 2,          // chars extracted from Gemini candidates/parts
+     "returnedTextLength": 2,           // chars in the text returned to the caller
      "fallbackUsed": false,             // true when Vertex→Gemini API provider fallback was used
      "projectConfigured": true,
      "locationConfigured": true,
@@ -6524,6 +6530,12 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       error: "Gemini is not configured – set GEMINI_AUTH_MODE=vertex_ai with GOOGLE_CLOUD_PROJECT (Vertex AI) or GEMINI_API_KEY (gemini_api)",
       authModeRequested:         authDiag.authModeRequested,
       authModeUsed:              authDiag.authModeUsed,
+      httpStatus:                null,
+      provider:                  authDiag.authModeUsed,
+      model:                     null,
+      rawResponsePresent:        false,
+      extractedTextLength:       0,
+      returnedTextLength:        0,
       fallbackUsed:              false,
       projectConfigured:         authDiag.projectConfigured,
       locationConfigured:        authDiag.locationConfigured,
@@ -6541,7 +6553,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       systemPrompt: "You are a minimal test assistant. Respond only with the single word asked for.",
       userMessage: "Reply only with OK",
       maxTokens: 16,
-      timeoutMs: 20000,
+      timeoutMs: 30000,
     });
 
     const authModeUsed      = result.authModeUsed      || authDiag.authModeUsed;
@@ -6556,6 +6568,14 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         configuredLocation: result.configuredLocation || configuredLocation,
         authModeRequested,
         authModeUsed,
+        // ── New diagnostic fields ──
+        httpStatus:                200,
+        provider:                  authModeUsed,
+        model:                     result.finalModelUsed || result.primaryModel,
+        rawResponsePresent:        result.rawResponsePresent ?? false,
+        extractedTextLength:       result.extractedTextLength ?? result.text.length,
+        returnedTextLength:        result.text.length,
+        // ──────────────────────────
         fallbackUsed:              result.fallbackUsed              ?? false,
         projectConfigured:         result.projectConfigured         ?? authDiag.projectConfigured,
         locationConfigured:        result.locationConfigured        ?? authDiag.locationConfigured,
@@ -6579,6 +6599,14 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       configuredLocation: result.configuredLocation || configuredLocation,
       authModeRequested,
       authModeUsed,
+      // ── New diagnostic fields ──
+      httpStatus:                result.httpStatus ?? 500,
+      provider:                  authModeUsed,
+      model:                     result.finalModelUsed || result.primaryModel || null,
+      rawResponsePresent:        result.rawResponsePresent ?? false,
+      extractedTextLength:       result.extractedTextLength ?? 0,
+      returnedTextLength:        0,
+      // ──────────────────────────
       fallbackUsed:              result.fallbackUsed              ?? false,
       projectConfigured:         result.projectConfigured         ?? authDiag.projectConfigured,
       locationConfigured:        result.locationConfigured        ?? authDiag.locationConfigured,
@@ -6589,7 +6617,7 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       fallbackModelUsed:         result.fallbackModelUsed,
       finalModelUsed:            result.finalModelUsed,
       error:                     result.error || "EMPTY_RESPONSE",
-      errorCategory:             result.errorCategory,
+      errorCategory:             result.errorCategory || "empty_model_response",
     });
   } catch (error) {
     logger.error("[admin] deepseek/agent-bridge/gemini-smoke-test error", {
@@ -6603,6 +6631,14 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       configuredLocation,
       authModeRequested:         authDiag.authModeRequested,
       authModeUsed:              authDiag.authModeUsed,
+      // ── New diagnostic fields ──
+      httpStatus:                null,
+      provider:                  authDiag.authModeUsed,
+      model:                     null,
+      rawResponsePresent:        false,
+      extractedTextLength:       0,
+      returnedTextLength:        0,
+      // ──────────────────────────
       fallbackUsed:              false,
       projectConfigured:         authDiag.projectConfigured,
       locationConfigured:        authDiag.locationConfigured,
