@@ -4183,6 +4183,7 @@ const {
 } = require("../services/agentBridge.service");
 const {
   isGeminiConfigured,
+  getLocationName: getGeminiLocation,
   runGeminiArchitectReview,
   runGeminiChat,
   VALID_MODES: GEMINI_ARCHITECT_MODES,
@@ -6485,8 +6486,12 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
      "success": true,
      "configured": true,
      "codepath": "runGeminiChat / @google/genai / models.generateContent",
-     "apiVersion": "v1",
-     "model": "gemini-2.5-flash",
+     "apiVersion": "v1beta",
+     "configuredLocation": "us-central1",
+     "primaryModel": "gemini-2.5-flash",
+     "fallbackModelUsed": false,
+     "finalModelUsed": "gemini-2.5-flash",
+     "usedFallback": false,
      "response": "OK",
      "textLength": 2
    }
@@ -6494,10 +6499,12 @@ router.get("/deepseek/agent-bridge/conference-admin-summary", (_req, res) => {
 router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
   const GEMINI_CODEPATH = "runGeminiChat / @google/genai / models.generateContent";
   const configured = isGeminiConfigured();
+  const configuredLocation = getGeminiLocation();
   if (!configured) {
     return res.status(503).json({
       success: false,
       configured: false,
+      configuredLocation,
       codepath: GEMINI_CODEPATH,
       error: "GEMINI_API_KEY is not set – Gemini is not configured",
     });
@@ -6516,10 +6523,12 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
         success: true,
         configured: true,
         codepath: GEMINI_CODEPATH,
-        apiVersion: "v1",
+        apiVersion: "v1beta",
+        configuredLocation: result.configuredLocation || configuredLocation,
         primaryModel: result.primaryModel,
         fallbackModelUsed: result.fallbackModelUsed,
         finalModelUsed: result.finalModelUsed,
+        usedFallback: result.fallbackModelUsed,
         response: result.text,
         textLength: result.text.length,
       });
@@ -6529,10 +6538,12 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       success: false,
       configured: true,
       codepath: GEMINI_CODEPATH,
-      apiVersion: "v1",
+      apiVersion: "v1beta",
+      configuredLocation: result.configuredLocation || configuredLocation,
       primaryModel: result.primaryModel,
       fallbackModelUsed: result.fallbackModelUsed,
       finalModelUsed: result.finalModelUsed,
+      usedFallback: result.fallbackModelUsed,
       error: result.error || "EMPTY_RESPONSE",
       errorCategory: result.errorCategory,
     });
@@ -6544,7 +6555,8 @@ router.get("/deepseek/agent-bridge/gemini-smoke-test", async (_req, res) => {
       success: false,
       configured: true,
       codepath: GEMINI_CODEPATH,
-      apiVersion: "v1",
+      apiVersion: "v1beta",
+      configuredLocation,
       error: error.message || "UNKNOWN_ERROR",
     });
   }
