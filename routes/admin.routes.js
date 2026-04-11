@@ -7436,7 +7436,9 @@ router.post("/gemini/conversations/:id/dry-run", async (req, res) => {
    Response: same schema as Gemini Agent (with DeepSeek model info)
 ========================================================= */
 
-router.post("/deepseek/agent/chat", async (req, res) => {
+/* Alias: /deepseek/agent-chat → same handler as /deepseek/agent/chat
+   so that frontends using either path reach the same logic. */
+async function _handleDeepSeekAgentChatStart(req, res) {
   const { mode, message, actionIntent, context } = req.body || {};
 
   logger.info("[admin] deepseek/agent/chat – start conversation request", {
@@ -7479,7 +7481,10 @@ router.post("/deepseek/agent/chat", async (req, res) => {
       error: error.message || "Internal error starting DeepSeek Agent conversation",
     });
   }
-});
+}
+
+router.post("/deepseek/agent/chat", _handleDeepSeekAgentChatStart);
+router.post("/deepseek/agent-chat", _handleDeepSeekAgentChatStart);
 
 /* =========================================================
    POST /api/admin/deepseek/agent/conversations/:id/follow-up
