@@ -9,6 +9,7 @@ const {
   scanProjectStructure,
   listDirectory,
   readFile,
+  needsProjectContext,
 } = require("./geminiProjectExplorer.service");
 
 /* ─────────────────────────────────────────────
@@ -338,11 +339,12 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
 
 /**
  * Builds a mode- and intent-aware German system prompt for the agent.
- * @param {string} mode   – one of VALID_AGENT_MODES
+ * @param {string}  mode            – one of VALID_AGENT_MODES
  * @param {string|null} actionIntent – one of VALID_ACTION_INTENTS or null
+ * @param {boolean} [contextInjected=false] – true when real project context will be prepended to the user message
  * @returns {string}
  */
-function _buildAgentSystemPrompt(mode, actionIntent) {
+function _buildAgentSystemPrompt(mode, actionIntent, contextInjected = false) {
   // ── Base identity ──
   const base = `Du bist Gemini Agent – ein kooperativer Frontend- und Architektur-Analyst für das HQS-System.
 Antworte immer auf Deutsch. Nutze klare, präzise Sprache ohne Füllwörter.`;
@@ -474,8 +476,8 @@ Anweisungen:
   }
 
   // ── free_chat / generic fallback ──
-  // Special case: architecture / code_review gets a richer instruction set
-  if (mode === "architecture" || mode === "code_review") {
+  // Special case: architecture / code_review (or free_chat with injected context) gets richer instructions
+  if (mode === "architecture" || mode === "code_review" || contextInjected) {
     const taskLabel = actionIntent
       ? { explain: "Erklärung", analyze: "Analyse", diagnose: "Diagnose",
           inspect_files: "Datei-Inspektion", plan_fix: "Fix-Planung" }[actionIntent] || actionIntent
@@ -488,6 +490,7 @@ Aktuelle Aufgabe: ${taskLabel}
 WICHTIG – Echter Systemkontext wurde automatisch gesammelt:
 Dir wird im User-Prompt ein aktueller Scan der Projektstruktur und ggf. relevante Dateiinhalte mitgeliefert.
 Nutze diesen echten Kontext, um systemspezifische, präzise Antworten zu geben – keine Allgemeinplätze.
+Falls der gelieferte Kontext nicht ausreicht, um die Frage zu beantworten, sage dies klar – erfinde keine Informationen.
 
 Anweisungen:
 - Lies zuerst die bereitgestellte Projektstruktur und Dateiinhalte sorgfältig.
@@ -534,8 +537,8 @@ function _buildGeminiContentsHistory(conversation) {
  * Sends the conversation history + new user message to Gemini using
  * the native multi-turn `contents` array, then returns the parsed result.
  *
- * For architecture / code_review modes with analytical intents, real project
- * context is gathered first via the secure agentExplorer tools and
+ * For architecture / code_review modes (or free_chat with auto-detected context intent),
+ * real project context is gathered first via the secure agentExplorer tools and
  * prepended to the user message.
  *
  * @param {object}      conversation  – the conversation object
@@ -544,25 +547,28 @@ function _buildGeminiContentsHistory(conversation) {
  * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string, errorCategory?: string, toolsInvoked?: string[], filesRead?: string[] }>}
  */
 async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
-  const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent);
+  // ── Decide whether to gather project context ──
+  // Triggered by: architect modes (architecture/code_review) with analytical intents,
+  // OR free_chat when the message heuristically signals a code/architecture question.
+  const shouldGatherContext =
+    (ARCHITECT_CONTEXT_MODES.has(conversation.mode) ||
+      (conversation.mode === "free_chat" && needsProjectContext(userMessage))) &&
+    (actionIntent == null || ARCHITECT_CONTEXT_INTENTS.has(actionIntent));
+
+  const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent, shouldGatherContext);
   const history = _buildGeminiContentsHistory(conversation);
 
-  // ── Architect-mode context gathering ──
-  // For architecture/code_review modes with analytical intents, collect real
-  // project context before sending the request to Gemini.
+  // ── Context gathering ──
   let toolsInvoked = [];
   let filesRead    = [];
   let effectiveUserMessage = userMessage;
-
-  const shouldGatherContext =
-    ARCHITECT_CONTEXT_MODES.has(conversation.mode) &&
-    (actionIntent == null || ARCHITECT_CONTEXT_INTENTS.has(actionIntent));
 
   if (shouldGatherContext) {
     logger.info("[geminiAgent] _callGeminiWithHistory – triggering architect context gathering", {
       conversationId: conversation.conversationId,
       mode: conversation.mode,
       actionIntent,
+      trigger: ARCHITECT_CONTEXT_MODES.has(conversation.mode) ? "mode" : "auto_detected",
     });
 
     try {
@@ -600,6 +606,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
     historyTurns: history.length,
     userMessageLength: effectiveUserMessage.length,
     architectContextActive: shouldGatherContext,
+    contextLoaded: toolsInvoked.length > 0,
     toolsInvoked,
     filesRead,
   });
