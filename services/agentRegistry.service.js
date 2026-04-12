@@ -80,6 +80,16 @@ const BLOCKED_PATH_PATTERNS = [
   ".env", "node_modules", ".git", "secrets", "credentials", "package-lock",
 ];
 
+/**
+ * Regex alternation string of the directory prefixes from ALLOWED_PROJECT_PATHS
+ * that are useful when extracting candidate file paths from user messages.
+ * Derived programmatically so it stays in sync with ALLOWED_PROJECT_PATHS.
+ * Used in _extractCandidateFiles() in both agent services.
+ */
+const CANDIDATE_FILE_DIRS_PATTERN = ALLOWED_PROJECT_PATHS
+  .map((p) => p.replace(/\/$/, ""))
+  .join("|");
+
 /* ─────────────────────────────────────────────
    Agent definitions (lazy – providers resolved at call time)
    ───────────────────────────────────────────── */
@@ -283,4 +293,5 @@ module.exports = {
   // Path safety (single source of truth)
   ALLOWED_PROJECT_PATHS,
   BLOCKED_PATH_PATTERNS,
+  CANDIDATE_FILE_DIRS_PATTERN,
 };

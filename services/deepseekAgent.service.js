@@ -63,6 +63,7 @@ const MAX_HISTORY_FOR_PROMPT        = 20;
 const {
   ALLOWED_PROJECT_PATHS,
   BLOCKED_PATH_PATTERNS,
+  CANDIDATE_FILE_DIRS_PATTERN,
 } = require("./agentRegistry.service");
 
 /* ─────────────────────────────────────────────
@@ -144,21 +145,18 @@ function _isPathAllowed(filePath) {
    ───────────────────────────────────────────── */
 
 /**
- * Directory prefixes used when extracting candidate file paths from messages.
- * Must stay in sync with ALLOWED_PROJECT_PATHS in agentRegistry.service.js.
- */
-const _CANDIDATE_FILE_DIRS = "services|routes|middleware|utils|config|engines|lib";
-
-/**
  * Extract file paths mentioned in a user message that look relevant.
  * Returns at most 2 candidate relative paths for readFile.
+ *
+ * The directory prefixes are derived from CANDIDATE_FILE_DIRS_PATTERN
+ * (exported by agentRegistry.service.js, in sync with ALLOWED_PROJECT_PATHS).
  *
  * @param {string} message
  * @returns {string[]}
  */
 function _extractCandidateFiles(message) {
   if (!message || typeof message !== "string") return [];
-  const pattern = new RegExp(`\\b((?:${_CANDIDATE_FILE_DIRS})\\/[\\w/.-]+\\.(?:js|ts|json|md))\\b`, "g");
+  const pattern = new RegExp(`\\b((?:${CANDIDATE_FILE_DIRS_PATTERN})\\/[\\w/.-]+\\.(?:js|ts|json|md))\\b`, "g");
   const found = [];
   let match;
   while ((match = pattern.exec(message)) !== null) {
