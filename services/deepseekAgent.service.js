@@ -100,6 +100,12 @@ const MAX_AGENT_TOOL_CALLS = 3;
 /** Max characters of gathered context injected into the prompt. */
 const MAX_AGENT_CONTEXT_CHARS = 12000;
 
+/**
+ * Session working-memory TTL: context gathered within this window can be
+ * reused without a full re-scan (saves tool calls on follow-up messages).
+ */
+const SESSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /* ─────────────────────────────────────────────
    In-memory conversation store
    ───────────────────────────────────────────── */
@@ -139,6 +145,103 @@ function _isPathAllowed(filePath) {
   }
 
   return ALLOWED_PROJECT_PATHS.some((prefix) => normalised.startsWith(prefix));
+}
+
+/* ─────────────────────────────────────────────
+   Helper – build structured agent-activity feed
+   ─────────────────────────────────────────────
+   Converts raw tool-call labels and contextSource
+   into a machine-readable activity array that is
+   returned in every agent response.
+   Paths are truncated to the last two segments to
+   avoid leaking full file-system paths.
+   ───────────────────────────────────────────── */
+
+/**
+ * Builds the `agentActivities` array for the API response.
+ *
+ * @param {string[]} toolsInvoked  – tool names as produced by _gatherAgentContext
+ * @param {string[]} filesRead     – relative file paths that were actually read
+ * @param {string}   contextSource – "fresh" | "session_cache" | "none"
+ * @param {string}   [actionIntent]
+ * @param {object}   [conversation] – for proposal/patch/dry-run/execute activities
+ * @returns {Array<{type:string, label:string, timestamp:string, count?:number, path?:string}>}
+ */
+function _buildAgentActivities(toolsInvoked = [], filesRead = [], contextSource = "none", actionIntent = null, conversation = null) {
+  const activities = [];
+  const now = new Date().toISOString();
+
+  if (contextSource === "session_cache") {
+    activities.push({ type: "context_reused", label: "Session-Kontext wiederverwendet", timestamp: now });
+  } else {
+    for (const tool of toolsInvoked) {
+      if (tool === "scanProjectStructure") {
+        activities.push({ type: "scan_project_structure", label: "Projektstruktur gescannt", timestamp: now });
+      } else if (tool.startsWith("readFile(")) {
+        const filePath = tool.slice("readFile(".length, -1);
+        // Only expose last two path segments – no absolute or deeply nested paths.
+        // Use cross-platform split to handle both "/" and "\" separators.
+        const displayPath = filePath.split(/[\\/]/).slice(-2).join("/");
+        activities.push({ type: "read_file", label: "Datei gelesen", path: displayPath, timestamp: now });
+      } else {
+        activities.push({ type: "tool_call", label: tool, timestamp: now });
+      }
+    }
+
+    if (filesRead.length > 0) {
+      activities.push({
+        type: "files_identified",
+        label: `${filesRead.length} relevante Datei${filesRead.length !== 1 ? "en" : ""} identifiziert`,
+        count: filesRead.length,
+        timestamp: now,
+      });
+    }
+  }
+
+  // ── Intent-driven activities ──
+  if (actionIntent === "propose_change" && conversation?.proposedChanges?.length > 0) {
+    const n = conversation.proposedChanges.length;
+    activities.push({
+      type: "propose_change",
+      label: `Änderungsvorschlag vorbereitet (${n} Datei${n !== 1 ? "en" : ""})`,
+      count: n,
+      timestamp: now,
+    });
+  }
+
+  if (actionIntent === "prepare_patch" && conversation?.preparedPatch) {
+    const n = (conversation.preparedPatch.editPlan || []).length;
+    activities.push({
+      type: "patch_prepared",
+      label: `Patch vorbereitet (${n} Operation${n !== 1 ? "en" : ""})`,
+      count: n,
+      timestamp: now,
+    });
+  }
+
+  if (actionIntent === "dry_run" && conversation?.dryRunResult) {
+    const r = conversation.dryRunResult;
+    activities.push({
+      type: "dry_run_completed",
+      label: r.success
+        ? `Dry Run erfolgreich (${(r.wouldChange || []).length} Datei${(r.wouldChange || []).length !== 1 ? "en" : ""})`
+        : "Dry Run mit Problemen",
+      timestamp: now,
+    });
+  }
+
+  if (actionIntent === "execute_change" && conversation?.executionResult) {
+    const r = conversation.executionResult;
+    activities.push({
+      type: "execute_change_completed",
+      label: r.success
+        ? `Änderungen ausgeführt (${(r.changedFiles || []).length} Datei${(r.changedFiles || []).length !== 1 ? "en" : ""})`
+        : "Ausführung mit Fehlern",
+      timestamp: now,
+    });
+  }
+
+  return activities;
 }
 
 /* ─────────────────────────────────────────────
@@ -186,15 +289,37 @@ function _extractCandidateFiles(message) {
  * @param {string|null} actionIntent   – current action intent
  * @param {string}      userMessage    – the user's latest message
  * @param {string}      conversationId – for logging
- * @returns {Promise<{ contextText: string, toolsInvoked: string[], filesRead: string[] }>}
+ * @param {object|null} [workingMemory] – conversation.workingMemory (mutated in-place when fresh context is gathered)
+ * @returns {Promise<{ contextText: string, toolsInvoked: string[], filesRead: string[], contextSource: string }>}
  */
-async function _gatherAgentContext(mode, actionIntent, userMessage, conversationId) {
+async function _gatherAgentContext(mode, actionIntent, userMessage, conversationId, workingMemory = null) {
+  const candidates = _extractCandidateFiles(userMessage);
+
+  // ── Session-cache short-circuit ──
+  if (workingMemory && workingMemory.lastContextTimestamp && workingMemory.cachedContextText) {
+    const age = Date.now() - new Date(workingMemory.lastContextTimestamp).getTime();
+    const newCandidates = candidates.filter((f) => !(workingMemory.lastReadFiles || []).includes(f));
+    if (age < SESSION_CACHE_TTL_MS && newCandidates.length === 0) {
+      logger.info("[deepseekAgent] _gatherAgentContext – session cache hit", {
+        conversationId,
+        ageSeconds: Math.round(age / 1000),
+        cachedLength: workingMemory.cachedContextText.length,
+      });
+      return {
+        contextText:   workingMemory.cachedContextText,
+        toolsInvoked:  [],
+        filesRead:     (workingMemory.lastReadFiles || []).slice(),
+        contextSource: "session_cache",
+      };
+    }
+  }
+
   const toolsInvoked = [];
   const filesRead    = [];
   const sections     = [];
   let toolCallCount  = 0;
 
-  logger.info("[deepseekAgent] _gatherAgentContext – start", {
+  logger.info("[deepseekAgent] _gatherAgentContext – start (fresh)", {
     conversationId,
     mode,
     actionIntent,
@@ -222,8 +347,6 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
   }
 
   // ── Step 2: Read files mentioned in the user message ──
-  const candidates = _extractCandidateFiles(userMessage);
-
   for (const filePath of candidates) {
     if (toolCallCount >= MAX_AGENT_TOOL_CALLS) break;
 
@@ -280,7 +403,14 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
     contextLength: contextText.length,
   });
 
-  return { contextText, toolsInvoked, filesRead };
+  // ── Update session working memory ──
+  if (workingMemory) {
+    workingMemory.lastReadFiles        = filesRead.slice();
+    workingMemory.lastContextTimestamp = new Date().toISOString();
+    workingMemory.cachedContextText    = contextText;
+  }
+
+  return { contextText, toolsInvoked, filesRead, contextSource: "fresh" };
 }
 
 /* ─────────────────────────────────────────────
@@ -501,8 +631,9 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
   const history = _buildConversationHistory(conversation);
 
   // ── Context gathering ──
-  let toolsInvoked = [];
-  let filesRead    = [];
+  let toolsInvoked  = [];
+  let filesRead     = [];
+  let contextSource = "none";
   let effectiveUserMessage = userMessage;
 
   if (shouldGatherContext) {
@@ -519,9 +650,11 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
         actionIntent,
         userMessage,
         conversation.conversationId,
+        conversation.workingMemory || null,
       );
-      toolsInvoked = gathered.toolsInvoked;
-      filesRead    = gathered.filesRead;
+      toolsInvoked  = gathered.toolsInvoked;
+      filesRead     = gathered.filesRead;
+      contextSource = gathered.contextSource;
 
       if (gathered.contextText) {
         effectiveUserMessage = `${gathered.contextText}\n\nFrage/Aufgabe:\n${userMessage}`;
@@ -529,6 +662,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
           conversationId: conversation.conversationId,
           toolsInvoked,
           filesRead,
+          contextSource,
           contextLength: gathered.contextText.length,
         });
       }
@@ -560,6 +694,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     historyLength: history.length,
     messageCount: messages.length,
     contextLoaded: toolsInvoked.length > 0,
+    contextSource,
     toolsUsed: toolsInvoked.length > 0,
     toolsInvoked,
     filesRead,
@@ -580,7 +715,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
       conversationId: conversation.conversationId,
       error: String(err.message).slice(0, 120),
     });
-    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120), toolsInvoked, filesRead };
+    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120), toolsInvoked, filesRead, contextSource };
   }
 
   const text = extractDeepSeekText(completion);
@@ -589,7 +724,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     logger.warn("[deepseekAgent] _callDeepSeekWithHistory – empty response", {
       conversationId: conversation.conversationId,
     });
-    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response", toolsInvoked, filesRead };
+    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response", toolsInvoked, filesRead, contextSource };
   }
 
   // Attempt JSON parse for structured intents
@@ -618,12 +753,13 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     conversationId: conversation.conversationId,
     textLength: text.length,
     hasParsed: parsed !== null,
+    contextSource,
     toolsUsed: toolsInvoked.length > 0,
     toolsInvoked,
     filesRead,
   });
 
-  return { success: true, text: text.trim(), parsed, error: undefined, toolsInvoked, filesRead };
+  return { success: true, text: text.trim(), parsed, error: undefined, toolsInvoked, filesRead, contextSource };
 }
 
 /* ─────────────────────────────────────────────
@@ -949,7 +1085,26 @@ async function _executeChanges(conversation) {
    Helper – build standard response object
    ───────────────────────────────────────────── */
 
-function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null) {
+/**
+ * Assembles the public response schema from conversation state.
+ * @param {object}      conversation
+ * @param {string}      replyText
+ * @param {string|null} actionIntent
+ * @param {boolean}     isInitial
+ * @param {string|null} [errorCategory]
+ * @param {object}      [diagnostics]  – tool-calling diagnostics { toolsInvoked, filesRead, contextSource }
+ * @returns {object}
+ */
+function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null, diagnostics = null) {
+  const contextSource   = diagnostics?.contextSource || "none";
+  const agentActivities = _buildAgentActivities(
+    diagnostics?.toolsInvoked || [],
+    diagnostics?.filesRead    || [],
+    contextSource,
+    actionIntent,
+    conversation,
+  );
+
   return {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
@@ -957,6 +1112,7 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
     status:           conversation.status,
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
     reply:            { text: replyText || "" },
+    agentActivities,
     errorCategory:    errorCategory || null,
     metadata: {
       model:         process.env.DEEPSEEK_FAST_MODEL || "deepseek-chat",
@@ -964,8 +1120,19 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
       messageCount:  conversation.messageCount,
       historyLength: conversation.messages.length,
       isInitial,
+      contextSource,
       timestamp:     new Date().toISOString(),
+      ...(diagnostics && diagnostics.toolsInvoked && diagnostics.toolsInvoked.length > 0
+        ? { toolsInvoked: diagnostics.toolsInvoked, filesRead: diagnostics.filesRead || [] }
+        : {}),
     },
+    workingMemory: conversation.workingMemory
+      ? {
+          lastReadFiles:            conversation.workingMemory.lastReadFiles || [],
+          lastContextTimestamp:     conversation.workingMemory.lastContextTimestamp || null,
+          lastDiagnosticHypothesis: conversation.workingMemory.lastDiagnosticHypothesis || null,
+        }
+      : null,
     proposedChanges:  conversation.proposedChanges || null,
     preparedPatch:    conversation.preparedPatch || null,
     executionResult:  conversation.executionResult || null,
@@ -1037,6 +1204,13 @@ async function startConversation(opts = {}) {
     executionResult: null,
     dryRunResult:    null,
     approved:        false,
+    // ── Session working memory (per-conversation, not global) ──
+    workingMemory: {
+      lastReadFiles:            [],
+      lastContextTimestamp:     null,
+      cachedContextText:        null,
+      lastDiagnosticHypothesis: null,
+    },
   };
 
   if (context && typeof context === "string" && context.trim()) {
@@ -1096,12 +1270,20 @@ async function startConversation(opts = {}) {
     conversation.status = "waiting_for_user";
   }
 
+  // ── Update session working memory ──
+  if (intent === "diagnose" && agentResult.text) {
+    conversation.workingMemory.lastDiagnosticHypothesis = agentResult.text.slice(0, 500);
+  }
+
   conversation.messages.push({
     role: "assistant",
     content: agentResult.text,
     timestamp: new Date().toISOString(),
     actionIntent: intent,
-    metadata: { hasParsed: agentResult.parsed !== null },
+    metadata: {
+      hasParsed:     agentResult.parsed !== null,
+      contextSource: agentResult.contextSource || "none",
+    },
   });
   conversation.messageCount++;
   conversation.updatedAt = new Date().toISOString();
@@ -1115,12 +1297,17 @@ async function startConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    contextSource: agentResult.contextSource || "none",
     toolsUsed: (agentResult.toolsInvoked || []).length > 0,
     toolsInvoked: agentResult.toolsInvoked || [],
     filesRead: agentResult.filesRead || [],
   });
 
-  return _buildResponse(conversation, agentResult.text, intent, true);
+  return _buildResponse(conversation, agentResult.text, intent, true, null, {
+    toolsInvoked:  agentResult.toolsInvoked  || [],
+    filesRead:     agentResult.filesRead     || [],
+    contextSource: agentResult.contextSource || "none",
+  });
 }
 
 /* ─────────────────────────────────────────────
@@ -1350,12 +1537,20 @@ async function continueConversation(opts = {}) {
     conversation.status = "waiting_for_user";
   }
 
+  // ── Update session working memory ──
+  if (intent === "diagnose" && agentResult.text && conversation.workingMemory) {
+    conversation.workingMemory.lastDiagnosticHypothesis = agentResult.text.slice(0, 500);
+  }
+
   conversation.messages.push({
     role: "assistant",
     content: agentResult.text,
     timestamp: new Date().toISOString(),
     actionIntent: intent,
-    metadata: { hasParsed: agentResult.parsed !== null },
+    metadata: {
+      hasParsed:     agentResult.parsed !== null,
+      contextSource: agentResult.contextSource || "none",
+    },
   });
   conversation.messageCount++;
   conversation.updatedAt = new Date().toISOString();
@@ -1366,12 +1561,17 @@ async function continueConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    contextSource: agentResult.contextSource || "none",
     toolsUsed: (agentResult.toolsInvoked || []).length > 0,
     toolsInvoked: agentResult.toolsInvoked || [],
     filesRead: agentResult.filesRead || [],
   });
 
-  return _buildResponse(conversation, agentResult.text, intent, false);
+  return _buildResponse(conversation, agentResult.text, intent, false, null, {
+    toolsInvoked:  agentResult.toolsInvoked  || [],
+    filesRead:     agentResult.filesRead     || [],
+    contextSource: agentResult.contextSource || "none",
+  });
 }
 
 /* ─────────────────────────────────────────────
@@ -1406,6 +1606,13 @@ function getConversation(conversationId) {
     executionResult: conversation.executionResult,
     dryRunResult:    conversation.dryRunResult,
     approved:        conversation.approved,
+    workingMemory:   conversation.workingMemory
+      ? {
+          lastReadFiles:            conversation.workingMemory.lastReadFiles || [],
+          lastContextTimestamp:     conversation.workingMemory.lastContextTimestamp || null,
+          lastDiagnosticHypothesis: conversation.workingMemory.lastDiagnosticHypothesis || null,
+        }
+      : null,
   };
 }
 

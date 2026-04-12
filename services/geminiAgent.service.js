@@ -90,6 +90,12 @@ const MAX_ARCHITECT_TOOL_CALLS = 3;
 /** Max characters of gathered context injected into the prompt. */
 const MAX_ARCHITECT_CONTEXT_CHARS = 12000;
 
+/**
+ * Session working-memory TTL: context gathered within this window can be
+ * reused without a full re-scan (saves tool calls on follow-up messages).
+ */
+const SESSION_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 const {
   ALLOWED_PROJECT_PATHS,
   BLOCKED_PATH_PATTERNS,
@@ -199,6 +205,103 @@ function _buildConversationHistory(conversation) {
    number of tool calls to avoid unbounded loops.
    ───────────────────────────────────────────── */
 
+/* ─────────────────────────────────────────────
+   Helper – build structured agent-activity feed
+   ─────────────────────────────────────────────
+   Converts raw tool-call labels and contextSource
+   into a machine-readable activity array that is
+   returned in every agent response.
+   Paths are truncated to the last two segments to
+   avoid leaking full file-system paths.
+   ───────────────────────────────────────────── */
+
+/**
+ * Builds the `agentActivities` array for the API response.
+ *
+ * @param {string[]} toolsInvoked  – tool names as produced by _gatherArchitectContext
+ * @param {string[]} filesRead     – relative file paths that were actually read
+ * @param {string}   contextSource – "fresh" | "session_cache" | "none"
+ * @param {string}   [actionIntent]
+ * @param {object}   [conversation] – for proposal/patch/dry-run/execute activities
+ * @returns {Array<{type:string, label:string, timestamp:string, count?:number, path?:string}>}
+ */
+function _buildAgentActivities(toolsInvoked = [], filesRead = [], contextSource = "none", actionIntent = null, conversation = null) {
+  const activities = [];
+  const now = new Date().toISOString();
+
+  if (contextSource === "session_cache") {
+    activities.push({ type: "context_reused", label: "Session-Kontext wiederverwendet", timestamp: now });
+  } else {
+    for (const tool of toolsInvoked) {
+      if (tool === "scanProjectStructure") {
+        activities.push({ type: "scan_project_structure", label: "Projektstruktur gescannt", timestamp: now });
+      } else if (tool.startsWith("readFile(")) {
+        const filePath = tool.slice("readFile(".length, -1);
+        // Only expose last two path segments – no absolute or deeply nested paths.
+        // Use cross-platform split to handle both "/" and "\" separators.
+        const displayPath = filePath.split(/[\\/]/).slice(-2).join("/");
+        activities.push({ type: "read_file", label: "Datei gelesen", path: displayPath, timestamp: now });
+      } else {
+        activities.push({ type: "tool_call", label: tool, timestamp: now });
+      }
+    }
+
+    if (filesRead.length > 0) {
+      activities.push({
+        type: "files_identified",
+        label: `${filesRead.length} relevante Datei${filesRead.length !== 1 ? "en" : ""} identifiziert`,
+        count: filesRead.length,
+        timestamp: now,
+      });
+    }
+  }
+
+  // ── Intent-driven activities (always included regardless of contextSource) ──
+  if (actionIntent === "propose_change" && conversation?.proposedChanges?.length > 0) {
+    const n = conversation.proposedChanges.length;
+    activities.push({
+      type: "propose_change",
+      label: `Änderungsvorschlag vorbereitet (${n} Datei${n !== 1 ? "en" : ""})`,
+      count: n,
+      timestamp: now,
+    });
+  }
+
+  if (actionIntent === "prepare_patch" && conversation?.preparedPatch) {
+    const n = (conversation.preparedPatch.editPlan || []).length;
+    activities.push({
+      type: "patch_prepared",
+      label: `Patch vorbereitet (${n} Operation${n !== 1 ? "en" : ""})`,
+      count: n,
+      timestamp: now,
+    });
+  }
+
+  if (actionIntent === "dry_run" && conversation?.dryRunResult) {
+    const r = conversation.dryRunResult;
+    activities.push({
+      type: "dry_run_completed",
+      label: r.success
+        ? `Dry Run erfolgreich (${(r.wouldChange || []).length} Datei${(r.wouldChange || []).length !== 1 ? "en" : ""})`
+        : "Dry Run mit Problemen",
+      timestamp: now,
+    });
+  }
+
+  if (actionIntent === "execute_change" && conversation?.executionResult) {
+    const r = conversation.executionResult;
+    activities.push({
+      type: "execute_change_completed",
+      label: r.success
+        ? `Änderungen ausgeführt (${(r.changedFiles || []).length} Datei${(r.changedFiles || []).length !== 1 ? "en" : ""})`
+        : "Ausführung mit Fehlern",
+      timestamp: now,
+    });
+  }
+
+  return activities;
+}
+
 /**
  * Extract file paths mentioned in a user message that look relevant.
  * Returns at most 2 candidate relative paths for readFile.
@@ -226,25 +329,48 @@ function _extractCandidateFiles(message) {
  * Used only for architecture / code_review modes with analytical intents.
  *
  * Flow:
- *   1. scanProjectStructure() – always called first
- *   2. readFile() on up to 2 files extracted from the user message
+ *   1. Check session working-memory cache (SESSION_CACHE_TTL_MS); skip tools if fresh.
+ *   2. scanProjectStructure() – always called first when fresh.
+ *   3. readFile() on up to 2 files extracted from the user message.
  *
  * Total tool calls are bounded by MAX_ARCHITECT_TOOL_CALLS.
  * Total injected context is capped at MAX_ARCHITECT_CONTEXT_CHARS.
  *
- * @param {string}      mode         – conversation mode
- * @param {string|null} actionIntent – current action intent
- * @param {string}      userMessage  – the user's latest message
+ * @param {string}      mode           – conversation mode
+ * @param {string|null} actionIntent   – current action intent
+ * @param {string}      userMessage    – the user's latest message
  * @param {string}      conversationId – for logging
- * @returns {Promise<{ contextText: string, toolsInvoked: string[], filesRead: string[] }>}
+ * @param {object|null} [workingMemory] – conversation.workingMemory (mutated in-place when fresh context is gathered)
+ * @returns {Promise<{ contextText: string, toolsInvoked: string[], filesRead: string[], contextSource: string }>}
  */
-async function _gatherArchitectContext(mode, actionIntent, userMessage, conversationId) {
+async function _gatherArchitectContext(mode, actionIntent, userMessage, conversationId, workingMemory = null) {
+  const candidates = _extractCandidateFiles(userMessage);
+
+  // ── Session-cache short-circuit ──
+  if (workingMemory && workingMemory.lastContextTimestamp && workingMemory.cachedContextText) {
+    const age = Date.now() - new Date(workingMemory.lastContextTimestamp).getTime();
+    const newCandidates = candidates.filter((f) => !(workingMemory.lastReadFiles || []).includes(f));
+    if (age < SESSION_CACHE_TTL_MS && newCandidates.length === 0) {
+      logger.info("[geminiAgent] _gatherArchitectContext – session cache hit", {
+        conversationId,
+        ageSeconds: Math.round(age / 1000),
+        cachedLength: workingMemory.cachedContextText.length,
+      });
+      return {
+        contextText:   workingMemory.cachedContextText,
+        toolsInvoked:  [],
+        filesRead:     (workingMemory.lastReadFiles || []).slice(),
+        contextSource: "session_cache",
+      };
+    }
+  }
+
   const toolsInvoked = [];
   const filesRead    = [];
   const sections     = [];
   let toolCallCount  = 0;
 
-  logger.info("[geminiAgent] _gatherArchitectContext – start", {
+  logger.info("[geminiAgent] _gatherArchitectContext – start (fresh)", {
     conversationId,
     mode,
     actionIntent,
@@ -272,8 +398,6 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
   }
 
   // ── Step 2: Read files mentioned in the user message ──
-  const candidates = _extractCandidateFiles(userMessage);
-
   for (const filePath of candidates) {
     if (toolCallCount >= MAX_ARCHITECT_TOOL_CALLS) break;
 
@@ -330,7 +454,14 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
     contextLength: contextText.length,
   });
 
-  return { contextText, toolsInvoked, filesRead };
+  // ── Update session working memory ──
+  if (workingMemory) {
+    workingMemory.lastReadFiles        = filesRead.slice();
+    workingMemory.lastContextTimestamp = new Date().toISOString();
+    workingMemory.cachedContextText    = contextText;
+  }
+
+  return { contextText, toolsInvoked, filesRead, contextSource: "fresh" };
 }
 
 /* ─────────────────────────────────────────────
@@ -541,10 +672,10 @@ function _buildGeminiContentsHistory(conversation) {
  * real project context is gathered first via the secure agentExplorer tools and
  * prepended to the user message.
  *
- * @param {object}      conversation  – the conversation object
+ * @param {object}      conversation  – the conversation object (workingMemory mutated in-place)
  * @param {string}      userMessage   – latest user message
  * @param {string|null} actionIntent  – current action intent
- * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string, errorCategory?: string, toolsInvoked?: string[], filesRead?: string[] }>}
+ * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string, errorCategory?: string, toolsInvoked?: string[], filesRead?: string[], contextSource?: string }>}
  */
 async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   // ── Decide whether to gather project context ──
@@ -559,8 +690,9 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   const history = _buildGeminiContentsHistory(conversation);
 
   // ── Context gathering ──
-  let toolsInvoked = [];
-  let filesRead    = [];
+  let toolsInvoked  = [];
+  let filesRead     = [];
+  let contextSource = "none";
   let effectiveUserMessage = userMessage;
 
   if (shouldGatherContext) {
@@ -577,9 +709,11 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
         actionIntent,
         userMessage,
         conversation.conversationId,
+        conversation.workingMemory || null,
       );
-      toolsInvoked = gathered.toolsInvoked;
-      filesRead    = gathered.filesRead;
+      toolsInvoked  = gathered.toolsInvoked;
+      filesRead     = gathered.filesRead;
+      contextSource = gathered.contextSource;
 
       if (gathered.contextText) {
         effectiveUserMessage =
@@ -588,6 +722,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
           conversationId: conversation.conversationId,
           toolsInvoked,
           filesRead,
+          contextSource,
           contextLength: gathered.contextText.length,
         });
       }
@@ -607,6 +742,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
     userMessageLength: effectiveUserMessage.length,
     architectContextActive: shouldGatherContext,
     contextLoaded: toolsInvoked.length > 0,
+    contextSource,
     toolsInvoked,
     filesRead,
   });
@@ -630,7 +766,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
       error: result.error,
       errorCategory: result.errorCategory || "unknown",
     });
-    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory, toolsInvoked, filesRead };
+    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory, toolsInvoked, filesRead, contextSource };
   }
 
   // Attempt JSON parse for structured intents
@@ -664,11 +800,12 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
     conversationId: conversation.conversationId,
     textLength: result.text.length,
     hasParsed: parsed !== null,
+    contextSource,
     toolsInvoked,
     filesRead,
   });
 
-  return { success: true, text: result.text, parsed, error: undefined, toolsInvoked, filesRead };
+  return { success: true, text: result.text, parsed, error: undefined, toolsInvoked, filesRead, contextSource };
 }
 
 /* ─────────────────────────────────────────────
@@ -1023,10 +1160,19 @@ async function _executeChanges(conversation) {
  * @param {string|null} actionIntent
  * @param {boolean}     isInitial
  * @param {string|null} [errorCategory]
- * @param {object}      [diagnostics]  – optional tool-calling diagnostics
+ * @param {object}      [diagnostics]  – tool-calling diagnostics { toolsInvoked, filesRead, contextSource }
  * @returns {object}
  */
 function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null, diagnostics = null) {
+  const contextSource   = diagnostics?.contextSource || "none";
+  const agentActivities = _buildAgentActivities(
+    diagnostics?.toolsInvoked || [],
+    diagnostics?.filesRead    || [],
+    contextSource,
+    actionIntent,
+    conversation,
+  );
+
   const response = {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
@@ -1034,6 +1180,7 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
     status:           conversation.status,
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
     reply:            { text: replyText || "" },
+    agentActivities,
     errorCategory:    errorCategory || null,
     metadata: {
       model:         process.env.GEMINI_MODEL || "gemini-2.5-flash",
@@ -1041,12 +1188,20 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
       messageCount:  conversation.messageCount,
       historyLength: conversation.messages.length,
       isInitial,
+      contextSource,
       timestamp:     new Date().toISOString(),
       // Architect context diagnostics – present only when tools were used
       ...(diagnostics && diagnostics.toolsInvoked && diagnostics.toolsInvoked.length > 0
         ? { toolsInvoked: diagnostics.toolsInvoked, filesRead: diagnostics.filesRead || [] }
         : {}),
     },
+    workingMemory: conversation.workingMemory
+      ? {
+          lastReadFiles:            conversation.workingMemory.lastReadFiles || [],
+          lastContextTimestamp:     conversation.workingMemory.lastContextTimestamp || null,
+          lastDiagnosticHypothesis: conversation.workingMemory.lastDiagnosticHypothesis || null,
+        }
+      : null,
     proposedChanges:  conversation.proposedChanges || null,
     preparedPatch:    conversation.preparedPatch || null,
     executionResult:  conversation.executionResult || null,
@@ -1139,6 +1294,13 @@ async function startConversation(opts = {}) {
     executionResult: null,
     dryRunResult:    null,
     approved:        false,
+    // ── Session working memory (per-conversation, not global) ──
+    workingMemory: {
+      lastReadFiles:            [],
+      lastContextTimestamp:     null,
+      cachedContextText:        null,
+      lastDiagnosticHypothesis: null,
+    },
   };
 
   // Add optional context as system message
@@ -1202,6 +1364,11 @@ async function startConversation(opts = {}) {
     conversation.status = "waiting_for_user";
   }
 
+  // ── Update session working memory ──
+  if (intent === "diagnose" && geminiResult.text) {
+    conversation.workingMemory.lastDiagnosticHypothesis = geminiResult.text.slice(0, 500);
+  }
+
   // Add assistant reply to history
   conversation.messages.push({
     role: "assistant",
@@ -1209,7 +1376,8 @@ async function startConversation(opts = {}) {
     timestamp: new Date().toISOString(),
     actionIntent: intent,
     metadata: {
-      hasParsed: geminiResult.parsed !== null,
+      hasParsed:     geminiResult.parsed !== null,
+      contextSource: geminiResult.contextSource || "none",
       ...(geminiResult.toolsInvoked && geminiResult.toolsInvoked.length > 0
         ? { toolsInvoked: geminiResult.toolsInvoked, filesRead: geminiResult.filesRead || [] }
         : {}),
@@ -1227,13 +1395,15 @@ async function startConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    contextSource: geminiResult.contextSource || "none",
     toolsInvoked: geminiResult.toolsInvoked || [],
     filesRead: geminiResult.filesRead || [],
   });
 
   return _buildResponse(conversation, geminiResult.text, intent, true, null, {
-    toolsInvoked: geminiResult.toolsInvoked || [],
-    filesRead:    geminiResult.filesRead    || [],
+    toolsInvoked:  geminiResult.toolsInvoked  || [],
+    filesRead:     geminiResult.filesRead     || [],
+    contextSource: geminiResult.contextSource || "none",
   });
 }
 
@@ -1478,6 +1648,11 @@ async function continueConversation(opts = {}) {
     conversation.status = "waiting_for_user";
   }
 
+  // ── Update session working memory ──
+  if (intent === "diagnose" && geminiResult.text && conversation.workingMemory) {
+    conversation.workingMemory.lastDiagnosticHypothesis = geminiResult.text.slice(0, 500);
+  }
+
   // Add assistant reply
   conversation.messages.push({
     role: "assistant",
@@ -1485,7 +1660,8 @@ async function continueConversation(opts = {}) {
     timestamp: new Date().toISOString(),
     actionIntent: intent,
     metadata: {
-      hasParsed: geminiResult.parsed !== null,
+      hasParsed:     geminiResult.parsed !== null,
+      contextSource: geminiResult.contextSource || "none",
       ...(geminiResult.toolsInvoked && geminiResult.toolsInvoked.length > 0
         ? { toolsInvoked: geminiResult.toolsInvoked, filesRead: geminiResult.filesRead || [] }
         : {}),
@@ -1500,13 +1676,15 @@ async function continueConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    contextSource: geminiResult.contextSource || "none",
     toolsInvoked: geminiResult.toolsInvoked || [],
     filesRead: geminiResult.filesRead || [],
   });
 
   return _buildResponse(conversation, geminiResult.text, intent, false, null, {
-    toolsInvoked: geminiResult.toolsInvoked || [],
-    filesRead:    geminiResult.filesRead    || [],
+    toolsInvoked:  geminiResult.toolsInvoked  || [],
+    filesRead:     geminiResult.filesRead     || [],
+    contextSource: geminiResult.contextSource || "none",
   });
 }
 
@@ -1547,6 +1725,13 @@ function getConversation(conversationId) {
     executionResult: conversation.executionResult,
     dryRunResult:    conversation.dryRunResult,
     approved:        conversation.approved,
+    workingMemory:   conversation.workingMemory
+      ? {
+          lastReadFiles:            conversation.workingMemory.lastReadFiles || [],
+          lastContextTimestamp:     conversation.workingMemory.lastContextTimestamp || null,
+          lastDiagnosticHypothesis: conversation.workingMemory.lastDiagnosticHypothesis || null,
+        }
+      : null,
   };
 }
 
