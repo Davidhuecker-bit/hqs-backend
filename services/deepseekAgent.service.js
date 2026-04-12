@@ -14,6 +14,7 @@ const {
   scanProjectStructure,
   listDirectory,
   readFile,
+  findFileByName,
   needsProjectContext,
 } = require("./geminiProjectExplorer.service");
 
@@ -284,7 +285,40 @@ function _extractCandidateFiles(message) {
 }
 
 /**
- * Infers likely target files from query keywords when no explicit file paths
+ * Extracts bare filenames (without a directory prefix) mentioned in the user
+ * message.  Examples: "DashboardIntegrated.jsx", "admin.routes.js".
+ *
+ * Only filenames with known text extensions are extracted.
+ * Filenames that are already part of a directory path (e.g. "services/foo.js")
+ * are excluded – those are handled by _extractCandidateFiles.
+ *
+ * Returns at most 3 unique basenames (case-preserved).
+ *
+ * @param {string} message
+ * @returns {string[]}
+ */
+function _extractTargetFilenames(message) {
+  if (!message || typeof message !== "string") return [];
+
+  // Match a filename-like token that is NOT preceded by a path separator or dot
+  // (to avoid re-matching tails of already-qualified paths like services/foo.service.js)
+  const re = /(?<![/\\.\w])([\w][\w.-]*\.(?:jsx?|tsx?|json|yaml|yml|md|markdown|css|scss|sass|less|html?|sh|graphql|gql|sql|toml|ini|cfg))\b/g;
+  const found  = [];
+  const seenLc = new Set();
+  let match;
+  while ((match = re.exec(message)) !== null) {
+    const name = match[1];
+    const lc   = name.toLowerCase();
+    if (!seenLc.has(lc)) {
+      seenLc.add(lc);
+      found.push(name);
+    }
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+/**
  * are mentioned in the message. Covers common question categories:
  *   • route/endpoint/pfad/api/url  → routes/admin.routes.js
  *   • service/dienst                → services/agentRegistry.service.js (or named)
@@ -385,6 +419,25 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
   const inferred   = candidates.length === 0 ? _inferTargetFiles(userMessage) : [];
   const allCandidates = [...candidates, ...inferred.filter((f) => !candidates.includes(f))];
 
+  // ── Step 0 (pre-cache): extract bare filenames and resolve via findFileByName ──
+  const targetFilenames    = _extractTargetFilenames(userMessage);
+  const targetFileDiagnostics = [];
+
+  for (const basename of targetFilenames) {
+    const searchResult = findFileByName(basename);
+    const diag = {
+      requested:     basename,
+      resolved:      searchResult.success && searchResult.matches.length > 0,
+      matches:       searchResult.matches,
+      searchedScopes: searchResult.searchedScopes,
+    };
+    targetFileDiagnostics.push(diag);
+    if (diag.resolved) {
+      const best = diag.matches[0];
+      if (!allCandidates.includes(best)) allCandidates.push(best);
+    }
+  }
+
   // ── Session-cache short-circuit (with mismatch detection) ──
   if (workingMemory && workingMemory.lastContextTimestamp && workingMemory.cachedContextText) {
     const age = Date.now() - new Date(workingMemory.lastContextTimestamp).getTime();
@@ -402,6 +455,7 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
         filesRead:               (workingMemory.lastReadFiles || []).slice(),
         contextSource:           "session_cache",
         contextMismatchRecovered: false,
+        targetFileDiagnostics,
       };
     }
     if (mismatch) {
@@ -425,6 +479,7 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
     mode,
     actionIntent,
     inferredFiles: inferred,
+    targetFilenames,
   });
 
   // ── Step 1: Scan project structure ──
@@ -448,7 +503,7 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
     }
   }
 
-  // ── Step 2: Read explicitly mentioned + inferred files ──
+  // ── Step 2: Read explicitly mentioned + inferred + resolved target files ──
   for (const filePath of allCandidates) {
     if (toolCallCount >= MAX_AGENT_TOOL_CALLS) break;
 
@@ -485,6 +540,21 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
     }
   }
 
+  // ── Step 3: Annotate context for multiple-match or not-found target files ──
+  for (const diag of targetFileDiagnostics) {
+    if (!diag.resolved) {
+      sections.push(
+        `Hinweis: Die Datei "${diag.requested}" wurde in den erlaubten Projektbereichen nicht gefunden.\n` +
+        `Durchsuchte Bereiche: ${diag.searchedScopes.join(", ") || "keine"}`
+      );
+    } else if (diag.matches.length > 1) {
+      sections.push(
+        `Hinweis: Für "${diag.requested}" wurden ${diag.matches.length} Treffer gefunden: ` +
+        `${diag.matches.slice(0, 3).join(", ")}. Gelesener Pfad: ${diag.matches[0]}`
+      );
+    }
+  }
+
   let contextText = sections.join("\n\n");
 
   // Cap total context to avoid oversized prompts
@@ -503,6 +573,7 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
     toolsInvoked,
     filesRead,
     contextLength: contextText.length,
+    targetFileDiagnostics,
   });
 
   // ── Update session working memory ──
@@ -512,7 +583,7 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
     workingMemory.cachedContextText    = contextText;
   }
 
-  return { contextText, toolsInvoked, filesRead, contextSource: "fresh", contextMismatchRecovered: false };
+  return { contextText, toolsInvoked, filesRead, contextSource: "fresh", contextMismatchRecovered: false, targetFileDiagnostics };
 }
 
 /* ─────────────────────────────────────────────
@@ -743,6 +814,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
   let filesRead     = [];
   let contextSource = "none";
   let contextMismatchRecovered = false;
+  let targetFileDiagnostics = [];
   let effectiveUserMessage = userMessage;
 
   if (shouldGatherContext) {
@@ -765,6 +837,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
       filesRead                = gathered.filesRead;
       contextSource            = gathered.contextSource;
       contextMismatchRecovered = gathered.contextMismatchRecovered || false;
+      targetFileDiagnostics    = gathered.targetFileDiagnostics || [];
 
       if (gathered.contextText) {
         effectiveUserMessage = `${gathered.contextText}\n\nFrage/Aufgabe:\n${userMessage}`;
@@ -833,7 +906,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
       conversationId: conversation.conversationId,
       error: String(err.message).slice(0, 120),
     });
-    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120), toolsInvoked, filesRead, contextSource, contextMismatchRecovered };
+    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120), toolsInvoked, filesRead, contextSource, contextMismatchRecovered, targetFileDiagnostics };
   }
 
   const text = extractDeepSeekText(completion);
@@ -842,7 +915,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     logger.warn("[deepseekAgent] _callDeepSeekWithHistory – empty response", {
       conversationId: conversation.conversationId,
     });
-    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response", toolsInvoked, filesRead, contextSource, contextMismatchRecovered };
+    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response", toolsInvoked, filesRead, contextSource, contextMismatchRecovered, targetFileDiagnostics };
   }
 
   // Attempt JSON parse for structured intents
@@ -877,7 +950,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     filesRead,
   });
 
-  return { success: true, text: text.trim(), parsed, error: undefined, toolsInvoked, filesRead, contextSource, contextMismatchRecovered };
+  return { success: true, text: text.trim(), parsed, error: undefined, toolsInvoked, filesRead, contextSource, contextMismatchRecovered, targetFileDiagnostics };
 }
 
 /* ─────────────────────────────────────────────
@@ -1234,7 +1307,7 @@ async function _executeChanges(conversation) {
  * @param {string|null} actionIntent
  * @param {boolean}     isInitial
  * @param {string|null} [errorCategory]
- * @param {object}      [diagnostics]  – tool-calling diagnostics { toolsInvoked, filesRead, contextSource }
+ * @param {object}      [diagnostics]  – tool-calling diagnostics { toolsInvoked, filesRead, contextSource, targetFileDiagnostics }
  * @returns {object}
  */
 function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null, diagnostics = null) {
@@ -1270,6 +1343,20 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
     ? "context_loaded_but_not_referenced"
     : undefined;
 
+  // ── Diagnostics: targeted file search result ──
+  const targetFileDiagnostics = diagnostics?.targetFileDiagnostics || [];
+  const firstTarget = targetFileDiagnostics[0] || null;
+  const targetFileFields = firstTarget
+    ? {
+        targetFileRequested: firstTarget.requested,
+        targetFileResolved:  firstTarget.resolved,
+        resolvedFilePath:    firstTarget.resolved ? (firstTarget.matches[0] || null) : null,
+        ...(firstTarget.searchedScopes && firstTarget.searchedScopes.length > 0
+          ? { searchedScopes: firstTarget.searchedScopes }
+          : {}),
+      }
+    : {};
+
   return {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
@@ -1290,6 +1377,7 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
       contextUsedInAnswer,
       contextMismatchRecovered,
       ...(fallbackReason ? { fallbackReason } : {}),
+      ...targetFileFields,
       timestamp:               new Date().toISOString(),
       ...(diagnostics && diagnostics.toolsInvoked && diagnostics.toolsInvoked.length > 0
         ? { toolsInvoked: diagnostics.toolsInvoked }
@@ -1477,6 +1565,7 @@ async function startConversation(opts = {}) {
     filesRead:                agentResult.filesRead                || [],
     contextSource:            agentResult.contextSource            || "none",
     contextMismatchRecovered: agentResult.contextMismatchRecovered || false,
+    targetFileDiagnostics:    agentResult.targetFileDiagnostics    || [],
   });
 }
 
@@ -1742,6 +1831,7 @@ async function continueConversation(opts = {}) {
     filesRead:                agentResult.filesRead                || [],
     contextSource:            agentResult.contextSource            || "none",
     contextMismatchRecovered: agentResult.contextMismatchRecovered || false,
+    targetFileDiagnostics:    agentResult.targetFileDiagnostics    || [],
   });
 }
 
@@ -1808,5 +1898,6 @@ module.exports = {
   _extractCandidateFiles,
   _gatherAgentContext,
   _inferTargetFiles,
+  _extractTargetFilenames,
   _isCacheMismatch,
 };

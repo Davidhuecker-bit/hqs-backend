@@ -5,12 +5,13 @@
  *  Agent Project Explorer – Secure Minimal Tool Set (shared: Gemini + DeepSeek)
  * ═══════════════════════════════════════════════════════════════
  *
- *  Provides three tightly controlled server-side exploration tools
+ *  Provides four tightly controlled server-side exploration tools
  *  shared by all internal agent paths (Gemini, DeepSeek):
  *
  *    scanProjectStructure()          – top-level overview of allowed dirs
  *    listDirectory(relPath)          – list files in one allowed directory
  *    readFile(relPath)               – read a single text file (size-capped)
+ *    findFileByName(basename)        – search all allowed dirs for a named file
  *
  *  Security rules (non-negotiable):
  *    • Only paths under ALLOWED_EXPLORER_PATHS are accessible
@@ -49,6 +50,12 @@ const MAX_SCAN_DEPTH = 2;
 
 /** Maximum total entries in a full project scan. */
 const MAX_SCAN_ENTRIES = 300;
+
+/** Maximum number of files returned by findFileByName. */
+const MAX_FILE_SEARCH_RESULTS = 5;
+
+/** Maximum directory depth for findFileByName recursive walk. */
+const MAX_FILE_SEARCH_DEPTH = 5;
 
 /**
  * Extra path segments / patterns that are always blocked on top of
@@ -484,11 +491,187 @@ function readFile(relPath) {
 }
 
 /* ─────────────────────────────────────────────
-   Public helper: needsProjectContext
+   Internal helper: recursive walk for findFileByName
    ───────────────────────────────────────────── */
 
 /**
- * Heuristically decides whether a free-chat message requires real project
+ * Recursively walks absDir looking for files whose lowercased name matches
+ * baseLower.  Appends matching relative paths to results up to maxResults.
+ *
+ * @param {string}   absDir     – absolute path of the directory to walk
+ * @param {string}   relDir     – corresponding relative path (for result entries)
+ * @param {string}   baseLower  – lower-cased target basename
+ * @param {number}   depth      – current recursion depth (0-based)
+ * @param {number}   maxDepth   – recursion depth cap
+ * @param {string[]} results    – accumulator (mutated in-place)
+ * @param {number}   maxResults – stop when results.length reaches this
+ */
+function _walkForFile(absDir, relDir, baseLower, depth, maxDepth, results, maxResults) {
+  if (depth > maxDepth) return;
+  if (results.length >= maxResults) return;
+
+  let entries;
+  try {
+    entries = fs.readdirSync(absDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (results.length >= maxResults) return;
+
+    const entryRel = relDir ? `${relDir}/${entry.name}` : entry.name;
+    const normRel  = _normalise(entryRel);
+
+    if (normRel.includes("..")) continue;
+
+    // Skip blocked paths
+    const lower   = normRel.toLowerCase();
+    const blocked =
+      _isExtraBlocked(lower) ||
+      BLOCKED_PATH_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
+    if (blocked) continue;
+
+    if (entry.isDirectory()) {
+      _walkForFile(path.join(absDir, entry.name), entryRel, baseLower, depth + 1, maxDepth, results, maxResults);
+    } else if (entry.name.toLowerCase() === baseLower) {
+      if (_isTextFile(entry.name)) {
+        results.push(normRel);
+      }
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────
+   Public tool: findFileByName
+   ───────────────────────────────────────────── */
+
+/**
+ * Searches all allowed project paths for a file matching the given basename.
+ * Returns all matching relative paths (up to MAX_FILE_SEARCH_RESULTS) together
+ * with the list of scopes that were searched.
+ *
+ * Security rules enforced:
+ *   • basename must not contain path separators or traversal sequences
+ *   • must pass EXTRA_BLOCKED_PATTERNS and BLOCKED_PATH_PATTERNS checks
+ *   • must be a recognised text file (ALLOWED_TEXT_EXTENSIONS / ALLOWED_BASENAMES)
+ *   • result paths are verified against the same security fence as readFile
+ *
+ * @param {string} basename – e.g. "DashboardIntegrated.jsx" or "admin.routes.js"
+ * @returns {{
+ *   success: boolean,
+ *   matches: string[],
+ *   searchedScopes: string[],
+ *   error?: string
+ * }}
+ */
+function findFileByName(basename) {
+  logger.info("[agentExplorer] tool:findFileByName – called", { basename });
+
+  if (!basename || typeof basename !== "string") {
+    return { success: false, matches: [], searchedScopes: [], error: "Empty basename" };
+  }
+
+  const norm = _normalise(basename);
+
+  // Only allow simple basenames (no directory components)
+  if (!norm || norm.includes("/") || norm.includes("\\") || norm.includes("..") || norm.includes("~")) {
+    logger.warn("[agentExplorer] tool:findFileByName – basename rejected (traversal/path)", { basename });
+    return { success: false, matches: [], searchedScopes: [], error: `Invalid basename: ${basename}` };
+  }
+
+  // Blocked pattern check on the basename itself
+  if (_isExtraBlocked(norm.toLowerCase())) {
+    logger.warn("[agentExplorer] tool:findFileByName – basename rejected (blocked pattern)", { basename });
+    return { success: false, matches: [], searchedScopes: [], error: `Blocked: ${basename}` };
+  }
+
+  // Extension check – only search for files we can actually read
+  if (!_isTextFile(norm)) {
+    logger.warn("[agentExplorer] tool:findFileByName – file type not searchable", {
+      basename, ext: path.extname(norm),
+    });
+    return {
+      success: false,
+      matches: [],
+      searchedScopes: [],
+      error: `File type not searchable: ${path.extname(norm) || basename}`,
+    };
+  }
+
+  const baseLower      = norm.toLowerCase();
+  const matches        = [];
+  const searchedScopes = [];
+
+  for (const allowedPrefix of ALLOWED_PROJECT_PATHS) {
+    const absAllowed = path.resolve(_projectRoot, allowedPrefix.replace(/\/$/, ""));
+    if (!fs.existsSync(absAllowed)) continue;
+
+    searchedScopes.push(allowedPrefix);
+    _walkForFile(
+      absAllowed,
+      allowedPrefix.replace(/\/$/, ""),
+      baseLower,
+      0,
+      MAX_FILE_SEARCH_DEPTH,
+      matches,
+      MAX_FILE_SEARCH_RESULTS,
+    );
+
+    if (matches.length >= MAX_FILE_SEARCH_RESULTS) break;
+  }
+
+  logger.info("[agentExplorer] tool:findFileByName – done", {
+    basename,
+    matchCount: matches.length,
+    searchedScopeCount: searchedScopes.length,
+    matches,
+  });
+
+  return { success: true, matches, searchedScopes };
+}
+
+
+/* ─────────────────────────────────────────────
+   Public helper: extractTargetFilenames
+   (shared by geminiAgent and deepseekAgent)
+   ───────────────────────────────────────────── */
+
+/**
+ * Extracts bare filenames (without a directory prefix) mentioned in the user
+ * message.  Examples: "DashboardIntegrated.jsx", "admin.routes.js".
+ *
+ * Only filenames with known text extensions are extracted.
+ * Filenames that are already part of a directory path (e.g. "services/foo.js")
+ * are excluded – those are handled by the agent's _extractCandidateFiles.
+ *
+ * Returns at most 3 unique basenames (case-preserved).
+ *
+ * @param {string} message
+ * @returns {string[]}
+ */
+function extractTargetFilenames(message) {
+  if (!message || typeof message !== "string") return [];
+
+  // Match a filename-like token that is NOT preceded by a path separator or dot
+  // (to avoid re-matching tails of already-qualified paths like services/foo.service.js)
+  const re = /(?<![/\\.\w])([\w][\w.-]*\.(?:jsx?|tsx?|json|yaml|yml|md|markdown|css|scss|sass|less|html?|sh|graphql|gql|sql|toml|ini|cfg))\b/g;
+  const found  = [];
+  const seenLc = new Set();
+  let match;
+  while ((match = re.exec(message)) !== null) {
+    const name = match[1];
+    const lc   = name.toLowerCase();
+    if (!seenLc.has(lc)) {
+      seenLc.add(lc);
+      found.push(name);
+    }
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+/* ─────────────────────────────────────────────
  * context (code, architecture, specific files, service details, etc.).
  *
  * Used by both geminiAgent and deepseekAgent to auto-detect context need in
@@ -558,11 +741,15 @@ module.exports = {
   scanProjectStructure,
   listDirectory,
   readFile,
+  findFileByName,
+  extractTargetFilenames,
   needsProjectContext,
   // Exported for testing / documentation
   MAX_FILE_SIZE_BYTES,
   MAX_DIR_ENTRIES,
   MAX_SCAN_DEPTH,
+  MAX_FILE_SEARCH_RESULTS,
+  MAX_FILE_SEARCH_DEPTH,
   ALLOWED_TEXT_EXTENSIONS,
   EXTRA_BLOCKED_PATTERNS,
 };
