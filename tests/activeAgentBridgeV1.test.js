@@ -49,6 +49,7 @@ jest.mock("../services/geminiProjectExplorer.service", () => ({
   })),
   listDirectory: jest.fn(() => ({ success: true, entries: [] })),
   readFile: jest.fn(() => ({ success: false, error: "not found" })),
+  findFileByName: jest.fn(() => ({ success: true, matches: [], searchedScopes: [] })),
   needsProjectContext: jest.fn(() => false),
 }));
 
@@ -56,7 +57,7 @@ const geminiAgent = require("../services/geminiAgent.service");
 const deepseekAgent = require("../services/deepseekAgent.service");
 const { isGeminiConfigured, runGeminiChat } = require("../services/geminiArchitect.service");
 const { isDeepSeekConfigured, createDeepSeekChatCompletion, extractDeepSeekText } = require("../services/deepseek.service");
-const { scanProjectStructure, readFile, needsProjectContext } = require("../services/geminiProjectExplorer.service");
+const { scanProjectStructure, readFile, findFileByName, needsProjectContext } = require("../services/geminiProjectExplorer.service");
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -68,6 +69,7 @@ beforeEach(() => {
   extractDeepSeekText.mockImplementation((c) => c?.choices?.[0]?.message?.content || "");
   scanProjectStructure.mockReturnValue({ success: true, tree: "services/\n  foo.js", entryCount: 1 });
   readFile.mockReturnValue({ success: false, error: "not found" });
+  findFileByName.mockReturnValue({ success: true, matches: [], searchedScopes: [] });
   needsProjectContext.mockReturnValue(false);
 });
 
