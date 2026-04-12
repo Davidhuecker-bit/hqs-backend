@@ -198,11 +198,14 @@ function _buildConversationHistory(conversation) {
    ───────────────────────────────────────────── */
 
 /**
+ * Directory prefixes used when extracting candidate file paths from messages.
+ * Must stay in sync with ALLOWED_PROJECT_PATHS in agentRegistry.service.js.
+ */
+const _CANDIDATE_FILE_DIRS = "services|routes|middleware|utils|config|engines|lib";
+
+/**
  * Extract file paths mentioned in a user message that look relevant.
  * Returns at most 2 candidate relative paths for readFile.
- *
- * The directory prefixes in the pattern must align with ALLOWED_PROJECT_PATHS
- * (from agentRegistry.service.js).  Update both if new directories are added.
  *
  * @param {string} message
  * @returns {string[]}
@@ -211,7 +214,7 @@ function _extractCandidateFiles(message) {
   if (!message || typeof message !== "string") return [];
   // Match patterns like: services/foo.js, routes/bar.js, utils/baz.ts, etc.
   // NOTE: directory prefixes here should stay in sync with ALLOWED_PROJECT_PATHS.
-  const pattern = /\b((?:services|routes|middleware|utils|config|engines|lib)\/[\w/.-]+\.(?:js|ts|json|md))\b/g;
+  const pattern = new RegExp(`\\b((?:${_CANDIDATE_FILE_DIRS})\\/[\\w/.-]+\\.(?:js|ts|json|md))\\b`, "g");
   const found = [];
   let match;
   while ((match = pattern.exec(message)) !== null) {
@@ -257,7 +260,7 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
     try {
       const scan = scanProjectStructure();
       if (scan.success && scan.tree) {
-        sections.push(`Aktuelle Projektstruktur (automatisch gescannt):\n\`\`\`\n${scan.tree}\n\`\`\``);
+        sections.push(`Aktuelle Projektstruktur (automatisch gescannt):\n~~~\n${scan.tree}\n~~~`);
         logger.info("[geminiAgent] _gatherArchitectContext – scanProjectStructure done", {
           conversationId,
           entryCount: scan.entryCount,
@@ -285,7 +288,7 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
       if (result.success && result.content) {
         const truncNote = result.truncated ? " [gekürzt]" : "";
         sections.push(
-          `Dateiinhalt: ${filePath}${truncNote} (${(result.sizeBytes / 1024).toFixed(1)} KB):\n\`\`\`\n${result.content}\n\`\`\``
+          `Dateiinhalt: ${filePath}${truncNote} (${(result.sizeBytes / 1024).toFixed(1)} KB):\n~~~\n${result.content}\n~~~`
         );
         filesRead.push(filePath);
         logger.info("[geminiAgent] _gatherArchitectContext – readFile done", {
