@@ -84,6 +84,37 @@ const BLOCKED_PATH_PATTERNS = [
   ".env", "node_modules", ".git", "secrets", "credentials", "package-lock",
 ];
 
+/**
+ * Optional path to the frontend project root.
+ * Set the FRONTEND_ROOT environment variable to enable frontend file search.
+ * When null, only the backend project root is searched.
+ */
+const FRONTEND_PROJECT_ROOT = process.env.FRONTEND_ROOT || null;
+
+/**
+ * Directory prefixes (relative to FRONTEND_PROJECT_ROOT) searched by
+ * findFileByName and readable via readFile when FRONTEND_ROOT is configured.
+ * This mirrors the structure of a typical Vite/React/Vue frontend project.
+ *
+ * READ access is granted to both agents.
+ * WRITE access remains governed by the existing role-based write policy.
+ */
+const FRONTEND_SEARCH_PATHS = [
+  "src/",
+  "src/components/",
+  "src/views/",
+  "src/hooks/",
+  "src/services/",
+  "src/utils/",
+  "src/pages/",
+  "src/layouts/",
+  "src/styles/",
+  "components/",
+  "pages/",
+  "views/",
+  "public/",
+];
+
 /* ─────────────────────────────────────────────
    Write-scope per agent  (role-based write policy)
    ─────────────────────────────────────────────
@@ -387,4 +418,7 @@ module.exports = {
   FRONTEND_WRITE_PATHS,
   BACKEND_WRITE_PATHS,
   checkWriteScope,
+  // Frontend project root support
+  FRONTEND_PROJECT_ROOT,
+  FRONTEND_SEARCH_PATHS,
 };
