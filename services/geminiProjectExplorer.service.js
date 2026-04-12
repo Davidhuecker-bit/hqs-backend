@@ -533,6 +533,14 @@ function needsProjectContext(message) {
     "wie funktioniert.*api", "wie funktioniert.*service",
     "was macht.*service", "was macht.*route",
     "backend.*struktur", "frontend.*struktur",
+    // Path / endpoint / field queries
+    "pfad", "endpoint", "antwortfeld", "response.?field", "field.?name",
+    "welcher.*pfad", "welcher.*endpoint", "welche.*url",
+    "welches.*feld", "welches.*antwortfeld",
+    "api.?url", "api.?pfad", "api.?endpoint", "api.?path",
+    "route", "welche.*route", "welchen.*route",
+    "welchen.*endpunkt", "which.*endpoint", "which.*route", "which.*path",
+    "antwort.*feld", "response.*field", "rückgabe.*feld",
   ];
   return signalPhrases.some((phrase) => {
     if (/[.*+?]/.test(phrase)) {

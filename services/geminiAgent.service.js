@@ -338,6 +338,84 @@ function _extractCandidateFiles(message) {
 }
 
 /**
+ * Infers likely target files from query keywords when no explicit file paths
+ * are mentioned in the message. Covers common question categories:
+ *   • route/endpoint/pfad/api/url  → routes/admin.routes.js
+ *   • service/dienst                → services/ directory listing then first .service.js
+ *   • middleware/auth               → middleware/
+ *
+ * Returns at most 2 candidate paths that can be passed to readFile().
+ *
+ * @param {string} message
+ * @returns {string[]}
+ */
+function _inferTargetFiles(message) {
+  if (!message || typeof message !== "string") return [];
+  const lower = message.toLowerCase();
+  const inferred = [];
+
+  // Route / endpoint / API path questions → read the main admin routes file
+  if (/\b(?:route|endpoint|pfad|url|path|api)\b/.test(lower)) {
+    inferred.push("routes/admin.routes.js");
+  }
+
+  // Service questions → read agentRegistry (lists all services) or a named service
+  if (/\b(?:service|dienst)\b/.test(lower)) {
+    // Check if a specific service name is mentioned
+    const serviceMatch = lower.match(/\b(\w+)(?:agent|service|architect|bridge|registry|orchestrator)\b/);
+    if (serviceMatch) {
+      const name = serviceMatch[0].replace(/\s+/g, "");
+      const candidate = `services/${name}.service.js`;
+      if (!inferred.includes(candidate)) inferred.push(candidate);
+    } else {
+      inferred.push("services/agentRegistry.service.js");
+    }
+  }
+
+  // Middleware / auth questions
+  if (/\b(?:middleware|auth(?:entication)?|authorization)\b/.test(lower)) {
+    inferred.push("middleware/adminAuth.js");
+  }
+
+  return inferred.slice(0, 2);
+}
+
+/**
+ * Returns true when the new user message is topically different from the
+ * last cached context (session-cache mismatch). Used to force a fresh
+ * context reload when the conversation topic shifts significantly.
+ *
+ * Heuristic: look for clear domain keywords that are NOT present in the
+ * cached context text.
+ *
+ * @param {string}      newMessage    – latest user message
+ * @param {string}      cachedContext – last cached context string
+ * @returns {boolean}
+ */
+function _isCacheMismatch(newMessage, cachedContext) {
+  if (!newMessage || !cachedContext) return false;
+  const lower = newMessage.toLowerCase();
+  const cachedLower = cachedContext.toLowerCase();
+
+  // Extract first-order topic keywords from the new message
+  const topicPatterns = [
+    /\b(routes?\/\S+)/,
+    /\b(services?\/\S+)/,
+    /\b(\w+\.(?:js|ts|json))\b/,
+    /\b(middleware|auth|authentication)\b/,
+    /\b(endpoint|pfad|url|path)\b/,
+  ];
+
+  for (const re of topicPatterns) {
+    const m = lower.match(re);
+    if (m && !cachedLower.includes(m[1])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Gathers project context by calling the secure exploration tools.
  * Used only for architecture / code_review modes with analytical intents.
  *
@@ -358,23 +436,37 @@ function _extractCandidateFiles(message) {
  */
 async function _gatherArchitectContext(mode, actionIntent, userMessage, conversationId, workingMemory = null) {
   const candidates = _extractCandidateFiles(userMessage);
+  // Infer files from query keywords when no explicit candidates found
+  const inferred   = candidates.length === 0 ? _inferTargetFiles(userMessage) : [];
+  const allCandidates = [...candidates, ...inferred.filter((f) => !candidates.includes(f))];
 
-  // ── Session-cache short-circuit ──
+  // ── Session-cache short-circuit (with mismatch detection) ──
   if (workingMemory && workingMemory.lastContextTimestamp && workingMemory.cachedContextText) {
     const age = Date.now() - new Date(workingMemory.lastContextTimestamp).getTime();
-    const newCandidates = candidates.filter((f) => !(workingMemory.lastReadFiles || []).includes(f));
-    if (age < SESSION_CACHE_TTL_MS && newCandidates.length === 0) {
+    const newCandidates = allCandidates.filter((f) => !(workingMemory.lastReadFiles || []).includes(f));
+    const mismatch = _isCacheMismatch(userMessage, workingMemory.cachedContextText);
+    if (age < SESSION_CACHE_TTL_MS && newCandidates.length === 0 && !mismatch) {
       logger.info("[geminiAgent] _gatherArchitectContext – session cache hit", {
         conversationId,
         ageSeconds: Math.round(age / 1000),
         cachedLength: workingMemory.cachedContextText.length,
       });
       return {
-        contextText:   workingMemory.cachedContextText,
-        toolsInvoked:  [],
-        filesRead:     (workingMemory.lastReadFiles || []).slice(),
-        contextSource: "session_cache",
+        contextText:             workingMemory.cachedContextText,
+        toolsInvoked:            [],
+        filesRead:               (workingMemory.lastReadFiles || []).slice(),
+        contextSource:           "session_cache",
+        contextMismatchRecovered: false,
       };
+    }
+    if (mismatch) {
+      logger.info("[geminiAgent] _gatherArchitectContext – cache mismatch, reloading fresh context", {
+        conversationId,
+        ageSeconds: Math.round(age / 1000),
+      });
+      workingMemory.cachedContextText    = null;
+      workingMemory.lastContextTimestamp = null;
+      workingMemory.lastReadFiles        = [];
     }
   }
 
@@ -387,6 +479,7 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
     conversationId,
     mode,
     actionIntent,
+    inferredFiles: inferred,
   });
 
   // ── Step 1: Scan project structure ──
@@ -410,8 +503,8 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
     }
   }
 
-  // ── Step 2: Read files mentioned in the user message ──
-  for (const filePath of candidates) {
+  // ── Step 2: Read explicitly mentioned + inferred files ──
+  for (const filePath of allCandidates) {
     if (toolCallCount >= MAX_ARCHITECT_TOOL_CALLS) break;
 
     toolCallCount++;
@@ -474,7 +567,7 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
     workingMemory.cachedContextText    = contextText;
   }
 
-  return { contextText, toolsInvoked, filesRead, contextSource: "fresh" };
+  return { contextText, toolsInvoked, filesRead, contextSource: "fresh", contextMismatchRecovered: false };
 }
 
 /* ─────────────────────────────────────────────
@@ -636,12 +729,18 @@ Dir wird im User-Prompt ein aktueller Scan der Projektstruktur und ggf. relevant
 Nutze diesen echten Kontext, um systemspezifische, präzise Antworten zu geben – keine Allgemeinplätze.
 Falls der gelieferte Kontext nicht ausreicht, um die Frage zu beantworten, sage dies klar – erfinde keine Informationen.
 
+VERBOTEN wenn Kontext geladen wurde:
+- Schreibe NICHT „ich habe keinen Zugriff auf den Code" oder ähnliche generische Aussagen.
+- Schreibe NICHT „ich kann ohne den Code nicht antworten" oder „bitte sende mir den Code".
+- Gib KEINE pauschalen Antworten, die ignorieren, dass echter Projektkontext vorliegt.
+- Falls der Kontext für die Frage nicht ausreicht, benenne KONKRET welche Datei oder welcher Pfad zusätzlich gelesen werden müsste (z.B. „Um das zu beantworten, müsste ich services/foo.service.js lesen").
+
 Anweisungen:
 - Lies zuerst die bereitgestellte Projektstruktur und Dateiinhalte sorgfältig.
 - Beziehe dich konkret auf tatsächliche Dateien, Dienste und Strukturen aus dem Kontext.
+- Nenne konkrete Dateinamen, Pfade und Funktionen aus dem geladenen Kontext.
 - Gliedere die Antwort klar: Zusammenfassung → Befunde → Empfehlungen (mit Dateibezug).
-- Benenne konkrete Dateipfade, Funktionen oder Codeabschnitte wenn möglich.
-- Wenn der Kontext nicht ausreicht, sage es konkret – kein allgemeines "es könnte sein".
+- Wenn der Kontext nicht ausreicht: benenne die fehlende Datei/den fehlenden Pfad konkret.
 - Halte die Antwort prägnant und sachlich.`;
   }
 
@@ -706,6 +805,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   let toolsInvoked  = [];
   let filesRead     = [];
   let contextSource = "none";
+  let contextMismatchRecovered = false;
   let effectiveUserMessage = userMessage;
 
   if (shouldGatherContext) {
@@ -724,9 +824,10 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
         conversation.conversationId,
         conversation.workingMemory || null,
       );
-      toolsInvoked  = gathered.toolsInvoked;
-      filesRead     = gathered.filesRead;
-      contextSource = gathered.contextSource;
+      toolsInvoked             = gathered.toolsInvoked;
+      filesRead                = gathered.filesRead;
+      contextSource            = gathered.contextSource;
+      contextMismatchRecovered = gathered.contextMismatchRecovered || false;
 
       if (gathered.contextText) {
         effectiveUserMessage =
@@ -736,6 +837,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
           toolsInvoked,
           filesRead,
           contextSource,
+          contextMismatchRecovered,
           contextLength: gathered.contextText.length,
         });
       }
@@ -779,7 +881,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
       error: result.error,
       errorCategory: result.errorCategory || "unknown",
     });
-    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory, toolsInvoked, filesRead, contextSource };
+    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory, toolsInvoked, filesRead, contextSource, contextMismatchRecovered };
   }
 
   // Attempt JSON parse for structured intents
@@ -818,7 +920,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
     filesRead,
   });
 
-  return { success: true, text: result.text, parsed, error: undefined, toolsInvoked, filesRead, contextSource };
+  return { success: true, text: result.text, parsed, error: undefined, toolsInvoked, filesRead, contextSource, contextMismatchRecovered };
 }
 
 /* ─────────────────────────────────────────────
@@ -1202,13 +1304,32 @@ async function _executeChanges(conversation) {
  */
 function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null, diagnostics = null) {
   const contextSource   = diagnostics?.contextSource || "none";
+  const filesRead       = diagnostics?.filesRead || [];
   const agentActivities = _buildAgentActivities(
     diagnostics?.toolsInvoked || [],
-    diagnostics?.filesRead    || [],
+    filesRead,
     contextSource,
     actionIntent,
     conversation,
   );
+
+  // ── Diagnostics: was context actually used in the answer? ──
+  // Heuristic: answer references a concrete file path or directory that was read.
+  const contextUsedInAnswer = (() => {
+    if (contextSource === "none" || filesRead.length === 0) return false;
+    if (!replyText) return false;
+    const lowerReply = replyText.toLowerCase();
+    // Answer uses context if it contains at least one of the read file paths
+    return filesRead.some((f) => lowerReply.includes(f.toLowerCase().split("/").pop()));
+  })();
+
+  // ── Diagnostics: was context-mismatch recovery triggered? ──
+  const contextMismatchRecovered = diagnostics?.contextMismatchRecovered || false;
+
+  // ── Diagnostics: fallback reason (present only when context was loaded but not used) ──
+  const fallbackReason = (contextSource !== "none" && !contextUsedInAnswer && replyText)
+    ? "context_loaded_but_not_referenced"
+    : undefined;
 
   const response = {
     conversationId:   conversation.conversationId,
@@ -1220,16 +1341,20 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
     agentActivities,
     errorCategory:    errorCategory || null,
     metadata: {
-      model:         process.env.GEMINI_MODEL || "gemini-2.5-flash",
-      apiVersion:    "v1",
-      messageCount:  conversation.messageCount,
-      historyLength: conversation.messages.length,
+      model:                   process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      apiVersion:              "v1",
+      messageCount:            conversation.messageCount,
+      historyLength:           conversation.messages.length,
       isInitial,
       contextSource,
-      timestamp:     new Date().toISOString(),
+      filesRead,
+      contextUsedInAnswer,
+      contextMismatchRecovered,
+      ...(fallbackReason ? { fallbackReason } : {}),
+      timestamp:               new Date().toISOString(),
       // Architect context diagnostics – present only when tools were used
       ...(diagnostics && diagnostics.toolsInvoked && diagnostics.toolsInvoked.length > 0
-        ? { toolsInvoked: diagnostics.toolsInvoked, filesRead: diagnostics.filesRead || [] }
+        ? { toolsInvoked: diagnostics.toolsInvoked }
         : {}),
     },
     workingMemory: conversation.workingMemory
@@ -1438,9 +1563,10 @@ async function startConversation(opts = {}) {
   });
 
   return _buildResponse(conversation, geminiResult.text, intent, true, null, {
-    toolsInvoked:  geminiResult.toolsInvoked  || [],
-    filesRead:     geminiResult.filesRead     || [],
-    contextSource: geminiResult.contextSource || "none",
+    toolsInvoked:             geminiResult.toolsInvoked             || [],
+    filesRead:                geminiResult.filesRead                || [],
+    contextSource:            geminiResult.contextSource            || "none",
+    contextMismatchRecovered: geminiResult.contextMismatchRecovered || false,
   });
 }
 
@@ -1719,9 +1845,10 @@ async function continueConversation(opts = {}) {
   });
 
   return _buildResponse(conversation, geminiResult.text, intent, false, null, {
-    toolsInvoked:  geminiResult.toolsInvoked  || [],
-    filesRead:     geminiResult.filesRead     || [],
-    contextSource: geminiResult.contextSource || "none",
+    toolsInvoked:             geminiResult.toolsInvoked             || [],
+    filesRead:                geminiResult.filesRead                || [],
+    contextSource:            geminiResult.contextSource            || "none",
+    contextMismatchRecovered: geminiResult.contextMismatchRecovered || false,
   });
 }
 
@@ -1792,4 +1919,6 @@ module.exports = {
   _isWritePathAllowed,
   _dryRunChanges,
   _gatherArchitectContext,
+  _inferTargetFiles,
+  _isCacheMismatch,
 };
