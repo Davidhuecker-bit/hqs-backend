@@ -282,7 +282,9 @@ async function _gatherAgentContext(mode, actionIntent, userMessage, conversation
   return { contextText, toolsInvoked, filesRead };
 }
 
-
+/* ─────────────────────────────────────────────
+   Helper – prune oldest conversations
+   ───────────────────────────────────────────── */
 
 function _pruneConversations() {
   if (_deepseekConversations.size <= MAX_CONVERSATIONS) return;
