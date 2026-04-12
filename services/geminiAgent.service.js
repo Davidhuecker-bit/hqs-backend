@@ -5,6 +5,11 @@ const path = require("path");
 
 const logger = require("../utils/logger");
 const { isGeminiConfigured, runGeminiChat } = require("./geminiArchitect.service");
+const {
+  scanProjectStructure,
+  listDirectory,
+  readFile,
+} = require("./geminiProjectExplorer.service");
 
 /* ─────────────────────────────────────────────
    Constants & validation
@@ -56,6 +61,33 @@ const VALID_CONVERSATION_STATUSES = [
 const MAX_CONVERSATIONS           = 200;
 const MAX_MESSAGES_PER_CONVERSATION = 100;
 const MAX_HISTORY_FOR_PROMPT      = 20;
+
+/* ─────────────────────────────────────────────
+   Architect-mode context gathering constants
+   ─────────────────────────────────────────────
+   When the agent operates in architecture or
+   code_review mode with an analytical intent,
+   it first gathers real project context via the
+   secure geminiProjectExplorer tools before
+   formulating its answer.
+   ───────────────────────────────────────────── */
+
+/** Modes that trigger proactive project context gathering. */
+const ARCHITECT_CONTEXT_MODES = new Set(["architecture", "code_review"]);
+
+/**
+ * Action intents that warrant project context gathering.
+ * Free chat and change intents do NOT trigger exploration.
+ */
+const ARCHITECT_CONTEXT_INTENTS = new Set([
+  "explain", "analyze", "diagnose", "inspect_files", "plan_fix",
+]);
+
+/** Max total tool invocations per context-gather run (1 scan + N reads). */
+const MAX_ARCHITECT_TOOL_CALLS = 3;
+
+/** Max characters of gathered context injected into the prompt. */
+const MAX_ARCHITECT_CONTEXT_CHARS = 12000;
 
 const {
   ALLOWED_PROJECT_PATHS,
@@ -154,6 +186,147 @@ function _buildConversationHistory(conversation) {
   const msgs = conversation.messages || [];
   const slice = msgs.slice(-MAX_HISTORY_FOR_PROMPT);
   return slice.map((m) => ({ role: m.role, content: m.content }));
+}
+
+/* ─────────────────────────────────────────────
+   Helper – architect context gathering
+   ─────────────────────────────────────────────
+   Proactively collects real project structure
+   and relevant file content for architecture /
+   code-review intents.  Limited to a small
+   number of tool calls to avoid unbounded loops.
+   ───────────────────────────────────────────── */
+
+/**
+ * Extract file paths mentioned in a user message that look relevant.
+ * Returns at most 2 candidate relative paths for readFile.
+ *
+ * @param {string} message
+ * @returns {string[]}
+ */
+function _extractCandidateFiles(message) {
+  if (!message || typeof message !== "string") return [];
+  // Match patterns like: services/foo.js, routes/bar.js, utils/baz.ts, etc.
+  const pattern = /\b((?:services|routes|middleware|utils|config|engines|lib)\/[\w/.-]+\.(?:js|ts|json|md))\b/g;
+  const found = [];
+  let match;
+  while ((match = pattern.exec(message)) !== null) {
+    if (!found.includes(match[1])) found.push(match[1]);
+    if (found.length >= 2) break;
+  }
+  return found;
+}
+
+/**
+ * Gathers project context by calling the secure exploration tools.
+ * Used only for architecture / code_review modes with analytical intents.
+ *
+ * Flow:
+ *   1. scanProjectStructure() – always called first
+ *   2. readFile() on up to 2 files extracted from the user message
+ *
+ * Total tool calls are bounded by MAX_ARCHITECT_TOOL_CALLS.
+ * Total injected context is capped at MAX_ARCHITECT_CONTEXT_CHARS.
+ *
+ * @param {string}      mode         – conversation mode
+ * @param {string|null} actionIntent – current action intent
+ * @param {string}      userMessage  – the user's latest message
+ * @param {string}      conversationId – for logging
+ * @returns {Promise<{ contextText: string, toolsInvoked: string[], filesRead: string[] }>}
+ */
+async function _gatherArchitectContext(mode, actionIntent, userMessage, conversationId) {
+  const toolsInvoked = [];
+  const filesRead    = [];
+  const sections     = [];
+  let toolCallCount  = 0;
+
+  logger.info("[geminiAgent] _gatherArchitectContext – start", {
+    conversationId,
+    mode,
+    actionIntent,
+  });
+
+  // ── Step 1: Scan project structure ──
+  if (toolCallCount < MAX_ARCHITECT_TOOL_CALLS) {
+    toolCallCount++;
+    toolsInvoked.push("scanProjectStructure");
+    try {
+      const scan = scanProjectStructure();
+      if (scan.success && scan.tree) {
+        sections.push(`Aktuelle Projektstruktur (automatisch gescannt):\n\`\`\`\n${scan.tree}\n\`\`\``);
+        logger.info("[geminiAgent] _gatherArchitectContext – scanProjectStructure done", {
+          conversationId,
+          entryCount: scan.entryCount,
+        });
+      }
+    } catch (err) {
+      logger.warn("[geminiAgent] _gatherArchitectContext – scanProjectStructure error", {
+        conversationId,
+        error: String(err.message).slice(0, 80),
+      });
+    }
+  }
+
+  // ── Step 2: Read files mentioned in the user message ──
+  const candidates = _extractCandidateFiles(userMessage);
+
+  for (const filePath of candidates) {
+    if (toolCallCount >= MAX_ARCHITECT_TOOL_CALLS) break;
+
+    toolCallCount++;
+    toolsInvoked.push(`readFile(${filePath})`);
+
+    try {
+      const result = readFile(filePath);
+      if (result.success && result.content) {
+        const truncNote = result.truncated ? " [gekürzt]" : "";
+        sections.push(
+          `Dateiinhalt: ${filePath}${truncNote} (${(result.sizeBytes / 1024).toFixed(1)} KB):\n\`\`\`\n${result.content}\n\`\`\``
+        );
+        filesRead.push(filePath);
+        logger.info("[geminiAgent] _gatherArchitectContext – readFile done", {
+          conversationId,
+          filePath,
+          sizeBytes: result.sizeBytes,
+          truncated: result.truncated,
+        });
+      } else {
+        logger.info("[geminiAgent] _gatherArchitectContext – readFile skipped", {
+          conversationId,
+          filePath,
+          reason: result.error || "empty content",
+        });
+      }
+    } catch (err) {
+      logger.warn("[geminiAgent] _gatherArchitectContext – readFile error", {
+        conversationId,
+        filePath,
+        error: String(err.message).slice(0, 80),
+      });
+    }
+  }
+
+  let contextText = sections.join("\n\n");
+
+  // Cap total context to avoid oversized prompts
+  if (contextText.length > MAX_ARCHITECT_CONTEXT_CHARS) {
+    contextText = contextText.slice(0, MAX_ARCHITECT_CONTEXT_CHARS) + "\n... [Kontext gekürzt]";
+    logger.info("[geminiAgent] _gatherArchitectContext – context truncated", {
+      conversationId,
+      originalLength: sections.join("\n\n").length,
+      cappedAt: MAX_ARCHITECT_CONTEXT_CHARS,
+    });
+  }
+
+  logger.info("[geminiAgent] _gatherArchitectContext – complete", {
+    conversationId,
+    toolCallCount,
+    toolsInvoked,
+    filesRead,
+    contextLength: contextText.length,
+  });
+
+  return { contextText, toolsInvoked, filesRead };
 }
 
 /* ─────────────────────────────────────────────
@@ -298,6 +471,30 @@ Anweisungen:
   }
 
   // ── free_chat / generic fallback ──
+  // Special case: architecture / code_review gets a richer instruction set
+  if (mode === "architecture" || mode === "code_review") {
+    const taskLabel = actionIntent
+      ? { explain: "Erklärung", analyze: "Analyse", diagnose: "Diagnose",
+          inspect_files: "Datei-Inspektion", plan_fix: "Fix-Planung" }[actionIntent] || actionIntent
+      : "Architektur-/Code-Analyse";
+    return `${base}
+
+Aktueller Modus: ${mode}
+Aktuelle Aufgabe: ${taskLabel}
+
+WICHTIG – Echter Systemkontext wurde automatisch gesammelt:
+Dir wird im User-Prompt ein aktueller Scan der Projektstruktur und ggf. relevante Dateiinhalte mitgeliefert.
+Nutze diesen echten Kontext, um systemspezifische, präzise Antworten zu geben – keine Allgemeinplätze.
+
+Anweisungen:
+- Lies zuerst die bereitgestellte Projektstruktur und Dateiinhalte sorgfältig.
+- Beziehe dich konkret auf tatsächliche Dateien, Dienste und Strukturen aus dem Kontext.
+- Gliedere die Antwort klar: Zusammenfassung → Befunde → Empfehlungen (mit Dateibezug).
+- Benenne konkrete Dateipfade, Funktionen oder Codeabschnitte wenn möglich.
+- Wenn der Kontext nicht ausreicht, sage es konkret – kein allgemeines "es könnte sein".
+- Halte die Antwort prägnant und sachlich.`;
+  }
+
   return `${base}
 
 Aktueller Modus: ${mode}
@@ -334,30 +531,84 @@ function _buildGeminiContentsHistory(conversation) {
  * Sends the conversation history + new user message to Gemini using
  * the native multi-turn `contents` array, then returns the parsed result.
  *
+ * For architecture / code_review modes with analytical intents, real project
+ * context is gathered first via the secure geminiProjectExplorer tools and
+ * prepended to the user message.
+ *
  * @param {object}      conversation  – the conversation object
  * @param {string}      userMessage   – latest user message
  * @param {string|null} actionIntent  – current action intent
- * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string, errorCategory?: string }>}
+ * @returns {Promise<{ success: boolean, text: string, parsed: object|null, error?: string, errorCategory?: string, toolsInvoked?: string[], filesRead?: string[] }>}
  */
 async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
   const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent);
   const history = _buildGeminiContentsHistory(conversation);
+
+  // ── Architect-mode context gathering ──
+  // For architecture/code_review modes with analytical intents, collect real
+  // project context before sending the request to Gemini.
+  let toolsInvoked = [];
+  let filesRead    = [];
+  let effectiveUserMessage = userMessage;
+
+  const shouldGatherContext =
+    ARCHITECT_CONTEXT_MODES.has(conversation.mode) &&
+    (actionIntent == null || ARCHITECT_CONTEXT_INTENTS.has(actionIntent));
+
+  if (shouldGatherContext) {
+    logger.info("[geminiAgent] _callGeminiWithHistory – triggering architect context gathering", {
+      conversationId: conversation.conversationId,
+      mode: conversation.mode,
+      actionIntent,
+    });
+
+    try {
+      const gathered = await _gatherArchitectContext(
+        conversation.mode,
+        actionIntent,
+        userMessage,
+        conversation.conversationId,
+      );
+      toolsInvoked = gathered.toolsInvoked;
+      filesRead    = gathered.filesRead;
+
+      if (gathered.contextText) {
+        effectiveUserMessage =
+          `${gathered.contextText}\n\n---\n\nUser-Anfrage:\n${userMessage}`;
+        logger.info("[geminiAgent] _callGeminiWithHistory – architect context injected", {
+          conversationId: conversation.conversationId,
+          toolsInvoked,
+          filesRead,
+          contextLength: gathered.contextText.length,
+        });
+      }
+    } catch (ctxErr) {
+      logger.warn("[geminiAgent] _callGeminiWithHistory – architect context gathering failed (continuing without)", {
+        conversationId: conversation.conversationId,
+        error: String(ctxErr.message).slice(0, 80),
+      });
+    }
+  }
 
   logger.info("[geminiAgent] _callGeminiWithHistory – sending prompt", {
     conversationId: conversation.conversationId,
     mode: conversation.mode,
     actionIntent,
     historyTurns: history.length,
-    userMessageLength: userMessage.length,
+    userMessageLength: effectiveUserMessage.length,
+    architectContextActive: shouldGatherContext,
+    toolsInvoked,
+    filesRead,
   });
 
   const maxTokens = actionIntent === "prepare_patch" ? 2048 : 1024;
   // gemini-2.5-flash – allow extra time for complex operations (prepare_patch up to 90 s, others up to 60 s).
-  const timeoutMs = actionIntent === "prepare_patch" ? 90000 : 60000;
+  // Architect context gathering adds complexity: allow up to 90 s for architecture/code_review.
+  const timeoutMs = (actionIntent === "prepare_patch" || shouldGatherContext) ? 90000 : 60000;
 
   const result = await runGeminiChat({
     systemPrompt,
-    userMessage,
+    userMessage: effectiveUserMessage,
     history,
     maxTokens,
     timeoutMs,
@@ -369,7 +620,7 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
       error: result.error,
       errorCategory: result.errorCategory || "unknown",
     });
-    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory };
+    return { success: false, text: "", parsed: null, error: result.error, errorCategory: result.errorCategory, toolsInvoked, filesRead };
   }
 
   // Attempt JSON parse for structured intents
@@ -403,9 +654,11 @@ async function _callGeminiWithHistory(conversation, userMessage, actionIntent) {
     conversationId: conversation.conversationId,
     textLength: result.text.length,
     hasParsed: parsed !== null,
+    toolsInvoked,
+    filesRead,
   });
 
-  return { success: true, text: result.text, parsed, error: undefined };
+  return { success: true, text: result.text, parsed, error: undefined, toolsInvoked, filesRead };
 }
 
 /* ─────────────────────────────────────────────
@@ -760,9 +1013,10 @@ async function _executeChanges(conversation) {
  * @param {string|null} actionIntent
  * @param {boolean}     isInitial
  * @param {string|null} [errorCategory]
+ * @param {object}      [diagnostics]  – optional tool-calling diagnostics
  * @returns {object}
  */
-function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null) {
+function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null, diagnostics = null) {
   const response = {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
@@ -778,6 +1032,10 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
       historyLength: conversation.messages.length,
       isInitial,
       timestamp:     new Date().toISOString(),
+      // Architect context diagnostics – present only when tools were used
+      ...(diagnostics && diagnostics.toolsInvoked && diagnostics.toolsInvoked.length > 0
+        ? { toolsInvoked: diagnostics.toolsInvoked, filesRead: diagnostics.filesRead || [] }
+        : {}),
     },
     proposedChanges:  conversation.proposedChanges || null,
     preparedPatch:    conversation.preparedPatch || null,
@@ -940,7 +1198,12 @@ async function startConversation(opts = {}) {
     content: geminiResult.text,
     timestamp: new Date().toISOString(),
     actionIntent: intent,
-    metadata: { hasParsed: geminiResult.parsed !== null },
+    metadata: {
+      hasParsed: geminiResult.parsed !== null,
+      ...(geminiResult.toolsInvoked && geminiResult.toolsInvoked.length > 0
+        ? { toolsInvoked: geminiResult.toolsInvoked, filesRead: geminiResult.filesRead || [] }
+        : {}),
+    },
   });
   conversation.messageCount++;
   conversation.updatedAt = new Date().toISOString();
@@ -954,9 +1217,14 @@ async function startConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    toolsInvoked: geminiResult.toolsInvoked || [],
+    filesRead: geminiResult.filesRead || [],
   });
 
-  return _buildResponse(conversation, geminiResult.text, intent, true);
+  return _buildResponse(conversation, geminiResult.text, intent, true, null, {
+    toolsInvoked: geminiResult.toolsInvoked || [],
+    filesRead:    geminiResult.filesRead    || [],
+  });
 }
 
 /* ─────────────────────────────────────────────
@@ -1206,7 +1474,12 @@ async function continueConversation(opts = {}) {
     content: geminiResult.text,
     timestamp: new Date().toISOString(),
     actionIntent: intent,
-    metadata: { hasParsed: geminiResult.parsed !== null },
+    metadata: {
+      hasParsed: geminiResult.parsed !== null,
+      ...(geminiResult.toolsInvoked && geminiResult.toolsInvoked.length > 0
+        ? { toolsInvoked: geminiResult.toolsInvoked, filesRead: geminiResult.filesRead || [] }
+        : {}),
+    },
   });
   conversation.messageCount++;
   conversation.updatedAt = new Date().toISOString();
@@ -1217,9 +1490,14 @@ async function continueConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    toolsInvoked: geminiResult.toolsInvoked || [],
+    filesRead: geminiResult.filesRead || [],
   });
 
-  return _buildResponse(conversation, geminiResult.text, intent, false);
+  return _buildResponse(conversation, geminiResult.text, intent, false, null, {
+    toolsInvoked: geminiResult.toolsInvoked || [],
+    filesRead:    geminiResult.filesRead    || [],
+  });
 }
 
 /* ─────────────────────────────────────────────
@@ -1275,7 +1553,10 @@ module.exports = {
   MODE_ALIASES,
   VALID_CONVERSATION_STATUSES,
   ALLOWED_PROJECT_PATHS,
+  ARCHITECT_CONTEXT_MODES,
+  ARCHITECT_CONTEXT_INTENTS,
   // Exposed for testing
   _isPathAllowed,
   _dryRunChanges,
+  _gatherArchitectContext,
 };
