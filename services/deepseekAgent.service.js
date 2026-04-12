@@ -179,7 +179,9 @@ function _buildAgentActivities(toolsInvoked = [], filesRead = [], contextSource 
         activities.push({ type: "scan_project_structure", label: "Projektstruktur gescannt", timestamp: now });
       } else if (tool.startsWith("readFile(")) {
         const filePath = tool.slice("readFile(".length, -1);
-        const displayPath = filePath.split("/").slice(-2).join("/");
+        // Only expose last two path segments – no absolute or deeply nested paths.
+        // Use cross-platform split to handle both "/" and "\" separators.
+        const displayPath = filePath.split(/[\\/]/).slice(-2).join("/");
         activities.push({ type: "read_file", label: "Datei gelesen", path: displayPath, timestamp: now });
       } else {
         activities.push({ type: "tool_call", label: tool, timestamp: now });

@@ -19,7 +19,7 @@
    ───────────────────────────────────────────── */
 
 let mockGeminiChatResult = { success: true, text: "Mock-Antwort." };
-let mockDeepSeekCompletion = { choices: [{ message: { content: "Mock-Antwort DS." } }] };
+let mockDeepSeekCompletion = { choices: [{ message: { content: "Mock-Antwort DeepSeek." } }] };
 
 jest.mock("../services/geminiArchitect.service", () => ({
   isGeminiConfigured: jest.fn(() => true),
@@ -61,7 +61,7 @@ const { scanProjectStructure, readFile, needsProjectContext } = require("../serv
 beforeEach(() => {
   jest.clearAllMocks();
   mockGeminiChatResult = { success: true, text: "Mock-Antwort." };
-  mockDeepSeekCompletion = { choices: [{ message: { content: "Mock-Antwort DS." } }] };
+  mockDeepSeekCompletion = { choices: [{ message: { content: "Mock-Antwort DeepSeek." } }] };
   isGeminiConfigured.mockReturnValue(true);
   isDeepSeekConfigured.mockReturnValue(true);
   createDeepSeekChatCompletion.mockImplementation(async () => mockDeepSeekCompletion);
