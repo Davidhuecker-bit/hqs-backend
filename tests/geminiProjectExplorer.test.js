@@ -179,9 +179,7 @@ describe("geminiProjectExplorer – readFile", () => {
     expect(result.success).toBe(false);
   });
 
-  test("reads .md files (allowed text extension)", () => {
-    // Use a path that is in an allowed directory.  services/ is always present.
-    // Pick a .js file rather than a fictional .md to make the test deterministic.
+  test("reads allowed text extensions (js, json, ts)", () => {
     const result = readFile("services/agentRegistry.service.js");
     expect(result.success).toBe(true);
     expect(typeof result.content).toBe("string");

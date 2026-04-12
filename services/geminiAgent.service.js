@@ -201,12 +201,16 @@ function _buildConversationHistory(conversation) {
  * Extract file paths mentioned in a user message that look relevant.
  * Returns at most 2 candidate relative paths for readFile.
  *
+ * The directory prefixes in the pattern must align with ALLOWED_PROJECT_PATHS
+ * (from agentRegistry.service.js).  Update both if new directories are added.
+ *
  * @param {string} message
  * @returns {string[]}
  */
 function _extractCandidateFiles(message) {
   if (!message || typeof message !== "string") return [];
   // Match patterns like: services/foo.js, routes/bar.js, utils/baz.ts, etc.
+  // NOTE: directory prefixes here should stay in sync with ALLOWED_PROJECT_PATHS.
   const pattern = /\b((?:services|routes|middleware|utils|config|engines|lib)\/[\w/.-]+\.(?:js|ts|json|md))\b/g;
   const found = [];
   let match;

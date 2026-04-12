@@ -53,10 +53,14 @@ const MAX_SCAN_ENTRIES = 300;
 /**
  * Extra path segments / patterns that are always blocked on top of
  * the shared BLOCKED_PATH_PATTERNS from agentRegistry.
- * These patterns are checked against the normalised relative path.
+ * These patterns are checked against the normalised relative path
+ * via _isExtraBlocked() which handles the .env vs .env.example
+ * distinction specially.
  */
 const EXTRA_BLOCKED_PATTERNS = [
-  ".env",        // .env, .env.local, .env.production, etc.
+  // NOTE: ".env" is NOT in this list because raw string matching would also
+  // block ".env.example".  The _isExtraBlocked() function handles .env files
+  // explicitly using filename-level checks.
   ".key",
   ".pem",
   ".p12",
@@ -80,6 +84,8 @@ const EXTRA_BLOCKED_PATTERNS = [
 /**
  * Allowed file extensions for readFile.
  * Only plain-text formats that are safe to transmit to the model.
+ * Note: ".env.example" is allowed by base-name match in _isTextFile(),
+ * while ".env" (and variants) are blocked by _isExtraBlocked().
  */
 const ALLOWED_TEXT_EXTENSIONS = new Set([
   ".js", ".cjs", ".mjs",
@@ -92,7 +98,6 @@ const ALLOWED_TEXT_EXTENSIONS = new Set([
   ".html", ".htm",
   ".css", ".scss", ".sass", ".less",
   ".sh",
-  ".env.example",
   ".gitignore",
   ".dockerignore",
   ".sql",
@@ -100,6 +105,18 @@ const ALLOWED_TEXT_EXTENSIONS = new Set([
   ".toml",
   ".ini",
   ".cfg",
+]);
+
+/**
+ * Allowed base filenames (for dotfiles without a usable extension).
+ * These are checked separately by _isTextFile().
+ */
+const ALLOWED_BASENAMES = new Set([
+  ".env.example",
+  ".gitignore",
+  ".dockerignore",
+  ".editorconfig",
+  ".nvmrc",
 ]);
 
 /* ─────────────────────────────────────────────
@@ -116,6 +133,37 @@ const _projectRoot = process.cwd();
 function _normalise(relPath) {
   if (typeof relPath !== "string") return "";
   return relPath.replace(/\\/g, "/").replace(/^\/+/, "").trim();
+}
+
+/**
+ * Returns true if any segment of relPath is a .env file (but NOT .env.example).
+ * Blocks: .env, .env.local, .env.production, .env.development, etc.
+ * Allows: .env.example
+ *
+ * @param {string} lowerPath – lower-case normalised relative path
+ * @returns {boolean}
+ */
+function _isEnvBlocked(lowerPath) {
+  // Split on "/" and check each segment
+  const segments = lowerPath.split("/");
+  for (const seg of segments) {
+    if (seg === ".env") return true;                          // exact .env
+    if (seg.startsWith(".env.") && seg !== ".env.example") return true; // .env.local etc.
+  }
+  return false;
+}
+
+/**
+ * Returns true if the path is blocked by EXTRA_BLOCKED_PATTERNS or .env logic.
+ * @param {string} lowerPath – lower-case normalised relative path
+ * @returns {boolean}
+ */
+function _isExtraBlocked(lowerPath) {
+  if (_isEnvBlocked(lowerPath)) return true;
+  for (const extra of EXTRA_BLOCKED_PATTERNS) {
+    if (lowerPath.includes(extra.toLowerCase())) return true;
+  }
+  return false;
 }
 
 /**
@@ -141,10 +189,8 @@ function _isPathSafe(relPath) {
     if (lower.includes(blocked.toLowerCase())) return false;
   }
 
-  // Extra hard-block patterns
-  for (const extra of EXTRA_BLOCKED_PATTERNS) {
-    if (lower.includes(extra.toLowerCase())) return false;
-  }
+  // Extra hard-block patterns (including .env logic)
+  if (_isExtraBlocked(lower)) return false;
 
   // Must start with an allowed prefix
   return ALLOWED_PROJECT_PATHS.some((prefix) => relPath.startsWith(prefix));
@@ -167,18 +213,16 @@ function _safeAbsolute(relPath) {
 
 /**
  * Returns true if the file extension is in ALLOWED_TEXT_EXTENSIONS
- * or if the filename itself is a recognised dotfile (e.g. `.env.example`).
+ * or if the base filename itself is in ALLOWED_BASENAMES (e.g. `.env.example`).
  *
  * @param {string} filename
  * @returns {boolean}
  */
 function _isTextFile(filename) {
-  const ext = path.extname(filename).toLowerCase();
+  const ext  = path.extname(filename).toLowerCase();
   if (ALLOWED_TEXT_EXTENSIONS.has(ext)) return true;
-  // Handle files like ".env.example" or ".gitignore" that have no extension
-  // but are in the allowed set by base name pattern.
   const base = path.basename(filename).toLowerCase();
-  return ALLOWED_TEXT_EXTENSIONS.has(base);
+  return ALLOWED_BASENAMES.has(base);
 }
 
 /**
@@ -238,7 +282,7 @@ function scanProjectStructure() {
       if (normRel.includes("..")) continue;
       const lower = normRel.toLowerCase();
       const blocked =
-        EXTRA_BLOCKED_PATTERNS.some((p) => lower.includes(p.toLowerCase())) ||
+        _isExtraBlocked(lower) ||
         BLOCKED_PATH_PATTERNS.some((p) => lower.includes(p.toLowerCase()));
       if (blocked) continue;
 
@@ -309,13 +353,9 @@ function listDirectory(relPath) {
     logger.warn("[geminiExplorer] tool:listDirectory – path rejected (traversal)", { relPath: norm });
     return { success: false, entries: [], error: `Path rejected: ${norm}` };
   }
-  for (const extra of EXTRA_BLOCKED_PATTERNS) {
-    if (checkPath.toLowerCase().includes(extra.toLowerCase())) {
-      logger.warn("[geminiExplorer] tool:listDirectory – path rejected (blocked pattern)", {
-        relPath: norm, pattern: extra,
-      });
-      return { success: false, entries: [], error: `Path rejected: ${norm}` };
-    }
+  if (_isExtraBlocked(checkPath.toLowerCase())) {
+    logger.warn("[geminiExplorer] tool:listDirectory – path rejected (blocked pattern)", { relPath: norm });
+    return { success: false, entries: [], error: `Path rejected: ${norm}` };
   }
   // Must start with an allowed prefix
   const allowed = ALLOWED_PROJECT_PATHS.some((p) => norm.startsWith(p) || norm === p.replace(/\/$/, ""));
