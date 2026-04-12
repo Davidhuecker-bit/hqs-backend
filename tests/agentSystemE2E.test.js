@@ -195,7 +195,7 @@ describe("DeepSeek – Full Workflow Chain (chat→follow-up→propose→patch�
       confirmExecution: true,
       approved: false,
     });
-    expect(noApproval.assistantReply).toMatch(/Freigabe/);
+    expect(noApproval.reply.text).toMatch(/Freigabe/);
 
     // Step 7: Execute with approval – will fail because test file doesn't exist,
     // but the gate must be passed (approved check passed, execution attempted)
@@ -279,7 +279,7 @@ describe("Gemini – Full Workflow Chain (chat→follow-up→propose→patch→d
       confirmExecution: true,
       approved: false,
     });
-    expect(noApproval.assistantReply).toMatch(/Freigabe/);
+    expect(noApproval.reply.text).toMatch(/Freigabe/);
 
     // Step 7: Execute with approval
     const execute = await geminiAgent.continueConversation({
@@ -600,7 +600,7 @@ describe("Orchestrator – Classification & Dispatch", () => {
     const result = await handleRequest({ message: "Erkläre die Architektur", agent: "deepseek", mode: "free_chat" });
     const expectedKeys = [
       "conversationId", "conferenceId", "agent", "mode", "actionIntent",
-      "status", "followUpPossible", "assistantReply", "metadata",
+      "status", "followUpPossible", "reply", "errorCategory", "metadata",
       "proposedChanges", "preparedPatch", "executionResult", "dryRunResult",
       "requiresApproval", "approved", "changedFiles", "errors", "warnings",
       "requestId", "traceId",
@@ -777,7 +777,7 @@ describe("Response Schema – Cross-Agent Consistency", () => {
 
     // Both should have these specific fields
     for (const key of ["conversationId", "mode", "actionIntent", "status",
-      "followUpPossible", "assistantReply", "metadata", "proposedChanges",
+      "followUpPossible", "reply", "errorCategory", "metadata", "proposedChanges",
       "preparedPatch", "executionResult", "dryRunResult", "requiresApproval",
       "approved", "changedFiles"]) {
       expect(dsResult).toHaveProperty(key);

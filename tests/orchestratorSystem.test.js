@@ -509,7 +509,8 @@ describe("Agent Orchestrator", () => {
     expect(result).toHaveProperty("actionIntent");
     expect(result).toHaveProperty("status");
     expect(result).toHaveProperty("followUpPossible");
-    expect(result).toHaveProperty("assistantReply");
+    expect(result).toHaveProperty("reply");
+    expect(result).toHaveProperty("errorCategory");
     expect(result).toHaveProperty("metadata");
     expect(result).toHaveProperty("proposedChanges");
     expect(result).toHaveProperty("preparedPatch");
@@ -609,7 +610,7 @@ describe("System Integration Smoke Tests", () => {
 
     const expectedKeys = [
       "conversationId", "conferenceId", "agent", "mode", "actionIntent",
-      "status", "followUpPossible", "assistantReply", "metadata",
+      "status", "followUpPossible", "reply", "errorCategory", "metadata",
       "proposedChanges", "preparedPatch", "executionResult", "dryRunResult",
       "requiresApproval", "approved", "changedFiles", "errors", "warnings",
       "requestId", "traceId",

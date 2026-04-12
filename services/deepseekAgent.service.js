@@ -686,14 +686,15 @@ async function _executeChanges(conversation) {
    Helper – build standard response object
    ───────────────────────────────────────────── */
 
-function _buildResponse(conversation, assistantReply, actionIntent, isInitial) {
+function _buildResponse(conversation, replyText, actionIntent, isInitial, errorCategory = null) {
   return {
     conversationId:   conversation.conversationId,
     mode:             conversation.mode,
     actionIntent:     actionIntent || null,
     status:           conversation.status,
     followUpPossible: conversation.status !== "completed" && conversation.status !== "error",
-    assistantReply:   assistantReply || "",
+    reply:            { text: replyText || "" },
+    errorCategory:    errorCategory || null,
     metadata: {
       model:         process.env.DEEPSEEK_FAST_MODEL || "deepseek-chat",
       apiVersion:    "v1",
@@ -726,6 +727,7 @@ async function startConversation(opts = {}) {
       `Ungültiger Modus: ${mode}. Erlaubt: ${VALID_AGENT_MODES.join(", ")}`,
       actionIntent || null,
       true,
+      "invalid_request",
     );
   }
 
@@ -736,6 +738,7 @@ async function startConversation(opts = {}) {
       "Nachricht darf nicht leer sein.",
       actionIntent || null,
       true,
+      "invalid_request",
     );
   }
 
@@ -746,6 +749,7 @@ async function startConversation(opts = {}) {
       "DeepSeek ist nicht konfiguriert (DEEPSEEK_API_KEY fehlt).",
       actionIntent || null,
       true,
+      "config",
     );
   }
 
@@ -807,14 +811,14 @@ async function startConversation(opts = {}) {
     conversation.status = "error";
     _deepseekConversations.set(conversationId, conversation);
     _pruneConversations();
-    return _buildResponse(conversation, `Fehler: ${String(err.message).slice(0, 120)}`, intent, true);
+    return _buildResponse(conversation, `Fehler: ${String(err.message).slice(0, 120)}`, intent, true, "unknown");
   }
 
   if (!agentResult.success) {
     conversation.status = "error";
     _deepseekConversations.set(conversationId, conversation);
     _pruneConversations();
-    return _buildResponse(conversation, `DeepSeek-Fehler: ${agentResult.error || "Unbekannt"}`, intent, true);
+    return _buildResponse(conversation, `DeepSeek-Fehler: ${agentResult.error || "Unbekannt"}`, intent, true, agentResult.errorCategory || "api_error");
   }
 
   if (intent === "propose_change") {
@@ -868,12 +872,13 @@ async function continueConversation(opts = {}) {
       `Konversation nicht gefunden: ${conversationId}`,
       actionIntent || null,
       false,
+      "not_found",
     );
   }
 
   if (!message || typeof message !== "string" || !message.trim()) {
     logger.warn("[deepseekAgent] continueConversation – empty message", { conversationId });
-    return _buildResponse(conversation, "Nachricht darf nicht leer sein.", actionIntent || null, false);
+    return _buildResponse(conversation, "Nachricht darf nicht leer sein.", actionIntent || null, false, "invalid_request");
   }
 
   if (conversation.messageCount >= MAX_MESSAGES_PER_CONVERSATION) {
@@ -892,7 +897,7 @@ async function continueConversation(opts = {}) {
 
   if (!isDeepSeekConfigured()) {
     logger.warn("[deepseekAgent] continueConversation – DeepSeek not configured");
-    return _buildResponse(conversation, "DeepSeek ist nicht konfiguriert (DEEPSEEK_API_KEY fehlt).", actionIntent || null, false);
+    return _buildResponse(conversation, "DeepSeek ist nicht konfiguriert (DEEPSEEK_API_KEY fehlt).", actionIntent || null, false, "config");
   }
 
   const intent = actionIntent && VALID_ACTION_INTENTS.includes(actionIntent)
@@ -978,6 +983,7 @@ async function continueConversation(opts = {}) {
         "Änderung erfordert explizite Freigabe. Setze 'approved: true' um fortzufahren.",
         "execute_change",
         false,
+        "approval_required",
       );
     }
 
@@ -1009,7 +1015,7 @@ async function continueConversation(opts = {}) {
       });
       conversation.status = "error";
       conversation.updatedAt = new Date().toISOString();
-      return _buildResponse(conversation, `Ausführungsfehler: ${String(err.message).slice(0, 120)}`, "execute_change", false);
+      return _buildResponse(conversation, `Ausführungsfehler: ${String(err.message).slice(0, 120)}`, "execute_change", false, "unknown");
     }
 
     conversation.executionResult = execResult;
@@ -1057,13 +1063,13 @@ async function continueConversation(opts = {}) {
     });
     conversation.status = "error";
     conversation.updatedAt = new Date().toISOString();
-    return _buildResponse(conversation, `Fehler: ${String(err.message).slice(0, 120)}`, intent, false);
+    return _buildResponse(conversation, `Fehler: ${String(err.message).slice(0, 120)}`, intent, false, "unknown");
   }
 
   if (!agentResult.success) {
     conversation.status = "error";
     conversation.updatedAt = new Date().toISOString();
-    return _buildResponse(conversation, `DeepSeek-Fehler: ${agentResult.error || "Unbekannt"}`, intent, false);
+    return _buildResponse(conversation, `DeepSeek-Fehler: ${agentResult.error || "Unbekannt"}`, intent, false, agentResult.errorCategory || "api_error");
   }
 
   if (intent === "propose_change") {
