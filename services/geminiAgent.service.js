@@ -68,7 +68,7 @@ const MAX_HISTORY_FOR_PROMPT      = 20;
    When the agent operates in architecture or
    code_review mode with an analytical intent,
    it first gathers real project context via the
-   secure geminiProjectExplorer tools before
+   secure agentExplorer tools before
    formulating its answer.
    ───────────────────────────────────────────── */
 
@@ -536,7 +536,7 @@ function _buildGeminiContentsHistory(conversation) {
  * the native multi-turn `contents` array, then returns the parsed result.
  *
  * For architecture / code_review modes with analytical intents, real project
- * context is gathered first via the secure geminiProjectExplorer tools and
+ * context is gathered first via the secure agentExplorer tools and
  * prepended to the user message.
  *
  * @param {object}      conversation  – the conversation object

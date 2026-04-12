@@ -10,6 +10,12 @@ const {
   extractDeepSeekText,
 } = require("./deepseek.service");
 
+const {
+  scanProjectStructure,
+  listDirectory,
+  readFile,
+} = require("./geminiProjectExplorer.service");
+
 /* ─────────────────────────────────────────────
    Constants & validation
    ───────────────────────────────────────────── */
@@ -60,6 +66,39 @@ const {
 } = require("./agentRegistry.service");
 
 /* ─────────────────────────────────────────────
+   Agent-mode context gathering constants
+   ─────────────────────────────────────────────
+   When the agent operates in an analytical mode
+   with a compatible intent, it first gathers
+   real project context via the shared
+   agentExplorer tools before formulating its
+   answer.
+   ───────────────────────────────────────────── */
+
+/** Modes that trigger proactive project context gathering. */
+const AGENT_CONTEXT_MODES = new Set([
+  "architecture",
+  "code_review",
+  "backend_review",
+  "api_review",
+  "system_diagnostics",
+]);
+
+/**
+ * Action intents that warrant project context gathering.
+ * Change and execution intents do NOT trigger exploration.
+ */
+const AGENT_CONTEXT_INTENTS = new Set([
+  "explain", "analyze", "diagnose", "inspect_files", "plan_fix",
+]);
+
+/** Max total tool invocations per context-gather run (1 scan + N reads). */
+const MAX_AGENT_TOOL_CALLS = 3;
+
+/** Max characters of gathered context injected into the prompt. */
+const MAX_AGENT_CONTEXT_CHARS = 12000;
+
+/* ─────────────────────────────────────────────
    In-memory conversation store
    ───────────────────────────────────────────── */
 
@@ -101,8 +140,145 @@ function _isPathAllowed(filePath) {
 }
 
 /* ─────────────────────────────────────────────
-   Helper – prune oldest conversations
+   Helper – extract candidate file paths
    ───────────────────────────────────────────── */
+
+/**
+ * Extract file paths mentioned in a user message that look relevant.
+ * Returns at most 2 candidate relative paths for readFile.
+ *
+ * @param {string} message
+ * @returns {string[]}
+ */
+function _extractCandidateFiles(message) {
+  if (!message || typeof message !== "string") return [];
+  const pattern = /\b((?:services|routes|middleware|utils|config|engines|lib)\/[\w/.-]+\.(?:js|ts|json|md))\b/g;
+  const found = [];
+  let match;
+  while ((match = pattern.exec(message)) !== null) {
+    if (!found.includes(match[1])) found.push(match[1]);
+    if (found.length >= 2) break;
+  }
+  return found;
+}
+
+/* ─────────────────────────────────────────────
+   Helper – gather project context via tools
+   ───────────────────────────────────────────── */
+
+/**
+ * Gathers project context by calling the shared agentExplorer tools.
+ * Used only for analytical modes with compatible intents.
+ *
+ * Flow:
+ *   1. scanProjectStructure() – always called first
+ *   2. readFile() on up to 2 files mentioned in the user message
+ *
+ * Total tool calls are bounded by MAX_AGENT_TOOL_CALLS.
+ * Total injected context is capped at MAX_AGENT_CONTEXT_CHARS.
+ *
+ * @param {string}      mode           – conversation mode
+ * @param {string|null} actionIntent   – current action intent
+ * @param {string}      userMessage    – the user's latest message
+ * @param {string}      conversationId – for logging
+ * @returns {Promise<{ contextText: string, toolsInvoked: string[], filesRead: string[] }>}
+ */
+async function _gatherAgentContext(mode, actionIntent, userMessage, conversationId) {
+  const toolsInvoked = [];
+  const filesRead    = [];
+  const sections     = [];
+  let toolCallCount  = 0;
+
+  logger.info("[deepseekAgent] _gatherAgentContext – start", {
+    conversationId,
+    mode,
+    actionIntent,
+  });
+
+  // ── Step 1: Scan project structure ──
+  if (toolCallCount < MAX_AGENT_TOOL_CALLS) {
+    toolCallCount++;
+    toolsInvoked.push("scanProjectStructure");
+    try {
+      const scan = scanProjectStructure();
+      if (scan.success && scan.tree) {
+        sections.push(`Aktuelle Projektstruktur (automatisch gescannt):\n\`\`\`\n${scan.tree}\n\`\`\``);
+        logger.info("[deepseekAgent] _gatherAgentContext – scanProjectStructure done", {
+          conversationId,
+          entryCount: scan.entryCount,
+        });
+      }
+    } catch (err) {
+      logger.warn("[deepseekAgent] _gatherAgentContext – scanProjectStructure error", {
+        conversationId,
+        error: String(err.message).slice(0, 80),
+      });
+    }
+  }
+
+  // ── Step 2: Read files mentioned in the user message ──
+  const candidates = _extractCandidateFiles(userMessage);
+
+  for (const filePath of candidates) {
+    if (toolCallCount >= MAX_AGENT_TOOL_CALLS) break;
+
+    toolCallCount++;
+    toolsInvoked.push(`readFile(${filePath})`);
+
+    try {
+      const result = readFile(filePath);
+      if (result.success && result.content) {
+        const truncNote = result.truncated ? " [gekürzt]" : "";
+        sections.push(
+          `Dateiinhalt: ${filePath}${truncNote} (${(result.sizeBytes / 1024).toFixed(1)} KB):\n\`\`\`\n${result.content}\n\`\`\``
+        );
+        filesRead.push(filePath);
+        logger.info("[deepseekAgent] _gatherAgentContext – readFile done", {
+          conversationId,
+          filePath,
+          sizeBytes: result.sizeBytes,
+          truncated: result.truncated,
+        });
+      } else {
+        logger.info("[deepseekAgent] _gatherAgentContext – readFile skipped", {
+          conversationId,
+          filePath,
+          reason: result.error || "empty content",
+        });
+      }
+    } catch (err) {
+      logger.warn("[deepseekAgent] _gatherAgentContext – readFile error", {
+        conversationId,
+        filePath,
+        error: String(err.message).slice(0, 80),
+      });
+    }
+  }
+
+  let contextText = sections.join("\n\n");
+
+  // Cap total context to avoid oversized prompts
+  if (contextText.length > MAX_AGENT_CONTEXT_CHARS) {
+    contextText = contextText.slice(0, MAX_AGENT_CONTEXT_CHARS) + "\n... [Kontext gekürzt]";
+    logger.info("[deepseekAgent] _gatherAgentContext – context truncated", {
+      conversationId,
+      originalLength: sections.join("\n\n").length,
+      cappedAt: MAX_AGENT_CONTEXT_CHARS,
+    });
+  }
+
+  logger.info("[deepseekAgent] _gatherAgentContext – complete", {
+    conversationId,
+    toolCallCount,
+    toolsInvoked,
+    filesRead,
+    contextLength: contextText.length,
+  });
+
+  return { contextText, toolsInvoked, filesRead };
+}
+
+
 
 function _pruneConversations() {
   if (_deepseekConversations.size <= MAX_CONVERSATIONS) return;
@@ -265,6 +441,30 @@ Anweisungen:
 - Halte die Antwort kurz und strukturiert.`;
   }
 
+  // ── Context-gathering modes get richer instructions ──
+  if (AGENT_CONTEXT_MODES.has(mode)) {
+    const taskLabel = actionIntent
+      ? { explain: "Erklärung", analyze: "Analyse", diagnose: "Diagnose",
+          inspect_files: "Datei-Inspektion", plan_fix: "Fix-Planung" }[actionIntent] || actionIntent
+      : "System-/Code-Analyse";
+    return `${base}
+
+Aktueller Modus: ${mode}
+Aktuelle Aufgabe: ${taskLabel}
+
+WICHTIG – Echter Systemkontext wurde automatisch gesammelt:
+Dir wird im User-Prompt ein aktueller Scan der Projektstruktur und ggf. relevante Dateiinhalte mitgeliefert.
+Nutze diesen echten Kontext, um systemspezifische, präzise Antworten zu geben – keine Allgemeinplätze.
+
+Anweisungen:
+- Lies zuerst die bereitgestellte Projektstruktur und Dateiinhalte sorgfältig.
+- Beziehe dich konkret auf tatsächliche Dateien, Dienste und Strukturen aus dem Kontext.
+- Gliedere die Antwort klar: Zusammenfassung → Befunde → Empfehlungen (mit Dateibezug).
+- Benenne konkrete Dateipfade, Funktionen oder Codeabschnitte wenn möglich.
+- Wenn der Kontext nicht ausreicht, sage es konkret – kein allgemeines "es könnte sein".
+- Halte die Antwort prägnant und sachlich.`;
+  }
+
   return `${base}
 
 Aktueller Modus: ${mode}
@@ -284,6 +484,45 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
   const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent);
   const history = _buildConversationHistory(conversation);
 
+  // ── Agent-mode context gathering ──
+  // For analytical modes with compatible intents, collect real project context
+  // before sending the request to DeepSeek.
+  let toolsInvoked = [];
+  let filesRead    = [];
+  let effectiveUserMessage = userMessage;
+
+  const shouldGatherContext =
+    AGENT_CONTEXT_MODES.has(conversation.mode) &&
+    (actionIntent == null || AGENT_CONTEXT_INTENTS.has(actionIntent));
+
+  if (shouldGatherContext) {
+    logger.info("[deepseekAgent] _callDeepSeekWithHistory – triggering agent context gathering", {
+      conversationId: conversation.conversationId,
+      mode: conversation.mode,
+      actionIntent,
+    });
+
+    try {
+      const gathered = await _gatherAgentContext(
+        conversation.mode,
+        actionIntent,
+        userMessage,
+        conversation.conversationId,
+      );
+      toolsInvoked = gathered.toolsInvoked;
+      filesRead    = gathered.filesRead;
+
+      if (gathered.contextText) {
+        effectiveUserMessage = `${gathered.contextText}\n\nFrage/Aufgabe:\n${userMessage}`;
+      }
+    } catch (err) {
+      logger.warn("[deepseekAgent] _callDeepSeekWithHistory – context gathering failed", {
+        conversationId: conversation.conversationId,
+        error: String(err.message).slice(0, 120),
+      });
+    }
+  }
+
   const messages = [{ role: "system", content: systemPrompt }];
 
   if (history.length > 0) {
@@ -295,7 +534,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     }
   }
 
-  messages.push({ role: "user", content: userMessage });
+  messages.push({ role: "user", content: effectiveUserMessage });
 
   logger.info("[deepseekAgent] _callDeepSeekWithHistory – sending prompt", {
     conversationId: conversation.conversationId,
@@ -303,6 +542,9 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     actionIntent,
     historyLength: history.length,
     messageCount: messages.length,
+    toolsUsed: toolsInvoked.length > 0,
+    toolsInvoked,
+    filesRead,
   });
 
   const timeoutMs = actionIntent === "prepare_patch" ? 40000 : 25000;
@@ -320,7 +562,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
       conversationId: conversation.conversationId,
       error: String(err.message).slice(0, 120),
     });
-    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120) };
+    return { success: false, text: "", parsed: null, error: String(err.message).slice(0, 120), toolsInvoked, filesRead };
   }
 
   const text = extractDeepSeekText(completion);
@@ -329,7 +571,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     logger.warn("[deepseekAgent] _callDeepSeekWithHistory – empty response", {
       conversationId: conversation.conversationId,
     });
-    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response" };
+    return { success: false, text: "", parsed: null, error: "DeepSeek returned empty response", toolsInvoked, filesRead };
   }
 
   // Attempt JSON parse for structured intents
@@ -358,9 +600,12 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     conversationId: conversation.conversationId,
     textLength: text.length,
     hasParsed: parsed !== null,
+    toolsUsed: toolsInvoked.length > 0,
+    toolsInvoked,
+    filesRead,
   });
 
-  return { success: true, text: text.trim(), parsed, error: undefined };
+  return { success: true, text: text.trim(), parsed, error: undefined, toolsInvoked, filesRead };
 }
 
 /* ─────────────────────────────────────────────
@@ -852,6 +1097,9 @@ async function startConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    toolsUsed: (agentResult.toolsInvoked || []).length > 0,
+    toolsInvoked: agentResult.toolsInvoked || [],
+    filesRead: agentResult.filesRead || [],
   });
 
   return _buildResponse(conversation, agentResult.text, intent, true);
@@ -1100,6 +1348,9 @@ async function continueConversation(opts = {}) {
     actionIntent: intent,
     status: conversation.status,
     messageCount: conversation.messageCount,
+    toolsUsed: (agentResult.toolsInvoked || []).length > 0,
+    toolsInvoked: agentResult.toolsInvoked || [],
+    filesRead: agentResult.filesRead || [],
   });
 
   return _buildResponse(conversation, agentResult.text, intent, false);
@@ -1152,7 +1403,11 @@ module.exports = {
   VALID_AGENT_MODES,
   VALID_CONVERSATION_STATUSES,
   ALLOWED_PROJECT_PATHS,
+  AGENT_CONTEXT_MODES,
+  AGENT_CONTEXT_INTENTS,
   // Exposed for testing
   _isPathAllowed,
   _dryRunChanges,
+  _extractCandidateFiles,
+  _gatherAgentContext,
 };
