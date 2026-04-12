@@ -631,11 +631,47 @@ function findFileByName(basename) {
   return { success: true, matches, searchedScopes };
 }
 
+
 /* ─────────────────────────────────────────────
+   Public helper: extractTargetFilenames
+   (shared by geminiAgent and deepseekAgent)
    ───────────────────────────────────────────── */
 
 /**
- * Heuristically decides whether a free-chat message requires real project
+ * Extracts bare filenames (without a directory prefix) mentioned in the user
+ * message.  Examples: "DashboardIntegrated.jsx", "admin.routes.js".
+ *
+ * Only filenames with known text extensions are extracted.
+ * Filenames that are already part of a directory path (e.g. "services/foo.js")
+ * are excluded – those are handled by the agent's _extractCandidateFiles.
+ *
+ * Returns at most 3 unique basenames (case-preserved).
+ *
+ * @param {string} message
+ * @returns {string[]}
+ */
+function extractTargetFilenames(message) {
+  if (!message || typeof message !== "string") return [];
+
+  // Match a filename-like token that is NOT preceded by a path separator or dot
+  // (to avoid re-matching tails of already-qualified paths like services/foo.service.js)
+  const re = /(?<![/\\.\w])([\w][\w.-]*\.(?:jsx?|tsx?|json|yaml|yml|md|markdown|css|scss|sass|less|html?|sh|graphql|gql|sql|toml|ini|cfg))\b/g;
+  const found  = [];
+  const seenLc = new Set();
+  let match;
+  while ((match = re.exec(message)) !== null) {
+    const name = match[1];
+    const lc   = name.toLowerCase();
+    if (!seenLc.has(lc)) {
+      seenLc.add(lc);
+      found.push(name);
+    }
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+/* ─────────────────────────────────────────────
  * context (code, architecture, specific files, service details, etc.).
  *
  * Used by both geminiAgent and deepseekAgent to auto-detect context need in
@@ -706,6 +742,7 @@ module.exports = {
   listDirectory,
   readFile,
   findFileByName,
+  extractTargetFilenames,
   needsProjectContext,
   // Exported for testing / documentation
   MAX_FILE_SIZE_BYTES,

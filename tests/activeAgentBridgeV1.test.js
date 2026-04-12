@@ -50,6 +50,7 @@ jest.mock("../services/geminiProjectExplorer.service", () => ({
   listDirectory: jest.fn(() => ({ success: true, entries: [] })),
   readFile: jest.fn(() => ({ success: false, error: "not found" })),
   findFileByName: jest.fn(() => ({ success: true, matches: [], searchedScopes: [] })),
+  extractTargetFilenames: jest.fn(() => []),
   needsProjectContext: jest.fn(() => false),
 }));
 
