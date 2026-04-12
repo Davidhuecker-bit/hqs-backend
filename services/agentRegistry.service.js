@@ -70,6 +70,10 @@ const SAFETY_LEVELS = {
    (single source of truth)
    ───────────────────────────────────────────── */
 
+/**
+ * All paths readable by both agents.
+ * Both Gemini and DeepSeek may read every prefix listed here.
+ */
 const ALLOWED_PROJECT_PATHS = [
   "src/", "components/", "pages/", "views/", "layouts/",
   "styles/", "config/", "utils/", "lib/", "public/",
@@ -79,6 +83,92 @@ const ALLOWED_PROJECT_PATHS = [
 const BLOCKED_PATH_PATTERNS = [
   ".env", "node_modules", ".git", "secrets", "credentials", "package-lock",
 ];
+
+/* ─────────────────────────────────────────────
+   Write-scope per agent  (role-based write policy)
+   ─────────────────────────────────────────────
+   Gemini  → may only write Frontend paths.
+   DeepSeek → may only write Backend  paths.
+   Reading is unrestricted within ALLOWED_PROJECT_PATHS for both agents.
+   ───────────────────────────────────────────── */
+
+/**
+ * Paths that Gemini (frontend_agent) is allowed to modify.
+ * Any propose_change / prepare_patch / dry_run / execute_change
+ * that targets a path outside this list will be blocked.
+ */
+const FRONTEND_WRITE_PATHS = [
+  "src/", "components/", "pages/", "views/", "layouts/",
+  "styles/", "public/",
+];
+
+/**
+ * Paths that DeepSeek (backend_agent) is allowed to modify.
+ */
+const BACKEND_WRITE_PATHS = [
+  "services/", "routes/", "middleware/", "engines/",
+  "utils/", "lib/", "config/",
+];
+
+/**
+ * Checks whether `agentId` is permitted to WRITE to `filePath`.
+ *
+ * This is distinct from _isPathAllowed (which governs READ access and applies
+ * BLOCKED_PATH_PATTERNS security checks).  checkWriteScope enforces the
+ * role-based write policy:
+ *   - "gemini"   (frontend_agent) → may only write FRONTEND_WRITE_PATHS
+ *   - "deepseek" (backend_agent)  → may only write BACKEND_WRITE_PATHS
+ *
+ * Callers should always validate READ access with _isPathAllowed *before*
+ * calling checkWriteScope, so that secret/env protections are applied first.
+ *
+ * @param {string} agentId   – "gemini" | "deepseek"
+ * @param {string} filePath  – relative path to validate
+ * @returns {{ allowed: boolean, reason: string }}
+ */
+function checkWriteScope(agentId, filePath) {
+  if (!filePath || typeof filePath !== "string") {
+    return { allowed: false, reason: "Ungültiger Dateipfad." };
+  }
+
+  const normalised = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+
+  if (agentId === "gemini") {
+    const ok = FRONTEND_WRITE_PATHS.some((p) => normalised.startsWith(p));
+    if (!ok) {
+      return {
+        allowed: false,
+        reason:
+          `Gemini (Frontend-Agent) darf nur Frontend-Pfade ändern ` +
+          `(${FRONTEND_WRITE_PATHS.join(", ")}). ` +
+          `Schreibzugriff auf "${filePath}" ist blockiert. ` +
+          `Für Backend-Änderungen bitte DeepSeek verwenden.`,
+      };
+    }
+    return { allowed: true, reason: "" };
+  }
+
+  if (agentId === "deepseek") {
+    const ok = BACKEND_WRITE_PATHS.some((p) => normalised.startsWith(p));
+    if (!ok) {
+      return {
+        allowed: false,
+        reason:
+          `DeepSeek (Backend-Agent) darf nur Backend-Pfade ändern ` +
+          `(${BACKEND_WRITE_PATHS.join(", ")}). ` +
+          `Schreibzugriff auf "${filePath}" ist blockiert. ` +
+          `Für Frontend-Änderungen bitte Gemini verwenden.`,
+      };
+    }
+    return { allowed: true, reason: "" };
+  }
+
+  // Unknown agent – deny by default
+  return {
+    allowed: false,
+    reason: `Unbekannter Agent "${agentId}" – Schreibzugriff verweigert.`,
+  };
+}
 
 /**
  * Regex alternation string of the directory prefixes from ALLOWED_PROJECT_PATHS
@@ -294,4 +384,7 @@ module.exports = {
   ALLOWED_PROJECT_PATHS,
   BLOCKED_PATH_PATTERNS,
   CANDIDATE_FILE_DIRS_PATTERN,
+  FRONTEND_WRITE_PATHS,
+  BACKEND_WRITE_PATHS,
+  checkWriteScope,
 };
