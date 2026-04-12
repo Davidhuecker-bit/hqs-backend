@@ -307,7 +307,8 @@ function _inferTargetFiles(message) {
 
   // Service questions → read agentRegistry (lists all services) or a named service
   if (/\b(?:service|dienst)\b/.test(lower)) {
-    const serviceMatch = lower.match(/\b(\w+)(?:agent|service|architect|bridge|registry|orchestrator)\b/);
+    // Require prefix ≥ 4 chars to avoid short false matches like "the" + "agent"
+    const serviceMatch = lower.match(/\b(\w{4,})(?:agent|service|architect|bridge|registry|orchestrator)\b/);
     if (serviceMatch) {
       const name = serviceMatch[0].replace(/\s+/g, "");
       const candidate = `services/${name}.service.js`;
@@ -1252,7 +1253,13 @@ function _buildResponse(conversation, replyText, actionIntent, isInitial, errorC
     if (contextSource === "none" || filesRead.length === 0) return false;
     if (!replyText) return false;
     const lowerReply = replyText.toLowerCase();
-    return filesRead.some((f) => lowerReply.includes(f.toLowerCase().split("/").pop()));
+    // Check full path first; fall back to basename only when ≥ 8 chars.
+    return filesRead.some((f) => {
+      const lower = f.toLowerCase();
+      if (lowerReply.includes(lower)) return true;
+      const basename = lower.split("/").pop() || "";
+      return basename.length >= 8 && lowerReply.includes(basename);
+    });
   })();
 
   // ── Diagnostics: was context-mismatch recovery triggered? ──

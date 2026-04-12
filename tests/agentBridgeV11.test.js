@@ -19,7 +19,7 @@
    Mocks
    ───────────────────────────────────────────── */
 
-let mockGeminiChatResult  = { success: true, text: "Mock-Antwort Gemini." };
+let mockGeminiChatResult = { success: true, text: "Mock-Antwort Gemini." };
 let mockDeepSeekCompletion = { choices: [{ message: { content: "Mock-Antwort DeepSeek." } }] };
 
 jest.mock("../services/geminiArchitect.service", () => ({
@@ -204,14 +204,14 @@ describe("V1.1 – _isCacheMismatch correctness", () => {
 
   test("same topic → no mismatch", () => {
     const cache = "Projektstruktur:\nservices/geminiAgent.service.js\nroutes/admin.routes.js";
-    const msg   = "Was macht geminiAgent.service.js?";
-    expect(_isCacheMismatch(msg, cache)).toBe(false);
+    const message = "Was macht geminiAgent.service.js?";
+    expect(_isCacheMismatch(message, cache)).toBe(false);
   });
 
   test("different specific file → mismatch", () => {
     const cache = "Projektstruktur:\nservices/geminiAgent.service.js";
-    const msg   = "Erkläre mir routes/admin.routes.js";
-    expect(_isCacheMismatch(msg, cache)).toBe(true);
+    const message = "Erkläre mir routes/admin.routes.js";
+    expect(_isCacheMismatch(message, cache)).toBe(true);
   });
 
   test("empty message → no mismatch", () => {
@@ -228,14 +228,14 @@ describe("V1.1 – DeepSeek _isCacheMismatch correctness", () => {
 
   test("same topic → no mismatch", () => {
     const cache = "Projektstruktur:\nservices/deepseekAgent.service.js";
-    const msg   = "Was macht deepseekAgent.service.js?";
-    expect(_isCacheMismatch(msg, cache)).toBe(false);
+    const message = "Was macht deepseekAgent.service.js?";
+    expect(_isCacheMismatch(message, cache)).toBe(false);
   });
 
   test("different route file → mismatch", () => {
     const cache = "Projektstruktur:\nservices/deepseekAgent.service.js";
-    const msg   = "Erkläre mir routes/admin.routes.js";
-    expect(_isCacheMismatch(msg, cache)).toBe(true);
+    const message = "Erkläre mir routes/admin.routes.js";
+    expect(_isCacheMismatch(message, cache)).toBe(true);
   });
 });
 
