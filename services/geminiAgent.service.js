@@ -100,6 +100,7 @@ const {
   ALLOWED_PROJECT_PATHS,
   BLOCKED_PATH_PATTERNS,
   CANDIDATE_FILE_DIRS_PATTERN,
+  checkWriteScope,
 } = require("./agentRegistry.service");
 
 /* ─────────────────────────────────────────────
@@ -131,6 +132,7 @@ function _generateConversationId() {
 /**
  * Returns true when `filePath` is within an allowed project directory
  * and does NOT match any blocked pattern.
+ * Used for READ access – both agents may read all allowed paths.
  * @param {string} filePath – relative file path to validate
  * @returns {boolean}
  */
@@ -152,6 +154,17 @@ function _isPathAllowed(filePath) {
     normalised.startsWith(prefix),
   );
   return allowed;
+}
+
+/**
+ * Returns the write-scope check result for Gemini (frontend_agent).
+ * Gemini may only modify Frontend paths (src/, components/, pages/, …).
+ * Always call _isPathAllowed first so BLOCKED_PATH_PATTERNS are also applied.
+ * @param {string} filePath
+ * @returns {{ allowed: boolean, reason: string }}
+ */
+function _isWritePathAllowed(filePath) {
+  return checkWriteScope("gemini", filePath);
 }
 
 /* ─────────────────────────────────────────────
@@ -891,6 +904,15 @@ function _dryRunChanges(conversation) {
       continue;
     }
 
+    // Write-scope check: Gemini may only modify frontend paths
+    const writeCheck = _isWritePathAllowed(filePath);
+    if (!writeCheck.allowed) {
+      result.issues.push(`Schreibzugriff verweigert: ${writeCheck.reason}`);
+      result.log.push(`DRY-RUN WRITE-SCOPE BLOCKED: ${filePath}`);
+      result.success = false;
+      continue;
+    }
+
     const absolutePath = path.resolve(projectRoot, filePath);
     if (!absolutePath.startsWith(projectRoot)) {
       result.issues.push(`Pfad abgelehnt (außerhalb Projektverzeichnis): ${filePath}`);
@@ -997,6 +1019,21 @@ async function _executeChanges(conversation) {
       logger.warn("[geminiAgent] _executeChanges – path rejected", {
         conversationId: conversation.conversationId,
         filePath,
+      });
+      result.success = false;
+      continue;
+    }
+
+    // Write-scope check: Gemini may only modify frontend paths
+    const writeCheck = _isWritePathAllowed(filePath);
+    if (!writeCheck.allowed) {
+      const msg = `Schreibzugriff verweigert: ${writeCheck.reason}`;
+      result.errors.push(msg);
+      result.log.push(`WRITE-SCOPE BLOCKED: ${filePath}`);
+      logger.warn("[geminiAgent] _executeChanges – write-scope blocked", {
+        conversationId: conversation.conversationId,
+        filePath,
+        reason: writeCheck.reason,
       });
       result.success = false;
       continue;
@@ -1752,6 +1789,7 @@ module.exports = {
   ARCHITECT_CONTEXT_INTENTS,
   // Exposed for testing
   _isPathAllowed,
+  _isWritePathAllowed,
   _dryRunChanges,
   _gatherArchitectContext,
 };
