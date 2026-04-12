@@ -68,7 +68,7 @@ const MAX_HISTORY_FOR_PROMPT      = 20;
    When the agent operates in architecture or
    code_review mode with an analytical intent,
    it first gathers real project context via the
-   secure geminiProjectExplorer tools before
+   secure agentExplorer tools before
    formulating its answer.
    ───────────────────────────────────────────── */
 
@@ -92,6 +92,7 @@ const MAX_ARCHITECT_CONTEXT_CHARS = 12000;
 const {
   ALLOWED_PROJECT_PATHS,
   BLOCKED_PATH_PATTERNS,
+  CANDIDATE_FILE_DIRS_PATTERN,
 } = require("./agentRegistry.service");
 
 /* ─────────────────────────────────────────────
@@ -201,17 +202,15 @@ function _buildConversationHistory(conversation) {
  * Extract file paths mentioned in a user message that look relevant.
  * Returns at most 2 candidate relative paths for readFile.
  *
- * The directory prefixes in the pattern must align with ALLOWED_PROJECT_PATHS
- * (from agentRegistry.service.js).  Update both if new directories are added.
+ * The directory prefixes are derived from CANDIDATE_FILE_DIRS_PATTERN
+ * (exported by agentRegistry.service.js, in sync with ALLOWED_PROJECT_PATHS).
  *
  * @param {string} message
  * @returns {string[]}
  */
 function _extractCandidateFiles(message) {
   if (!message || typeof message !== "string") return [];
-  // Match patterns like: services/foo.js, routes/bar.js, utils/baz.ts, etc.
-  // NOTE: directory prefixes here should stay in sync with ALLOWED_PROJECT_PATHS.
-  const pattern = /\b((?:services|routes|middleware|utils|config|engines|lib)\/[\w/.-]+\.(?:js|ts|json|md))\b/g;
+  const pattern = new RegExp(`\\b((?:${CANDIDATE_FILE_DIRS_PATTERN})\\/[\\w/.-]+\\.(?:js|ts|json|md))\\b`, "g");
   const found = [];
   let match;
   while ((match = pattern.exec(message)) !== null) {
@@ -257,7 +256,7 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
     try {
       const scan = scanProjectStructure();
       if (scan.success && scan.tree) {
-        sections.push(`Aktuelle Projektstruktur (automatisch gescannt):\n\`\`\`\n${scan.tree}\n\`\`\``);
+        sections.push(`Aktuelle Projektstruktur (automatisch gescannt):\n~~~\n${scan.tree}\n~~~`);
         logger.info("[geminiAgent] _gatherArchitectContext – scanProjectStructure done", {
           conversationId,
           entryCount: scan.entryCount,
@@ -285,7 +284,7 @@ async function _gatherArchitectContext(mode, actionIntent, userMessage, conversa
       if (result.success && result.content) {
         const truncNote = result.truncated ? " [gekürzt]" : "";
         sections.push(
-          `Dateiinhalt: ${filePath}${truncNote} (${(result.sizeBytes / 1024).toFixed(1)} KB):\n\`\`\`\n${result.content}\n\`\`\``
+          `Dateiinhalt: ${filePath}${truncNote} (${(result.sizeBytes / 1024).toFixed(1)} KB):\n~~~\n${result.content}\n~~~`
         );
         filesRead.push(filePath);
         logger.info("[geminiAgent] _gatherArchitectContext – readFile done", {
@@ -536,7 +535,7 @@ function _buildGeminiContentsHistory(conversation) {
  * the native multi-turn `contents` array, then returns the parsed result.
  *
  * For architecture / code_review modes with analytical intents, real project
- * context is gathered first via the secure geminiProjectExplorer tools and
+ * context is gathered first via the secure agentExplorer tools and
  * prepended to the user message.
  *
  * @param {object}      conversation  – the conversation object

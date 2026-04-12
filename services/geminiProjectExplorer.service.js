@@ -2,11 +2,11 @@
 
 /**
  * ═══════════════════════════════════════════════════════════════
- *  Gemini Project Explorer – Secure Minimal Tool Set
+ *  Agent Project Explorer – Secure Minimal Tool Set (shared: Gemini + DeepSeek)
  * ═══════════════════════════════════════════════════════════════
  *
  *  Provides three tightly controlled server-side exploration tools
- *  for the Gemini Architect / Agent path:
+ *  shared by all internal agent paths (Gemini, DeepSeek):
  *
  *    scanProjectStructure()          – top-level overview of allowed dirs
  *    listDirectory(relPath)          – list files in one allowed directory
@@ -23,7 +23,7 @@
  *    • No path traversal sequences allowed
  *    • All tool calls are logged for diagnostics
  *
- *  This module is ONLY for the internal Gemini Architect/Agent path.
+ *  This module is ONLY for internal agent paths (Gemini, DeepSeek).
  *  It must NOT be exposed as a public API endpoint.
  * ═══════════════════════════════════════════════════════════════
  */
@@ -255,7 +255,7 @@ function _formatEntry(entry, relBase) {
  * @returns {{ success: boolean, tree: string, entryCount: number, error?: string }}
  */
 function scanProjectStructure() {
-  logger.info("[geminiExplorer] tool:scanProjectStructure – called");
+  logger.info("[agentExplorer] tool:scanProjectStructure – called");
 
   const lines = [];
   let entryCount = 0;
@@ -318,7 +318,7 @@ function scanProjectStructure() {
 
   const tree = lines.join("\n");
 
-  logger.info("[geminiExplorer] tool:scanProjectStructure – done", {
+  logger.info("[agentExplorer] tool:scanProjectStructure – done", {
     entryCount,
     truncated,
     lineCount: lines.length,
@@ -340,7 +340,7 @@ function scanProjectStructure() {
 function listDirectory(relPath) {
   const norm = _normalise(relPath);
 
-  logger.info("[geminiExplorer] tool:listDirectory – called", { relPath: norm });
+  logger.info("[agentExplorer] tool:listDirectory – called", { relPath: norm });
 
   if (!norm) {
     return { success: false, entries: [], error: "Empty path" };
@@ -350,17 +350,17 @@ function listDirectory(relPath) {
   const checkPath = norm.endsWith("/") ? norm : `${norm}/`;
   // Minimal check: path traversal and extra blocked patterns
   if (checkPath.includes("..") || checkPath.includes("~")) {
-    logger.warn("[geminiExplorer] tool:listDirectory – path rejected (traversal)", { relPath: norm });
+    logger.warn("[agentExplorer] tool:listDirectory – path rejected (traversal)", { relPath: norm });
     return { success: false, entries: [], error: `Path rejected: ${norm}` };
   }
   if (_isExtraBlocked(checkPath.toLowerCase())) {
-    logger.warn("[geminiExplorer] tool:listDirectory – path rejected (blocked pattern)", { relPath: norm });
+    logger.warn("[agentExplorer] tool:listDirectory – path rejected (blocked pattern)", { relPath: norm });
     return { success: false, entries: [], error: `Path rejected: ${norm}` };
   }
   // Must start with an allowed prefix
   const allowed = ALLOWED_PROJECT_PATHS.some((p) => norm.startsWith(p) || norm === p.replace(/\/$/, ""));
   if (!allowed) {
-    logger.warn("[geminiExplorer] tool:listDirectory – path not in allowed prefixes", { relPath: norm });
+    logger.warn("[agentExplorer] tool:listDirectory – path not in allowed prefixes", { relPath: norm });
     return { success: false, entries: [], error: `Path not allowed: ${norm}` };
   }
 
@@ -381,11 +381,11 @@ function listDirectory(relPath) {
       .map((e) => _formatEntry(e, norm))
       .filter(Boolean);
   } catch (err) {
-    logger.warn("[geminiExplorer] tool:listDirectory – read error", { relPath: norm, error: String(err.message) });
+    logger.warn("[agentExplorer] tool:listDirectory – read error", { relPath: norm, error: String(err.message) });
     return { success: false, entries: [], error: String(err.message).slice(0, 80) };
   }
 
-  logger.info("[geminiExplorer] tool:listDirectory – done", {
+  logger.info("[agentExplorer] tool:listDirectory – done", {
     relPath: norm,
     entryCount: entries.length,
   });
@@ -407,7 +407,7 @@ function listDirectory(relPath) {
 function readFile(relPath) {
   const norm = _normalise(relPath);
 
-  logger.info("[geminiExplorer] tool:readFile – called", { relPath: norm });
+  logger.info("[agentExplorer] tool:readFile – called", { relPath: norm });
 
   if (!norm) {
     return { success: false, content: "", sizeBytes: 0, truncated: false, error: "Empty path" };
@@ -415,14 +415,14 @@ function readFile(relPath) {
 
   // Safety checks
   if (!_isPathSafe(norm)) {
-    logger.warn("[geminiExplorer] tool:readFile – path rejected by safety check", { relPath: norm });
+    logger.warn("[agentExplorer] tool:readFile – path rejected by safety check", { relPath: norm });
     return { success: false, content: "", sizeBytes: 0, truncated: false, error: `Path rejected: ${norm}` };
   }
 
   // Extension check
   const filename = path.basename(norm);
   if (!_isTextFile(filename)) {
-    logger.warn("[geminiExplorer] tool:readFile – file type not allowed", {
+    logger.warn("[agentExplorer] tool:readFile – file type not allowed", {
       relPath: norm, ext: path.extname(filename),
     });
     return {
@@ -460,20 +460,20 @@ function readFile(relPath) {
       fs.closeSync(fd);
       content = buf.slice(0, bytesRead).toString("utf-8");
       truncated = true;
-      logger.info("[geminiExplorer] tool:readFile – file truncated", {
+      logger.info("[agentExplorer] tool:readFile – file truncated", {
         relPath: norm, sizeBytes, maxBytes: MAX_FILE_SIZE_BYTES,
       });
     } else {
       content = fs.readFileSync(absPath, "utf-8");
     }
   } catch (err) {
-    logger.warn("[geminiExplorer] tool:readFile – read error", {
+    logger.warn("[agentExplorer] tool:readFile – read error", {
       relPath: norm, error: String(err.message).slice(0, 80),
     });
     return { success: false, content: "", sizeBytes, truncated: false, error: String(err.message).slice(0, 80) };
   }
 
-  logger.info("[geminiExplorer] tool:readFile – done", {
+  logger.info("[agentExplorer] tool:readFile – done", {
     relPath: norm,
     sizeBytes,
     contentLength: content.length,
