@@ -141,6 +141,23 @@ const _projectRoot = process.cwd();
 const _frontendRoot = FRONTEND_PROJECT_ROOT ? path.resolve(FRONTEND_PROJECT_ROOT) : null;
 
 /**
+ * Pre-computed deduplicated list of FRONTEND_SEARCH_PATHS with sub-paths removed
+ * when their parent is already present.  Computed once at module load to avoid
+ * repeating the O(n²) filter inside every findFileByName call.
+ *
+ * Example: "src/components/" is dropped because "src/" is already in the list
+ * and the recursive walk from "src/" will reach "src/components/" anyway.
+ */
+const _frontendSearchRoots = FRONTEND_SEARCH_PATHS.filter((fePath) => {
+  const feDir = fePath.replace(/\/$/, "");
+  return !FRONTEND_SEARCH_PATHS.some((other) => {
+    if (other === fePath) return false;
+    const otherDir = other.replace(/\/$/, "");
+    return feDir.startsWith(otherDir + "/");
+  });
+});
+
+/**
  * Normalise a relative path: forward slashes, strip leading slash.
  * @param {string} relPath
  * @returns {string}
@@ -486,12 +503,8 @@ function readFile(relPath) {
   let absPath = absBackend;
   if (_frontendRoot && _isFrontendSearchPath(norm)) {
     const absfe = _safeAbsoluteFrontend(norm);
-    if (absfe) {
-      // Use frontend root when file exists there (or backend abs is null / not found)
-      const backendExists = absBackend ? (() => { try { fs.statSync(absBackend); return true; } catch { return false; } })() : false;
-      if (!backendExists) {
-        absPath = absfe;
-      }
+    if (absfe && (!absBackend || !fs.existsSync(absBackend))) {
+      absPath = absfe;
     }
   }
 
@@ -678,28 +691,15 @@ function findFileByName(basename) {
   }
 
   // Also search the frontend project root when FRONTEND_ROOT is configured.
-  // Only paths not already covered by the backend search above are added.
+  // _frontendSearchRoots is pre-computed at module load (deduplicated).
   if (_frontendRoot && matches.length < MAX_FILE_SEARCH_RESULTS) {
-    // Deduplicate: skip sub-paths whose parent was already queued (the walk
-    // is recursive so "src/" already covers "src/components/" etc.).
-    const fePathsToSearch = FRONTEND_SEARCH_PATHS.filter((fePath) => {
-      const feDir = fePath.replace(/\/$/, "");
-      // Keep this path only if no already-queued frontend path is a prefix of it
-      return !FRONTEND_SEARCH_PATHS.some((other) => {
-        if (other === fePath) return false;
-        const otherDir = other.replace(/\/$/, "");
-        return feDir.startsWith(otherDir + "/");
-      });
-    });
-
-    for (const fePath of fePathsToSearch) {
+    for (const fePath of _frontendSearchRoots) {
       if (matches.length >= MAX_FILE_SEARCH_RESULTS) break;
-      const feDir     = fePath.replace(/\/$/, "");
-      const absFeDir  = path.resolve(_frontendRoot, feDir);
+      const feDir    = fePath.replace(/\/$/, "");
+      const absFeDir = path.resolve(_frontendRoot, feDir);
       if (!fs.existsSync(absFeDir)) continue;
 
-      const scopeLabel = `frontend:${fePath}`;
-      searchedScopes.push(scopeLabel);
+      searchedScopes.push(`frontend:${fePath}`);
       _walkForFile(
         absFeDir,
         feDir,
