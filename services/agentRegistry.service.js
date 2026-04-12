@@ -111,8 +111,16 @@ const BACKEND_WRITE_PATHS = [
 ];
 
 /**
- * Returns true when `agentId` is allowed to write `filePath`.
- * Reading is always determined separately by _isPathAllowed / ALLOWED_PROJECT_PATHS.
+ * Checks whether `agentId` is permitted to WRITE to `filePath`.
+ *
+ * This is distinct from _isPathAllowed (which governs READ access and applies
+ * BLOCKED_PATH_PATTERNS security checks).  checkWriteScope enforces the
+ * role-based write policy:
+ *   - "gemini"   (frontend_agent) → may only write FRONTEND_WRITE_PATHS
+ *   - "deepseek" (backend_agent)  → may only write BACKEND_WRITE_PATHS
+ *
+ * Callers should always validate READ access with _isPathAllowed *before*
+ * calling checkWriteScope, so that secret/env protections are applied first.
  *
  * @param {string} agentId   – "gemini" | "deepseek"
  * @param {string} filePath  – relative path to validate
