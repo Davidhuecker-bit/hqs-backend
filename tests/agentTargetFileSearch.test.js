@@ -691,3 +691,166 @@ describe("Integration – target file diagnostics fields in response metadata", 
     expect(result.metadata).not.toHaveProperty("searchedScopes");
   });
 });
+
+/* ─────────────────────────────────────────────
+   8. Frontend root – findFileByName searches FRONTEND_ROOT paths
+   ───────────────────────────────────────────── */
+
+describe("findFileByName – frontend root support (FRONTEND_ROOT configured)", () => {
+  const path = require("path");
+  const origReaddirSync = require("fs").readdirSync;
+  const origExistsSync  = require("fs").existsSync;
+  const FAKE_FRONTEND_ROOT = path.resolve("/fake/frontend");
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env.FRONTEND_ROOT = FAKE_FRONTEND_ROOT;
+  });
+
+  afterEach(() => {
+    delete process.env.FRONTEND_ROOT;
+    require("fs").readdirSync = origReaddirSync;
+    require("fs").existsSync  = origExistsSync;
+    jest.resetModules();
+  });
+
+  test("finds a frontend .jsx file inside FRONTEND_ROOT/src/components/", () => {
+    const fs = require("fs");
+    fs.existsSync = (p) => {
+      // Only the frontend src/ directory exists
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src")) return true;
+      return origExistsSync(p);
+    };
+    fs.readdirSync = (p, opts) => {
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src")) {
+        return [{ name: "components", isDirectory: () => true, isFile: () => false }];
+      }
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src", "components")) {
+        return [{ name: "DashboardIntegrated.jsx", isDirectory: () => false, isFile: () => true }];
+      }
+      return [];
+    };
+
+    const { findFileByName } = jest.requireActual("../services/geminiProjectExplorer.service");
+    const result = findFileByName("DashboardIntegrated.jsx");
+
+    expect(result.success).toBe(true);
+    expect(result.matches.some((m) => m.includes("DashboardIntegrated.jsx"))).toBe(true);
+    // searchedScopes must show that the frontend root was consulted
+    expect(result.searchedScopes.some((s) => s.startsWith("frontend:"))).toBe(true);
+  });
+
+  test("searchedScopes contains frontend: prefixed entries when FRONTEND_ROOT is set", () => {
+    const fs = require("fs");
+    fs.existsSync = (p) => {
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src")) return true;
+      return origExistsSync(p);
+    };
+    fs.readdirSync = (p, opts) => {
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src")) {
+        return [{ name: "App.tsx", isDirectory: () => false, isFile: () => true }];
+      }
+      return [];
+    };
+
+    const { findFileByName } = jest.requireActual("../services/geminiProjectExplorer.service");
+    const result = findFileByName("NonExistent.jsx");
+
+    expect(result.success).toBe(true);
+    expect(result.searchedScopes.some((s) => s.startsWith("frontend:"))).toBe(true);
+  });
+
+  test("backend file is still found when FRONTEND_ROOT is also configured", () => {
+    const fs = require("fs");
+    // Mock: backend has services/ with agentRegistry.service.js
+    fs.existsSync = (p) => {
+      const rel = p.replace(process.cwd() + path.sep, "").replace(/\\/g, "/");
+      if (rel === "services") return true;
+      // Frontend src exists too (but does not contain the target file)
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src")) return true;
+      return origExistsSync(p);
+    };
+    fs.readdirSync = (p, opts) => {
+      const rel = p.replace(process.cwd() + path.sep, "").replace(/\\/g, "/");
+      if (rel === "services") {
+        return [{ name: "agentRegistry.service.js", isDirectory: () => false, isFile: () => true }];
+      }
+      if (p === path.join(FAKE_FRONTEND_ROOT, "src")) {
+        return [];
+      }
+      return [];
+    };
+
+    const { findFileByName } = jest.requireActual("../services/geminiProjectExplorer.service");
+    const result = findFileByName("agentRegistry.service.js");
+
+    expect(result.success).toBe(true);
+    expect(result.matches.some((m) => m.includes("agentRegistry.service.js"))).toBe(true);
+    // Must not be a frontend-prefixed match
+    expect(result.matches.every((m) => !m.startsWith("frontend:"))).toBe(true);
+  });
+
+  test("no additional scopes are searched when FRONTEND_ROOT is not set", () => {
+    // This test verifies the default (no FRONTEND_ROOT) still works unchanged.
+    // Unset env var and re-require the module.
+    delete process.env.FRONTEND_ROOT;
+    jest.resetModules();
+
+    const fs = require("fs");
+    fs.existsSync = (p) => {
+      const rel = p.replace(process.cwd() + path.sep, "").replace(/\\/g, "/");
+      if (rel === "src") return true;
+      return origExistsSync(p);
+    };
+    fs.readdirSync = (p, opts) => {
+      const rel = p.replace(process.cwd() + path.sep, "").replace(/\\/g, "/");
+      if (rel === "src") return [];
+      return [];
+    };
+
+    const { findFileByName } = jest.requireActual("../services/geminiProjectExplorer.service");
+    const result = findFileByName("SomeComponent.jsx");
+
+    expect(result.success).toBe(true);
+    // Without FRONTEND_ROOT no frontend: scopes should appear
+    expect(result.searchedScopes.every((s) => !s.startsWith("frontend:"))).toBe(true);
+  });
+});
+
+/* ─────────────────────────────────────────────
+   9. Write scope unchanged by frontend root addition
+   ───────────────────────────────────────────── */
+
+describe("Write scope – unchanged after frontend root addition", () => {
+  const { checkWriteScope } = require("../services/agentRegistry.service");
+
+  test("Gemini may still write to src/ (frontend path)", () => {
+    const result = checkWriteScope("gemini", "src/components/Button.jsx");
+    expect(result.allowed).toBe(true);
+  });
+
+  test("Gemini is still blocked from writing to services/", () => {
+    const result = checkWriteScope("gemini", "services/myService.js");
+    expect(result.allowed).toBe(false);
+  });
+
+  test("DeepSeek may still write to services/ (backend path)", () => {
+    const result = checkWriteScope("deepseek", "services/myService.js");
+    expect(result.allowed).toBe(true);
+  });
+
+  test("DeepSeek is still blocked from writing to src/", () => {
+    const result = checkWriteScope("deepseek", "src/components/Button.jsx");
+    expect(result.allowed).toBe(false);
+  });
+
+  test("FRONTEND_SEARCH_PATHS exported from agentRegistry contains expected sub-paths", () => {
+    const { FRONTEND_SEARCH_PATHS } = require("../services/agentRegistry.service");
+    expect(FRONTEND_SEARCH_PATHS).toContain("src/");
+    expect(FRONTEND_SEARCH_PATHS).toContain("src/components/");
+    expect(FRONTEND_SEARCH_PATHS).toContain("src/views/");
+    expect(FRONTEND_SEARCH_PATHS).toContain("src/hooks/");
+    expect(FRONTEND_SEARCH_PATHS).toContain("src/services/");
+    expect(FRONTEND_SEARCH_PATHS).toContain("src/utils/");
+  });
+});

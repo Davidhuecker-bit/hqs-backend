@@ -33,7 +33,7 @@ const fs   = require("fs");
 const path = require("path");
 
 const logger = require("../utils/logger");
-const { ALLOWED_PROJECT_PATHS, BLOCKED_PATH_PATTERNS } = require("./agentRegistry.service");
+const { ALLOWED_PROJECT_PATHS, BLOCKED_PATH_PATTERNS, FRONTEND_PROJECT_ROOT, FRONTEND_SEARCH_PATHS } = require("./agentRegistry.service");
 
 /* ─────────────────────────────────────────────
    Security constants
@@ -133,6 +133,14 @@ const ALLOWED_BASENAMES = new Set([
 const _projectRoot = process.cwd();
 
 /**
+ * Resolved absolute path of the frontend project root, or null if
+ * FRONTEND_ROOT is not configured.  Used by findFileByName and readFile
+ * to extend the search / read scope to the frontend project without
+ * relaxing any security rules.
+ */
+const _frontendRoot = FRONTEND_PROJECT_ROOT ? path.resolve(FRONTEND_PROJECT_ROOT) : null;
+
+/**
  * Normalise a relative path: forward slashes, strip leading slash.
  * @param {string} relPath
  * @returns {string}
@@ -216,6 +224,37 @@ function _safeAbsolute(relPath) {
     return null;
   }
   return abs;
+}
+
+/**
+ * Resolve a relative path to an absolute path inside the frontend root.
+ * Returns null when _frontendRoot is not configured or the resolved path
+ * would escape the frontend root (path traversal guard).
+ *
+ * @param {string} relPath – relative path (already normalised)
+ * @returns {string|null} absolute path within _frontendRoot, or null
+ */
+function _safeAbsoluteFrontend(relPath) {
+  if (!_frontendRoot) return null;
+  const abs = path.resolve(_frontendRoot, relPath);
+  if (!abs.startsWith(_frontendRoot + path.sep) && abs !== _frontendRoot) {
+    return null;
+  }
+  return abs;
+}
+
+/**
+ * Returns true if the normalised relative path starts with any prefix
+ * listed in FRONTEND_SEARCH_PATHS.  Used to decide whether a path
+ * should be looked up in the frontend root when not found in the backend.
+ *
+ * @param {string} norm – normalised relative path
+ * @returns {boolean}
+ */
+function _isFrontendSearchPath(norm) {
+  return FRONTEND_SEARCH_PATHS.some(
+    (p) => norm.startsWith(p) || norm === p.replace(/\/$/, ""),
+  );
 }
 
 /**
@@ -438,7 +477,24 @@ function readFile(relPath) {
     };
   }
 
-  const absPath = _safeAbsolute(norm);
+  const absBackend = _safeAbsolute(norm);
+
+  // Resolve the actual absolute path to read from.
+  // Primary: backend project root.
+  // Fallback: frontend root when the path is a recognised frontend search path
+  //           and the file does not exist in the backend root.
+  let absPath = absBackend;
+  if (_frontendRoot && _isFrontendSearchPath(norm)) {
+    const absfe = _safeAbsoluteFrontend(norm);
+    if (absfe) {
+      // Use frontend root when file exists there (or backend abs is null / not found)
+      const backendExists = absBackend ? (() => { try { fs.statSync(absBackend); return true; } catch { return false; } })() : false;
+      if (!backendExists) {
+        absPath = absfe;
+      }
+    }
+  }
+
   if (!absPath) {
     return { success: false, content: "", sizeBytes: 0, truncated: false, error: `Path outside project root: ${norm}` };
   }
@@ -621,11 +677,47 @@ function findFileByName(basename) {
     if (matches.length >= MAX_FILE_SEARCH_RESULTS) break;
   }
 
+  // Also search the frontend project root when FRONTEND_ROOT is configured.
+  // Only paths not already covered by the backend search above are added.
+  if (_frontendRoot && matches.length < MAX_FILE_SEARCH_RESULTS) {
+    // Deduplicate: skip sub-paths whose parent was already queued (the walk
+    // is recursive so "src/" already covers "src/components/" etc.).
+    const fePathsToSearch = FRONTEND_SEARCH_PATHS.filter((fePath) => {
+      const feDir = fePath.replace(/\/$/, "");
+      // Keep this path only if no already-queued frontend path is a prefix of it
+      return !FRONTEND_SEARCH_PATHS.some((other) => {
+        if (other === fePath) return false;
+        const otherDir = other.replace(/\/$/, "");
+        return feDir.startsWith(otherDir + "/");
+      });
+    });
+
+    for (const fePath of fePathsToSearch) {
+      if (matches.length >= MAX_FILE_SEARCH_RESULTS) break;
+      const feDir     = fePath.replace(/\/$/, "");
+      const absFeDir  = path.resolve(_frontendRoot, feDir);
+      if (!fs.existsSync(absFeDir)) continue;
+
+      const scopeLabel = `frontend:${fePath}`;
+      searchedScopes.push(scopeLabel);
+      _walkForFile(
+        absFeDir,
+        feDir,
+        baseLower,
+        0,
+        MAX_FILE_SEARCH_DEPTH,
+        matches,
+        MAX_FILE_SEARCH_RESULTS,
+      );
+    }
+  }
+
   logger.info("[agentExplorer] tool:findFileByName – done", {
     basename,
     matchCount: matches.length,
     searchedScopeCount: searchedScopes.length,
     matches,
+    frontendRootConfigured: Boolean(_frontendRoot),
   });
 
   return { success: true, matches, searchedScopes };
@@ -752,4 +844,6 @@ module.exports = {
   MAX_FILE_SEARCH_DEPTH,
   ALLOWED_TEXT_EXTENSIONS,
   EXTRA_BLOCKED_PATTERNS,
+  // Frontend root support (read-only, no write policy change)
+  FRONTEND_SEARCH_PATHS,
 };
