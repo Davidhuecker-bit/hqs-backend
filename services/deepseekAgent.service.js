@@ -14,6 +14,7 @@ const {
   scanProjectStructure,
   listDirectory,
   readFile,
+  needsProjectContext,
 } = require("./geminiProjectExplorer.service");
 
 /* ─────────────────────────────────────────────
@@ -318,7 +319,7 @@ function _buildConversationHistory(conversation) {
    System prompt builder
    ───────────────────────────────────────────── */
 
-function _buildAgentSystemPrompt(mode, actionIntent) {
+function _buildAgentSystemPrompt(mode, actionIntent, contextInjected = false) {
   const base = `Du bist DeepSeek Agent – ein kooperativer Backend- und System-Analyst für das HQS-System.
 Antworte immer auf Deutsch. Nutze klare, präzise Sprache ohne Füllwörter.`;
 
@@ -447,8 +448,8 @@ Anweisungen:
 - Halte die Antwort kurz und strukturiert.`;
   }
 
-  // ── Context-gathering modes get richer instructions ──
-  if (AGENT_CONTEXT_MODES.has(mode)) {
+  // ── Context-gathering modes (or free_chat with injected context) get richer instructions ──
+  if (AGENT_CONTEXT_MODES.has(mode) || contextInjected) {
     const taskLabel = actionIntent
       ? { explain: "Erklärung", analyze: "Analyse", diagnose: "Diagnose",
           inspect_files: "Datei-Inspektion", plan_fix: "Fix-Planung" }[actionIntent] || actionIntent
@@ -461,6 +462,7 @@ Aktuelle Aufgabe: ${taskLabel}
 WICHTIG – Echter Systemkontext wurde automatisch gesammelt:
 Dir wird im User-Prompt ein aktueller Scan der Projektstruktur und ggf. relevante Dateiinhalte mitgeliefert.
 Nutze diesen echten Kontext, um systemspezifische, präzise Antworten zu geben – keine Allgemeinplätze.
+Falls der gelieferte Kontext nicht ausreicht, um die Frage zu beantworten, sage dies klar – erfinde keine Informationen.
 
 Anweisungen:
 - Lies zuerst die bereitgestellte Projektstruktur und Dateiinhalte sorgfältig.
@@ -487,25 +489,28 @@ Anweisungen:
    ───────────────────────────────────────────── */
 
 async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent) {
-  const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent);
+  // ── Decide whether to gather project context ──
+  // Triggered by: analytical modes (architecture/code_review/backend_review/…) with compatible intents,
+  // OR free_chat when the message heuristically signals a code/system question.
+  const shouldGatherContext =
+    (AGENT_CONTEXT_MODES.has(conversation.mode) ||
+      (conversation.mode === "free_chat" && needsProjectContext(userMessage))) &&
+    (actionIntent == null || AGENT_CONTEXT_INTENTS.has(actionIntent));
+
+  const systemPrompt = _buildAgentSystemPrompt(conversation.mode, actionIntent, shouldGatherContext);
   const history = _buildConversationHistory(conversation);
 
-  // ── Agent-mode context gathering ──
-  // For analytical modes with compatible intents, collect real project context
-  // before sending the request to DeepSeek.
+  // ── Context gathering ──
   let toolsInvoked = [];
   let filesRead    = [];
   let effectiveUserMessage = userMessage;
-
-  const shouldGatherContext =
-    AGENT_CONTEXT_MODES.has(conversation.mode) &&
-    (actionIntent == null || AGENT_CONTEXT_INTENTS.has(actionIntent));
 
   if (shouldGatherContext) {
     logger.info("[deepseekAgent] _callDeepSeekWithHistory – triggering agent context gathering", {
       conversationId: conversation.conversationId,
       mode: conversation.mode,
       actionIntent,
+      trigger: AGENT_CONTEXT_MODES.has(conversation.mode) ? "mode" : "auto_detected",
     });
 
     try {
@@ -520,6 +525,12 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
 
       if (gathered.contextText) {
         effectiveUserMessage = `${gathered.contextText}\n\nFrage/Aufgabe:\n${userMessage}`;
+        logger.info("[deepseekAgent] _callDeepSeekWithHistory – agent context injected", {
+          conversationId: conversation.conversationId,
+          toolsInvoked,
+          filesRead,
+          contextLength: gathered.contextText.length,
+        });
       }
     } catch (err) {
       logger.warn("[deepseekAgent] _callDeepSeekWithHistory – context gathering failed", {
@@ -548,6 +559,7 @@ async function _callDeepSeekWithHistory(conversation, userMessage, actionIntent)
     actionIntent,
     historyLength: history.length,
     messageCount: messages.length,
+    contextLoaded: toolsInvoked.length > 0,
     toolsUsed: toolsInvoked.length > 0,
     toolsInvoked,
     filesRead,

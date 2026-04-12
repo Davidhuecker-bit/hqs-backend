@@ -484,6 +484,65 @@ function readFile(relPath) {
 }
 
 /* ─────────────────────────────────────────────
+   Public helper: needsProjectContext
+   ───────────────────────────────────────────── */
+
+/**
+ * Heuristically decides whether a free-chat message requires real project
+ * context (code, architecture, specific files, service details, etc.).
+ *
+ * Used by both geminiAgent and deepseekAgent to auto-detect context need in
+ * free_chat mode without requiring the user to choose a special mode.
+ *
+ * Triggers context gathering when the message:
+ *   • References a known directory prefix or a file with a code extension
+ *   • Mentions a recognised HQS service / module name
+ *   • Contains architecture / code-review signal phrases (German or English)
+ *
+ * Deliberately narrow to avoid loading context for general-knowledge questions.
+ *
+ * @param {string} message
+ * @returns {boolean}
+ */
+function needsProjectContext(message) {
+  if (!message || typeof message !== "string") return false;
+  const lower = message.toLowerCase();
+
+  // 1. Explicit file-path patterns  (services/, routes/, *.js, *.ts …)
+  if (/\b(?:services|routes|tests|middleware|config|utils|jobs|scripts)\//i.test(message)) return true;
+  if (/\b\w[\w.-]+\.(?:js|ts|tsx|jsx|json|yaml|yml)\b/i.test(message)) return true;
+
+  // 2. Known HQS module / service names
+  const hqsModules = [
+    "geminiagent", "deepseekagent", "geminiarchitect", "agentbridge",
+    "agentregistry", "agentorchestrator", "requestclassifier",
+    "conversationstore", "audittrail", "agentdebate",
+    "geminiprojectexplorer",
+  ];
+  if (hqsModules.some((m) => lower.includes(m))) return true;
+
+  // 3. Architecture / code-review signal phrases
+  const signalPhrases = [
+    "architektur", "architecture",
+    "projektstruktur", "dateistruktur", "code-struktur",
+    "code review", "code-review",
+    "wie ist.*aufgebaut", "wie.*implementiert", "wie.*strukturiert",
+    "erkläre.*service", "erkläre.*route", "erkläre.*api",
+    "zeige.*datei", "zeige.*code", "lies.*datei",
+    "welche.*service", "welche.*route", "welche.*datei", "welche.*endpunkt",
+    "wie funktioniert.*api", "wie funktioniert.*service",
+    "was macht.*service", "was macht.*route",
+    "backend.*struktur", "frontend.*struktur",
+  ];
+  return signalPhrases.some((phrase) => {
+    if (/[.*+?]/.test(phrase)) {
+      try { return new RegExp(phrase).test(lower); } catch { return false; }
+    }
+    return lower.includes(phrase);
+  });
+}
+
+/* ─────────────────────────────────────────────
    Exports
    ───────────────────────────────────────────── */
 
@@ -491,6 +550,7 @@ module.exports = {
   scanProjectStructure,
   listDirectory,
   readFile,
+  needsProjectContext,
   // Exported for testing / documentation
   MAX_FILE_SIZE_BYTES,
   MAX_DIR_ENTRIES,
